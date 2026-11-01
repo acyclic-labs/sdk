@@ -7,7 +7,8 @@ use proptest::prelude::*;
 #[tokio::test]
 async fn inherited_directory_intersects_current_root_and_data_policy()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (host, volume, grant, writer) = fixture([true; 8], VolumeClass::AgentPrivate).await?;
+    let (host, volume, grant, writer, _issuer) =
+        fixture([true; 8], VolumeClass::AgentPrivate).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
     let root = host.open(&reference, None).await?;
@@ -376,7 +377,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
 #[tokio::test]
 async fn descendant_restore_retains_the_original_repository_policy_cut()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let (host, volume, _, writer) = fixture([true; 8], VolumeClass::Project).await?;
+    let (host, volume, _, writer, _issuer) = fixture([true; 8], VolumeClass::Project).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
     let root = host.open(&reference, None).await?;
@@ -578,6 +579,7 @@ async fn fixture(
     VolumeRef,
     ContentGrant,
     ContentGrant,
+    AuthorityRoot,
 )> {
     let provider = ProviderRef::new(
         "native-list".into(),
@@ -671,7 +673,7 @@ async fn fixture(
         &mut None,
     )?;
     let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "rows", &mut None)?;
-    Ok((host, volume, read, writer))
+    Ok((host, volume, read, writer, issuer))
 }
 
 proptest! {
@@ -682,7 +684,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         runtime.block_on(async {
-            let (host, volume, grant, _) = fixture(mask, VolumeClass::Project).await?;
+            let (host, volume, grant, _, _issuer) = fixture(mask, VolumeClass::Project).await?;
             let caller = crate::Capabilities::new([Capability {
                 layers: vec![std::iter::once("rows".into())
                     .chain(caller_mask.into_iter().enumerate().filter(|(_, keep)| *keep)
