@@ -93,7 +93,11 @@ impl RequestContinuation {
         io: Option<&PreparationIo>,
     ) -> Result<PreparedModelRequest> {
         PreparedModelRequest::record_preparation();
-        if self.suffix.is_empty() && self.prepared.admitted_limits == limits {
+        // The first continuation establishes the hash cut used by transcript staging.
+        if self.suffix.is_empty()
+            && self.prepared.admitted_limits == limits
+            && !self.prepared.encoding.is_empty()
+        {
             with_history_io(io, |work| limits.validate(work))?;
             return Ok(self.prepared);
         }

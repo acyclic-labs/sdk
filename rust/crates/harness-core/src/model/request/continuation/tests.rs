@@ -206,6 +206,9 @@ fn changed_limits_revalidate_the_admitted_prefix() -> Result<()> {
         let mut original = request(1)?;
         original.messages = vec![text("retained text exceeding the new bound")];
         let prepared = PreparedModelRequest::prepare(original, Limits::default(), None)?;
+        let prepared = prepared
+            .into_continuation()
+            .finish(Limits::default(), None)?;
         let mut continuation = prepared.into_continuation();
         if append {
             continuation.messages().push(text("new"));
@@ -222,6 +225,9 @@ fn changed_limits_revalidate_the_admitted_prefix() -> Result<()> {
                 .is_err()
         );
         let prepared = PreparedModelRequest::prepare(request(10)?, Limits::default(), None)?;
+        let prepared = prepared
+            .into_continuation()
+            .finish(Limits::default(), None)?;
         let mut continuation = prepared.into_continuation();
         if append {
             continuation.messages().push(text("new"));

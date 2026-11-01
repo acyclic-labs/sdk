@@ -73,6 +73,9 @@ fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
                     Limits::default(),
                     Some(io),
                 )?;
+                // Keep the original first hash cut for later transcript staging.
+                prepared = prepared.into_continuation().finish(Limits::default(), Some(io))?;
+                assert!(prepared.cached_message_digests(None, Some(io))?.is_some());
                 let pointer = prepared.bytes().as_ptr();
                 let digest = prepared.request_digest();
                 let inventory = prepared.preparation_owned_bytes(io)?;
@@ -95,7 +98,7 @@ fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
                 assert_eq!(prepared.bytes(), expected);
                 // The former empty append still encodes the whole tool envelope.
                 let _previous = encoding::EncodingPrefix::append(
-                    prepared.bytes, Vec::new(), count, &prepared.request, Some(io),
+                    prepared.bytes, prepared.encoding, count, &prepared.request, Some(io),
                 )?;
                 assert!(io.receipt().bytes_encoded > receipt.bytes_encoded,
                     "former empty append did not expose repeated encoding");
@@ -135,6 +138,9 @@ fn an_unchanged_request_still_observes_original_cancellation() -> Result<()> {
             Limits::default(),
             Some(&io),
         )?;
+        let prepared = prepared
+            .into_continuation()
+            .finish(Limits::default(), Some(&io))?;
         cancellation.cancel();
         let failure = prepared
             .into_continuation()
