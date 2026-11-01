@@ -44,7 +44,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                     Ok(())
                 });
             assert!(
-                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(found)) if found == version)
+                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion { found, expected: 4 }) if found == version)
             );
             assert!(matches!(
                 steps.as_slice(),

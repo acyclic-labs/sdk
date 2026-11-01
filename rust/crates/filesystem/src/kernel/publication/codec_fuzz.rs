@@ -55,7 +55,10 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(
             decode_publication_evidence::<CanonicalDecodeError>(&header, u64::MAX, |_| Ok(()))
                 .err(),
-            Some(CanonicalDecodeError::UnsupportedVersion(version))
+            Some(CanonicalDecodeError::UnsupportedVersion {
+                found: version,
+                expected: 4,
+            })
         );
     }
     let mut wrong = bytes.to_vec();

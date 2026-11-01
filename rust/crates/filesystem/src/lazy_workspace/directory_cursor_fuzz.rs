@@ -42,7 +42,7 @@ fn check_profile(
         assert!(matches!(
             LazyDirectoryCursor::decode(&header, profile, limits, work),
             Err(LazyWorkspaceError::Filesystem(crate::FsError::Decode(
-                CanonicalDecodeError::UnsupportedVersion(found)
+                CanonicalDecodeError::UnsupportedVersion { found, expected: 1 }
             ))) if found == version
         ));
     }
