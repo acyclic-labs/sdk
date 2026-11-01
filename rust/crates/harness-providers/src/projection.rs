@@ -249,7 +249,10 @@ pub(crate) fn body_named<'a>(
             #[cfg(not(target_arch = "wasm32"))]
             if provider.codex_login.is_some() {
                 map.remove("max_output_tokens");
-                map.insert("instructions".into(), json!(system.join("\n\n")));
+                map.insert(
+                    "instructions".into(),
+                    serde_json::Value::String(text::join(system, "\n\n")),
+                );
                 map.insert("tool_choice".into(), json!("auto"));
                 map.insert("parallel_tool_calls".into(), json!(true));
             }
@@ -258,7 +261,10 @@ pub(crate) fn body_named<'a>(
             map.insert("stream".into(), json!(true));
             map.insert("max_tokens".into(), json!(max));
             if !system.is_empty() {
-                map.insert("system".into(), json!(system.join("\n\n")));
+                map.insert(
+                    "system".into(),
+                    serde_json::Value::String(text::join(system, "\n\n")),
+                );
             }
         }
         Adapter::Gemini => {
@@ -266,9 +272,19 @@ pub(crate) fn body_named<'a>(
 
             map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
             if !system.is_empty() {
+                let mut part = serde_json::Map::new();
+                part.insert(
+                    "text".into(),
+                    serde_json::Value::String(text::join(system, "\n\n")),
+                );
+                let mut instruction = serde_json::Map::new();
+                instruction.insert(
+                    "parts".into(),
+                    serde_json::Value::Array(vec![serde_json::Value::Object(part)]),
+                );
                 map.insert(
                     "systemInstruction".into(),
-                    json!({"parts":[{"text":system.join("\n\n")}]}),
+                    serde_json::Value::Object(instruction),
                 );
             }
         }
