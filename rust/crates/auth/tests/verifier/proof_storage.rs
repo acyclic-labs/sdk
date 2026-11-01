@@ -8,7 +8,7 @@ use std::process::Command;
 use zeroize::Zeroizing;
 
 #[test]
-fn proof_buffers_are_scrubbed_before_deallocation() {
+fn protected_buffers_are_scrubbed_before_deallocation() {
     let directory = tempfile::tempdir().unwrap();
     let library = directory.path().join("scrub.so");
     let compiler = Command::new("cc")
@@ -34,6 +34,9 @@ fn proof_buffers_are_scrubbed_before_deallocation() {
         "bad-key",
         "encode",
         "broken",
+        "body-grow",
+        "body-failed-growth",
+        "body-unprotected-growth",
     ] {
         let active = directory.path().join(case);
         let output = Command::new(std::env::current_exe().unwrap())
@@ -47,7 +50,11 @@ fn proof_buffers_are_scrubbed_before_deallocation() {
             .env("AUTH_SCRUB_CASE", case)
             .output()
             .unwrap();
-        let expected = if case == "broken" { 86 } else { 0 };
+        let expected = if matches!(case, "broken" | "body-unprotected-growth") {
+            86
+        } else {
+            0
+        };
         assert_eq!(
             output.status.code(),
             Some(expected),
@@ -63,6 +70,10 @@ fn scrub_child() {
     let Ok(case) = std::env::var("AUTH_SCRUB_CASE") else {
         return;
     };
+    if case.starts_with("body-") {
+        body_storage(&case);
+        return;
+    }
     let mut bytes = Zeroizing::new(root(|_| {}));
     let trust = Snapshot::default();
     let cap = verify(&bytes, &trust, NOW).unwrap();
@@ -95,5 +106,48 @@ fn scrub_child() {
             drop(verify(&bytes, &trust, NOW).unwrap());
         }
         _ => assert!(verify(&bytes, &trust, NOW).is_err()),
+    }
+}
+
+fn body_storage(case: &str) {
+    use acyclic_auth::operation::reserve_protected_bytes;
+
+    let mut bytes = Zeroizing::new(Vec::new());
+    reserve_protected_bytes(&mut bytes, 64).unwrap();
+    bytes.extend_from_slice(&[4; 64]);
+    let original = bytes.as_ptr();
+    let capacity = bytes.capacity();
+    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    match case {
+        "body-grow" => {
+            let cost = acyclic_test_support::measure(|| {
+                reserve_protected_bytes(&mut bytes, capacity * 2).unwrap();
+            });
+            assert_eq!(cost.count_total, 1);
+            assert_eq!(cost.bytes_total, bytes.capacity() as u64);
+            assert_ne!(original, bytes.as_ptr());
+            assert_eq!(bytes.as_slice(), &[4; 64]);
+            let current = bytes.as_ptr();
+            let cost = acyclic_test_support::measure(|| {
+                reserve_protected_bytes(&mut bytes, capacity).unwrap();
+            });
+            assert_eq!(cost.count_total, 0);
+            assert_eq!(current, bytes.as_ptr());
+        }
+        "body-failed-growth" => {
+            assert!(reserve_protected_bytes(&mut bytes, usize::MAX).is_err());
+            assert_eq!(original, bytes.as_ptr());
+            assert_eq!(capacity, bytes.capacity());
+            assert_eq!(bytes.as_slice(), &[4; 64]);
+        }
+        "body-unprotected-growth" => {
+            // The old backing is live until replacement construction completes.
+            // Omitting its scrub must trip the same pre-free allocator oracle.
+            let unprotected = std::mem::take(&mut *bytes);
+            let replacement = unprotected.clone();
+            drop(unprotected);
+            drop(Zeroizing::new(replacement));
+        }
+        _ => unreachable!(),
     }
 }

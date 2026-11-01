@@ -1,9 +1,10 @@
 //! One admitted body reader for bounded JSON exchanges.
 use acyclic_harness_core::{Error, NativeWork, Result};
 use futures::StreamExt as _;
+use zeroize::Zeroizing;
 
 pub(crate) struct Body {
-    pub bytes: Vec<u8>,
+    pub bytes: Zeroizing<Vec<u8>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub custody: acyclic_harness_core::NativeCustody,
 }
@@ -29,7 +30,7 @@ pub(crate) async fn read(
     let mut custody = work
         .map(|work| work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED))
         .transpose()?;
-    let mut bytes = Vec::new();
+    let mut bytes = Zeroizing::new(Vec::new());
     let mut chunks = 0usize;
     while let Some(chunk) = body.next().await {
         let chunk = chunk?;
@@ -57,9 +58,8 @@ pub(crate) async fn read(
                 )?;
                 hold.absorb(&mut growth)?;
             }
-            bytes
-                .try_reserve_exact(capacity - bytes.len())
-                .map_err(|cause| {
+            acyclic_auth::operation::reserve_protected_bytes(&mut bytes, capacity).map_err(
+                |cause| {
                     #[cfg(not(target_arch = "wasm32"))]
                     if work.is_some() {
                         return acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)
@@ -67,11 +67,12 @@ pub(crate) async fn read(
                     }
                     let _ = cause;
                     boundary(work, "cannot allocate HTTP JSON response")
-                })?;
+                },
+            )?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(hold) = custody.as_mut() {
-                // Reallocation may overlap both buffers. The full new claim
-                // precedes it; only the old backing retires after it returns.
+                // The replacement's full claim precedes allocation. Scrub the
+                // original backing before releasing its allocation credit.
                 hold.release(previous as u64)?;
             }
         }

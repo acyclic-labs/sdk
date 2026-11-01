@@ -10,6 +10,29 @@ pub fn protect_bytes(bytes: bytes::Bytes) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(bytes.into())
 }
 
+/// Ensures room for `capacity` bytes without releasing an unscrubbed backing.
+/// Unlike ordinary vector reservation, growth allocates a separate replacement,
+/// copies the initialized bytes once, then scrubs and releases the old storage.
+/// Allocation failure preserves the original bytes and capacity. A sufficient
+/// capacity performs no allocation or copy.
+///
+/// The caller must admit the full replacement while retaining the old backing's
+/// credit before calling this operation, then retire the old credit afterwards.
+/// This supplies neither capacity credit nor authority. Subsequent writes must
+/// stay within the reserved capacity to avoid ordinary vector reallocation.
+pub fn reserve_protected_bytes(
+    bytes: &mut Zeroizing<Vec<u8>>,
+    capacity: usize,
+) -> Result<(), std::collections::TryReserveError> {
+    if capacity > bytes.capacity() {
+        let mut replacement = Zeroizing::new(Vec::new());
+        replacement.try_reserve_exact(capacity)?;
+        replacement.extend_from_slice(bytes);
+        *bytes = replacement;
+    }
+    Ok(())
+}
+
 /// An owned operation payload, scrubbed when its final transport owner retires.
 ///
 /// Moving this value transfers the original allocation. It supplies neither
