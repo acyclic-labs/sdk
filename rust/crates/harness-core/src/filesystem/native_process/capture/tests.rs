@@ -382,7 +382,11 @@ mod simulation {
         stdout: Vec<u8>,
     }
 
-    fn capture_probe(entropy: bool, simulated_process: bool) -> Result<Observed> {
+    fn capture_probe(
+        entropy: bool,
+        simulated_process: bool,
+        release_control: bool,
+    ) -> Result<Observed> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -426,6 +430,8 @@ mod simulation {
             }
             let source = Arc::new(OnceLock::new());
             let worker_source = Arc::clone(&source);
+            let (pending, mut controls) =
+                tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<()>>();
             let invocation = Invocation {
                 executable: "/bin/sh".into(),
                 argv: vec!["-c".into(), "printf dst".into()],
@@ -461,8 +467,24 @@ mod simulation {
                                 tokio::runtime::Handle::try_current().is_ok(),
                                 "control future constructed outside its runtime"
                             );
-                            tokio::time::sleep(Duration::from_millis(3))
-                        });
+                            let (release, mut wait) = tokio::sync::oneshot::channel();
+                            let mut release = Some(release);
+                            let pending = &pending;
+                            std::future::poll_fn(move |cx| {
+                                let result = Pin::new(&mut wait).poll(cx);
+                                // Announce only after the actual receiver has
+                                // registered this worker's waker at Pending.
+                                if result.is_pending()
+                                    && let Some(release) = release.take()
+                                {
+                                    pending.send(release).expect("lost control driver");
+                                }
+                                result
+                            })
+                        })
+                        .map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::BrokenPipe, error)
+                        })?;
                         assert!(tokio::runtime::Handle::try_current().is_err());
                     }
                     Ok(())
@@ -476,6 +498,7 @@ mod simulation {
             let operation: Capture<'_> = Box::pin(operation);
             let mut operation = Box::pin(schedule.scope(operation));
             let mut phases = Vec::new();
+            let mut control_observed = false;
             let (output, custody) = loop {
                 tokio::select! {
                     biased;
@@ -483,6 +506,14 @@ mod simulation {
                         let boundary = boundary.expect("lost process boundary");
                         phases.push(boundary.name);
                         boundary.release();
+                    },
+                    release = controls.recv(), if !control_observed => {
+                        let release = release.expect("lost Pending control registration");
+                        control_observed = true;
+                        phases.push("control:pending");
+                        if release_control {
+                            release.send(()).expect("lost registered control waiter");
+                        }
                     },
                     output = &mut operation => break output?,
                 }
@@ -514,7 +545,7 @@ mod simulation {
             // Tokio publication worker. Require its complete original custody
             // path, including physical completion, in the seeded trace.
             && observed.trace.iter().any(|event| event == "native:dispatch")
-            && ["native:submitted", "native:completed"]
+            && ["native:submitted", "control:pending", "native:completed"]
                 .iter()
                 .all(|phase| observed.boundaries.contains(phase))
             && !observed.trace.iter().any(|event| event == "blocking:dispatch")
@@ -522,23 +553,27 @@ mod simulation {
 
     #[test]
     fn capture_retains_seeded_worker_sources_and_custody() -> Result<()> {
-        let first = capture_probe(true, false)?;
-        let second = capture_probe(true, false)?;
+        let first = capture_probe(true, false, true)?;
+        let second = capture_probe(true, false, true)?;
         assert!(retained_sources(&first));
         assert_eq!(first, second, "real process handoff did not replay");
         // Erase only the worker's entropy source. Keep its seeded executor,
         // clock and physical terminal, including the same Pending control check.
         assert!(
-            !retained_sources(&capture_probe(false, false)?),
+            !retained_sources(&capture_probe(false, false, true)?),
             "source-erased process handoff escaped the same oracle"
         );
+        assert!(matches!(
+            capture_probe(true, false, false),
+            Err(Error::Process(crate::ProcessError::Io { .. }))
+        ));
         Ok(())
     }
 
     #[test]
     fn scoped_process_provider_replays_at_the_original_worker_boundary() -> Result<()> {
-        let first = capture_probe(true, true)?;
-        assert_eq!(first, capture_probe(true, true)?);
+        let first = capture_probe(true, true, true)?;
+        assert_eq!(first, capture_probe(true, true, true)?);
         let accepted = |observed: &Observed| {
             observed.stdout == b"sim"
                 && observed
@@ -550,7 +585,7 @@ mod simulation {
         assert!(accepted(&first));
         // Removing the provider restores the original OS path. The same
         // output/custody/dispatch oracle must reject that boundary mutation.
-        assert!(!accepted(&capture_probe(true, false)?));
+        assert!(!accepted(&capture_probe(true, false, true)?));
         Ok(())
     }
 }

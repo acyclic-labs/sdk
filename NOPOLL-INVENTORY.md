@@ -1,5 +1,23 @@
 # Polling and timed-wait inventory
 
+Capture control successor, location on `47ad15fec8`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:470` | Three-millisecond synthetic Pending ownership check | The exact oneshot receiver registers its worker waker before publishing its sole release sender to the seeded driver. Driver withdrawal returns `BrokenPipe` through the original capture result. | Source complete; unqualified |
+
+The existing real-process replay, output custody and erased-entropy negative
+remain. The same oracle now requires the actual Pending registration event;
+substituting a timer without that event cannot satisfy it. The same named
+control also drops the sole release producer and requires the original process
+I/O error. The driver consumes one registration and releases or withdraws it
+once; it never checks elapsed time or retries an observation. Registration work
+is fixed per capture, independent of history or agent count. One driver channel
+and one oneshot replace one timer; no new task, thread, process, file, payload
+copy or durability barrier. Exact channel allocation/syscall counts remain
+unmeasured, and no production operation changes.
+
+
 MCP reader successor, location on `f4e34ab9f9`:
 
 | Source | Kind | Replacement and terminal | Status |
