@@ -301,5 +301,3 @@ pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volum
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod decoder_fuzz;
-
-pub(crate) use file_read::complete_standalone_backend;
