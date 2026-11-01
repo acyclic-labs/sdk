@@ -52,13 +52,13 @@ test("checks original default members alone in bounded worker targets", async ()
 });
 
 test("real Cargo compilations overlap; restoring the shared build lock is rejected", async () => {
+  // Resolve the selected toolchain before creating anything requiring cleanup.
+  const cargo = execFileSync("rustup", ["which", "cargo"], { encoding: "utf8" }).trim();
   // Keep the real fixture and both build directories under the original
   // caller-selected target storage.
   const fixtureRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target", "crate-test-fixtures");
   mkdirSync(fixtureRoot, { recursive: true });
   const directory = mkdtempSync(join(fixtureRoot, "crate-check-"));
-  // Observe the selected toolchain's own directory lock and its diagnostic.
-  const cargo = execFileSync("rustup", ["which", "cargo"], { encoding: "utf8" }).trim();
   try {
     for (const shared of [false, true]) {
       const fixture = join(directory, shared ? "shared" : "parallel");
@@ -138,9 +138,12 @@ fn main() {
         delete env.COMPILE_BARRIER;
         if (measure) env.COMPILE_BARRIER = barrier;
         // Negative control restores the original shared target and build lock.
-        const cargoArgs = shared
+        const targetArgs = shared
           ? args.map((arg, index) => args[index - 1] === "--target-dir" ? target : arg)
           : args;
+        // The lock-event adapter consumes plain diagnostics even when the
+        // caller requests colored output through Cargo's environment.
+        const cargoArgs = ["--color=never", ...targetArgs];
         const child = spawn(cargo, cargoArgs, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
           env,
