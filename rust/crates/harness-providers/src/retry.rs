@@ -2,6 +2,10 @@ use crate::RetrySpec;
 use acyclic_harness_core::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 
+pub(crate) const fn retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500..=599)
+}
+
 /// One exchange's redelivery schedule. Its owner supplies the operation's
 /// completion fence; generation additionally requires refusal or connection failure.
 pub(crate) struct Redelivery {

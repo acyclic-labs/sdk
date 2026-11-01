@@ -166,10 +166,11 @@ proptest::proptest! {
     fn count_body_failures_share_the_exchange_attempt_budget(
         failures in 0..6usize, budget in 0..5u8, timeout in proptest::prelude::any::<bool>(),
         partial in proptest::prelude::any::<bool>(), definitive in proptest::prelude::any::<bool>(),
+        status in proptest::sample::select(vec![200u16, 201, 202, 400, 413, 408, 429, 503]),
     ) {
         struct CountBody {
             sent: std::sync::atomic::AtomicUsize,
-            failures: usize, timeout: bool, partial: bool, definitive: bool,
+            failures: usize, timeout: bool, partial: bool, definitive: bool, status: u16,
         }
         impl HttpTransport for CountBody {
             fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
@@ -192,21 +193,23 @@ proptest::proptest! {
                     } else {
                         Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"{\"input_tokens\":7}"))]))
                     };
-                    Ok(HttpResponse { status: 200, body, retry_after: None })
+                    let status = if attempt < self.failures { self.status } else { 200 };
+                    Ok(HttpResponse { status, body, retry_after: None })
                 })
             }
         }
         let (mut provider, _) = provider(Adapter::Responses, 200);
         Arc::make_mut(&mut provider.config).retry.attempts = budget;
         let transport = Arc::new(CountBody {
-            sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive,
+            sent: std::sync::atomic::AtomicUsize::new(0), failures, timeout, partial, definitive, status,
         });
         provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
         let result = futures::executor::block_on(provider.count_tokens(&request));
-        let expected = if definitive && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
+        let final_failure = definitive || matches!(status, 400 | 413);
+        let expected = if final_failure && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
-        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!definitive && failures <= usize::from(budget)));
+        proptest::prop_assert_eq!(result.is_ok(), failures == 0 || (!final_failure && failures <= usize::from(budget)));
         if let Ok(count) = result { proptest::prop_assert_eq!(count.input_tokens, 7); }
     }
 }

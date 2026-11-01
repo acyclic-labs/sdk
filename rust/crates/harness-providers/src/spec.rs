@@ -122,9 +122,9 @@ impl Default for TimeoutSpec {
 /// A successful HTTP response or an uncertain reply loss ends generation redelivery,
 /// even before its first event. A credential-refresh failure also ends generation
 /// with that original cause. Failure while reading a refusal body cannot make
-/// its HTTP status retryable. Read-only token counts retain their whole-body retry
-/// budget. Waits use the provider's `Retry-After` when present, otherwise exponential
-/// backoff with deterministic per-dispatch jitter.
+/// its HTTP status retryable. Read-only token counts can retry interrupted successful
+/// bodies within the same budget. Waits use the provider's `Retry-After` when present,
+/// otherwise exponential backoff with deterministic per-dispatch jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]

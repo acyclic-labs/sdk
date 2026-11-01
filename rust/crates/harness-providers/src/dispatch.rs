@@ -290,7 +290,7 @@ impl GenerationAttempt {
                     ..
                 }
             ),
-            Admission::Refused(status) => matches!(status, 408 | 429 | 500..=599),
+            Admission::Refused(status) => crate::retry::retryable_status(status),
             Admission::Accepted => false,
         };
         if !retryable {
