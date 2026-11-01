@@ -59,11 +59,13 @@ export const modelTokenCount = (bytes, request_digest) => ({
 // The canonical replay-to-live cursor owns registration and cancellation.
 // These fixed fixture histories are retained only for their parallel assertions.
 export async function untilRecords(fixture, agents, agent, stream, test) {
+  const completed = agents.completion();
+  completed.catch(() => {});
   const cursor = await agents.follow(agent, stream, 0n);
   const records = [];
   try {
     for (;;) {
-      const bytes = await Promise.race([cursor.next(), fixture.failed]);
+      const bytes = await Promise.race([cursor.next(), fixture.failed, completed]);
       if (bytes === null) throw new Error("agent stream closed before its required record");
       const frame = fromBinary(ReadResponseSchema, bytes);
       const batch = fromBinary(RecordBatchSchema, decodeReadResponse(frame.codec, frame.data, frame.decodedLength));
