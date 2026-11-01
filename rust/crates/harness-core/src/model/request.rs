@@ -562,7 +562,10 @@ impl PreparedModelRequest {
                     let maximum = io.remaining()?.bytes_encoded;
                     with_history_io(Some(io), |work| {
                         crate::executor::json::json_byte_length_at_depth(
-                            message, Some(maximum), 256, work,
+                            message,
+                            Some(maximum),
+                            256,
+                            work,
                         )
                     })?
                 }
