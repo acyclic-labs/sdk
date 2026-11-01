@@ -55,6 +55,7 @@ proptest! {
                 }]
             } else { vec![] };
             let request = PreparedModelRequest::prepare(ModelRequest {
+                compose_tools: false,
                 model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
@@ -108,6 +109,7 @@ fn with_parts(
 ) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -593,6 +595,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
     let result = crate::projection::body_with_files(
         &provider,
         &ModelRequest {
+            compose_tools: false,
             model: provider.model().clone(),
             tools: vec![],
             max_output_tokens: Some(64),

@@ -136,6 +136,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
             Some(1024)
         );
         let mut request = ModelRequest {
+            compose_tools: false,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,

@@ -41,6 +41,7 @@ async fn initialize(journal: &Journal, operation: OperationId) -> Result<()> {
 fn request() -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("test".into(), "inline".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,

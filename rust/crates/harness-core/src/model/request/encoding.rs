@@ -20,6 +20,7 @@ pub(super) struct EncodingPrefix {
 
 #[derive(Serialize)]
 struct Envelope<'a> {
+    compose_tools: bool,
     max_output_tokens: Option<u32>,
     messages: &'a [ModelMessage],
     model: &'a Model,
@@ -62,6 +63,7 @@ fn envelope(
 ) -> Result<(acyclic_stream::OwnedBytes, usize)> {
     let bytes = encode(
         &Envelope {
+            compose_tools: request.compose_tools,
             max_output_tokens: request.max_output_tokens,
             messages: &[],
             model: &request.model,

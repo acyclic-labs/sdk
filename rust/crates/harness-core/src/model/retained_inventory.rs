@@ -89,6 +89,7 @@ mod tests {
     fn sparse_request() -> Result<ModelRequest> {
         let sparse = serde_json::json!({"outer": [{"inner": "value"}]});
         Ok(ModelRequest {
+            compose_tools: false,
             model: Model::new("test".into(), "inventory".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::Assistant,

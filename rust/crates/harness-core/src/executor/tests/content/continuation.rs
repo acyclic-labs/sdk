@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn request(count: usize) -> Result<crate::model::ModelRequest> {
     Ok(crate::model::ModelRequest {
+        compose_tools: false,
         model: Model::new("test".into(), "content-admission".into(), "1".into())?,
         messages: (0..count)
             .map(|_| ModelMessage {

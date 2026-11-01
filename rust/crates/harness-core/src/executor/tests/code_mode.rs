@@ -123,6 +123,155 @@ fn logs(journal: &Journal) -> Value {
     Value::Array(entries)
 }
 
+fn tool_notice_table(request: &ModelRequest) -> Value {
+    let mut json = String::new();
+    let mut complete = false;
+    for message in &request.messages {
+        let Some((notices, _)) = message.content.notice_parts() else {
+            continue;
+        };
+        for notice in notices
+            .iter()
+            .filter(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+        {
+            assert!(!complete, "tool table continued after its final fragment");
+            assert_eq!(notice.body["offset"].as_u64(), Some(json.len() as u64));
+            json.push_str(notice.body["json"].as_str().unwrap());
+            complete = notice.body["complete"].as_bool().unwrap();
+        }
+    }
+    assert!(complete, "tool table did not finish");
+    serde_json::from_str(&json).unwrap()
+}
+
+#[tokio::test]
+async fn custom_code_executor_preserves_other_native_declarations() -> Result<()> {
+    let (mut executor, model, echo) = executor("42", allowed()?, true)?;
+    let object = json!({"type":"object"});
+    let mut tools = echo_tools(
+        echo.clone(),
+        object.clone(),
+        object.clone(),
+        crate::tool::json_projection_schema(object),
+    )?;
+    let mut custom = crate::tools::catalog()
+        .find(|spec| spec.name == "code")
+        .unwrap()
+        .bind()?;
+    custom.executor = echo.clone();
+    custom.projection = Arc::new(crate::tool::JsonToolProjection);
+    custom.definition.revision = "custom".into();
+    tools.register((custom, None), &mut None, None)?;
+    executor.tools = tools;
+    executor.execute(input(), &Journal::default()).await?;
+    let requests = model.requests();
+    assert!(!requests[0].compose_tools);
+    assert_eq!(requests[0].model_tools().count(), 2);
+    assert!(
+        !requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.notice_parts().is_some())
+    );
+    assert_eq!(result(&model)["code"], "42");
+    assert_eq!(echo.0.load(Ordering::SeqCst), 1);
+    let mut forged = requests[0].clone();
+    forged.compose_tools = true;
+    let forged = crate::model::PreparedModelRequest::prepare(forged, executor.limits, None)?;
+    assert!(
+        StockExecution::ordinary(&executor)
+            .validate_response_request(&forged)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix() -> Result<()> {
+    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "program".into(),
+                "code".into(),
+                json!({"code":"await tools.late({value:42})"}),
+            ))]),
+            done_turn(),
+        ])
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: 1_048_576,
+            output_tokens: Some(16_384),
+        })
+        .with_token_counter(fixture_token_count),
+    );
+    executor.provider = model.clone();
+    let mut late = executor
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    late.definition.name = "late".into();
+    late.definition.description = "escaped \" \\ \n \u{1f600}".repeat(8000);
+    late.definition.input_schema["description"] = late.definition.description.clone().into();
+    let expected = late.definition.clone();
+    executor.tools.register((late, None), &mut None, None)?;
+    executor = executor.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:late",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    executor.limits.render_bytes = 65_536;
+    let turn = input();
+    let journal = Journal::default();
+    executor.execute(turn.clone(), &journal).await?;
+    let requests = model.requests();
+    let table = tool_notice_table(&requests[0]);
+    assert_eq!(
+        table
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "late"),
+        Some(&serde_json::to_value(expected).unwrap())
+    );
+    let notices = requests[0]
+        .messages
+        .iter()
+        .filter(|message| message.content.notice_parts().is_some())
+        .collect::<Vec<_>>();
+    assert!(notices.len() > 1);
+    for message in notices {
+        assert!(serde_json::to_vec(&message.content).unwrap().len() <= 65_536);
+        message
+            .content
+            .validate_limits(executor.limits, &mut None)?;
+    }
+    assert_eq!(result(&model)["value"], 42);
+    assert_eq!(
+        requests[0].messages,
+        requests[1].messages[..requests[0].messages.len()]
+    );
+    executor.execute(turn, &journal).await?;
+    assert_eq!(model.requests().len(), 2);
+    // An allowance smaller than framing refuses instead of waiting or looping.
+    executor.limits.render_bytes = 1;
+    let mut context = crate::context::Context::default();
+    assert!(
+        StockExecution::ordinary(&executor)
+            .code_tools_notice(&mut context, &requests[0].tools)
+            .is_err()
+    );
+    assert!(context.messages.is_empty());
+    Ok(())
+}
+
 #[tokio::test]
 async fn dynamic_tools_update_notices_and_program_bindings_without_changing_declarations()
 -> Result<()> {
@@ -170,27 +319,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             .collect::<Vec<_>>(),
         ["code"]
     );
-    let notice = |request: &ModelRequest| {
-        request
-            .messages
-            .iter()
-            .find_map(|message| {
-                let (notices, _) = message.content.notice_parts()?;
-                notices
-                    .iter()
-                    .find(|notice| notice.source == "tools" && notice.kind == "tools.changed")
-                    .map(|notice| notice.body.clone())
-            })
-            .unwrap()
-    };
-    assert_eq!(notice(&before[0])["tools"].as_array().unwrap().len(), 1);
-    let changed = notice(&after[0]);
-    assert_eq!(changed["tools"].as_array().unwrap().len(), 3);
-    assert_eq!(changed["tools"][2]["name"], "late");
-    assert_eq!(
-        changed["tools"][2]["input_schema"],
-        json!({"type":"object"})
-    );
+    assert_eq!(tool_notice_table(&before[0]).as_array().unwrap().len(), 1);
+    let changed = tool_notice_table(&after[0]);
+    assert_eq!(changed.as_array().unwrap().len(), 3);
+    assert_eq!(changed[2]["name"], "late");
+    assert_eq!(changed[2]["input_schema"], json!({"type":"object"}));
     assert_eq!(
         after[0].messages,
         after[1].messages[..after[0].messages.len()]
@@ -205,7 +338,7 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
     assert_eq!(
-        notice(&revoked_model.requests()[0])["tools"]
+        tool_notice_table(&revoked_model.requests()[0])
             .as_array()
             .unwrap()
             .len(),

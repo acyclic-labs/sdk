@@ -308,6 +308,7 @@ mod tests {
         let (messages, total) = fixture([6000, 6000], [true, true]);
         assert!(total > 10_000);
         let request = ModelRequest {
+            compose_tools: false,
             model: Model::new("synthetic".into(), "budget".into(), "1".into()).unwrap(),
             messages,
             tools: vec![crate::tool::ToolDefinition {

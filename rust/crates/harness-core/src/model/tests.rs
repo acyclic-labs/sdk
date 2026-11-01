@@ -67,6 +67,7 @@ fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata
 
 fn request() -> Result<ModelRequest> {
     Ok(ModelRequest {
+        compose_tools: false,
         model: Model::new("mock".into(), "exact".into(), "pinned".into())?,
         messages: vec![ModelMessage {
             role: ModelRole::User,

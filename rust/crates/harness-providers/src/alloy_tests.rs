@@ -340,6 +340,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         let provider = alloy.select(turn(ordinal));
         assert_eq!(provider.model().provider, MEMBERS[(ordinal % 4) as usize].0);
         let request = ModelRequest {
+            compose_tools: false,
             model: provider.model().clone(),
             messages: history.clone(),
             tools: vec![acyclic_harness_core::tool::ToolDefinition {

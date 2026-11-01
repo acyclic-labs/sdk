@@ -51,6 +51,7 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
     assert!(declarations[0].available());
     assert!(!declarations[1].available());
     let mut request = ModelRequest {
+        compose_tools: false,
         model: Model {
             provider: "test".into(),
             name: "model".into(),

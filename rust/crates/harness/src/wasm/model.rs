@@ -39,6 +39,7 @@ pub(super) struct WasmModelRequestInput {
 impl From<WasmModelRequestInput> for crate::model::ModelRequest {
     fn from(input: WasmModelRequestInput) -> Self {
         Self {
+            compose_tools: false,
             model: input.model,
             messages: input.messages,
             tools: input.tools.into_iter().map(ToolDefinition::from).collect(),

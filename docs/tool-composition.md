@@ -42,13 +42,19 @@ alias or old-data migration is installed.
 
 The stable native catalog includes `code { code }`, backed by embedded QuickJS
 on every provider protocol. Native tool declarations remain fixed when dynamic
-capabilities change. A `tools.changed` context notice after the active input
-contains the turn's current granted tools and their original schemas. The notice
+capabilities change. Ordered `tools.changed` context notices after the active
+input contain the current granted tools and their original schemas. Concatenate
+each body's `json` string at its UTF-8 byte `offset` until `complete` is true to
+reconstruct the JSON array. Fragments fit the admitted per-part render allowance,
+including escaping and framing, even when one schema exceeds a part. The batch
 retains its position as later steps append calls/results, preserving that prefix.
 New turns use the latest bound registry; each program binds a fresh table from
 that same snapshot. The turn's admitted tools remain pinned for receipt replay.
 Dynamic schemas stay in the admitted request for validating earlier exchanges;
 only the provider declaration iterator filters them from the native prefix.
+The admitted request's explicit `compose_tools` setting controls this projection;
+stock execution sets it from the bound JavaScript executor. A custom tool named
+`code` retains ordinary declarations and does not announce a JavaScript table.
 Use it for multi-step reads, filters and loops, for example:
 
 ```javascript

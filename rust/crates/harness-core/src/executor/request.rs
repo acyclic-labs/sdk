@@ -175,10 +175,14 @@ impl StockExecution<'_> {
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
         let tools = self.request_tools(&context.messages)?;
+        let compose_tools = self.code_composition(&tools)?;
         #[cfg(not(target_arch = "wasm32"))]
-        self.code_tools_notice(&mut context, &tools)?;
+        if compose_tools {
+            self.code_tools_notice(&mut context, &tools)?;
+        }
         let message_count = context.messages.len();
-        let request = self.request_from_parts(std::mem::take(&mut context.messages), tools)?;
+        let request =
+            self.request_from_parts(std::mem::take(&mut context.messages), tools, compose_tools)?;
         let mut request = if let Some((prefix, verifier)) = self.inherited_prefix() {
             crate::model::PreparedModelRequest::inherit_request(
                 request,
@@ -255,7 +259,8 @@ impl StockExecution<'_> {
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
         let tools = self.request_tools(&messages)?;
-        self.request_from_parts(messages, tools)
+        let compose_tools = self.code_composition(&tools)?;
+        self.request_from_parts(messages, tools, compose_tools)
     }
 
     fn request_tools(&self, messages: &[ModelMessage]) -> Result<Vec<crate::tool::ToolDefinition>> {
@@ -270,13 +275,25 @@ impl StockExecution<'_> {
         &self,
         messages: Vec<ModelMessage>,
         tools: Vec<crate::tool::ToolDefinition>,
+        compose_tools: bool,
     ) -> Result<ModelRequest> {
         Ok(ModelRequest {
+            compose_tools,
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
             tools,
             max_output_tokens: self.output_budget()?,
         })
+    }
+
+    fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
+        Ok(!cfg!(target_arch = "wasm32")
+            && tools.iter().any(|tool| tool.name == "code")
+            && self
+                .stock
+                .tools
+                .get("code", None, self.io)?
+                .is_some_and(|tool| tool.executor.is_code_mode()))
     }
 
     fn request_tools_required(&self, messages: &[ModelMessage]) -> Result<bool> {
@@ -317,6 +334,7 @@ impl StockExecution<'_> {
         };
         if request.model != self.stock.model
             || request.tools != tools
+            || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_budget()?
         {
             return Err(stock_boundary(

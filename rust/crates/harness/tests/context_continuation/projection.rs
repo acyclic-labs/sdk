@@ -102,6 +102,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     assert_eq!(reopened, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("synthetic".into(), "typed-payload".into(), "1".into())?,
             messages: reopened.messages,
             tools: vec![ToolDefinition {

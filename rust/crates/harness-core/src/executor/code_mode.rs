@@ -39,12 +39,11 @@ impl StockExecution<'_> {
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
-        if !tools.iter().any(|tool| tool.name == "code") {
-            return Ok(());
-        }
         #[derive(Serialize)]
         struct Body<'a> {
-            tools: &'a [crate::tool::ToolDefinition],
+            offset: usize,
+            json: &'a str,
+            complete: bool,
         }
         #[derive(Serialize)]
         struct Notice<'a> {
@@ -64,82 +63,134 @@ impl StockExecution<'_> {
             role: ModelRole,
             content: Content<'a>,
         }
-        let notice = Message {
-            role: ModelRole::User,
-            content: Content {
+        fn content(json: &str, offset: usize, complete: bool) -> Content<'_> {
+            Content {
                 kind: "notices",
                 notices: [Notice {
                     source: "tools",
                     kind: "tools.changed",
-                    body: Body { tools },
+                    body: Body {
+                        offset,
+                        json,
+                        complete,
+                    },
                     wake: false,
                     coalesce_key: None,
                 }],
-            },
-        };
+            }
+        }
+        let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
         #[cfg(feature = "filesystem")]
         let funded = self
             .io
-            .map(|io| io.encode(&notice, u64::MAX, false))
+            .map(|io| io.encode(&tools, u64::MAX, false))
             .transpose()?;
         #[cfg(not(feature = "filesystem"))]
         let funded: Option<acyclic_stream::OwnedBytes> = None;
-        #[cfg(feature = "filesystem")]
-        let _bytes_hold;
-        let bytes = match funded {
+        let table = match funded {
             Some(bytes) => bytes,
-            None => serde_json::to_vec(&notice).map(Into::into).map_err(|_| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "tool notice encoding failed",
-                )
-            })?,
+            None => serde_json::to_vec(tools)
+                .map(Into::into)
+                .map_err(|_| invalid("tool table encoding failed"))?,
         };
         #[cfg(feature = "filesystem")]
-        {
-            _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-        }
-        #[cfg(feature = "filesystem")]
-        let decoded = self
-            .io
-            .map(|io| {
-                io.decode(
-                    std::marker::PhantomData::<ModelMessage>,
-                    &bytes,
-                    crate::wire::ErrorCode::Invalid,
-                )
-            })
-            .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let decoded: Option<(ModelMessage, crate::conversation::ContentHold<'_>)> = None;
-        let decoded = match decoded {
-            Some((message, hold)) => (message, Some(hold)),
-            None => (
-                serde_json::from_slice(&bytes).map_err(|_| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "tool notice decoding failed",
-                    )
-                })?,
-                None,
-            ),
-        };
-        // The active input cursor is already authenticated. Insert immediately
-        // after it, keeping the same prefix when later model steps add results.
+        let _table_hold = self.io.map(|io| io.guard_bytes(&table)).transpose()?;
+        let table = std::str::from_utf8(&table).map_err(|_| invalid("tool table is not UTF-8"))?;
+        crate::model::charge_items(self.io, table.len() as u64)?;
+        // Charge actual JSON escaping, with worst-case offset and completion
+        // framing. A schema larger than one part is split without truncation.
+        let overhead = with_history_io(self.io, |work| {
+            json::json_byte_length(&content("", usize::MAX, false), u64::MAX, work)
+        })?;
+        let maximum = self
+            .stock
+            .limits
+            .render_bytes
+            .checked_sub(overhead)
+            .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))?;
         let index = context
             .current_input_index
             .map_or(context.messages.len(), |index| index as usize + 1);
-        if context.messages.get(index) == Some(&decoded.0) {
+        let mut matched = 0;
+        let mut pending = Vec::new();
+        let mut offset = 0;
+        while offset < table.len() {
+            let remaining = &table[offset..];
+            let mut bytes = 0;
+            let mut end = 0;
+            for (index, character) in remaining.char_indices() {
+                let size = match character {
+                    '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+                    character if character < '\u{20}' => 6,
+                    character => character.len_utf8() as u64,
+                };
+                if size > maximum - bytes {
+                    break;
+                }
+                bytes += size;
+                end = index + character.len_utf8();
+            }
+            if end == 0 {
+                return Err(invalid("render allowance cannot advance a tool notice"));
+            }
+            let notice = Message {
+                role: ModelRole::User,
+                content: content(&remaining[..end], offset, offset + end == table.len()),
+            };
+            #[cfg(feature = "filesystem")]
+            let funded = self
+                .io
+                .map(|io| io.encode(&notice, u64::MAX, false))
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let funded: Option<acyclic_stream::OwnedBytes> = None;
+            let bytes = match funded {
+                Some(bytes) => bytes,
+                None => serde_json::to_vec(&notice)
+                    .map(Into::into)
+                    .map_err(|_| invalid("tool notice encoding failed"))?,
+            };
+            #[cfg(feature = "filesystem")]
+            let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+            #[cfg(feature = "filesystem")]
+            let decoded = self
+                .io
+                .map(|io| {
+                    io.decode(
+                        std::marker::PhantomData::<ModelMessage>,
+                        &bytes,
+                        crate::wire::ErrorCode::Invalid,
+                    )
+                })
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let decoded: Option<(ModelMessage, crate::conversation::ContentHold<'_>)> = None;
+            let decoded = match decoded {
+                Some((message, hold)) => (message, Some(hold)),
+                None => (
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| invalid("tool notice decoding failed"))?,
+                    None,
+                ),
+            };
+            if pending.is_empty() && context.messages.get(index + matched) == Some(&decoded.0) {
+                matched += 1;
+            } else {
+                stock_vec_push(&mut pending, retain_preparation(decoded)?, self.io)?;
+            }
+            offset += end;
+        }
+        if pending.is_empty() {
             return Ok(());
         }
-        let message = retain_preparation(decoded)?;
-        crate::context::ContextInsertion {
-            local_index: index,
-            message,
-        }
-        .insert(context, 0, self.io)
+        // Move the suffix once for the whole batch, independently of part count.
+        crate::context::ContextInsertion::insert_batch(
+            stock_into_iter(pending, self.io)?,
+            index + matched,
+            context,
+            0,
+            self.io,
+        )
     }
 
     pub(super) fn restore_js_context(

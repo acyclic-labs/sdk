@@ -358,6 +358,7 @@ pub(super) fn provider_with(
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: provider.model.clone(),
             messages: vec![
                 ModelMessage {
@@ -400,6 +401,7 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         let (prepared, _) = request(&provider)?;
         let mut request = prepared.request().clone();
         request.tools = vec![code.clone()];
+        request.compose_tools = true;
         let original = projection::body(&provider, &request)?;
         let mut late = code.clone();
         late.name = "late".into();
@@ -440,6 +442,14 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         ]);
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let changed = projection::body(&provider, prepared.request())?;
+        let mut direct = prepared.request().clone();
+        direct.compose_tools = false;
+        let direct = projection::body(&provider, &direct)?;
+        assert!(
+            serde_json::to_string(&direct["tools"])
+                .unwrap()
+                .contains("late")
+        );
         assert_eq!(original["tools"], changed["tools"]);
         let (name, schema) = match adapter {
             Adapter::Chat => (
@@ -686,6 +696,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
+            compose_tools: false,
             model: provider.model.clone(),
             max_output_tokens: Some(64),
             tools: vec![tool],

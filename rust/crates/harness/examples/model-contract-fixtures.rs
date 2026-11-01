@@ -17,6 +17,7 @@ fn text(bytes: &[u8]) -> Result<String> {
 }
 fn main() -> Result<()> {
     let request = ModelRequest {
+        compose_tools: false,
         model: Model::new("mock".into(), "exact".into(), "pinned".into())?,
         messages: vec![
             ModelMessage {
