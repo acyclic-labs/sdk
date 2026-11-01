@@ -108,10 +108,6 @@ impl Atom {
 struct StringSyntax {
     escape: bool,
     hex_left: u8,
-    hex: u16,
-    high_surrogate: bool,
-    low_escape: u8,
-    low_hex: bool,
     utf8_left: u8,
     lower: u8,
     upper: u8,
@@ -129,41 +125,10 @@ impl StringSyntax {
             return true;
         }
         if self.hex_left != 0 {
-            let digit = match byte {
-                b'0'..=b'9' => byte - b'0',
-                b'a'..=b'f' => byte - b'a' + 10,
-                b'A'..=b'F' => byte - b'A' + 10,
-                _ => return false,
-            };
-            self.hex = (self.hex << 4) | u16::from(digit);
-            self.hex_left -= 1;
-            if self.hex_left == 0 {
-                if self.low_hex {
-                    if !(0xdc00..=0xdfff).contains(&self.hex) {
-                        return false;
-                    }
-                    self.low_hex = false;
-                    self.high_surrogate = false;
-                } else if (0xd800..=0xdbff).contains(&self.hex) {
-                    self.high_surrogate = true;
-                    self.low_escape = 2;
-                } else if (0xdc00..=0xdfff).contains(&self.hex) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if self.low_escape != 0 {
-            let expected = if self.low_escape == 2 { b'\\' } else { b'u' };
-            if byte != expected {
+            if !byte.is_ascii_hexdigit() {
                 return false;
             }
-            self.low_escape -= 1;
-            if self.low_escape == 0 {
-                self.hex = 0;
-                self.hex_left = 4;
-                self.low_hex = true;
-            }
+            self.hex_left -= 1;
             return true;
         }
         if self.escape {
@@ -172,7 +137,6 @@ impl StringSyntax {
                 b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => true,
                 b'u' => {
                     self.hex_left = 4;
-                    self.hex = 0;
                     true
                 }
                 _ => false,
@@ -204,7 +168,7 @@ impl StringSyntax {
     }
 
     fn complete(&self) -> bool {
-        !self.escape && self.hex_left == 0 && !self.high_surrogate && self.utf8_left == 0
+        !self.escape && self.hex_left == 0 && self.utf8_left == 0
     }
 }
 

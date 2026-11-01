@@ -101,9 +101,8 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
         "false0",
         "NaN",
         r#""\q""#,
-        r#""\uDC00""#,
-        r#""\uD800x""#,
-        r#""\uD800\u0000""#,
+        r#""\uDC0x""#,
+        r#""\uD80""#,
         "\"\n\"",
     ] {
         assert!(
@@ -112,6 +111,11 @@ fn malformed_tokens_nesting_and_credit_refuse_without_a_continuation_wait() {
         );
     }
     assert!(scan(br#""\uD834\uDD1E""#, 1, 128).is_ok());
+    for source in [r#""\uDC00""#, r#""\uD800x""#, r#""\uD800\u0000""#] {
+        assert!(serde_json::from_str::<&serde_json::value::RawValue>(source).is_ok());
+        assert!(scan(source.as_bytes(), 1, 128).is_ok());
+        assert!(serde_json::from_str::<String>(source).is_err());
+    }
     assert!(scan(b"[[]]", 1, 0).is_err());
     for source in [
         &b"\"\xc0\x80\""[..],

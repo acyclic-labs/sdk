@@ -72,6 +72,7 @@ struct Walk<'a, 'b> {
     schema: &'static JsonValueSchema,
     depth: u32,
     virtual_value: bool,
+    maximum_depth: u32,
     raw: Option<&'static JsonValueSchema>,
     layout: Option<Placement<'a>>,
     charge: &'a Charge<'b>,
@@ -106,6 +107,7 @@ impl<'a, 'b> Walk<'a, 'b> {
             layout,
             depth: self.depth + 1,
             virtual_value: self.virtual_value,
+            maximum_depth: self.maximum_depth,
             charge: self.charge,
             failed: self.failed,
         }
@@ -117,6 +119,14 @@ impl<'de> DeserializeSeed<'de> for Walk<'_, '_> {
         self,
         decoder: D,
     ) -> std::result::Result<Branches, D::Error> {
+        if std::ptr::eq(self.schema, &NONE)
+            && self
+                .layout
+                .is_some_and(|layout| layout.opaque(self.maximum_depth))
+        {
+            <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
+            return Ok(self.base());
+        }
         if self.depth > 256 + usize::BITS {
             <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
             return Ok(Branches {
@@ -156,6 +166,7 @@ impl Walk<'_, '_> {
                     self.layout.map(Placement::expanded),
                     self.depth,
                     true,
+                    self.maximum_depth,
                     scratch_bound(text.len() as u64).map_err(|error| self.error::<E>(error))?,
                     self.charge,
                     self.failed,
@@ -291,6 +302,7 @@ fn document(
     layout: Option<Placement<'_>>,
     depth: u32,
     virtual_value: bool,
+    maximum_depth: u32,
     scratch: u64,
     charge: &Charge<'_>,
     failed: &RefCell<Option<Error>>,
@@ -302,6 +314,7 @@ fn document(
         schema,
         depth,
         virtual_value,
+        maximum_depth,
         raw: None,
         layout,
         charge,
@@ -485,6 +498,7 @@ fn laid_out(
         layout,
         0,
         false,
+        lexical.maximum_depth,
         lexical.scratch(labels)?,
         &charge,
         &RefCell::new(None),

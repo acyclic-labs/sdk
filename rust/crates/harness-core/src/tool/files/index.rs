@@ -257,10 +257,15 @@ impl<'a> OrdinalIndex<'a> {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let _file_hold;
-        let (file, retained) = self
+        let (file, retained) = match self
             .task
             .observe_private_file_once(self.destination, operation, io)
-            .await?;
+            .await
+        {
+            Ok(found) => found,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(None),
+            Err(error) => return Err(error),
+        };
         _file_hold = super::window::custody(io, retained)?;
         let Some(file) = file else {
             return Ok(None);
@@ -283,7 +288,11 @@ impl<'a> OrdinalIndex<'a> {
                 "ordinal index page exceeds its framing",
             ));
         }
-        let bytes = self.task.read_file(&file, io).await?;
+        let bytes = match self.task.read_file(&file, io).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(None),
+            Err(error) => return Err(error),
+        };
         edit::charge(&self._hold, 0, bytes.len() as u64)?;
         Ok(Some(bytes))
     }
@@ -422,7 +431,7 @@ impl<'a> OrdinalIndex<'a> {
         let (path, hold) = self.path(operation)?;
         _path_hold = hold;
         let _file_hold;
-        let (file, retained) = self
+        let (file, retained) = match self
             .task
             .stage_private_file_once(
                 self.destination,
@@ -432,7 +441,12 @@ impl<'a> OrdinalIndex<'a> {
                 ("application/octet-stream", "ordinal-index.bin"),
                 io,
             )
-            .await?;
+            .await
+        {
+            Ok(published) => published,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(()),
+            Err(error) => return Err(error),
+        };
         _file_hold = super::window::custody(io, retained)?;
         drop(file);
         Ok(())

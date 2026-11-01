@@ -76,10 +76,10 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
     let selected: crate::tool::files::ReadFileResult =
         serde_json::from_value(result.value.clone()).unwrap();
     assert_eq!(selected.outputs.len(), 2);
-    let crate::tool::files::FileReadSource::Authored(source) = &selected.file else {
+    let crate::tool::files::FileReadSource::Authored(authored) = &selected.file else {
         panic!("notebook selection lost its authored source");
     };
-    assert!(source.byte_length > limits.file_bytes);
+    assert!(authored.byte_length > limits.file_bytes);
     for (index, output) in selected.outputs.iter().enumerate() {
         assert_eq!((output.cell_index, output.output_index), (1, index as u64));
         assert_eq!(output.file.descriptor().media_type(), "image/png");
@@ -189,6 +189,60 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
                 Err(error) => Err(error),
             };
         assert!(cancelled.is_err());
+    }
+    // Tiny captured payloads have references much larger than their source
+    // bytes. Native parts must consume the same page credit as its text.
+    let cells: Vec<_> = (0..24)
+        .map(|_| {
+            json!({
+                "source":[],"outputs":[{"data":{"image/png":encoded}}],
+            })
+        })
+        .collect();
+    let many = serde_json::to_vec(&json!({"nbformat":4,"cells":cells})).unwrap();
+    runtime.block_on(source.stage(
+        OperationId::new(),
+        "many.ipynb",
+        &many,
+        "application/x-ipynb+json",
+        "many.ipynb",
+    ))?;
+    let narrow = Limits {
+        render_bytes: 4096,
+        ..limits
+    };
+    let paged = task.scoped(task.scope().grants().clone(), narrow)?;
+    let mut offset = 0;
+    while offset < 24 {
+        let page_call = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "native-page".into(),
+            name: tool.definition.name.clone(),
+            arguments: json!({"path":"many.ipynb","selection":{"kind":"cells","offset":offset}}),
+        };
+        let page_context = ToolContext::new(
+            Arc::new(paged.clone()),
+            page_call.operation_id,
+            &page_call.call_id,
+        )?;
+        let page =
+            runtime.block_on(tool.executor.execute(page_call.clone(), Some(page_context)))?;
+        let files = page.value["outputs"].as_array().unwrap();
+        assert!(!files.is_empty());
+        assert!(files.len() < 24);
+        for (index, file) in files.iter().enumerate() {
+            assert_eq!(file["cell_index"].as_u64(), Some(offset + index as u64));
+        }
+        let next = files.last().unwrap()["cell_index"].as_u64().unwrap() + 1;
+        assert!(next > offset);
+        let projection = tool.projection.project(&page_call, &page, None)?.0;
+        assert!(serde_json::to_vec(&projection).unwrap().len() <= 4096);
+        tool.definition
+            .validate_projection(&projection, narrow, None)?;
+        if next < 24 {
+            assert!(page.value["page"]["next"].is_u64());
+        }
+        offset = next;
     }
     Ok(())
 }
@@ -635,6 +689,20 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
             ("generation-bound range", 0, 4096),
             ("generation-bound range", 4096, 4096),
         ]
+    );
+    // Cache write authority alone cannot turn an allowed source read into a
+    // private receipt/list/read refusal, including when those pages exist.
+    let write_only = task.scoped(
+        Capabilities::new([
+            source.read_capability.clone(),
+            private.write_capability.clone(),
+            "tool:call:read".into(),
+        ]),
+        limits,
+    )?;
+    assert_eq!(
+        runtime.block_on(read(&write_only, Some(&version)))?.0,
+        expected
     );
 
     // A complete descriptor and an authored token share the same bounded

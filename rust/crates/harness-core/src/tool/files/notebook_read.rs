@@ -518,17 +518,34 @@ pub(super) async fn read(
         .empty
         .or(selection.array_end)
         .ok_or_else(|| executor::rejection(work, "notebook cell array is missing"))?;
-    let (start, selected_end) = selection.interval.unwrap_or((empty, empty));
+    let (start, mut selected_end) = selection.interval.unwrap_or((empty, empty));
+    let media_budget = super::projection::notebook_text_budget(&input.path, &version, maximum, io)?;
     let outputs = super::notebook_outputs::retain(
         context,
         input,
         &window,
         (&version, position),
         &selection.outputs.payloads,
+        media_budget,
         work,
         io,
     )
     .await?;
+    if let Some((cell, end)) = outputs.next {
+        if end <= start {
+            return Err(executor::rejection(
+                work,
+                "render credit cannot hold one cell's native outputs",
+            ));
+        }
+        selected_end = selected_end.min(end);
+        selection.next_cell = cell;
+    }
+    let budget = if outputs.values.is_empty() {
+        budget
+    } else {
+        budget.min(outputs.remaining)
+    };
     let length = (selected_end - start)
         .min(budget.saturating_add(3))
         .min(quantum);

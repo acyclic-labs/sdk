@@ -315,6 +315,41 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         assert_eq!(native.live_allocation_bytes(), baseline);
     }
 
+    // Borrowed and ignored subtrees retain their original JSON spelling, even
+    // where a string cannot be decoded to a Rust Unicode string.
+    let opaque = r#"{"nbformat":4,"cells":[{"id":"a","cell_type":"markdown","source":[],"metadata":{"raw":"\ud800"}},{"id":"b","cell_type":"code","source":[],"outputs":[{"text":"\udc00"}]}],"metadata":{"language_info":{"name":"python","ignored":"\ud800"},"extra":{"\udc00":"\ud800"}}}"#;
+    for work in [None, Some(&native)] {
+        let (text, hold, facts) = edit(
+            opaque,
+            &NotebookEdit::Replace {
+                cell: NotebookCell::Id { id: "a".into() },
+                source: "updated".into(),
+                cell_type: None,
+            },
+            work,
+        )
+        .unwrap();
+        assert!(text.contains(r#""metadata":{"raw":"\ud800"}"#));
+        assert!(text.contains(r#""outputs":[{"text":"\udc00"}]"#));
+        assert!(
+            text.ends_with(
+                opaque
+                    .split_once(",\"metadata\":{\"language_info\"")
+                    .unwrap()
+                    .1
+            )
+        );
+        assert_eq!(
+            facts.language.as_ref().map(|value| value.as_ref()),
+            Some("python")
+        );
+        serde_json::from_str::<&serde_json::value::RawValue>(&text).unwrap();
+        drop(facts);
+        drop(text);
+        drop(hold);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+
     // A differently encoded spelling of the same stable ID must conflict.
     let error = edit(
         source,

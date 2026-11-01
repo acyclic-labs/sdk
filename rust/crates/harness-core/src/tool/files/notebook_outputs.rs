@@ -36,6 +36,7 @@ impl Media {
 #[derive(Clone, Copy)]
 pub(super) struct Payload {
     pub cell: u64,
+    pub cell_start: u64,
     pub output: u64,
     pub start: u64,
     pub end: u64,
@@ -47,6 +48,7 @@ pub(super) struct Spans {
     pub payloads: Vec<Payload>,
     pub hold: crate::NativeCustody,
     active: Option<u64>,
+    cell_start: u64,
     checkpoint: usize,
     output: u64,
     outputs: bool,
@@ -110,10 +112,13 @@ impl Spans {
         work: crate::NativeWork<'_>,
     ) -> Result<bool> {
         let invalid = || executor::rejection(work, "invalid notebook output bundle");
-        if let SpanEvent::Start { depth: at, .. } = event
+        if let SpanEvent::Start {
+            depth: at, start, ..
+        } = event
             && at == depth
         {
             self.active = selected.then_some(cell);
+            self.cell_start = start;
             self.checkpoint = self.payloads.len();
             self.output = 0;
             self.outputs = false;
@@ -201,6 +206,7 @@ impl Spans {
                     edit::charge(&self.hold, std::mem::size_of::<Payload>() as u64, 1)?;
                     self.payloads.push(Payload {
                         cell,
+                        cell_start: self.cell_start,
                         output: self.output,
                         start,
                         end,
@@ -225,6 +231,8 @@ impl Spans {
 
 pub(super) struct Retained {
     pub values: Vec<NotebookOutput>,
+    pub remaining: u64,
+    pub next: Option<(u64, u64)>,
     hold: crate::NativeCustody,
 }
 
@@ -250,12 +258,15 @@ pub(super) async fn retain(
     window: &super::window::Window,
     source: (&str, u64),
     spans: &[Payload],
+    budget: u64,
     work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Retained> {
     let (version, position) = source;
     let mut retained = Retained {
         values: Vec::new(),
+        remaining: budget,
+        next: None,
         hold: edit::allocation(work, 0)?,
     };
     if spans.is_empty() {
@@ -282,7 +293,15 @@ pub(super) async fn retain(
     let mut identity = blake3::Hasher::new();
     identity.update(domain);
     identity.update(version.as_bytes());
+    let mut cell = None;
+    let mut checkpoint = 0;
+    let mut cell_budget = budget;
     for payload in spans {
+        if cell != Some(payload.cell) {
+            cell = Some(payload.cell);
+            checkpoint = retained.values.len();
+            cell_budget = retained.remaining;
+        }
         let length = payload
             .end
             .checked_sub(payload.start)
@@ -378,6 +397,14 @@ pub(super) async fn retain(
                 "notebook output receipt differs from its projection",
             ));
         }
+        let rendered = super::projection::notebook_output_bytes(&file, io)?;
+        if rendered > retained.remaining.saturating_sub(6) {
+            retained.values.truncate(checkpoint);
+            retained.remaining = cell_budget;
+            retained.next = Some((payload.cell, payload.cell_start));
+            break;
+        }
+        retained.remaining -= rendered;
         let length = retained
             .values
             .len()

@@ -114,6 +114,62 @@ fn policy(file: &FileRef, intent: crate::model::NativeMediaIntent) -> NativePoli
     }
 }
 
+fn output_part(file: &FileRef) -> MediaPart<'_> {
+    let intent = if file.descriptor().media_type() == "application/pdf" {
+        crate::model::NativeMediaIntent::Document
+    } else {
+        crate::model::NativeMediaIntent::Image {
+            detail: crate::model::ImageDetail::Auto,
+        }
+    };
+    MediaPart::File {
+        file,
+        policy: policy(file, intent),
+    }
+}
+
+pub(super) fn notebook_text_budget(
+    path: &str,
+    version: &str,
+    maximum: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<u64> {
+    let page = ReadPage {
+        start: u64::MAX,
+        end: u64::MAX,
+        next: Some(u64::MAX),
+        offset: u64::MAX,
+    };
+    let empty = ReadProjection::Parts {
+        parts: MediaParts {
+            text: MediaText::Notebook {
+                path,
+                version,
+                page: &page,
+                text: "",
+            },
+            primary: None,
+            outputs: &[],
+        },
+    };
+    let overhead = crate::executor::with_history_io(io, |history| {
+        crate::executor::json::json_byte_length(&empty, u64::MAX, history)
+    })?;
+    Ok(maximum
+        .min(crate::tool::output::VIEW_BYTES)
+        .saturating_sub(overhead))
+}
+
+pub(super) fn notebook_output_bytes(
+    file: &FileRef,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<u64> {
+    crate::executor::with_history_io(io, |history| {
+        crate::executor::json::json_byte_length(&output_part(file), u64::MAX - 1, history)
+    })
+    .map(|bytes| bytes + 1) // The preceding sequence comma.
+}
+
 impl Serialize for MediaParts<'_> {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -141,17 +197,7 @@ impl Serialize for MediaParts<'_> {
             })?;
         }
         for output in self.outputs {
-            let intent = if output.file.descriptor().media_type() == "application/pdf" {
-                crate::model::NativeMediaIntent::Document
-            } else {
-                crate::model::NativeMediaIntent::Image {
-                    detail: crate::model::ImageDetail::Auto,
-                }
-            };
-            parts.serialize_element(&MediaPart::File {
-                file: &output.file,
-                policy: policy(&output.file, intent),
-            })?;
+            parts.serialize_element(&output_part(&output.file))?;
         }
         parts.end()
     }

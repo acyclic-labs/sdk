@@ -624,6 +624,20 @@ impl<'a> Placement<'a> {
             .nodes()
             .any(|node| std::ptr::eq(node, value))
     }
+    /// No candidate decodes this subtree, and no surrounding enum buffers it.
+    pub(super) fn opaque(self, maximum_depth: u32) -> bool {
+        let opaque = self.copies() == 0
+            && !self.candidates.owns_strings
+            && self
+                .candidates
+                .nodes()
+                .all(|node| matches!(node, JsonLayout::BorrowedRaw));
+        if opaque {
+            let mut cost = self.cost.borrow_mut();
+            cost.skipped_depth = cost.skipped_depth.max(u64::from(maximum_depth));
+        }
+        opaque
+    }
     /// The same position, for a raw JSON document a `Value` expands in place.
     pub(super) fn expanded(self) -> Self {
         let mut candidates = Candidates::NONE;

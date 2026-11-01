@@ -51,10 +51,22 @@ impl TaskContext {
         &self,
         io: Option<&ContentIo>,
     ) -> Result<Option<PrivateContent<'_>>> {
-        Ok(self
+        let destination = self
             .summary_destination(io)?
             .writer()
-            .filter(|destination| destination.volume() != &self.tool_read_content().volume))
+            .filter(|destination| destination.volume() != &self.tool_read_content().volume);
+        let Some(destination) = destination else {
+            return Ok(None);
+        };
+        let readable = crate::executor::with_history_io(io, |work| {
+            crate::core::directory_read_granted_with_work(
+                self.scope.grants(),
+                destination.volume(),
+                "",
+                work,
+            )
+        })?;
+        Ok(readable.then_some(destination))
     }
 
     /// The turn's validated summary writer: the
