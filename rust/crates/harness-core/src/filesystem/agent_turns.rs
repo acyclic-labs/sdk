@@ -31,7 +31,7 @@ use crate::{
     runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
+use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
