@@ -95,31 +95,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             FilePublication::Replace(expected) => expected,
             FilePublication::Authorized(..) => None,
         };
-        let mut transaction = if authorized.is_some()
-            || matches!(publication, FilePublication::Replace(_))
-        {
-            let selected;
-            let pinned = match authorized {
-                Some(generation) => generation,
-                None => {
-                    selected = match expected {
-                        Some(reference) => self.generation(workspace, reference, Some(io)).await?,
-                        None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-                    };
-                    &selected
-                }
-            };
-            io.sdk(
+        let selected;
+        let pinned = match authorized {
+            Some(generation) => Some(generation),
+            None if matches!(publication, FilePublication::Replace(_)) => {
+                selected = match expected {
+                    Some(reference) => self.generation(workspace, reference, Some(io)).await?,
+                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                };
+                Some(&selected)
+            }
+            None => None,
+        };
+        #[cfg(test)]
+        if let Some(pause) = &self.publication_pause {
+            pause().await;
+        }
+        let mut transaction = match pinned {
+            Some(pinned) => io.sdk(
                 workspace
                     .begin_transaction_at(pinned, operation, io, io.cancellation())
                     .await,
-            )?
-        } else {
-            io.sdk(
+            )?,
+            None => io.sdk(
                 workspace
                     .begin_transaction(operation, io, io.cancellation())
                     .await,
-            )?
+            )?,
         };
         if let Some(fence) = publication.fence() {
             io.sdk(
@@ -127,10 +129,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .observe_policy_fence(fence, io, io.cancellation())
                     .await,
             )?;
-        }
-        #[cfg(test)]
-        if let Some(pause) = &self.publication_pause {
-            pause().await;
         }
         Self::publish_mutations(&mut transaction, mutations, io).await?;
         Self::commit_publication(transaction, io, publication).await
