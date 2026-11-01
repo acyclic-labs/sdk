@@ -16,6 +16,13 @@ pub(crate) struct PreparedCandidateAdoption {
     pub(super) candidate: CheckoutDependencies,
 }
 
+/// A pinned rebase target retaining the original mode and shared proof.
+/// Only candidate rebasing is exposed; this pin cannot publish or mutate it.
+#[cfg(feature = "native-mount")]
+pub(crate) struct NativeCandidateRebase<A: 'static, O: 'static> {
+    pub(super) checkout: Checkout<A, O>,
+}
+
 impl<A, O> Checkout<A, O> {
     #[cfg(feature = "native-mount")]
     pub(crate) fn prepare_candidate_adoption(
@@ -95,6 +102,23 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn pin_native_candidate_rebase(
+        &self,
+        base: &Self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<NativeCandidateRebase<A, O>>, FsError> {
+        accounting.check()?;
+        if self.candidate_base_unchanged(base) {
+            return Ok(None);
+        }
+        let custody = Self::checkout_custody(accounting, cancellation)?;
+        let dependencies = self.dependencies.observing_with_custody(custody);
+        let checkout = self.replica(dependencies, self.mode, accounting)?;
+        Ok(Some(NativeCandidateRebase { checkout }))
+    }
+
     pub(super) fn checkout_custody(
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,

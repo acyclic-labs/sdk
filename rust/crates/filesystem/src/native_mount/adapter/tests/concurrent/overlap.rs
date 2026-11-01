@@ -289,6 +289,80 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         b"rebased"
     );
 
+    // Force an actual merge against a newer root before delaying the provider.
+    // Each exit retains the original pin and mutation/publication leases.
+    for exit in ["return", "superseded", "abandoned", "cancelled"] {
+        source.runtime.wait(|| async {
+            let stop = CancellationToken::new();
+            let pending_work = capture_meter(BOUNDARY_BUDGET, &stop)?;
+            let bytes = match exit {
+                "superseded" => b"refused",
+                "abandoned" => b"abandon",
+                "cancelled" => b"cancel!",
+                _ => b"outside",
+            };
+            let pending = staged_write(&source.checkout, left, bytes, &pending_work).await?;
+            write(&source, right, 0, exit.as_bytes(), &work).await?;
+            let winner = staged_write(&source.checkout, right, b"newest", &work).await?;
+            let reads = objects.entered.load(Ordering::Acquire);
+            objects.paused_reads.store(true, Ordering::Release);
+            let mut rebase = Box::pin(source.checkout.install_change(
+                pending,
+                ViewChange::Node(left),
+                None,
+                &pending_work,
+                source.cancellation(),
+                None,
+            ));
+            assert!(futures::poll!(rebase.as_mut()).is_pending());
+            assert_eq!(objects.entered.load(Ordering::Acquire), reads + 1);
+            assert!(
+                source.checkout.state.try_write().is_ok(),
+                "rebase I/O retains no shared checkout guard"
+            );
+            match exit {
+                "superseded" => {
+                    source
+                        .checkout
+                        .install_change(
+                            winner,
+                            ViewChange::Node(right),
+                            None,
+                            &work,
+                            source.cancellation(),
+                            None,
+                        )
+                        .await?;
+                    objects.release();
+                    assert!(matches!(rebase.await, Err(MountSourceError::Stale)));
+                }
+                "abandoned" => {
+                    drop(winner);
+                    drop(rebase);
+                    objects.release();
+                }
+                "cancelled" => {
+                    drop(winner);
+                    stop.cancel();
+                    objects.release();
+                    assert!(matches!(rebase.await, Err(MountSourceError::Cancelled)));
+                }
+                _ => {
+                    drop(winner);
+                    objects.release();
+                    rebase.await?;
+                }
+            }
+            assert!(source.checkout.state.try_write().is_ok());
+            assert!(source.checkout.publication_fence.try_write().is_ok());
+            Ok(())
+        })?;
+        assert_eq!(
+            source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
+            b"outside"
+        );
+    }
+
     // Project the original private candidate while a disjoint candidate wins.
     // The original read is released by its provider; adoption must then refuse
     // the changed base instead of returning facts for a different root.
@@ -327,7 +401,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     })?;
     assert_eq!(
         source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
-        b"rebased"
+        b"outside"
     );
     assert_eq!(
         source.open_file(&paths[1])?.read_up_to(0, 16)?.as_ref(),
