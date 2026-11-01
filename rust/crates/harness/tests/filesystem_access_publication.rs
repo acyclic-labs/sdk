@@ -80,7 +80,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_once(unknown, Some(4096), ContentAccess::default())?
+            .observe_staged_once(unknown, None, Some(4096), ContentAccess::default())?
             .await
             .err()
             .ok_or("metadata discovery unexpectedly succeeded")?

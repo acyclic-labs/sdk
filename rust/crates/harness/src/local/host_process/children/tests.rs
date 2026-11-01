@@ -140,7 +140,7 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
             if let Some(completed) = sessions.refresh("idle", &mut running)? {
                 break completed;
             }
-            futures::executor::block_on(ready);
+            futures::executor::block_on(ready).into_result()?;
         };
         assert!(completed["next"].is_null(), "turn {turn} queued nothing");
         assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
@@ -166,7 +166,7 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
     Ok(())
 }
 
-fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
+fn exercise(host: &str, cwd: &Path, _state: &Path) -> Result {
     let (mut sessions, parent) = children(host, cwd, "held-stderr")?;
     let (mut running, view) = claim(
         &mut sessions,
@@ -215,7 +215,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
             running.process.try_wait()?.is_none(),
             "fixture exited before exporting its pipe"
         );
-        futures::executor::block_on(ready);
+        futures::executor::block_on(ready).into_result()?;
     };
     // A real duplicate writer held by this test process, outside child custody.
     let writer = fs::OpenOptions::new()
@@ -232,7 +232,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
         if running.process.try_wait()?.is_some() {
             break;
         }
-        futures::executor::block_on(ready);
+        futures::executor::block_on(ready).into_result()?;
     }
     running.process.require_stdin_complete()?;
     assert!(

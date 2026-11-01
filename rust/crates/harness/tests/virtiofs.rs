@@ -113,19 +113,19 @@ fn standalone_daemon_reports_bind_refusal_on_its_original_ready_channel() -> Res
     let socket = temporary.path().join("occupied.sock");
     let original = b"the existing socket path belongs to another owner";
     std::fs::write(&socket, original)?;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
     command
         .arg(SERVICE_READY_ARGUMENT)
         .arg("--socket")
         .arg(&socket)
         .arg("--config")
         .arg(config)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::null());
     let mut daemon = ProcessTree::spawn(&mut command)?;
     let startup = (|| {
-        let stdout = daemon.take_stdout().ok_or("step=take original daemon readiness channel; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs standalone_daemon_reports_bind_refusal_on_its_original_ready_channel -- --exact")?;
+        let stdout = daemon.take_stdout().ok_or("step=take original daemon readiness channel; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test main virtiofs::standalone_daemon_reports_bind_refusal_on_its_original_ready_channel -- --exact")?;
         Ok::<_, Box<dyn std::error::Error>>(ServiceReadiness::from(stdout).wait()?)
     })();
     let retired = daemon.terminate(None);

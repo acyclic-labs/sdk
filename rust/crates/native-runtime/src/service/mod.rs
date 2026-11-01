@@ -10,6 +10,18 @@ pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 #[derive(Debug)]
 pub struct ServiceReadiness(File);
 
+#[cfg(any(unix, windows))]
+impl From<std::process::ChildStdout> for ServiceReadiness {
+    /// Transfers the service's original stdout handle without duplicating it.
+    fn from(stdout: std::process::ChildStdout) -> Self {
+        #[cfg(unix)]
+        let channel = std::os::fd::OwnedFd::from(stdout);
+        #[cfg(windows)]
+        let channel = std::os::windows::io::OwnedHandle::from(stdout);
+        Self(File::from(channel))
+    }
+}
+
 /// How a started service left its readiness channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceStartOutcome {
@@ -188,9 +200,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
                     .stdout
                     .take()
                     .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
-                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
-                    readiness,
-                ))))
+                Ok(ServiceReadiness::from(readiness))
             }
         };
         operation.finish(spawn())
