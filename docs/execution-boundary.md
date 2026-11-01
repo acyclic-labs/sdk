@@ -41,7 +41,9 @@ request that also selects a path-based directory. Descriptor count, warden
 ordering and the single request/acknowledgement remain unchanged.
 
 `ExecutionGrant::attenuate` permits narrower workspace/read roots, removal of
-writes, and narrower networking. It refuses an increase of authority. Linux
+writes, and narrower networking. It refuses increased write or network authority
+before consuming read roots, resolving paths or compiling a native filter.
+Admitted requests still bind and verify every selected object. Linux
 resolves narrower roots with `openat2` beneath the verified parent object,
 refusing symlink substitution and resolution races. Other platforms currently
 refuse subtree attenuation until an equivalent native operation is available;
