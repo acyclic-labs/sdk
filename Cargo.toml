@@ -171,7 +171,7 @@ icu_casemap = { version = "=2.3.0", default-features = false, features = ["compi
 writeable = "=0.6.4"
 jsonschema = { version = "0.60.1", default-features = false }
 js-sys = "0.3.94"
-napi = { version = "=3.15.0", path = "rust/vendor/napi-3.15.0", features = ["async", "napi8", "serde-json"] }
+napi = { version = "=3.15.0", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.6.12"
 # The macOS FSEvents backend links CoreServices, which would load it into every
 # process at start; acyclic-fs loads FSEvents itself when a watch starts.
@@ -304,6 +304,9 @@ opt-level = 3
 
 [profile.dev.package.blake3]
 opt-level = 3
+
+[patch.crates-io]
+napi = { path = "rust/vendor/napi-3.15.0" }
 
 # Capability admission verifies Ed25519 chains throughout retained history. Keep
 # the scalar arithmetic optimized on native targets without x86 SIMD backends.

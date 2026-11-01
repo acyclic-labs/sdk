@@ -4,8 +4,10 @@ The native bindings use the pinned N-API implementation in
 `rust/vendor/napi-3.15.0`. `ORIGIN.json` binds the registry archive and each
 imported file to its original bytes. The only runtime correction reclaims a
 queued callback item before returning when Node supplies no live environment
-or callback. The shared dependency selects this source directly; generated
-bindings do not implement a second callback owner.
+or callback. The shared dependency retains its registry identity, and the root
+`[patch.crates-io]` selects the corrected source locally. Publication checks
+therefore keep treating NAPI as an external dependency. Generated bindings do
+not implement a second callback owner.
 
 The source override is necessary because the affected `call_js_cb` function is
 private to NAPI. Cargo's dependency overrides replace packages, not individual
