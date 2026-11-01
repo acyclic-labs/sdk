@@ -1,6 +1,6 @@
 //! Inbox observations at model boundaries. They do not race or drop tool futures.
 
-use super::{AgentRecord as _, AgentState, Error, InboxRecord, Queued, turn_input};
+use super::{AgentRecord as _, AgentState, Error, InboxRecord, turn_input};
 use acyclic_stream::{ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -14,8 +14,8 @@ pub struct BoundarySelection {
     pub from: u64,
     /// First unexamined source sequence.
     pub through: u64,
-    /// Original input references, in source order; never an out-of-band queue.
-    pub inputs: Vec<Queued>,
+    /// Original source sequences and records, in order; never an out-of-band queue.
+    pub inputs: Vec<(u64, InboxRecord)>,
 }
 
 /// Immutable inbox range pinned with the executor's prepared request.
@@ -81,11 +81,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
         let input = InboxRecord::decode(&record.value)?;
         let queued = match input {
             InboxRecord::Cancel(_) | InboxRecord::Archive(_) => break,
-            InboxRecord::Notice { id, notice } => Some(Queued {
-                inbox: record.sequence,
-                input: super::TurnInput::Notice { id, notice },
-            }),
-            InboxRecord::Message(_) => turn_input(record.sequence, input),
+            InboxRecord::Notice { .. } | InboxRecord::Message(_) => Some(input),
             other => {
                 // Inputs that keep their own turn are queue barriers. Passing
                 // one would let a later steering message settle before an
@@ -104,7 +100,7 @@ pub async fn select_boundary<P: StreamProvider + ?Sized>(
             .checked_add(1)
             .ok_or(Error::Record("steering inbox cursor overflow"))?;
         if let Some(input) = queued {
-            selection.inputs.push(input);
+            selection.inputs.push((record.sequence, input));
         }
     }
     if until.is_some_and(|until| until != selection.through) {

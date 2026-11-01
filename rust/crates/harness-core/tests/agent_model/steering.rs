@@ -4,12 +4,18 @@ use super::*;
 fn notice(index: usize, wake: bool) -> InboxRecord {
     InboxRecord::Notice {
         id: intent(&format!("event-{index}")),
-        notice: acyclic_harness_core::conversation::wire::Notice {
-            source: "events/source".into(),
-            kind: "test.event".into(),
-            body: serde_json::json!({"index": index}),
-            wake,
-            coalesce_key: None,
+        notice: if wake {
+            NoticePayload::Waking(Box::new(
+                super::corpus::notice_file().expect("valid Notice reference"),
+            ))
+        } else {
+            NoticePayload::Quiet(acyclic_harness_core::conversation::wire::Notice {
+                source: "events/source".into(),
+                kind: "test.event".into(),
+                body: serde_json::json!({"index": index}),
+                wake,
+                coalesce_key: None,
+            })
         },
     }
 }
