@@ -83,9 +83,6 @@ fn ancestry_requires_component_boundaries() -> Result<(), PathError> {
 #[test]
 fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathError> {
     let limits = VolumeLimits {
-        maximum_path_bytes: 8,
-        maximum_component_bytes: 3,
-        maximum_path_depth: 2,
         ..VolumeLimits::default()
     };
     let root = PortablePath::parse(PortablePath::ROOT, limits)?;
@@ -104,9 +101,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
         ("/a/", PathError::TrailingSeparator),
         ("/./a", PathError::CurrentComponent),
         ("/a\0b", PathError::Nul),
-        ("/abcd", PathError::ComponentTooLong),
-        ("/a/b/c", PathError::TooDeep),
-        ("/12345678", PathError::PathTooLong),
     ] {
         assert_eq!(PortablePath::parse(input, limits), Err(expected));
     }
@@ -116,9 +110,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
 #[test]
 fn borrowed_path_validation_is_the_same_canonical_parser() {
     let limits = VolumeLimits {
-        maximum_path_bytes: 8,
-        maximum_component_bytes: 3,
-        maximum_path_depth: 2,
         ..VolumeLimits::default()
     };
     for value in [
@@ -148,9 +139,6 @@ mod properties {
 
     fn limits() -> VolumeLimits {
         VolumeLimits {
-            maximum_path_bytes: 12,
-            maximum_component_bytes: 4,
-            maximum_path_depth: 3,
             ..VolumeLimits::default()
         }
     }
@@ -172,7 +160,6 @@ mod properties {
                             LogicalName::new(
                                 NameEncoding::Utf8,
                                 component.as_bytes().to_vec(),
-                                limits().maximum_component_bytes,
                             )
                         })
                         .collect::<Result<Vec<_>, _>>()
@@ -204,4 +191,22 @@ mod properties {
             );
         }
     }
+}
+
+#[test]
+fn complete_deep_paths_share_portable_and_namespace_semantics()
+-> Result<(), Box<dyn std::error::Error>> {
+    let spelling = "/leaf".repeat(8_193);
+    let path = PortablePath::parse(&spelling, VolumeLimits::default())?;
+    assert_eq!(path.depth(), 8_193);
+    let namespace = crate::kernel::NamespacePath::from_portable(&path, VolumeLimits::default())?;
+    assert_eq!(namespace.depth(), path.depth());
+    assert_eq!(namespace.encoded_bytes() as usize, spelling.len());
+    assert!(
+        namespace
+            .components()
+            .iter()
+            .all(|name| name.as_bytes() == b"leaf")
+    );
+    Ok(())
 }

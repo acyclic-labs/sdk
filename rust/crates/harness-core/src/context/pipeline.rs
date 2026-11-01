@@ -382,7 +382,10 @@ impl ContextPipeline {
     ) -> Result<Context> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
-        if self.0.len() > limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| self.0.len() > maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -427,15 +430,14 @@ impl ContextPipeline {
             return Ok(());
         }
         let frame = crate::executor::with_history_io(io, |work| {
-            let context_bytes = crate::executor::json::json_byte_length(context, u64::MAX, work)?;
-            let messages =
-                crate::executor::json::json_byte_length(&context.messages, u64::MAX, work)?;
+            let context_bytes = crate::executor::json::json_byte_length(context, None, work)?;
+            let messages = crate::executor::json::json_byte_length(&context.messages, None, work)?;
             Ok::<_, crate::Error>(context_bytes - messages)
         })?;
         let optional_limits = Limits {
             render_bytes: limits
                 .render_bytes
-                .saturating_sub(request_frame_bytes.saturating_sub(frame)),
+                .map(|maximum| maximum.saturating_sub(request_frame_bytes.saturating_sub(frame))),
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {

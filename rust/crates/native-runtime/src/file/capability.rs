@@ -85,6 +85,8 @@ impl NativeFile {
         };
         let payload = Arc::new(NativeFilePayload {
             file,
+            #[cfg(windows)]
+            completion_attached: std::sync::atomic::AtomicBool::new(false),
             _allocation: allocation,
         });
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -103,8 +105,9 @@ impl NativeFile {
                 overlapped: false,
             }),
             Err(error) => {
-                let NativeFilePayload { file, _allocation } =
-                    Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
+                let NativeFilePayload {
+                    file, _allocation, ..
+                } = Arc::try_unwrap(payload).unwrap_or_else(|_| std::process::abort());
                 if _allocation.is_none()
                     && let Some(meter) = meter
                 {

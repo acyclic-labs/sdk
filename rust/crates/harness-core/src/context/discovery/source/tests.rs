@@ -66,23 +66,6 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
                 .is_err()
         );
     }
-    let mut work = DiscoveryWork {
-        limits: ContextDiscoveryLimits {
-            entries: 2,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut no_progress = Pages(
-        [
-            page(1, &[], Some(1)),
-            page(1, &[], Some(2)),
-            page(1, &[], None),
-        ]
-        .into(),
-    );
-    assert!(work.list_source(&mut no_progress, "", None).await.is_err());
-    assert_eq!(no_progress.0.len(), 1, "the third page must not be read");
     let mut omitted = page(1, &[], None);
     omitted.scanned = 2;
     let mut work = DiscoveryWork::default();
@@ -106,9 +89,9 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
 proptest! {
     #[test]
     fn cached_discovery_cost_obeys_the_same_combined_budget(
-        a in 0u32..128, b in 0u32..128, bound in 1u32..128,
+        a in 0u64..128, b in 0u64..128, bound in 1u64..128,
     ) {
-        let mut work = DiscoveryWork { entries: a, limits: ContextDiscoveryLimits { entries: bound, ..Default::default() }, ..Default::default() };
+        let mut work = DiscoveryWork { entries: a, limits: ContextDiscoveryLimits { entries: Some(bound), ..Default::default() }, ..Default::default() };
         let used = DiscoveryWork { entries: b, ..Default::default() };
         let catalog = SkillCatalog::capture(Vec::new(), used, DiscoveryWork::default())?;
         let result = catalog.reuse(&mut work);
@@ -127,19 +110,19 @@ proptest! {
 fn cached_discovery_cannot_bypass_invalid_limits() {
     for limits in [
         ContextDiscoveryLimits {
-            entries: 0,
+            entries: Some(0),
             ..Default::default()
         },
         ContextDiscoveryLimits {
-            directories: 0,
+            directories: Some(0),
             ..Default::default()
         },
         ContextDiscoveryLimits {
-            header_bytes: 0,
+            header_bytes: Some(0),
             ..Default::default()
         },
         ContextDiscoveryLimits {
-            instruction_bytes: 0,
+            instruction_bytes: Some(0),
             ..Default::default()
         },
     ] {
@@ -167,7 +150,7 @@ impl SkillReader for Pages {
         &'a mut self,
         _: &'a str,
         _: &'a u8,
-        _: u32,
+        _: u64,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,

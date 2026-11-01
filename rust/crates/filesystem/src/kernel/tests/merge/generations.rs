@@ -19,7 +19,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 1,
+            maximum_changes: Some(1),
             ..request(
                 generation(base_table),
                 generation(ours_table),
@@ -38,6 +38,38 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         MergeGenerationError::ChangeLimit
     ));
 
+    let selected_request = stored_request(
+        &store,
+        generation(base_table),
+        generation(ours_table),
+        generation(theirs_table),
+    )
+    .await?;
+    let mut no_policy = selected_request.clone();
+    no_policy.maximum_changes = None;
+    no_policy.maximum_conflicts = None;
+    let complete = merge_generation_async(
+        &store,
+        no_policy,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    let selected = merge_generation_async(
+        &store,
+        selected_request,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(complete.value, selected.value);
+    assert!(matches!(
+        complete.value,
+        MergeGenerationOutcome::Prepared { .. }
+    ));
+
     let base_third = record(3, 3, 1, FilePayload::Empty, FileKind::Fifo);
     let ours_second = record(2, 5, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_second_overlap = record(2, 6, 1, FilePayload::Empty, FileKind::Fifo);
@@ -45,7 +77,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let three_way_union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 2,
+            maximum_changes: Some(2),
             ..request(
                 generation(put_table(&store, vec![base_first, base_second, base_third]).await?),
                 generation(put_table(&store, vec![ours_first, ours_second, base_third]).await?),
@@ -139,7 +171,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let ours_tree = put_tree(
         &store,
         vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"ours".to_vec(), 16)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"ours".to_vec())?,
             file_id: FileId::from_bytes([7; 16]),
             kind: FileKind::Fifo,
         }],
@@ -148,7 +180,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let theirs_tree = put_tree(
         &store,
         vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"theirs".to_vec(), 16)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"theirs".to_vec())?,
             file_id: FileId::from_bytes([8; 16]),
             kind: FileKind::Fifo,
         }],
@@ -162,7 +194,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let directory_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 1,
+            maximum_changes: Some(1),
             ..request(
                 generation(put_table(&store, vec![directory_with(empty)]).await?),
                 generation(put_table(&store, vec![directory_with(ours_tree)]).await?),
@@ -181,7 +213,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         MergeGenerationError::ChangeLimit
     ));
 
-    let shared_name = LogicalName::new(NameEncoding::Utf8, b"shared".to_vec(), 16)?;
+    let shared_name = LogicalName::new(NameEncoding::Utf8, b"shared".to_vec())?;
     let tree_for = async |file: u8| {
         put_tree(
             &store,
@@ -222,7 +254,7 @@ async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier(
     let directory_id = FileId::from_bytes([41; 16]);
     let entry = |name: &'static [u8], file: u8| -> Result<TreeEntry, Box<dyn std::error::Error>> {
         Ok(TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 16)?,
+            name: LogicalName::new(NameEncoding::Utf8, name.to_vec())?,
             file_id: FileId::from_bytes([file; 16]),
             kind: FileKind::Fifo,
         })
@@ -350,7 +382,7 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     let directory_id = FileId::from_bytes([51; 16]);
     let entry = |name: &'static [u8], file: u8| -> Result<TreeEntry, Box<dyn std::error::Error>> {
         Ok(TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 16)?,
+            name: LogicalName::new(NameEncoding::Utf8, name.to_vec())?,
             file_id: FileId::from_bytes([file; 16]),
             kind: FileKind::Fifo,
         })
@@ -545,7 +577,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     let b = FileId::from_bytes([3; 16]);
     let entry = |name: &str, file_id| -> Result<TreeEntry, Box<dyn std::error::Error>> {
         Ok(TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 16)?,
+            name: LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())?,
             file_id,
             kind: FileKind::Fifo,
         })

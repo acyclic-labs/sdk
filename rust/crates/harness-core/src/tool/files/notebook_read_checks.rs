@@ -5,8 +5,8 @@ fn discover(source: &str, offset: u64, limit: Option<u64>, chunk: usize) -> Resu
     let mut cursor = JsonSpans::default();
     let mut selected = Selection::new(offset, limit, u64::MAX);
     let bounds = JsonBounds {
-        maximum_bytes: source.len() as u64,
-        maximum_items: u64::MAX,
+        maximum_bytes: Some(source.len() as u64),
+        maximum_items: None,
         maximum_depth: 128,
     };
     for bytes in source.as_bytes().chunks(chunk) {
@@ -74,7 +74,7 @@ proptest! {
             warm.element_depth = 1;
             warm.total = Some(cells.len() as u64);
             warm.array_end = Some(end);
-            let bounds = JsonBounds { maximum_bytes:source.len() as u64,maximum_items:u64::MAX,maximum_depth:128 };
+            let bounds = JsonBounds { maximum_bytes: Some(source.len() as u64),maximum_items:None,maximum_depth:128 };
             for bytes in source.as_bytes()[start as usize..].chunks(chunk) {
                 let mut consumed = 0;
                 while consumed < bytes.len() && !warm.done {

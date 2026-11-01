@@ -33,29 +33,57 @@ pub fn binary_search_from<T, W: Work<T>>(
     known_before: usize,
     work: &mut W,
 ) -> Result<Result<usize, usize>, W::Error> {
-    if known_before > items.len() {
+    struct Slice<'a, T, W> {
+        items: &'a [T],
+        original: &'a mut W,
+    }
+    impl<T, W: Work<T>> Work<usize> for Slice<'_, T, W> {
+        type Error = W::Error;
+        fn check(&mut self) -> Result<(), Self::Error> {
+            self.original.check()
+        }
+        fn compare(&mut self, index: &usize) -> Result<Ordering, Self::Error> {
+            self.original.compare(&self.items[*index])
+        }
+        fn invalid_prefix(&self) -> Self::Error {
+            self.original.invalid_prefix()
+        }
+    }
+    binary_search_indexed(
+        items.len(),
+        known_before,
+        &mut Slice {
+            items,
+            original: work,
+        },
+    )
+}
+
+/// Uses the same probe plan over original rank-addressable storage.
+/// The caller admits each comparison before observing its payload.
+pub fn binary_search_indexed<W: Work<usize>>(
+    len: usize,
+    known_before: usize,
+    work: &mut W,
+) -> Result<Result<usize, usize>, W::Error> {
+    if known_before > len {
         return Err(work.invalid_prefix());
     }
-    if known_before == items.len() {
+    if known_before == len {
         work.check()?;
         return Ok(Err(known_before));
     }
-    let (mut base, mut rest) = (0_usize, items);
-    while let Some((lower, upper)) = rest.split_at_checked(rest.len() / 2)
-        && let Some((middle, higher)) = upper.split_first()
-    {
-        let index = base + lower.len();
+    let (mut base, mut end) = (0_usize, len);
+    while base < end {
+        let index = base + (end - base) / 2;
         let ordering = if index < known_before {
             Ordering::Less
         } else {
-            work.compare(middle)?
+            work.compare(&index)?
         };
         match ordering {
-            Ordering::Less => {
-                base = index + 1;
-                rest = higher;
-            }
-            Ordering::Greater => rest = lower,
+            Ordering::Less => base = index + 1,
+            Ordering::Greater => end = index,
             Ordering::Equal => return Ok(Ok(index)),
         }
     }

@@ -1,20 +1,21 @@
 use super::*;
 
 impl<'a> KernelAccounting<'a> {
-    pub(crate) fn cancellation(&self) -> &'a crate::CancellationToken {
-        match self {
-            Self::Standalone { cancellation, .. }
-            | Self::BorrowedStandalone { cancellation, .. } => cancellation,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { cancellation, .. } => cancellation,
-        }
-    }
     fn ensure_active(&self) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { allocations, .. } => allocations.ensure_active(),
             Self::BorrowedStandalone { allocations, .. } => allocations.ensure_active(),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { .. } => Ok(()),
+        }
+    }
+
+    pub(crate) fn cancellation(&self) -> &'a crate::CancellationToken {
+        match self {
+            Self::Standalone { cancellation, .. }
+            | Self::BorrowedStandalone { cancellation, .. } => cancellation,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { cancellation, .. } => cancellation,
         }
     }
 

@@ -421,6 +421,7 @@ async fn changed_directory_bindings_expand_only_their_descendants() -> Result<()
     ];
     for _ in 0..2 {
         assert_eq!(names(unbounded!(diff, changed_paths(6))?.0)?, expected);
+        assert_eq!(names(unbounded!(diff, changed_paths(None))?.0)?, expected);
     }
     assert!(matches!(
         unbounded!(diff, changed_paths(5)),

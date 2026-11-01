@@ -19,7 +19,7 @@ pub(super) fn binary(descriptor: &MessageDescriptor, bytes: &[u8]) {
     let Some(name) = name(descriptor) else {
         return;
     };
-    let actual = json::encode_binary(name, bytes, usize::MAX);
+    let actual = json::encode_binary(name, bytes, None);
     let shared = acyclic_protobuf_json::encode(descriptor.clone(), bytes);
     match (actual, shared) {
         (Ok(actual), Ok(shared)) => assert_eq!(value(&actual), value(&shared)),
@@ -27,7 +27,7 @@ pub(super) fn binary(descriptor: &MessageDescriptor, bytes: &[u8]) {
         _ => panic!("Objects and shared wire admission disagree"),
     }
     if let Some(maximum) = bytes.len().checked_sub(1) {
-        quota(json::encode_binary(name, bytes, maximum));
+        quota(json::encode_binary(name, bytes, Some(maximum)));
     }
 }
 
@@ -35,23 +35,23 @@ pub(super) fn json(descriptor: &MessageDescriptor, bytes: &[u8]) {
     let Some(name) = name(descriptor) else {
         return;
     };
-    let actual = json::decode_binary(name, bytes, usize::MAX);
-    let shared = acyclic_protobuf_json::decode(descriptor.clone(), bytes, usize::MAX);
+    let actual = json::decode_binary(name, bytes, None);
+    let shared = acyclic_protobuf_json::decode(descriptor.clone(), bytes, bytes.len());
     match (actual, shared) {
         (Ok(actual), Ok(shared)) => {
-            let actual_json = json::encode_binary(name, &actual, usize::MAX).unwrap();
+            let actual_json = json::encode_binary(name, &actual, None).unwrap();
             let shared_json =
                 acyclic_protobuf_json::encode(descriptor.clone(), &shared.encode_to_vec()).unwrap();
             assert_eq!(value(&actual_json), value(&shared_json));
-            let repeated = json::decode_binary(name, &actual_json, usize::MAX).unwrap();
+            let repeated = json::decode_binary(name, &actual_json, None).unwrap();
             assert_eq!(
-                value(&json::encode_binary(name, &repeated, usize::MAX).unwrap()),
+                value(&json::encode_binary(name, &repeated, None).unwrap()),
                 value(&actual_json)
             );
             let mut trailing = bytes.to_vec();
             trailing.extend_from_slice(b" false");
             assert_eq!(
-                json::decode_binary(name, &trailing, usize::MAX).unwrap_err(),
+                json::decode_binary(name, &trailing, None).unwrap_err(),
                 ErrorCode::InvalidArgument.into()
             );
         }
@@ -59,7 +59,7 @@ pub(super) fn json(descriptor: &MessageDescriptor, bytes: &[u8]) {
         _ => panic!("Objects and shared JSON admission disagree"),
     }
     if let Some(maximum) = bytes.len().checked_sub(1) {
-        quota(json::decode_binary(name, bytes, maximum));
+        quota(json::decode_binary(name, bytes, Some(maximum)));
     }
 }
 
@@ -68,7 +68,7 @@ pub(super) fn typed<T: Message + Default>(descriptor: &MessageDescriptor, messag
         return;
     };
     let encoded = json::encode(name, message).expect("typed Objects message encodes");
-    let restored: T = json::decode(name, &encoded, usize::MAX).expect("typed Objects JSON decodes");
+    let restored: T = json::decode(name, &encoded, None).expect("typed Objects JSON decodes");
     assert_eq!(
         value(&json::encode(name, &restored).unwrap()),
         value(&encoded)

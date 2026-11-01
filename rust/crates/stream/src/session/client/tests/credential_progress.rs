@@ -157,13 +157,13 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                 0,
                 0,
                 Body::Hello(wire::SessionHello {
+                    credentials: vec![],
                     interest: None,
                     version: crate::session::VERSION,
                     client_id: bytes::Bytes::from_static(b"deferred-owner"),
                     destination_node: "node".into(),
                     receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                     receive_frames: crate::MAX_ITEMS as u32,
-                    credentials: vec![],
                 }),
             ))
             .await?;

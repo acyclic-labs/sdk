@@ -1,7 +1,5 @@
 //! Independent post-admission checks; never call the manifest parser or validator.
-use acyclic_manifest::{
-    DeploymentManifest, EntryRuntime, Environment, MAX_JSON_BYTES, ResourcePattern,
-};
+use acyclic_manifest::{DeploymentManifest, EntryRuntime, Environment, ResourcePattern};
 
 fn inbox_authorized(
     env: &Environment,
@@ -48,9 +46,6 @@ fn inbox_authorized(
 
 /// Detect admission bugs independently of round-trip and code-generation checks.
 pub fn check(manifest: &DeploymentManifest) -> Result<(), &'static str> {
-    if serde_json::to_vec(manifest).map_err(|_| "encode")?.len() > MAX_JSON_BYTES {
-        return Err("json-size");
-    }
     for env in &manifest.environments {
         for route in &env.routes {
             if !env.entries.iter().any(|entry| {

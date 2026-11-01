@@ -37,7 +37,7 @@ fn encode_observation(
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     if let Some(io) = io {
-        return io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false);
+        return io.encode(value, Some(acyclic_stream::MAX_RECORD_BYTES as u64), false);
     }
     let encoded = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
     if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -462,11 +462,11 @@ where
         let event_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
-                if io.is_some() {
+                Some(if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
-                },
+                }),
                 work,
             )
         })?;

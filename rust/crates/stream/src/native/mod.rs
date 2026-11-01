@@ -7,7 +7,7 @@ mod work;
 pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;
-pub use prepared::PreparedNativeCommit;
+pub use prepared::{PreparedNativeCommit, PreparedRecordCapacity};
 pub(crate) use work::Work;
 
 macro_rules! span {

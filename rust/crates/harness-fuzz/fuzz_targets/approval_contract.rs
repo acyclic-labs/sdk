@@ -46,8 +46,8 @@ fn request(bytes: &[u8]) -> acyclic_harness::Result<Interaction> {
         std::marker::PhantomData::<Interaction>,
         bytes,
         JsonBounds {
-            maximum_bytes: bytes.len() as u64,
-            maximum_items: bytes.len() as u64,
+            maximum_bytes: Some(bytes.len() as u64),
+            maximum_items: Some(bytes.len() as u64),
             maximum_depth: 256,
         },
         Some(acyclic_harness::wire::ErrorCode::Invalid),

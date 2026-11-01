@@ -1,13 +1,8 @@
 use super::*;
 
 #[tokio::test]
-async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::new(SimulationOptions {
-        maximum_scheduled_faults: 1,
-        maximum_trace_entries: 2,
-        maximum_pending_objects: 1,
-        maximum_pending_object_bytes: 8,
-    })?;
+async fn scheduling_is_typed_and_traceable() -> Result<(), Box<dyn std::error::Error>> {
+    let simulation = Simulation::new();
     assert_eq!(
         simulation.schedule(ScheduledSimulationFault {
             operation: SimulationOperation::ObjectRead,
@@ -29,14 +24,6 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
         occurrence: 1,
         fault: SimulationFault::RejectBefore,
     })?;
-    assert_eq!(
-        simulation.schedule(ScheduledSimulationFault {
-            operation: SimulationOperation::ObjectRead,
-            occurrence: 1,
-            fault: SimulationFault::RejectBefore,
-        }),
-        Err(SimulationError::ScheduleFull)
-    );
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"x");
@@ -90,21 +77,9 @@ async fn every_operation_honours_precancellation_before_inner_work()
 }
 
 #[tokio::test]
-async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    assert!(matches!(
-        Simulation::new(SimulationOptions {
-            maximum_scheduled_faults: 0,
-            ..SimulationOptions::default()
-        }),
-        Err(SimulationError::ZeroBound)
-    ));
-    let simulation = Simulation::new(SimulationOptions {
-        maximum_scheduled_faults: 2,
-        maximum_trace_entries: 1,
-        maximum_pending_objects: 1,
-        maximum_pending_object_bytes: 4,
-    })?;
+async fn duplicate_and_incompatible_schedules_are_refused() -> Result<(), Box<dyn std::error::Error>>
+{
+    let simulation = Simulation::new();
     let scheduled = ScheduledSimulationFault {
         operation: SimulationOperation::ObjectContains,
         occurrence: 1,
@@ -122,19 +97,5 @@ async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_close
         ),
         Err(SimulationError::IncompatibleFault)
     );
-    let (_, objects) = simulation.stores();
-    let cancellation = CancellationToken::new();
-    let (object_id, _) = object(b"trace");
-    assert!(
-        (work!(objects, contains(object_id), B, &cancellation))
-            .await
-            .is_err()
-    );
-    let exhausted = (work!(objects, contains(object_id), B, &cancellation))
-        .await
-        .err()
-        .ok_or("trace exhaustion was ignored")?;
-    assert!(matches!(exhausted.error, ObjectStoreError::Rejected(_)));
-    assert_eq!(simulation.trace()?.len(), 1);
     Ok(())
 }

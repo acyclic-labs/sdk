@@ -105,23 +105,34 @@ pub async fn select_model_context_wasm(
         unchecked_param_type = "(file: WasmFileRefWire, maximumBytes: number) => Promise<Uint8Array>"
     )]
     reader: js_sys::Function,
-    maximum_messages: u32,
-    maximum_attachments: u32,
-    maximum_render_bytes: f64,
+    maximum_messages: Option<u32>,
+    maximum_attachments: Option<u32>,
+    maximum_render_bytes: Option<f64>,
     maximum_projected_attachments: u32,
 ) -> Result<JsValue, JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = BrowserContentReader(reader);
-    let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
+    let maximum_render_bytes = maximum_render_bytes
+        .map(|maximum| exact_nonnegative_u64(maximum, "maximum render bytes"))
+        .transpose()?;
+    let positive = |value: Option<u32>| {
+        value
+            .map(|value| {
+                std::num::NonZeroUsize::new(value as usize).ok_or_else(|| {
+                    JsValue::from_str("selected context count policy must be positive")
+                })
+            })
+            .transpose()
+    };
     let selected = select_model_context(
         &conversation,
         selection.conversation_revision,
         selection.clone(),
         &resolver,
         crate::conversation::Limits {
-            context_messages: maximum_messages as usize,
-            attachments: maximum_attachments as usize,
+            context_messages: positive(maximum_messages)?,
+            attachments: positive(maximum_attachments)?,
             render_bytes: maximum_render_bytes,
             ..Default::default()
         },
