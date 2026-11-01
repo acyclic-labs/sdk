@@ -39,6 +39,7 @@ struct Owner {
     revoke_read: AtomicBool,
     revoke_query: AtomicBool,
     childless: AtomicBool,
+    admission: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     diff: std::sync::Mutex<Option<DiffPause>>,
 }
 
@@ -61,6 +62,14 @@ impl Platform for Owner {
             self.denied.store(true, Ordering::SeqCst);
         }
         Box::pin(async move {
+            if let Some(admitted) = self
+                .admission
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take()
+            {
+                admitted.send(()).map_err(|()| StreamError::Unavailable)?;
+            }
             Ok(if denied {
                 PolicyDecision::Deny
             } else {
@@ -564,9 +573,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         wait: true,
     };
     let mut live_events = std::pin::pin!(call(&client, "agents", &events));
-    let mut revoked_events = std::pin::pin!(call(&client, "agents", &events));
     assert!(futures::poll!(&mut live_events).is_pending());
-    assert!(futures::poll!(&mut revoked_events).is_pending());
     assert!(server.bound().agents().runtime().drain().await.is_empty());
     assert!(
         matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true })
@@ -578,9 +585,44 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Ok(AgentReply::Events { input: 0, page: Some(page), settled: true, .. })
             if page.operation.is_none() && page.end == 0 && page.items.is_empty()
     ));
-    // Both queries were admitted before the same actor publication. Current
-    // authority still fences disclosure when the second waiter resumes.
+    // Keep this query pending on the next original input. Driving other calls
+    // must not complete it before revocation and its source publication.
+    let events = AgentCommand::Events {
+        agent: root.clone(),
+        input: 1,
+        after: 0,
+        wait: true,
+    };
+    let (admitted, admission) = tokio::sync::oneshot::channel();
+    *owner
+        .admission
+        .lock()
+        .map_err(|_| "admission control poisoned")? = Some(admitted);
+    let mut revoked_events = std::pin::pin!(call(&client, "agents", &events));
+    tokio::select! {
+        reply = &mut revoked_events => return Err(format!("query ended before admission: {reply:?}").into()),
+        admitted = admission => admitted?,
+    }
     owner.denied.store(true, Ordering::SeqCst);
+    let by = Sender::Host {
+        host: "query-source".into(),
+    };
+    assert!(matches!(
+        server
+            .bound()
+            .agents()
+            .send(
+                &root,
+                &by,
+                &InboxRecord::Cancel(Control {
+                    by: by.clone(),
+                    id: IntentId::try_from("release-revoked-query")?,
+                }),
+            )
+            .await?,
+        Delivered::Committed { .. }
+    ));
+    assert!(server.bound().agents().runtime().drain().await.is_empty());
     let refused = revoked_events
         .await
         .expect_err("events disclosed after revocation");
@@ -589,9 +631,9 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Some(StreamError::AccessDenied)
     ));
     owner.denied.store(false, Ordering::SeqCst);
-    // A journal position is scoped to an original turn. Neither an adopted
+    // A journal position is scoped to an original turn. Neither a consumed
     // control-only input nor the not-yet-created next input can own it.
-    for input in [0, 1] {
+    for input in [0, 1, 2] {
         assert!(matches!(
             call(&client, "agents", &AgentCommand::Events {
                 agent: root.clone(),
@@ -605,14 +647,14 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     }
     let usage = AgentCommand::Usage {
         agent: root.clone(),
-        input: 1,
+        input: 2,
         after: 0,
         wait: false,
     };
     assert!(matches!(
         call(&client, "agents", &usage).await?,
         Ok(AgentReply::Usage {
-            input: 1,
+            input: 2,
             page: None,
             settled: false
         })
