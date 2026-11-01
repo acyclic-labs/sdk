@@ -650,6 +650,7 @@ impl Authority {
                 Arc::clone(capability),
                 filter_digest,
                 false,
+                None,
             ),
         ))
     }

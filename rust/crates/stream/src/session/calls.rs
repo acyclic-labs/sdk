@@ -11,6 +11,7 @@ pub struct CallAuthorization(
     pub(super) Arc<acyclic_auth::verify::VerifiedCapability>,
     pub(super) [u8; 32],
     pub(super) bool,
+    pub(super) Option<CallContribution>,
 );
 
 impl CallAuthorization {
@@ -23,6 +24,10 @@ impl CallAuthorization {
     /// The host must still apply its current command policy before issuance and
     /// dispatch. This contributes dependencies; it grants no new resource.
     pub fn contribution(&self) -> Result<CallContribution, StreamError> {
+        if let Some(contribution) = &self.5 {
+            contribution.check()?;
+            return Ok(contribution.clone());
+        }
         self.1.has_changed().map_err(|_| StreamError::Unavailable)?;
         let capability = Arc::clone(&self.2);
         let contribution = CallContribution(Arc::new(Contribution {
@@ -202,20 +207,30 @@ pub trait CallProvider: crate::ProviderPlatform + 'static {
 pub(super) fn source(
     provider: Arc<dyn CallProvider>,
     invocation: Bytes,
-    authorization: CallAuthorization,
+    mut authorization: CallAuthorization,
     identity: wire::SessionChannel,
-) -> Source {
+) -> Result<(Source, Option<Source>), StreamError> {
     let enrolling = authorization.enrolling();
-    reply_with_enrollment(identity, Item::ActorCall, enrolling, async move {
-        let caller = enrolling
-            .then(|| authorization.contribution())
-            .transpose()?;
+    // Admission retains one original caller before any provider can suspend.
+    // Its terminal runs independently of data credit in the existing session.
+    let caller = enrolling
+        .then(|| authorization.contribution())
+        .transpose()?;
+    let terminal = caller
+        .as_ref()
+        .map(|caller| resources::terminal(caller.terminated(), identity));
+    authorization.5 = caller.clone();
+    let source = reply_with_enrollment(identity, Item::ActorCall, enrolling, async move {
+        if let Some(caller) = &caller {
+            caller.check()?;
+        }
         let mut reply = provider.call(invocation, authorization).await?;
         if let Some(caller) = caller {
             reply.enrollment = reply.enrollment.map(|enrollment| enrollment.bind(caller));
         }
         Ok(reply)
-    })
+    });
+    Ok((source, terminal))
 }
 
 /// One finite one-shot reply (an Actors call or a children page) on a channel.

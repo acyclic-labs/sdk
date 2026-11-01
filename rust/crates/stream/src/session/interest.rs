@@ -253,11 +253,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 context.4 = enrollment.is_some();
                 binding = Some(authorization);
                 opaque_cursor = true;
-                (
-                    false,
-                    calls::source(Arc::clone(provider), invocation, context, identity),
-                    None,
-                )
+                let (source, caller_terminal) =
+                    match calls::source(Arc::clone(provider), invocation, context, identity) {
+                        Ok(opened) => opened,
+                        Err(error) => return Ok(Admission::Failed(identity, error)),
+                    };
+                terminal = caller_terminal;
+                (false, source, None)
             }
             Some(Kind::Heads(request)) => {
                 if resume.next != 0 || !resume.opaque.is_empty() || subscription.filter.is_some() {
@@ -302,7 +304,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             _ => return Err(StreamError::Unsupported),
         };
-        if let Some(custody) = binding.as_ref().and_then(|binding| binding.custody()) {
+        // Enrollment's original caller terminal already includes inherited
+        // custody. Other sources still attach their exact slot's terminal.
+        if let Some(custody) = binding
+            .as_ref()
+            .filter(|binding| binding.enrollment.is_none())
+            .and_then(|binding| binding.custody())
+        {
             let custody = resources::terminal(custody.terminated(), identity);
             terminal = Some(match terminal {
                 Some(terminal) => Box::pin(stream::select(terminal, custody)) as Source,

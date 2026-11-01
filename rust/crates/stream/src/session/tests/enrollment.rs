@@ -76,6 +76,38 @@ impl CallProvider for Enrollment {
     }
 }
 
+struct SuspendedIssuance {
+    started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+impl CallProvider for SuspendedIssuance {
+    fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
+        Ok("actors:/selected".into())
+    }
+
+    fn call(
+        &self,
+        _: Bytes,
+        authorization: CallAuthorization,
+    ) -> crate::BoxProviderFuture<'static, Result<CallReply, StreamError>> {
+        let started = self.started.clone();
+        let dropped = self.dropped.clone();
+        Box::pin(async move {
+            struct Held(Arc<AtomicUsize>);
+            impl Drop for Held {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            let _held = Held(dropped);
+            let _original = authorization.contribution()?;
+            started.fetch_add(1, Ordering::SeqCst);
+            future::pending().await
+        })
+    }
+}
+
 fn token(other_principal: bool) -> Bytes {
     acyclic_auth::testing::root(|block| {
         let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
@@ -195,6 +227,130 @@ async fn enroll(session: &mut Session<MemoryStream>) -> TestResult {
             1,
         )
         .unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit() -> TestResult {
+    for dispatch in [false, true] {
+        for omit_terminal in [false, true] {
+            let (mut session, _owner, _) = fixture(false);
+            let started = Arc::new(AtomicUsize::new(0));
+            let dropped = Arc::new(AtomicUsize::new(0));
+            session.calls = Some(Arc::new(SuspendedIssuance {
+                started: started.clone(),
+                dropped: dropped.clone(),
+            }));
+            session.interest(wire::SessionInterest {
+                revision: 2,
+                upsert: vec![request(1, 1)],
+                remove: vec![],
+            })?;
+            assert!(matches!(
+                session.next_frame().await?.unwrap().wire().body,
+                Some(Body::InterestApplied(_))
+            ));
+            assert!(matches!(
+                session.next_frame().await?.unwrap().wire().body,
+                Some(Body::Opened(_))
+            ));
+            if dispatch {
+                session.credit = wire::SessionWindow {
+                    bytes: 100,
+                    frames: 1,
+                };
+                session.channels.get_mut(&1).unwrap().credit = session.credit;
+                session.refresh_source(1);
+                assert!(futures::poll!(session.next_frame()).is_pending());
+            }
+            assert_eq!(started.load(Ordering::SeqCst), usize::from(dispatch));
+            session.credit = Default::default();
+            session.channels.get_mut(&1).unwrap().credit = Default::default();
+            session.refresh_source(1);
+            if omit_terminal {
+                // Negative control: remove only the original caller's wait.
+                session.terminals.remove(1);
+            }
+            // A new, equivalent slot cannot revive the dropped original owner.
+            // Bypass incoming-frame revalidation to isolate that owner's event.
+            session
+                .authority
+                .register(&mut session.slots, 0, &[], session.limits.channels)?;
+            session.authority.register(
+                &mut session.slots,
+                0,
+                &token(false),
+                session.limits.channels,
+            )?;
+            let closed = futures::poll!(session.next_frame());
+            if omit_terminal {
+                assert!(closed.is_pending());
+                assert_eq!(dropped.load(Ordering::SeqCst), 0);
+                assert_eq!(
+                    session.slots.can_reserve(1, session.limits.channels),
+                    Err(StreamError::Conflict)
+                );
+                session.remove(1)?;
+            } else {
+                let std::task::Poll::Ready(closed) = closed else {
+                    panic!("original caller loss must end suspended issuance without credit");
+                };
+                let closed = closed?.ok_or("caller loss ended the physical session")?;
+                assert_eq!(closed.wire().channel_id, 1);
+                assert!(
+                    matches!(&closed.wire().body, Some(Body::Closed(value)) if value.code == "unavailable")
+                );
+                session.slots.can_reserve(1, session.limits.channels)?;
+            }
+            assert_eq!(started.load(Ordering::SeqCst), usize::from(dispatch));
+            assert_eq!(dropped.load(Ordering::SeqCst), usize::from(dispatch));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_loss_discards_ended_reply_without_credit_and_ignores_stale_generation()
+-> TestResult {
+    let (mut session, _owner, _) = fixture(false);
+    enroll(&mut session).await?;
+    session.credit = Default::default();
+    session.channels.get_mut(&1).unwrap().credit = Default::default();
+    let identity = wire::SessionChannel {
+        channel_id: 1,
+        generation: 1,
+    };
+    session.record(
+        identity,
+        Ok(Event::CallChunk {
+            index: 1,
+            total: 8,
+            bytes: Bytes::from_static(b"withheld"),
+            item: Item::ActorCall,
+        }),
+    )?;
+    session.record(identity, Ok(Event::End))?;
+    assert_eq!(session.pending_frames, 1);
+    assert!(session.channels[&1].ending.is_some());
+    session.record(
+        wire::SessionChannel {
+            generation: 0,
+            ..identity
+        },
+        Ok(Event::Terminated(StreamError::Unavailable)),
+    )?;
+    assert_eq!(session.pending_frames, 1);
+    // The finite data source is already gone; its original terminal still owns closure.
+    session.record(identity, Ok(Event::Terminated(StreamError::Unavailable)))?;
+    let closed = session
+        .next_frame()
+        .await?
+        .ok_or("terminal ended the physical session")?;
+    assert!(
+        matches!(&closed.wire().body, Some(Body::Closed(value)) if value.code == "unavailable")
+    );
+    assert_eq!(session.pending_frames, 0);
+    assert_eq!(session.pending_bytes, 0);
     Ok(())
 }
 

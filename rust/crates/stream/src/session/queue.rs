@@ -6,14 +6,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         identity: wire::SessionChannel,
         record: Result<Event, StreamError>,
     ) -> Result<(), StreamError> {
-        if let Some(channel) = self.channels.get(&identity.channel_id)
+        // A terminal owns its typed reason and discards withheld data even
+        // after the finite producer ended. Ordinary authority/data fences must
+        // neither replace that reason nor defer closure until data credit.
+        let terminal = matches!(&record, Ok(Event::Terminated(_)));
+        if !terminal
+            && let Some(channel) = self.channels.get(&identity.channel_id)
             && channel.generation == identity.generation
             && let Err(reason) = self.validate_authority(identity.channel_id)
         {
             return self.close_authority(identity, reason);
         }
         let Some(channel) = self.channels.get(&identity.channel_id).filter(|channel| {
-            channel.generation == identity.generation && channel.ending.is_none()
+            channel.generation == identity.generation && (terminal || channel.ending.is_none())
         }) else {
             return Ok(());
         };
