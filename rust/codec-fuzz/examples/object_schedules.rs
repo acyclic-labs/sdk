@@ -46,6 +46,7 @@ fn replay_inputs(
             DurableFault::Torn(_) => "torn",
             DurableFault::Failed => "failed",
             DurableFault::DiskFull => "disk-full",
+            DurableFault::Interrupted => "interrupted",
         };
         let (stage, outcome) = match &report.terminal {
             Terminal::Mutation(Ok(true)) => ("mutation", "applied"),
