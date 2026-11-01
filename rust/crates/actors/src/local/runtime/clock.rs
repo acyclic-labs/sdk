@@ -1,10 +1,10 @@
 //! The original host scheduling clock and its deadline event.
-use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
+use acyclic_stream::runtime::{Executor as _, PlatformExecutor, SleepError};
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform, UnixMillisClock as _};
 use tokio::sync::watch;
 
 /// Failure of the original scheduling clock or its controller.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum ClockError {
     /// A future deadline cannot be reached after its sole producer is dropped.
     #[error("actor clock producer dropped")]
@@ -12,6 +12,9 @@ pub enum ClockError {
     /// Refused advancement leaves the original time and deadline events intact.
     #[error("actor clock cannot advance backwards")]
     Reversed,
+    /// The original platform timer failed; this is not a manifest timeout.
+    #[error(transparent)]
+    Platform(#[from] SleepError),
 }
 
 /// The host clock. The dispatcher owns the only timer, armed at the earliest
@@ -38,10 +41,7 @@ impl Clock for SystemClock {
         deadline_unix_ms: u64,
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
         let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());
-        Box::pin(async move {
-            platform_sleep(milliseconds).await;
-            Ok(())
-        })
+        sleep(milliseconds)
     }
 }
 
@@ -111,16 +111,12 @@ impl Clock for ControlledClock {
     }
 }
 
-/// A platform sleep of `milliseconds`, in steps the platform timer can express.
-pub(super) fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, ()> {
-    Box::pin(platform_sleep(milliseconds))
-}
-
-async fn platform_sleep(milliseconds: u64) {
-    let mut remaining = milliseconds;
-    while remaining > 0 {
-        let step = u32::try_from(remaining).unwrap_or(u32::MAX);
-        PlatformExecutor.sleep(step).await;
-        remaining -= u64::from(step);
-    }
+/// The original platform deadline, including registration and producer failure.
+pub(super) fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, Result<(), ClockError>> {
+    Box::pin(async move {
+        PlatformExecutor
+            .sleep(milliseconds)
+            .await
+            .map_err(ClockError::from)
+    })
 }
