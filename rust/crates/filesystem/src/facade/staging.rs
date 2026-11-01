@@ -293,13 +293,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 original,
                 cancellation,
             )?;
-            let hashed = crate::async_storage::prepare_object(
-                &self.inner.objects,
-                hashed,
-                accounting,
-                cancellation,
-            )
-            .await?;
+            let hashed =
+                crate::async_storage::prepare_object(&self.inner.objects, hashed, accounting)
+                    .await?;
             let object = hashed.object_id();
             let mut work = authority_work(accounting, cancellation)?;
             self.inner.objects.put_hashed(hashed, &mut work).await?;
@@ -327,13 +323,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
-        let hashed = crate::async_storage::prepare_object(
-            &self.inner.objects,
-            hashed,
-            accounting,
-            cancellation,
-        )
-        .await?;
+        let hashed =
+            crate::async_storage::prepare_object(&self.inner.objects, hashed, accounting).await?;
         let object = hashed.object_id();
         let mut object_work = authority_work(accounting, cancellation)?;
         let result = self

@@ -4,19 +4,12 @@ pub(crate) async fn prepare_object<S: AsyncObjectStore>(
     store: &S,
     object: crate::HashedObject,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    cancellation: &crate::CancellationToken,
 ) -> Result<crate::HashedObject, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        return store
-            .prepare_hashed(object, &mut AuthorityWork::native(original, cancellation))
-            .await
-            .map_err(Into::into);
-    }
-    let mut work = AuthorityWork::new(accounting.remaining()?, cancellation);
-    let result = store.prepare_hashed(object, &mut work).await;
-    crate::kernel::complete_standalone_backend(accounting, work.spent(), 0)?;
-    result.map_err(Into::into)
+    let mut work = AuthorityFrame::borrow(accounting)?;
+    store
+        .prepare_hashed(object, &mut work)
+        .await
+        .map_err(Into::into)
 }
 
 /// The objects one authority record makes reachable, which must be durable,
