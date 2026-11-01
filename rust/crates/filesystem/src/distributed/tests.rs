@@ -120,6 +120,14 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
                     Err(AuthorityError::Owner(AuthorityStoreError::Retired))
                 ));
             }
+            4 => {
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                // Retiring another owner's credit cannot withdraw the original
+                // pending operation or prevent publication after guard release.
+                drop(seed.take());
+                producer.send(()).unwrap();
+                assert!(operation.as_mut().await?);
+            }
             _ => {
                 assert!(futures::poll!(operation.as_mut()).is_pending());
                 drop(seed.take());
@@ -144,7 +152,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         if !native {
             work.release(29)?;
         }
-        if exit != 0 {
+        if !matches!(exit, 0 | 4) {
             let fresh = CancellationToken::new();
             let mut explicit = AuthorityWork::new(BUDGET, &fresh);
             assert!(
@@ -162,7 +170,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         #[cfg(not(target_arch = "wasm32"))]
         true,
     ] {
-        for exit in 0..4 {
+        for exit in 0..5 {
             exercise(crate::memory::MemoryAuthorityStore::default(), native, exit).await?;
             exercise(
                 StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
