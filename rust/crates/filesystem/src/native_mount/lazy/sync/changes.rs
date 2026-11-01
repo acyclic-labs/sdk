@@ -56,7 +56,7 @@ where
         Ok(published)
     }
 
-    async fn publish_checkout<F, Fut, E>(
+    pub(super) async fn publish_checkout<F, Fut, E>(
         &self,
         publication: &mut PublicationState<'_, F>,
         context: NativeSnapshotContext,
