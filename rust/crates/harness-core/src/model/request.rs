@@ -549,26 +549,25 @@ impl PreparedModelRequest {
             io.retain_owned(size_of::<crate::context::ModelTokenCount>() as u64)?;
         }
         let mut message_tokens = Vec::new();
-        let mut fixed_bytes = self.bytes.len();
+        let mut fixed_bytes = self.bytes.len() as u64;
         for message in &self.request.messages {
             charge_items(io, 1)?;
-            #[cfg(feature = "filesystem")]
-            let _hold;
-            let bytes: acyclic_stream::OwnedBytes = match io {
+            let bytes = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => {
-                    let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
-                    _hold = io.guard_bytes(&bytes)?;
-                    bytes
+                    let maximum = io.remaining()?.bytes_encoded;
+                    with_history_io(Some(io), |work| {
+                        crate::executor::json::json_byte_length_at_depth(
+                            message, maximum, 256, work,
+                        )
+                    })?
                 }
-                _ => serde_json::to_vec(message)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .into(),
+                _ => crate::executor::json::json_byte_length(message, u64::MAX, &mut None)?,
             };
             fixed_bytes = fixed_bytes
-                .checked_sub(bytes.len())
+                .checked_sub(bytes)
                 .ok_or_else(|| Error::Invalid("message framing exceeds prepared request".into()))?;
-            let mut tokens = bytes.len() as u64;
+            let mut tokens = bytes;
             for file in message.content.file_refs() {
                 charge_items(io, 1)?;
                 tokens = tokens
