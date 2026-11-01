@@ -33,6 +33,10 @@ impl PausedObjects {
 }
 
 impl AsyncObjectStore for PausedObjects {
+    crate::async_storage::forward_object_store!(self => self.inner;
+        flush_before_publish,
+    );
+
     async fn put_hashed(
         &self,
         object: crate::storage::HashedObject,
