@@ -15,12 +15,19 @@ proptest! {
             "outputs":[{"output_type":"stream","name":"stdout","text":[source]}],
             "execution_count":17, "metadata":{"preserve":source}, "extension":[1,2,3],
         })).collect();
-        let original = json!({"nbformat":4,"nbformat_minor":5,"cells":cells,"metadata":{"keep":true},"extra":"retain"});
+        let (metadata, declared) = match position % 4 {
+            0 => (json!({"keep":true}), None),
+            1 => (json!({"language_info":{"name":sources[0]},"kernelspec":{"language":"other"}}), Some(sources[0].as_str())),
+            2 => (json!({"kernelspec":{"language":sources[0]}}), Some(sources[0].as_str())),
+            _ => (json!({"language_info":{},"kernelspec":{"language":sources[0]}}), Some(sources[0].as_str())),
+        };
+        let original = json!({"nbformat":4,"nbformat_minor":5,"cells":cells,"metadata":metadata,"extra":"retain"});
         let source = serde_json::to_string(&original).unwrap();
         let id = format!("cell-{index}");
         let replace = NotebookEdit::Replace { cell:NotebookCell::Index {index:index as u64, id:Some(id.clone())}, source:new_source.clone(), cell_type:None };
         let (edited, _hold, facts) = edit(&source, &replace, None).unwrap();
         prop_assert_eq!(facts.index, index as u64);
+        prop_assert_eq!(facts.language.as_ref().map(|value| value.as_ref()), declared);
         let prior = facts.prior.as_ref().unwrap();
         prop_assert_eq!(prior.id.as_deref(), Some(id.as_str()));
         prop_assert_eq!(prior.cell_type.as_ref(), "code");
@@ -44,6 +51,7 @@ proptest! {
         let insert = NotebookEdit::Insert { cell:NotebookCell::Index {index:insert_at as u64,id:None},after:false,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
         let (inserted, _insert_hold, facts) = edit(&source, &insert, None).unwrap();
         prop_assert_eq!(facts.index, insert_at as u64);
+        prop_assert_eq!(facts.language.as_ref().map(|value| value.as_ref()), declared);
         prop_assert!(facts.prior.is_none());
         let (removed, _remove_hold, facts) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
         prop_assert_eq!(facts.index, insert_at as u64);
@@ -171,6 +179,81 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     drop(text);
     drop(hold);
     assert_eq!(native.live_allocation_bytes(), baseline);
+
+    // Declared language uses the same decoder and retains escaped strings until
+    // publication facts are released; unrelated metadata stays byte-for-byte.
+    for (metadata, expected, owned) in [
+        ("{}", None, false),
+        (r#"{"kernelspec":{"name":"unrelated"}}"#, None, false),
+        (
+            r#"{"language_info":{"name":"python"},"kernelspec":{"language":"other"}}"#,
+            Some("python"),
+            false,
+        ),
+        (
+            r#"{"language_info":{"name":""},"kernelspec":{"language":"other"}}"#,
+            Some(""),
+            false,
+        ),
+        (
+            r#"{"kernelspec":{"language":"py\u0074hon"}}"#,
+            Some("python"),
+            true,
+        ),
+        (
+            r#"{"language_info":{"name":"py\u0074hon"}}"#,
+            Some("python"),
+            true,
+        ),
+    ] {
+        let source = format!(
+            r#"{{"nbformat":4,"cells":[{{"id":"a","cell_type":"code","source":[]}}],"metadata":{metadata}}}"#
+        );
+        let operation = NotebookEdit::Delete {
+            cell: NotebookCell::Id { id: "a".into() },
+        };
+        let (text, hold, facts) = edit(&source, &operation, Some(&native)).unwrap();
+        assert_eq!(
+            facts.language.as_ref().map(|value| value.as_ref()),
+            expected
+        );
+        if let Some(language) = &facts.language {
+            assert_eq!(matches!(**language, Cow::Owned(_)), owned);
+        }
+        assert!(text.ends_with(&format!(r#""metadata":{metadata}}}"#)));
+        drop(text);
+        drop(hold);
+        if owned {
+            assert!(native.live_allocation_bytes() > baseline);
+        }
+        drop(facts);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+
+    for metadata in [
+        "[]",
+        r#"{"language_info":[]}"#,
+        r#"{"language_info":{"name":17}}"#,
+        r#"{"language_info":{"name":null,"name":"python"}}"#,
+        r#"{"kernelspec":["python"]}"#,
+        r#"{"kernelspec":{"language":true}}"#,
+        r#"{"kernelspec":{"language":"python","language":"other"}}"#,
+        r#"{"language_info":null,"language_info":{"name":"python"}}"#,
+    ] {
+        let source = format!(
+            r#"{{"nbformat":4,"cells":[{{"id":"a","cell_type":"code","source":[]}}],"metadata":{metadata}}}"#
+        );
+        let operation = NotebookEdit::Delete {
+            cell: NotebookCell::Id { id: "a".into() },
+        };
+        assert!(edit(&source, &operation, None).is_err());
+        let error = edit(&source, &operation, Some(&native))
+            .err()
+            .expect("malformed declared language refused");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+        drop(error);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
 
     for (source, kind) in [
         (source, "markdown"),

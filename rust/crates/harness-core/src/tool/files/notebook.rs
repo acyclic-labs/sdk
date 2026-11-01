@@ -69,6 +69,70 @@ struct Notebook<'a> {
     nbformat: u32,
     #[serde(borrow)]
     cells: &'a RawValue,
+    #[serde(borrow)]
+    metadata: Option<&'a RawValue>,
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+struct NotebookMetadata<'a> {
+    #[serde(borrow)]
+    language_info: Option<&'a RawValue>,
+    #[serde(borrow)]
+    kernelspec: Option<&'a RawValue>,
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+struct LanguageInfo<'a> {
+    #[serde(borrow)]
+    name: Option<Cow<'a, str>>,
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+struct KernelSpec<'a> {
+    #[serde(borrow)]
+    language: Option<Cow<'a, str>>,
+}
+
+fn language<'a>(
+    notebook: &Notebook<'a>,
+    work: crate::NativeWork<'_>,
+) -> Result<Option<Decoded<Cow<'a, str>>>> {
+    let Some(raw) = notebook.metadata else {
+        return Ok(None);
+    };
+    let metadata = decode(
+        JsonObject(std::marker::PhantomData::<NotebookMetadata<'a>>),
+        raw.get(),
+        work,
+    )?;
+    // The declared language name takes precedence over the kernel specification.
+    if let Some(raw) = metadata.language_info {
+        let info = decode(
+            JsonObject(std::marker::PhantomData::<LanguageInfo<'a>>),
+            raw.get(),
+            work,
+        )?;
+        if let Some(value) = info.value.name {
+            return Ok(Some(Decoded {
+                value,
+                _hold: info._hold,
+            }));
+        }
+    }
+    if let Some(raw) = metadata.kernelspec {
+        let spec = decode(
+            JsonObject(std::marker::PhantomData::<KernelSpec<'a>>),
+            raw.get(),
+            work,
+        )?;
+        if let Some(value) = spec.value.language {
+            return Ok(Some(Decoded {
+                value,
+                _hold: spec._hold,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Deserialize, crate::HeapLayout)]
@@ -90,6 +154,7 @@ pub(super) struct Cell<'a> {
 pub(super) struct EditFacts<'a> {
     pub(super) index: u64,
     pub(super) prior: Option<Decoded<Cell<'a>>>,
+    pub(super) language: Option<Decoded<Cow<'a, str>>>,
 }
 
 struct EachCell<F>(F);
@@ -565,6 +630,7 @@ pub(super) fn edit<'a>(
             });
         }
     }
+    let language = language(&notebook, work)?;
     substitutions.sort_unstable_by_key(|entry| entry.map_or(usize::MAX, |entry| entry.0));
     let extra = substitutions
         .iter()
@@ -604,5 +670,13 @@ pub(super) fn edit<'a>(
             .get(cursor..)
             .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?,
     );
-    Ok((text, hold, EditFacts { index, prior }))
+    Ok((
+        text,
+        hold,
+        EditFacts {
+            index,
+            prior,
+            language,
+        },
+    ))
 }
