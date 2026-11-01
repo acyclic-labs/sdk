@@ -20,6 +20,11 @@ pub const MAX_INTENT_BYTES: usize = 128;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 /// Most volumes bound to one agent.
 pub const MAX_VOLUMES: usize = 8;
+/// Largest JSON encoding of a waking notice. Its turn input is retained whole
+/// by the conversation entry that settles it, so admission reserves the rest
+/// of [`MAX_RECORD_BYTES`] for that entry's widest other fields; `checkpoint`'s
+/// bound test builds the widest such entry.
+pub const MAX_WAKING_NOTICE_BYTES: usize = 24 * 1024;
 /// Format version of every persisted agent record and saved turn effect,
 /// carried by their one shared header. Any change to a persisted shape bumps
 /// it, and readers refuse every other version whole: there is no migration
@@ -595,9 +600,17 @@ impl AgentRecord for InboxRecord {
                 Ok(())
             }
             Self::ChildDone(done) => check_outcome(&done.outcome),
-            Self::Notice { notice, .. } => notice
-                .validate()
-                .map_err(|_| Error::Record("invalid primitive event notice")),
+            Self::Notice { notice, .. } => {
+                notice
+                    .validate()
+                    .map_err(|_| Error::Record("invalid primitive event notice"))?;
+                if notice.wake && json_len(notice)? > MAX_WAKING_NOTICE_BYTES {
+                    return Err(Error::Record(
+                        "waking notice exceeds MAX_WAKING_NOTICE_BYTES",
+                    ));
+                }
+                Ok(())
+            }
             Self::Message(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
             | Self::Archive(Control { by: from, .. })
@@ -610,6 +623,23 @@ impl AgentRecord for InboxRecord {
             | Self::ChildSettled(_) => Ok(()),
         }
     }
+}
+
+/// The JSON width of `value`, counted without buffering its encoding.
+fn json_len(value: &impl Serialize) -> Result<usize, Error> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).map_err(|_| Error::Record("record is malformed"))?;
+    Ok(count.0)
 }
 
 fn check_sender(sender: &Sender) -> Result<(), Error> {
