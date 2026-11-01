@@ -35,9 +35,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .and_then(|checkout| {
-                Generation::observed(self, checkout.generation_id(), &mut accounting)
-            });
+            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
         work.finish(result, &accounting)
     }
 
@@ -57,9 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .and_then(|checkout| {
-                Generation::observed(self, checkout.generation_id(), &mut accounting)
-            });
+            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
         work.finish(result, &accounting)
     }
 

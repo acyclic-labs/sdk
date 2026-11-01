@@ -93,7 +93,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume: &Volume<A, O>,
         generation: GenerationId,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<Option<GenerationClosure<A, O>>, FsError> {
+    ) -> Result<Option<crate::kernel::closure::PublishedProof>, FsError> {
         let epochs = self
             .inner
             .objects
@@ -111,7 +111,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 epochs,
                 accounting,
             )
-            .map(|published| published.map(GenerationClosure::Published))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

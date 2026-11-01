@@ -2,6 +2,81 @@ use super::*;
 
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observed_generations_keep_the_original_hold_until_the_last_alias()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_objects::Blobs as _;
+    for exact in [false, true] {
+        for native in [false, true] {
+            for forget in [false, true] {
+                let directory = tempfile::tempdir()?;
+                let cancel = CancellationToken::new();
+                let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+                let workspace = unbounded!(fs, create_workspace("observed-hold"))?;
+                workspace
+                    .write_text("/content", &"held".repeat(1_250))
+                    .await?;
+                let id = unbounded!(workspace, head())?.id();
+                let original = native
+                    .then(|| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel))
+                    .transpose()
+                    .map_err(|(error, _)| error)?;
+                let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+                let observed = match (&original, exact) {
+                    (Some(work), false) => workspace.head(work, &cancel).await?,
+                    (Some(work), true) => workspace.generation(id, work, &cancel).await?,
+                    (None, false) => unbounded!(workspace, head())?,
+                    (None, true) => unbounded!(workspace, generation(id))?,
+                };
+                let alias = observed.clone();
+                let mut last = alias.clone();
+                drop((observed, alias));
+                if forget {
+                    // Negative control: the original return dropped this hold.
+                    last.publication_closure = None;
+                }
+                assert_eq!(
+                    workspace.delete(IdempotencyKey::new()).await?,
+                    WorkspaceDelete::Deleted
+                );
+                let account = fs.local_account();
+                let digest = acyclic_objects::Digest::from_bytes(id.digest().into_bytes());
+                // Both epoch transitions must see the same surviving root.
+                for _ in 0..2 {
+                    fs.collect_local_pass(None, true, &cancel).await?;
+                }
+                account_collections(&fs).await?;
+                let found = account
+                    .get(digest, acyclic_objects::ByteRange::FULL, u64::MAX)
+                    .await;
+                if forget {
+                    assert_eq!(
+                        found.unwrap_err().code,
+                        acyclic_objects::wire::ErrorCode::NotFound
+                    );
+                } else {
+                    assert!(!found?.body().is_empty());
+                }
+                drop(last);
+                fs.collect_local_garbage(None, &cancel).await?;
+                assert_eq!(
+                    account.head(digest).await.unwrap_err().code,
+                    acyclic_objects::wire::ErrorCode::NotFound,
+                    "the final alias must release the original root"
+                );
+                drop((account, workspace));
+                close_local(fs).await?;
+                if let Some(work) = &original {
+                    work.receipt().verify(WorkBudget::UNBOUNDED)?;
+                    assert_eq!(Some(work.live_allocation_bytes()), baseline);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path();

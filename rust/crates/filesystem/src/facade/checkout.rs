@@ -102,6 +102,27 @@ pub struct Checkout<A: 'static, O: 'static> {
     pub(super) mode: CheckoutMode,
 }
 
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    /// Transfers the original registration instead of closing it at observation.
+    pub(crate) fn into_generation_closure(
+        mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<GenerationClosure<A, O>>, FsError> {
+        let published = self.volume.fs.observed_generation_closure(
+            &self.volume,
+            self.generation_id(),
+            accounting,
+        )?;
+        match self.root.hold.take() {
+            Some(hold) => Ok(Some(GenerationClosure::Observed {
+                published,
+                hold: crate::kernel::allocation::retained::RetainedArc::new(hold, accounting)?,
+            })),
+            None => Ok(published.map(GenerationClosure::Published)),
+        }
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     /// Opens one authenticated checkout under the supplied work limits.
     pub async fn checkout<W: FsWork>(
