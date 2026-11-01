@@ -263,8 +263,28 @@ test("transcript admission refuses before the executable starts", async t => {
         error => error instanceof SpoolEnded && error.kind === "spool" && /ENOENT|EEXIST/.test(error.detail.code));
       assert.equal(processes.started, 0);
       assert.equal(processes.children.size, 0);
+      if (transcripts.endsWith("missing")) mkdirSync(transcripts);
+      const recovered = await processes.run(process.execPath, ["-e", "process.stdout.write('recovered')"]);
+      assert.equal(recovered.code, 0);
+      assert.equal(recovered.stdout, "recovered");
+      assert.equal(processes.started, 1);
     } finally { await processes.close(); }
   });
+});
+
+test("a synchronous launch refusal preserves transcripts and allows a corrected launch", async () => {
+  const processes = new Processes();
+  try {
+    assert.throws(() => processes.start(process.execPath, ["\0"]), { code: "ERR_INVALID_ARG_VALUE" });
+    assert.equal(processes.started, 0);
+    assert.equal(processes.children.size, 0);
+    const recovered = await processes.run(process.execPath, ["-e", "process.stdout.write('recovered')"]);
+    assert.equal(recovered.code, 0);
+    assert.equal(recovered.stdout, "recovered");
+    assert.equal(readFileSync(join(processes.transcripts, "0.stdout"), "utf8"), "");
+    assert.equal(readFileSync(join(processes.transcripts, "0.stderr"), "utf8"), "");
+    assert.equal(processes.started, 1);
+  } finally { await processes.close(); }
 });
 
 test("a slow transcript holds the source back, so queued bytes stay bounded by a chunk", async () => {

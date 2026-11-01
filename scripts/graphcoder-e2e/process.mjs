@@ -29,6 +29,7 @@ export class Processes {
   children = new Map();
   stopping = false;
   started = 0;
+  #nextOrdinal = 0;
   #transcripts;
   #closing;
   #onReport;
@@ -75,7 +76,7 @@ export class Processes {
     if (report) Object.assign(env, endpoint?.environment ?? { ACYCLIC_REPORT_FD: "3" }, {
       ACYCLIC_REPORT_GENERATION: report.generation, ACYCLIC_REPORT_REQUEST_ID: report.requestId,
     });
-    const index = this.started, origin = this.#onProgress ? performance.now() : undefined;
+    const index = this.#nextOrdinal++, origin = this.#onProgress ? performance.now() : undefined;
     let progressFailure;
     const observe = this.#onProgress ? (phase, detail) => {
       const event = { schema: "acyclic.process-progress.v1", ordinal: index, operation: scopeOperation ?? null,
