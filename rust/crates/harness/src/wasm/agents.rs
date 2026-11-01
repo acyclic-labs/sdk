@@ -356,6 +356,7 @@ impl WasmAgents {
     /// Observes the original background runtime's terminal, including an abort
     /// when this host is freed. Active and late observers retain the same cause.
     /// Event-owned hosts have no background runtime and refuse this observation.
+    #[wasm_bindgen(unchecked_return_type = "Promise<never>")]
     pub fn completion(&self) -> std::result::Result<js_sys::Promise, JsValue> {
         let terminal = self
             .run
