@@ -223,17 +223,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     pub(super) async fn resolve_head_generation(
         &self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(ObjectId, Head), FsError> {
         let authority_id = volume_authority_id(self.id);
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .fs
             .inner
             .authority
             .head_payload(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
             .await;
-        record_authority_work(accounting, &authority)?;
+        finish_authority_work(authority)?;
         // Introduce the payload after its funding, so every exit drops the
         // payload first, including decoding failures and unwinding.
         let (value, _allocation) = result?;

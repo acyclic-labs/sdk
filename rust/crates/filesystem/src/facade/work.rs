@@ -107,13 +107,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> W::Output<(), FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let result = self
                 .inner
                 .authority
                 .durability_barrier(&mut authority)
                 .await;
-            record_authority_work(&mut accounting, &authority)?;
+            finish_authority_work(authority)?;
             result.map_err(FsError::from)
         }
         .await;
@@ -166,32 +166,13 @@ pub(crate) fn measured<T, E>(
         .map_err(|error| OperationFailure::new(error, work))
 }
 
-pub(super) fn authority_work<'a>(
-    accounting: &KernelAccounting<'a>,
-    cancellation: &'a CancellationToken,
-) -> Result<crate::AuthorityWork<'a>, FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        return Ok(crate::AuthorityWork::native(original, cancellation));
-    }
-    Ok(crate::AuthorityWork::new(
-        accounting.remaining()?,
-        cancellation,
-    ))
-}
-
-pub(super) fn record_authority_work(
-    accounting: &mut KernelAccounting<'_>,
-    authority: &crate::AuthorityWork<'_>,
+pub(super) fn finish_authority_work(
+    authority: crate::async_storage::AuthorityFrame<'_>,
 ) -> Result<(), FsError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
+    if authority.original.is_some() {
         return Ok(());
     }
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(FsError::HandleAllocationFailed)?;
-    *work = work.with_backend(authority.spent(), allocations.live_bytes())?;
-    work.verify(budget)?;
+    authority.spent().verify(authority.budget)?;
     Ok(())
 }

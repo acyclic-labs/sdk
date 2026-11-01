@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         generation: GenerationId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(Sequence, Sequence), FsError> {
         accounting.check()?;
         let head = self
@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.observed_generation.position(generation) == Some(Sequence::new(1)) {
             return Ok((Sequence::new(1), head));
         }
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .volume
             .fs
@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &mut authority,
             )
             .await;
-        record_authority_work(accounting, &authority)?;
+        finish_authority_work(authority)?;
         let position = result?.ok_or(FsError::NotFound)?;
         if position == Sequence::GENESIS || position > head {
             return Err(FsError::InvalidAuthorityHistory);

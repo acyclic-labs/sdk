@@ -36,16 +36,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         scope: crate::PublicationScope<'_>,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
         accounting.check()?;
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .objects
             .flush_before_publish(scope, &mut work)
             .await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         result.map_err(FsError::from)
     }
     pub(crate) async fn make_records_durable<W: FsWork>(
@@ -297,7 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::async_storage::prepare_object(&self.inner.objects, hashed, accounting)
                     .await?;
             let object = hashed.object_id();
-            let mut work = authority_work(accounting, _cancellation)?;
+            let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
             self.inner.objects.put_hashed(hashed, &mut work).await?;
             return Ok(object);
         }
