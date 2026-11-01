@@ -36,6 +36,7 @@ impl TurnExecutors for Never {
 #[derive(Default)]
 struct Owner {
     denied: AtomicBool,
+    revoke_read: AtomicBool,
     childless: AtomicBool,
     diff: std::sync::Mutex<Option<DiffPause>>,
 }
@@ -49,9 +50,14 @@ impl Platform for Owner {
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
-        _: &'a AgentCommand,
+        command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         let denied = self.denied.load(Ordering::SeqCst);
+        if matches!(command, AgentCommand::Read { .. })
+            && self.revoke_read.swap(false, Ordering::SeqCst)
+        {
+            self.denied.store(true, Ordering::SeqCst);
+        }
         Box::pin(async move {
             Ok(if denied {
                 PolicyDecision::Deny
@@ -225,9 +231,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
         &mut None,
     )?;
+    let owner = Arc::new(Owner::default());
     let Serving::Served(server) = serve(
         bound,
-        Arc::new(Owner::default()),
+        owner.clone(),
         &IntentId::try_from("output-root")?,
         RootRequest {
             agent,
@@ -381,6 +388,33 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         }
     }
     let client = connect(Some(Arc::new(bound.changes()?)))?;
+    for target in [
+        ReadTarget::File { file: file.clone() },
+        ReadTarget::ToolOutput {
+            path: path.into(),
+            at: None,
+        },
+    ] {
+        // Admission allowed this real immutable read, then the owner revoked
+        // it. The shared post-I/O fence must refuse even a successful source.
+        owner.revoke_read.store(true, Ordering::SeqCst);
+        let refused = call(
+            &client,
+            "agents",
+            &AgentCommand::Read {
+                agent: root.clone(),
+                target,
+                offset: 0,
+            },
+        )
+        .await
+        .expect_err("content disclosed after owner revocation");
+        assert!(matches!(
+            refused.downcast_ref::<StreamError>(),
+            Some(StreamError::AccessDenied)
+        ));
+        owner.denied.store(false, Ordering::SeqCst);
+    }
     publisher
         .stage_once(
             OperationId::from_bytes([5; 16]),
@@ -521,12 +555,52 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         futures::poll!(&mut live_usage).is_pending(),
         "adoption is committed but its original actor has not consumed the input"
     );
+    let events = AgentCommand::Events {
+        agent: root.clone(),
+        input: 0,
+        after: 0,
+        wait: true,
+    };
+    let mut live_events = std::pin::pin!(call(&client, "agents", &events));
+    let mut revoked_events = std::pin::pin!(call(&client, "agents", &events));
+    assert!(futures::poll!(&mut live_events).is_pending());
+    assert!(futures::poll!(&mut revoked_events).is_pending());
     assert!(server.bound().agents().runtime().drain().await.is_empty());
     assert!(
         matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true })
         if page.end == 0 && page.items.is_empty()),
         "a consumed input with no model call must finish its original quiet query"
     );
+    assert!(matches!(
+        live_events.await?,
+        Ok(AgentReply::Events { input: 0, page: Some(page), settled: true, .. })
+            if page.operation.is_none() && page.end == 0 && page.items.is_empty()
+    ));
+    // Both queries were admitted before the same actor publication. Current
+    // authority still fences disclosure when the second waiter resumes.
+    owner.denied.store(true, Ordering::SeqCst);
+    let refused = revoked_events
+        .await
+        .expect_err("events disclosed after revocation");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
+    owner.denied.store(false, Ordering::SeqCst);
+    // A journal position is scoped to an original turn. Neither an adopted
+    // control-only input nor the not-yet-created next input can own it.
+    for input in [0, 1] {
+        assert!(matches!(
+            call(&client, "agents", &AgentCommand::Events {
+                agent: root.clone(),
+                input,
+                after: 1,
+                wait: false,
+            }).await?,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == "invalid_agent_record" && reason.contains("journal cursor")
+        ));
+    }
     let usage = AgentCommand::Usage {
         agent: root.clone(),
         input: 1,
@@ -749,6 +823,13 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         ),
         "a closed input producer cannot leave the live query pending"
     );
+    assert!(matches!(
+        call(&client, "agents", &AgentCommand::Events {
+            agent: root.clone(), input: end, after: 0, wait: true,
+        }).await?,
+        Err(AgentControlFailure::Refused { code, reason })
+            if code == "invalid_agent_record" && reason.contains("usage input source is closed")
+    ));
     owner.denied.store(true, Ordering::SeqCst);
     assert!(
         call(&client, "agents", &AgentCommand::Root {})

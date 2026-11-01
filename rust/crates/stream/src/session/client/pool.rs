@@ -505,7 +505,14 @@ impl Pool {
             }
             route.received = after.next;
         }
-        if route.raw || mark.after.is_some() {
+        if route.raw || mark.after.is_some() || mark.opening_tail.is_some() {
+            if let Some(wire::SessionFrame {
+                body: Some(Body::Watermark(previous)),
+                ..
+            }) = &route.watermark
+            {
+                mark.opening_tail = previous.opening_tail.or(mark.opening_tail);
+            }
             // A durability-only update cannot erase an unconsumed
             // skipped-prefix cut. Both describe the same channel order.
             if mark.after.is_none()

@@ -2,6 +2,7 @@
 pub(crate) struct HistoryCursor {
     records: crate::pages::PinnedCursor<PinnedHistory>,
     awaiting_creation: bool,
+    opening_tail: Option<u64>,
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
 impl HistoryCursor {
@@ -35,6 +36,7 @@ impl HistoryCursor {
             };
             let mut cursor = Self::prepare(path, self.position(), anchor).await?;
             cursor.registration = self.registration.take();
+            cursor.opening_tail = self.opening_tail.take();
             *self = cursor;
         }
         Ok(true)
@@ -105,6 +107,7 @@ impl HistoryCursor {
         Self {
             records: Self::pinned(PinnedHistory::empty(next), next),
             awaiting_creation: false,
+            opening_tail: None,
             registration: None,
         }
     }
@@ -120,6 +123,7 @@ impl HistoryCursor {
         Self {
             records,
             awaiting_creation: false,
+            opening_tail: None,
             registration: None,
         }
     }

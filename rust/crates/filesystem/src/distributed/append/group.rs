@@ -81,6 +81,56 @@ pub(in crate::distributed) fn group_first<'a>(
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+    pub(in crate::distributed) async fn prepare_contribution(
+        &self,
+        append: &crate::GuardedAppend,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<
+        Option<(
+            crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
+            crate::distributed::actor::Revision,
+            crate::distributed::actor::PreparedProjection,
+            CommitRequest,
+        )>,
+        AuthorityStoreError,
+    > {
+        let actor = self.actor(append.authority_id, work)?;
+        let mut journal = actor.lease(work).await?;
+        let projection = self
+            .activate(
+                append.authority_id,
+                append.commit.publication.as_ref().map(|seal| seal.volume()),
+                &mut journal,
+                work,
+            )
+            .await?;
+        let revision = actor.begin_publication(journal)?;
+        let prepared = self
+            .prepare_group(
+                std::slice::from_ref(append),
+                work,
+                None::<&mut ()>,
+                Some(&projection),
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))?;
+        let mut prepared = match prepared {
+            GroupPreparation::Ready(prepared) => prepared,
+            GroupPreparation::Rejected {
+                outcome: FsAppendOutcome::Conflict { .. },
+                ..
+            } => return Ok(None),
+            GroupPreparation::Rejected { .. } => {
+                return Err(AuthorityStoreError::RejectedStatic(
+                    "composed publication authorization or operation identity changed",
+                ));
+            }
+        };
+        let next = prepared.project(&self.placement, projection, work)?;
+        prepared.transaction.deadline_unix_millis = prepared.deadline;
+        Ok(Some((actor, revision, next, prepared.transaction)))
+    }
+
     /// Appends a precomposed serial history in one atomic Streams transaction.
     /// Every request must name the same authority and epoch; each expected head
     /// must be exactly its predecessor's authenticated durable head. This API

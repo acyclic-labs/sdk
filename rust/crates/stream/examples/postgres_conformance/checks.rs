@@ -142,6 +142,12 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 at_least: Default::default(),
             })
             .await?;
+        if progress {
+            assert!(matches!(
+                subscription.next().await.transpose()?,
+                Some(FollowUpdate::Opening { tail: 1 })
+            ));
+        }
         drop(provider);
         // A distinct provider must wake this subscription through LISTEN after
         // its creator's last handle is gone, including after a previous yield.
@@ -197,6 +203,10 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             at_least: Default::default(),
         })
         .await?;
+    assert!(matches!(
+        updates.next().await.ok_or("missing opening cut")??,
+        FollowUpdate::Opening { .. }
+    ));
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);
     let killed = client

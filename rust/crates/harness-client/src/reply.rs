@@ -79,6 +79,20 @@ pub enum AgentReply {
         items: Vec<ChildAgent>,
         next: Option<String>,
     },
+    /// Authorized project roots observed for an exact-head restore request.
+    ProjectHeads {
+        /// Current roots, never substituted from a saved history descriptor.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        items: Vec<acyclic_harness_core::agent::HistoryVolume>,
+    },
+    /// One page of immutable turn summaries at a fixed exclusive cut.
+    History {
+        /// Consecutive saved turns, newest first. Roots remain at the source.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        items: Vec<acyclic_harness_core::agent::HistorySummary>,
+        /// Opaque exclusive continuation, or the end of this fixed cut.
+        next: Option<String>,
+    },
     /// A single authorized pending-approval page.
     Approvals {
         items: Vec<PendingApproval>,
@@ -95,6 +109,18 @@ pub enum AgentReply {
         /// The original actor checkpoint consumed this input and retains no
         /// paused, queued or overflowed work at or before it. A short page or
         /// status cursor alone does not establish this fence.
+        settled: bool,
+    },
+    /// Original observations, without a second stream or reconstructed transcript.
+    Events {
+        /// Exact original inbox sequence, at or after this agent's fork cut.
+        input: u64,
+        /// Original inbox tail observed on query admission, without another read.
+        /// A finite export freezes this cut; later inputs cannot extend it.
+        inbox_tail: u64,
+        /// One bounded source page. None marks the current committed inbox tail.
+        page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
+        /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
     },
     /// How far an agent has settled.
@@ -330,7 +356,7 @@ fn validate_reply(
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
         (AgentReply::Root { .. }, AgentCommand::Root {})
-        | (AgentReply::Bound { .. }, AgentCommand::Bind {})
+        | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
         | (AgentReply::Staged {}, AgentCommand::Stage { .. })
         | (
@@ -340,6 +366,7 @@ fn validate_reply(
             | AgentCommand::Decide { .. }
             | AgentCommand::Compact { .. }
             | AgentCommand::Rewind { .. }
+            | AgentCommand::Restore { .. }
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
         (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
@@ -385,11 +412,12 @@ fn validate_reply(
             },
             AgentCommand::Usage {
                 input: requested,
+                after,
                 wait,
                 ..
             },
         ) => {
-            return if input >= requested && !wait && !settled {
+            return if input >= requested && *after == 0 && !wait && !settled {
                 Ok(())
             } else {
                 Err(CommandError::Invalid)
@@ -409,6 +437,7 @@ fn validate_reply(
             },
         ) => {
             return if input >= requested
+                && (input == requested || *after == 0)
                 && (!wait || *settled || page.end > *after)
                 && page.items.len() <= 32
                 && page.end.checked_sub(*after).is_some_and(|visited| {
@@ -426,7 +455,69 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
-        (AgentReply::Spawned { agent, .. }, AgentCommand::Spawn { parent, .. }) => {
+        (
+            AgentReply::Events {
+                page: None,
+                input,
+                inbox_tail,
+                settled,
+            },
+            AgentCommand::Events {
+                input: requested,
+                after,
+                wait,
+                ..
+            },
+        ) => {
+            return if input >= requested && input == inbox_tail && *after == 0 && !wait && !settled
+            {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Events {
+                page: Some(page),
+                input,
+                settled,
+                inbox_tail,
+            },
+            AgentCommand::Events {
+                after,
+                input: requested,
+                wait,
+                ..
+            },
+        ) => {
+            use acyclic_harness_core::executor::EXECUTION_EVENT_PAGE_RECORDS;
+            let count = page.items.len() as u64;
+            return if input >= requested
+                && (input == requested || *after == 0)
+                && input < inbox_tail
+                && (!wait || *settled || page.end > *after)
+                && count <= u64::from(EXECUTION_EVENT_PAGE_RECORDS)
+                && after.checked_add(count) == Some(page.end)
+                && page.next.is_none_or(|next| {
+                    next == page.end && count == u64::from(EXECUTION_EVENT_PAGE_RECORDS)
+                })
+                && (page.operation.is_some() || (*after == 0 && page.items.is_empty()))
+                && page.items.iter().enumerate().all(|(index, record)| {
+                    Some(record.operation_id) == page.operation
+                        && after
+                            .checked_add(index as u64)
+                            .and_then(|n| n.checked_add(1))
+                            == Some(record.sequence)
+                }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (
+            AgentReply::Spawned { agent, .. },
+            AgentCommand::Spawn { parent, .. } | AgentCommand::Fork { parent, .. },
+        ) => {
             return if agent.parent().as_ref() == Some(parent) {
                 Ok(())
             } else {
@@ -441,6 +532,33 @@ fn validate_reply(
             if items.iter().any(|item| {
                 item.agent.parent().as_ref() != Some(agent) || !seen.insert(&item.agent)
             }) {
+                return Err(CommandError::Invalid);
+            }
+            (items.len(), next, page)
+        }
+        (AgentReply::ProjectHeads { items }, AgentCommand::ProjectHeads { .. }) => {
+            let mut seen = std::collections::BTreeSet::new();
+            return if items.iter().all(|item| {
+                item.binding.volume.class()
+                    == acyclic_harness_core::conversation::VolumeClass::Project
+                    && seen.insert(&item.binding.name)
+            }) {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
+        (AgentReply::History { items, next }, AgentCommand::History { page, .. }) => {
+            if items
+                .windows(2)
+                .any(|pair| pair[1].conversation.checked_add(1) != Some(pair[0].conversation))
+            {
+                return Err(CommandError::Invalid);
+            }
+            if items
+                .iter()
+                .any(|item| item.conversation == 0 || item.context_tail > item.conversation)
+            {
                 return Err(CommandError::Invalid);
             }
             (items.len(), next, page)
@@ -774,6 +892,125 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn event_reply_fences_original_sequences_and_quiet_frontiers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::{
+            OperationId,
+            executor::{ExecutionEvent, ExecutionEventPage, ExecutionRecord},
+        };
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
+        let operation = OperationId::from_bytes([2; 16]);
+        for after in [0, u64::MAX - 8, u64::MAX] {
+            for count in [0, 1, 7, 8] {
+                let Some(end) = after.checked_add(count) else {
+                    continue;
+                };
+                let command = AgentCommand::Events {
+                    agent: agent.clone(),
+                    input: 3,
+                    after,
+                    wait: false,
+                };
+                let reply = AgentReply::Events {
+                    inbox_tail: 4,
+                    input: 3,
+                    settled: false,
+                    page: Some(ExecutionEventPage {
+                        operation: Some(operation),
+                        end,
+                        next: (count == 8).then_some(end),
+                        items: (0..count)
+                            .map(|index| ExecutionRecord {
+                                operation_id: operation,
+                                sequence: after + index + 1,
+                                idempotency_key: index.to_string(),
+                                event: ExecutionEvent::Started {
+                                    request_digest: [3; 32],
+                                },
+                            })
+                            .collect(),
+                    }),
+                };
+                let bytes = encode_agent_reply(&Ok(reply), &command)?;
+                let live = AgentCommand::Events {
+                    agent: agent.clone(),
+                    input: 3,
+                    after,
+                    wait: true,
+                };
+                assert_eq!(decode_agent_reply(&bytes, &live).is_ok(), count > 0);
+                let envelope = Envelope::decode(bytes.as_slice())?;
+                let Some(envelope::Value::Reply(body)) = &envelope.value else {
+                    return Err("event envelope lost its reply".into());
+                };
+                let original: serde_json::Value = serde_json::from_slice(body)?;
+                // Mutations of our own wire format, never provider fixtures.
+                let mut mutations = Vec::new();
+                let mut changed = original.clone();
+                changed["page"]["end"] = end.wrapping_add(1).into();
+                mutations.push(changed);
+                if after != 0 {
+                    // Crossing adoption must never apply an earlier turn's
+                    // source offset to the new agent's first journal.
+                    let mut changed = original.clone();
+                    changed["input"] = 4.into();
+                    changed["inbox_tail"] = 5.into();
+                    mutations.push(changed);
+                    if count == 0 {
+                        let mut changed = original.clone();
+                        changed["page"]["operation"] = serde_json::Value::Null;
+                        mutations.push(changed);
+                    }
+                }
+                if count > 0 {
+                    for field in ["sequence", "operation_id"] {
+                        let mut changed = original.clone();
+                        changed["page"]["items"][0][field] = if field == "sequence" {
+                            after.into()
+                        } else {
+                            serde_json::to_value(OperationId::from_bytes([4; 16]))?
+                        };
+                        mutations.push(changed);
+                    }
+                    let mut changed = original.clone();
+                    changed["page"]["operation"] = serde_json::Value::Null;
+                    mutations.push(changed);
+                }
+                for changed in mutations {
+                    let mut envelope = Envelope::decode(bytes.as_slice())?;
+                    let Some(envelope::Value::Reply(body)) = &mut envelope.value else {
+                        return Err("event envelope lost its reply".into());
+                    };
+                    *body = serde_json::to_vec(&changed)?;
+                    assert!(matches!(
+                        decode_agent_reply(&envelope.encode_to_vec(), &command),
+                        Err(CommandError::Invalid)
+                    ));
+                }
+            }
+        }
+        let command = AgentCommand::Events {
+            agent,
+            input: 3,
+            after: 1,
+            wait: false,
+        };
+        assert!(
+            encode_agent_reply(
+                &Ok(AgentReply::Events {
+                    input: 3,
+                    inbox_tail: 3,
+                    page: None,
+                    settled: false,
+                }),
+                &command
+            )
+            .is_err()
+        );
         Ok(())
     }
 

@@ -51,6 +51,10 @@ pub enum Error {
     /// Another owner or transition changed the exact durable cut.
     #[error("actor epoch or checkpoint changed")]
     Conflict,
+    /// A composed external guard changed. Recompute the original delivery;
+    /// its handler must observe the changed guard or settle its refusal.
+    #[error("composed transaction precondition changed")]
+    PreconditionChanged,
     /// The actor is paused; queued work remains unconsumed.
     #[error("actor is paused")]
     Paused,
@@ -79,6 +83,7 @@ impl Error {
             Self::Unknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
+            Self::PreconditionChanged => "precondition_changed",
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
@@ -925,7 +930,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         // validation may reorder equivalent fork exclusions.
                         acyclic_stream::request::validate_commit(&mut prepared.request)?;
                         let original = &prepared.request;
-                        let request = composition.seal(original.clone()).await?;
+                        let request = composition.seal(original.clone()).await.map_err(
+                            |error| match error {
+                                GuestError::PreconditionChanged => Error::PreconditionChanged,
+                                error => Error::Handler(error),
+                            },
+                        )?;
                         if !original
                     .conditions
                     .iter()
@@ -997,10 +1007,27 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
                     Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
                 };
+                let revalidate = match (&outcome, &prepared.composition) {
+                    (Ok(CommitOutcome::Conflict(conflicts)), Some(composition)) => {
+                        conflicts.iter().all(|conflict| {
+                            let path = match conflict {
+                                acyclic_stream::CommitConflict::Missing { path }
+                                | acyclic_stream::CommitConflict::Head { path, .. }
+                                | acyclic_stream::CommitConflict::Tail { path, .. }
+                                | acyclic_stream::CommitConflict::Exists { path } => path,
+                            };
+                            prepared.own.as_ref() != Some(path)
+                        }) && composition.revalidate(conflicts)
+                    }
+                    _ => false,
+                };
                 if let Some(composition) = prepared.composition {
                     if let Err(source) = composition.settle(outcome.as_ref()).await {
                         return Err(Error::Settlement { outcome, source });
                     }
+                }
+                if revalidate {
+                    return Err(Error::PreconditionChanged);
                 }
                 PreparedPublish::settle(&outcome?)?;
                 retained

@@ -42,6 +42,8 @@ mod agent_goal;
 pub use agent_goal::GOAL_VOLUME;
 mod agent_internal;
 pub mod attestation;
+mod history;
+pub use history::read as history_checkpoint;
 pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};

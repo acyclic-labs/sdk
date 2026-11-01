@@ -249,8 +249,24 @@ impl AgentControls {
         client: Client,
         credential: u32,
     ) -> Result<(Self, String), AgentExchangeError> {
+        Self::discover_selected(client, credential, None).await
+    }
+
+    /// Select a descendant without creating another session or credential slot.
+    pub async fn select(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+    ) -> Result<(Self, String), AgentExchangeError> {
+        Self::discover_selected(self.client.clone(), self.credential, Some(agent)).await
+    }
+
+    async fn discover_selected(
+        client: Client,
+        credential: u32,
+        agent: Option<acyclic_harness_core::agent::AgentPath>,
+    ) -> Result<(Self, String), AgentExchangeError> {
         let discovery = Self::new(client.clone(), credential, AgentBinding::discovery());
-        let invocation = discovery.prepare(PreparedCommand::new(&AgentCommand::Bind {})?)?;
+        let invocation = discovery.prepare(PreparedCommand::new(&AgentCommand::Bind { agent })?)?;
         let (binding, tools) = AgentBinding::from_reply(&discovery.execute(&invocation).await?)?;
         Ok((Self::new(client, credential, binding), tools))
     }
@@ -276,6 +292,20 @@ impl AgentControls {
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
         crate::AgentClient::new(
+            self.client.clone(),
+            selection.agent,
+            selection.conversation_from,
+            selection.status_from,
+            self.credential,
+        )
+    }
+
+    /// Replay all committed transitions through the ordinary session owner.
+    pub fn observe_all(
+        &self,
+        selection: crate::AgentSelection,
+    ) -> Result<crate::AgentClient, crate::AgentClientError> {
+        crate::AgentClient::all(
             self.client.clone(),
             selection.agent,
             selection.conversation_from,

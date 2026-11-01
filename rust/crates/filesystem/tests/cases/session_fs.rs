@@ -270,6 +270,7 @@ impl Connection {
                     }),
                     kind: Some(wire::session_subscription::Kind::Follow(
                         wire::SessionFollow {
+                            opening_cut: false,
                             key: None,
                             read_limit: 0,
                             bootstrap_head: false,

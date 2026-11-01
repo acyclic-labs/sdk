@@ -125,7 +125,12 @@ pub enum AgentCommand {
     // Empty struct variants enforce deny_unknown_fields for fieldless commands too.
     /// Discover the binding of the tree this endpoint serves the session's
     /// credential, sent with [`crate::AgentBinding::discovery`].
-    Bind {},
+    Bind {
+        /// Optional descendant selected within the authenticated tree.
+        #[serde(default)]
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        agent: Option<AgentPath>,
+    },
     /// Discover the root admitted by this session's credential.
     Root {},
     /// Stage canonical user input and send one message with caller-owned intent.
@@ -170,6 +175,23 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Restore files, context or both at a selected committed turn. File
+    /// restoration compares every current project head to `expected`.
+    Restore {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable identity; reuse exactly after an uncertain delivery.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Selected conversation sequence, inclusive.
+        at: u64,
+        /// Explicit scope of the restoration.
+        mode: acyclic_harness_core::agent::RestoreMode,
+        /// Project heads observed and approved by the caller.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        expected: Vec<acyclic_harness_core::agent::HistoryVolume>,
+    },
     /// Retire the agent's conversation: later turns start with no history.
     ClearAll {
         /// Exact recipient.
@@ -190,12 +212,42 @@ pub enum AgentCommand {
         /// Brief staged by the host, not a client-created volume grant.
         brief: ModelContent,
     },
+    /// Fork the conversation and project generations saved at a prior turn.
+    Fork {
+        /// Exact parent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        parent: AgentPath,
+        /// Stable spawning identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Zero-based settled conversation turn.
+        at: u64,
+        /// New task brief, staged by the host.
+        brief: ModelContent,
+    },
     /// Discover only one bounded page of direct children.
     Children {
         /// Expanded tree node.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Whole-page limits and the unchanged host continuation.
+        #[serde(default)]
+        page: AgentPageRequest,
+    },
+    /// Read the authorized current project roots for a conditional restore.
+    ProjectHeads {
+        /// Selected agent, whose committed bindings supply the project volumes.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+    },
+    /// Read committed generation-linked history, newest first. An initial
+    /// request seeks directly to the tail; continuations visit older entries
+    /// under the same immutable opening cut.
+    History {
+        /// Selected agent; cursor selection cannot retarget it.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Bounded page and continuation at the original exclusive cut.
         #[serde(default)]
         page: AgentPageRequest,
     },
@@ -264,6 +316,19 @@ pub enum AgentCommand {
         /// when the selected page is quiet. False takes a bounded snapshot.
         wait: bool,
     },
+    /// Original execution observations through the same authorized input query
+    /// as Usage. Payloads retain their immutable references for bounded Read.
+    Events {
+        /// Agent whose original private journal is selected.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Original inbox sequence, initially zero (skips inherited inputs).
+        input: u64,
+        /// Exclusive original journal continuation, initially zero.
+        after: u64,
+        /// Park a quiet page on the original journal and actor producers.
+        wait: bool,
+    },
     /// Read one bounded range of a file the agent's turns produced, through
     /// the host's authorized reader of that agent's volumes.
     Read {
@@ -312,6 +377,21 @@ pub enum AgentCommand {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadTarget {
+    /// Immutable request owned by an exact original waiting-status record.
+    Approval {
+        /// Zero-based sequence in this agent's original status stream.
+        status: u64,
+    },
+    /// A payload owned by an original execution observation. The server derives
+    /// its turn and immutable reference from this exact agent/input/sequence.
+    Execution {
+        /// Original inbox sequence, without adoption clamping.
+        input: u64,
+        /// One-based original journal observation sequence.
+        sequence: u64,
+        /// A finite field of that observation; absent fields are refused.
+        field: acyclic_harness_core::executor::ExecutionPayloadField,
+    },
     /// An exact file: a settled turn's staged input or output.
     File {
         /// The immutable reference its record carries.
@@ -334,8 +414,13 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::Read {
+                target: ReadTarget::Execution { sequence: 0, .. },
+                ..
+            } => Err(CommandError::Invalid),
             Self::Prompt { body, .. }
             | Self::Spawn { brief: body, .. }
+            | Self::Fork { brief: body, .. }
             | Self::Compact {
                 instructions: Some(body),
                 ..
@@ -373,20 +458,26 @@ impl AgentCommand {
     #[must_use]
     pub const fn agent(&self) -> Option<&AgentPath> {
         match self {
-            Self::Bind {} | Self::Root {} => None,
+            Self::Root {} => None,
+            Self::Bind { agent } => agent.as_ref(),
             Self::Spawn { parent: agent, .. }
+            | Self::Fork { parent: agent, .. }
             | Self::Prompt { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
             | Self::Rewind { agent, .. }
+            | Self::Restore { agent, .. }
             | Self::ClearAll { agent, .. }
             | Self::Children { agent, .. }
+            | Self::History { agent, .. }
+            | Self::ProjectHeads { agent }
             | Self::Diff { agent, .. }
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
+            | Self::Events { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
@@ -397,21 +488,26 @@ impl AgentCommand {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
-            Self::Bind {} => "bind",
+            Self::Bind { .. } => "bind",
             Self::Root {} => "root",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",
             Self::Compact { .. } => "compact",
             Self::Rewind { .. } => "rewind",
+            Self::Restore { .. } => "restore",
             Self::ClearAll { .. } => "clear_all",
             Self::Spawn { .. } => "spawn",
+            Self::Fork { .. } => "fork",
             Self::Children { .. } => "children",
+            Self::History { .. } => "history",
+            Self::ProjectHeads { .. } => "project_heads",
             Self::Diff { .. } => "diff",
             Self::Approvals { .. } => "approvals",
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",
             Self::Settlement { .. } => "settlement",
             Self::Usage { .. } => "usage",
+            Self::Events { .. } => "events",
             Self::Read { .. } => "read",
             Self::Stage { .. } => "stage",
             Self::Staged { .. } => "staged",

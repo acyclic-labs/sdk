@@ -555,6 +555,10 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
                 at_least: Default::default(),
             })
             .await?;
+        assert!(matches!(
+            followed.next().await.ok_or("opening cut missing")??,
+            acyclic_stream::FollowUpdate::Opening { .. }
+        ));
         let acyclic_stream::FollowUpdate::Record(first) =
             followed.next().await.ok_or("first member missing")??
         else {

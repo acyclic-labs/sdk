@@ -35,7 +35,7 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of every agent's status stream, keyed by its globally unique id.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 4] = [CHILDREN, CLOSED, TARGETS, MACHINES];
+pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
@@ -231,6 +231,12 @@ impl AgentPath {
     /// Conversation stream.
     pub fn conversation(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CONVERSATION}", self.text))
+    }
+
+    /// Generation-linked checkpoints, indexed exactly like the conversation.
+    /// Consumers read bounded ranges and follow its live tail.
+    pub fn history(&self) -> Result<StreamPath, Error> {
+        stream(&format!("{}/history", self.text))
     }
 
     /// Status stream.

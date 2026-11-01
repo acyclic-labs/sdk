@@ -82,7 +82,7 @@ impl CallProvider for Endpoint {
                         .map_err(|_| StreamError::InvalidArgument)?,
                     delivery,
                 },
-                AgentCommand::Bind {} => {
+                AgentCommand::Bind { .. } => {
                     assert!(AgentBinding::is_discovery(call.invocation()));
                     AgentBinding::reply(&route(), TOOLS.into())
                 }

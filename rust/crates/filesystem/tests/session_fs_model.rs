@@ -52,6 +52,10 @@ fn resume(omit_wake: bool) {
                 })
                 .await
                 .unwrap();
+            assert!(matches!(
+                follow.next().await.unwrap().unwrap(),
+                FollowUpdate::Opening { .. }
+            ));
             let FollowUpdate::Record(record) = follow.next().await.unwrap().unwrap() else {
                 panic!("change lost")
             };
@@ -93,10 +97,14 @@ fn replacement(unchecked: bool) {
             writer.join().unwrap();
             let rejected = match &mut follow {
                 Err(StreamError::PrefixNotRetained) => true,
-                Ok(records) => matches!(
-                    records.next().await,
-                    Some(Err(StreamError::PrefixNotRetained))
-                ),
+                Ok(records) => match records.next().await {
+                    Some(Err(StreamError::PrefixNotRetained)) => true,
+                    Some(Ok(FollowUpdate::Opening { .. })) => matches!(
+                        records.next().await,
+                        Some(Err(StreamError::PrefixNotRetained))
+                    ),
+                    _ => false,
+                },
                 _ => false,
             };
             assert!(rejected, "history was not rejected");

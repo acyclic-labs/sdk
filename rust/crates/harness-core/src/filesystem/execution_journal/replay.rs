@@ -8,7 +8,7 @@ where
 {
     /// Original append continuation of this admitted private journal. The
     /// hosting query retains it internally; it grants no public Stream access.
-    pub(in crate::filesystem) fn usage_follow(
+    pub(in crate::filesystem) fn follow(
         &self,
         operation: OperationId,
         after: u64,
@@ -241,6 +241,18 @@ where
                                 &mut page_root,
                             )
                             .await?;
+                    if !retain_models && !authenticated {
+                        // A bounded reference projection cannot authenticate an
+                        // arbitrarily large payload by materializing its body.
+                        // Original publication proofs are committed with these
+                        // observations; absence is a source failure, not a
+                        // license to switch to the model reconstruction path.
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "execution observation lacks its original publication proof",
+                        ));
+                    }
                     let model = if authenticated {
                         crate::executor::with_history_io(io, |work| {
                             ContentGrant::authorize_volume(

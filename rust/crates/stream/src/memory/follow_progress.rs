@@ -18,6 +18,9 @@ impl MemoryStream {
         let mut cursor =
             HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
         cursor.registration = Some(registration);
+        // Capture under the same state lock as interest registration. Even an
+        // absent waiting stream has an empty opening cut, without a tail probe.
+        cursor.opening_tail = Some(tail);
         Ok((changed, cursor))
     }
 
@@ -33,7 +36,10 @@ impl MemoryStream {
         drop(state);
         let path = snapshot.as_ref();
         if !cursor.observe_creation(path, *anchor).await? {
-            return Ok(None);
+            return Ok(cursor
+                .opening_tail
+                .take()
+                .map(|tail| crate::FollowUpdate::Opening { tail }));
         }
         let path = path.ok_or(if anchor.is_some() {
             StreamError::PrefixNotRetained
@@ -45,6 +51,9 @@ impl MemoryStream {
         }
         if let Some(anchor) = anchor {
             cursor.check_anchor(path, *anchor).await?;
+        }
+        if let Some(tail) = cursor.opening_tail.take() {
+            return Ok(Some(crate::FollowUpdate::Opening { tail }));
         }
         cursor.sync(path);
         let mut skipped = None;

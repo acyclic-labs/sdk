@@ -113,6 +113,9 @@ message SessionFollow {
   // Data retains its original sequence, so gaps are valid and never conflate.
   ReadKeySeek key = 8;
   uint32 read_limit = 9;
+  // ALL, unbounded only: fixed registration cut as one watermark, even at tail.
+  // Clients needing only live records avoid this additional control frame.
+  bool opening_cut = 10;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -183,6 +186,9 @@ message SessionMoved {
   SessionCursor resume = 2;
 }
 message SessionWatermark {
+  // Fixed registration tail, retained across watermark coalescing. This is an
+  // observation only: it never advances after or acknowledges unread records.
+  optional uint64 opening_tail = 5;
   uint64 accepted = 1;
   uint64 durable = 2;
   // Ordered skipped-prefix cut; absent for durability-only observations.

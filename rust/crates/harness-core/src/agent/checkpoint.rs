@@ -346,6 +346,7 @@ mod tests {
                 attachments: None,
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
+                history: None,
                 by: from.clone(),
                 id: intent(),
                 brief: Box::new(file()),

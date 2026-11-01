@@ -13,6 +13,7 @@ async fn qualify_prefix_credit(omit_held_data: bool) -> Result<(), Box<dyn std::
             3,
             1,
             Body::Watermark(wire::SessionWatermark {
+                opening_tail: (next == Some(2)).then_some(5),
                 accepted: 5,
                 durable: 5,
                 after: next.map(super::super::super::cursor),
@@ -66,6 +67,7 @@ async fn qualify_prefix_credit(omit_held_data: bool) -> Result<(), Box<dyn std::
     assert!(matches!(
         before.wire().body,
         Some(Body::Watermark(wire::SessionWatermark {
+            opening_tail: Some(5),
             after: Some(wire::SessionCursor { next: 2, .. }),
             ..
         }))

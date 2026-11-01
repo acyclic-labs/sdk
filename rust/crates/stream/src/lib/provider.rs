@@ -95,7 +95,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError>;
     /// Replays and remains live without a handoff gap. The history fence is checked
     /// atomically before subscription and on replacement. Ordered progress never
-    /// passes an earlier matching record; record-only follows retain indexed wakes.
+    /// passes an earlier matching record. Progress-enabled follows first yield
+    /// `Opening` even at the tail; record-only follows retain indexed wakes.
     async fn follow(
         &self,
         request: FollowRequest,

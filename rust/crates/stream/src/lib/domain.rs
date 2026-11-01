@@ -296,7 +296,8 @@ pub struct FollowRequest {
     pub preceding: Option<CommitId>,
     /// Projection intersected with the authenticated authority ceiling.
     pub filter: crate::FollowFilter,
-    /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
+    /// Emit one fixed registration tail, then contiguous skipped-prefix progress.
+    /// False retains indexed record-only wakes and emits no registration event.
     pub progress: bool,
     /// Initial absence policy; deletion after observation remains an error.
     pub when_absent: WhenAbsent,
@@ -666,6 +667,12 @@ pub type RecordStream = BoxProviderStream<'static, Result<Record, StreamError>>;
 /// and an immutable history anchor, never their values or indexed headers.
 #[derive(Debug)]
 pub enum FollowUpdate {
+    /// Fixed tail captured with the initial subscription, before any records.
+    /// This does not advance the cursor; later appends never change this cut.
+    Opening {
+        /// Exclusive end of the history present at registration.
+        tail: u64,
+    },
     /// A matching record after provider-side projection.
     Record(Record),
     /// A contiguous skipped prefix before the next matching record.
@@ -686,7 +693,7 @@ pub fn records_only(updates: FollowStream) -> RecordStream {
     Box::pin(updates.filter_map(|update| {
         futures::future::ready(match update {
             Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
-            Ok(FollowUpdate::Progress { .. }) => None,
+            Ok(FollowUpdate::Progress { .. } | FollowUpdate::Opening { .. }) => None,
             Err(error) => Some(Err(error)),
         })
     }))

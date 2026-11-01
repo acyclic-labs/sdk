@@ -182,6 +182,21 @@ impl Executor for Script {
 struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
+    fn open_control<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: &'a ContextAction,
+        _: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+        Box::pin(async {
+            Ok(OpenControl {
+                outputs: Arc::new(Unused),
+                checkpoint: None,
+                custody: None,
+            })
+        })
+    }
+
     fn open<'a>(
         &'a self,
         _: &'a AgentState,
@@ -195,7 +210,6 @@ impl TurnHost for Host {
             max_steps: 4,
             custody: None,
             selected: None,
-            checkpoint: None,
             approvals: None,
             effects: Some(self.0.clone()),
             outputs: Arc::new(Unused),
@@ -215,6 +229,15 @@ impl TurnHost for Host {
 struct Announcing(Host, Arc<Mutex<Roster>>);
 
 impl TurnHost for Announcing {
+    fn open_control<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a ContextAction,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+        self.0.open_control(agent, action, stop)
+    }
+
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,

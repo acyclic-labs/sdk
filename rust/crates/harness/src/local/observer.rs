@@ -46,23 +46,65 @@ impl Observer {
     /// Observes `connection`'s root from conversation sequence `from` and
     /// status sequence `status_from` on.
     pub(super) fn open(connection: &Connection, from: u64, status_from: u64) -> Result<Self> {
-        let agent = connection.root().clone();
-        let mut client = connection
-            .controls
-            .observe(AgentSelection {
-                agent: agent.clone(),
-                conversation_from: from,
-                status_from,
-            })
+        Self::opening(connection, from, status_from, None)
+    }
+
+    pub(super) fn replay(
+        connection: &Connection,
+        projection: &acyclic_harness_client::EventProjection,
+    ) -> Result<Self> {
+        let agent = connection.root();
+        projection.execution_position(agent).map_err(storage)?;
+        let cursor = |path: StreamPath| {
+            projection
+                .cursor(&acyclic_stream::wire_codec::session::stream_resource(
+                    path.as_str(),
+                ))
+                .next
+        };
+        let observer = Self::opening(
+            connection,
+            cursor(agent.conversation().map_err(storage)?),
+            cursor(agent.status().map_err(storage)?),
+            Some(projection),
+        )?;
+        projection
+            .validate_sources(&observer.sources())
             .map_err(storage)?;
+        Ok(observer)
+    }
+
+    fn opening(
+        connection: &Connection,
+        from: u64,
+        status_from: u64,
+        projection: Option<&acyclic_harness_client::EventProjection>,
+    ) -> Result<Self> {
+        let agent = connection.root().clone();
+        let selection = AgentSelection {
+            agent: agent.clone(),
+            conversation_from: from,
+            status_from,
+        };
+        let mut client = match projection {
+            Some(_) => connection.controls.observe_all(selection),
+            None => connection.controls.observe(selection),
+        }
+        .map_err(storage)?;
         client
             .open_resource(wire::SessionSubscription {
                 credential: super::endpoint::CREDENTIAL,
                 filter: None,
                 channel: None,
-                resume: Some(wire::SessionCursor {
-                    next: 0,
-                    opaque: Default::default(),
+                resume: Some(match projection {
+                    Some(projection) => projection
+                        .cursor(&connection.tools)
+                        .wire()
+                        .map_err(storage)?,
+                    None => wire::SessionCursor {
+                        next: 0,
+                        opaque: Default::default(),
+                    },
                 }),
                 kind: Some(wire::session_subscription::Kind::Follow(
                     wire::SessionFollow {
@@ -85,6 +127,74 @@ impl Observer {
         })
     }
 
+    /// One lossless delivery and its ordinary frontend event, including
+    /// watermarks. The caller flushes the JSONL line before saving its cursor.
+    ///
+    /// # Errors
+    /// The same authenticated follow and canonical record errors as `next`.
+    pub async fn next_projected(
+        &mut self,
+    ) -> Result<(Result<Option<Event>>, acyclic_harness_client::AgentDelivery)> {
+        let delivery = futures::future::poll_fn(|cx| self.client.poll_delivery(cx))
+            .await
+            .map_err(|error| {
+                if matches!(
+                    &error,
+                    AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable))
+                ) {
+                    self.connection.stream_failure(error)
+                } else {
+                    storage(error)
+                }
+            })?;
+        let event = match self.client.decode_delivery(&delivery) {
+            Ok(event) => self.apply(event),
+            Err(error) if self.conversation_missing(&error) => {
+                let announced = self
+                    .client
+                    .current_status()
+                    .map_err(storage)?
+                    .map_or(0, |status| status.conversation);
+                self.follow_announced(announced).map(|()| None)
+            }
+            Err(error) => Err(storage(error)),
+        };
+        Ok((event, delivery))
+    }
+
+    /// The bounded set of sources selected by this observer.
+    pub fn sources(&self) -> [String; 3] {
+        [
+            acyclic_stream::wire_codec::session::stream_resource(self.status.as_str()),
+            acyclic_stream::wire_codec::session::stream_resource(self.conversation.as_str()),
+            self.resource.clone(),
+        ]
+    }
+
+    fn apply(&mut self, event: AgentEvent) -> Result<Option<Event>> {
+        Ok(match event {
+            AgentEvent::Status { status, .. } => {
+                self.follow_announced(status.conversation)?;
+                if matches!(
+                    status.phase,
+                    crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
+                ) {
+                    self.reset_output()?;
+                }
+                Some(Event::Status(status))
+            }
+            AgentEvent::Conversation {
+                sequence, entry, ..
+            } => {
+                self.next_turn = sequence + 1;
+                self.reset_output()?;
+                Some(Event::Turn(entry))
+            }
+            AgentEvent::Resource { .. } => Some(Event::Output),
+            AgentEvent::Progress => None,
+        })
+    }
+
     /// The next event; cancel-safe.
     ///
     /// # Errors
@@ -92,33 +202,11 @@ impl Observer {
     pub async fn next(&mut self) -> Result<Event> {
         loop {
             match self.client.next().await {
-                Ok(AgentEvent::Status { status, .. }) => {
-                    // The status committed with a conversation's first entry
-                    // says it exists: follow it once it does.
-                    self.follow_announced(status.conversation)?;
-                    tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
-                    // An idle or finished agent runs no turn: an interrupted
-                    // one's output is done too.
-                    if matches!(
-                        status.phase,
-                        crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
-                    ) {
-                        self.reset_output()?;
+                Ok(event) => {
+                    if let Some(event) = self.apply(event)? {
+                        return Ok(event);
                     }
-                    return Ok(Event::Status(status));
                 }
-                Ok(AgentEvent::Conversation {
-                    sequence, entry, ..
-                }) => {
-                    tracing::debug!(sequence, "conversation entry");
-                    self.next_turn = sequence + 1;
-                    // The turn's output is complete; the next turn starts
-                    // its own display.
-                    self.reset_output()?;
-                    return Ok(Event::Turn(entry));
-                }
-                Ok(AgentEvent::Resource { .. }) => return Ok(Event::Output),
-                Ok(AgentEvent::Progress) => {}
                 Err(error) if self.conversation_missing(&error) => {
                     // Refused before its first entry: the status committed
                     // with that entry reopens it, and one read before this

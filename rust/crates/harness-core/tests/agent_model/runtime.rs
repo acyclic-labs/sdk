@@ -32,6 +32,7 @@ impl TurnDriver for Spawner {
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
+                        history: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),
@@ -477,6 +478,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let request = InboxRecord::Spawn(SpawnRequest {
+        history: None,
         by: user(),
         id: intent("s"),
         brief: Box::new(super::driver::file("task").expect("file")),
@@ -534,6 +536,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
+            history: None,
             by: user(),
             id: intent(&format!("s{n}")),
             brief: Box::new(super::driver::file("task").expect("file")),
@@ -573,6 +576,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
+            history: None,
             by: user(),
             id: intent(&format!("s{n}")),
             brief: Box::new(super::driver::file("task").expect("file")),

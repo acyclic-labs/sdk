@@ -18,7 +18,12 @@ pub use effects::{
 mod goal;
 pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;
+mod history;
 mod host;
+pub use history::{
+    ContextCut, HistoryCheckpoint, HistorySelection, HistorySummary, HistoryVolume, RestoreMode,
+    SavedVolume,
+};
 mod input;
 pub(crate) use input::input as turn_input;
 pub mod kernel;
@@ -46,9 +51,9 @@ pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
 pub use driver::{
-    COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
-    TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent, encode_user_input, expand_attachments,
-    model_input, roster_message, turn_id, turn_roster, turn_segment,
+    COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenControl, OpenTurn, TurnHost,
+    TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent, encode_user_input,
+    expand_attachments, model_input, roster_message, turn_id, turn_roster, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

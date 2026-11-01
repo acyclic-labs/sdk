@@ -16,6 +16,7 @@ pub use chain::{
 mod files;
 pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
 mod agent;
+pub(crate) use agent::request_path;
 /// Independent models that `llm` approval stages name, by name.
 pub type ApproverModels = std::collections::BTreeMap<
     String,

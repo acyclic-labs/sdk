@@ -165,6 +165,43 @@ where
         })
     }
 
+    fn load_range<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        range: acyclic_fs::ByteRange,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if reference.volume() != &self.volume {
+                return Err(canonical_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "journal content belongs to another private volume",
+                ));
+            }
+            let grant = crate::executor::with_history_io(io, |work| {
+                ContentGrant::verify(
+                    &self.verifier,
+                    &self.scope,
+                    &self.volume,
+                    VolumeOperation::Read,
+                    reference.descriptor().byte_length(),
+                    work,
+                )
+            })?;
+            let grant_hold = io
+                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                .transpose()?;
+            let result = self
+                .host
+                .read_content_range(reference, &grant, range, io)
+                .await;
+            drop(grant);
+            drop(grant_hold);
+            result
+        })
+    }
+
     fn append<'a>(
         &'a self,
         operation: OperationId,

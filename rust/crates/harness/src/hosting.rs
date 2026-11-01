@@ -333,13 +333,13 @@ where
         let routed = call.invocation();
         // Discovery names no tree: the endpoint answers it with its own.
         if AgentBinding::is_discovery(routed) {
-            return if matches!(call.command(), AgentCommand::Bind {}) {
+            return if matches!(call.command(), AgentCommand::Bind { .. }) {
                 Ok(call)
             } else {
                 Err(StreamError::AccessDenied)
             };
         }
-        if matches!(call.command(), AgentCommand::Bind {})
+        if matches!(call.command(), AgentCommand::Bind { .. })
             || routed.namespace.as_deref() != Some(within.namespace().as_str())
             || routed.account_id.as_slice() != within.account().as_bytes()
         {
@@ -354,12 +354,6 @@ where
             .contains(agent)
             .then_some(agent)
             .ok_or(Error::NoSuchAgent)
-    }
-
-    /// The `fs:/` resource announcing the root's tool output, on a host whose
-    /// volumes announce it.
-    async fn tool_resource(&self) -> Result<String, Error> {
-        self.bound.tool_resource(&self.root).await
     }
 
     /// Delivers one context request to `agent`; its checkpoint settles in
@@ -391,10 +385,13 @@ where
     ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
-            AgentCommand::Bind {} => Ok(AgentBinding::reply(
-                &self.binding(),
-                self.tool_resource().await?,
-            )),
+            AgentCommand::Bind { agent } => {
+                let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
+                Ok(AgentBinding::reply(
+                    &self.binding(),
+                    self.bound.tool_resource(agent).await?,
+                ))
+            }
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
@@ -431,6 +428,22 @@ where
                     settled,
                 })
             }
+            AgentCommand::Events {
+                agent,
+                input,
+                after,
+                wait,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let (input, inbox_tail, page, settled) =
+                    self.bound.event_page(agent, *input, *after, *wait).await?;
+                Ok(AgentReply::Events {
+                    input,
+                    inbox_tail,
+                    page,
+                    settled,
+                })
+            }
             AgentCommand::Read {
                 agent,
                 target,
@@ -438,6 +451,31 @@ where
             } => {
                 let agent = self.within_tree(agent)?;
                 let (bytes, length) = match target {
+                    ReadTarget::Approval { status } => {
+                        let (bytes, length) = self
+                            .bound
+                            .read_approval_request(agent, *status, *offset, MAX_READ_BYTES)
+                            .await?;
+                        return Ok(AgentReply::read(&bytes, length));
+                    }
+                    ReadTarget::Execution {
+                        input,
+                        sequence,
+                        field,
+                    } => {
+                        let (bytes, length) = self
+                            .bound
+                            .read_event_payload(
+                                agent,
+                                *input,
+                                *sequence,
+                                *field,
+                                *offset,
+                                MAX_READ_BYTES,
+                            )
+                            .await?;
+                        return Ok(AgentReply::read(&bytes, length));
+                    }
                     ReadTarget::File { file } => {
                         self.bound
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
@@ -535,9 +573,115 @@ where
                 self.context(self.within_tree(agent)?, by, id, ContextAction::Rewind)
                     .await
             }
+            AgentCommand::Restore {
+                agent,
+                id,
+                at,
+                mode,
+                expected,
+            } => {
+                self.context(
+                    self.within_tree(agent)?,
+                    by,
+                    id,
+                    ContextAction::Restore {
+                        at: *at,
+                        mode: *mode,
+                        expected: expected.clone(),
+                    },
+                )
+                .await
+            }
             AgentCommand::ClearAll { agent, id } => {
                 self.context(self.within_tree(agent)?, by, id, ContextAction::Clear)
                     .await
+            }
+            AgentCommand::ProjectHeads { agent } => Ok(AgentReply::ProjectHeads {
+                items: self.bound.project_heads(self.within_tree(agent)?).await?,
+            }),
+            AgentCommand::History { agent, page } => {
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                use futures::TryStreamExt as _;
+                let agent = self.within_tree(agent)?;
+                let cursor = match page.cursor() {
+                    Some(cursor) => {
+                        let bytes = STANDARD
+                            .decode(cursor)
+                            .map_err(|_| Error::Record("invalid history cursor"))?;
+                        let cursor: HistoryCursor = serde_json::from_slice(&bytes)
+                            .map_err(|_| Error::Record("invalid history cursor"))?;
+                        if cursor.version != 1
+                            || cursor.agent != *agent
+                            || cursor.before > cursor.tail
+                        {
+                            return Err(Error::Record("history cursor differs from selection"));
+                        }
+                        cursor
+                    }
+                    None => {
+                        let tail = self.tail(agent.history()?).await?;
+                        HistoryCursor {
+                            version: 1,
+                            agent: agent.clone(),
+                            before: tail,
+                            tail,
+                        }
+                    }
+                };
+                let count = u64::from(page.items()).min(cursor.before);
+                let start = cursor.before - count;
+                let mut candidates = Vec::new();
+                if count != 0 {
+                    let mut records = agents
+                        .provider()
+                        .read(acyclic_stream::ReadRequest {
+                            key: None,
+                            path: agent.history()?,
+                            from: start,
+                            limit: count as u32,
+                            at_least: Default::default(),
+                        })
+                        .await
+                        .map_err(Error::Stream)?;
+                    while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+                        let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
+                        let sequence = start + candidates.len() as u64;
+                        if record.sequence != sequence || item.conversation != sequence + 1 {
+                            return Err(Error::Record("history page differs from indexed cut"));
+                        }
+                        candidates.push(item);
+                    }
+                    if candidates.len() as u64 != count {
+                        return Err(Error::Record("history page ended before its retained cut"));
+                    }
+                }
+                let mut items = Vec::new();
+                let mut bytes = 0;
+                let mut before = cursor.before;
+                for item in candidates.into_iter().rev() {
+                    let size = serde_json::to_vec(&item)
+                        .map_err(|_| Error::Record("history item encoding failed"))?
+                        .len()
+                        + usize::from(!items.is_empty());
+                    let next = history_cursor(&cursor, item.conversation - 1)?;
+                    let envelope = serde_json::to_vec(&AgentReply::History {
+                        items: Vec::new(),
+                        next,
+                    })
+                    .map_err(|_| Error::Record("history page encoding failed"))?
+                    .len();
+                    if bytes + size + envelope > page.bytes() as usize {
+                        if items.is_empty() {
+                            return Err(Error::Stream(StreamError::Capacity));
+                        }
+                        break;
+                    }
+                    bytes += size;
+                    before = item.conversation - 1;
+                    items.push(item);
+                }
+                let next = history_cursor(&cursor, before)?;
+                Ok(AgentReply::History { items, next })
             }
             AgentCommand::Children { agent, page } => {
                 let agent = self.within_tree(agent)?;
@@ -622,11 +766,30 @@ where
                         .map(|after| children_cursor(&listed.hierarchy_version, &after)),
                 })
             }
-            AgentCommand::Spawn { parent, id, brief } => {
+            AgentCommand::Spawn { parent, id, brief }
+            | AgentCommand::Fork {
+                parent, id, brief, ..
+            } => {
                 let parent = self.within_tree(parent)?;
                 if !self.platform.runs_children() {
                     return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
                 }
+                let history = match command {
+                    AgentCommand::Fork { at, .. } => {
+                        let saved = crate::filesystem::history_checkpoint(
+                            agents.provider().as_ref(),
+                            parent,
+                            *at,
+                        )
+                        .await
+                        .map_err(|error| Error::Turn(Box::new(error)))?;
+                        Some(crate::agent::HistorySelection {
+                            conversation: saved.conversation,
+                            checkpoint: saved.checkpoint,
+                        })
+                    }
+                    _ => None,
+                };
                 let brief = text(brief)?;
                 let brief = self
                     .bound
@@ -636,6 +799,7 @@ where
                     by: by.clone(),
                     id: id.clone(),
                     brief: Box::new(brief),
+                    history,
                 });
                 let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
                     return Err(Error::Record("the parent is archived"));
@@ -787,6 +951,29 @@ fn children_cursor(version: &CommitId, after: &StreamPath) -> String {
     cursor
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryCursor {
+    version: u32,
+    agent: AgentPath,
+    before: u64,
+    tail: u64,
+}
+
+fn history_cursor(cursor: &HistoryCursor, before: u64) -> Result<Option<String>, Error> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    (before != 0)
+        .then(|| {
+            serde_json::to_vec(&HistoryCursor {
+                before,
+                ..cursor.clone()
+            })
+            .map(|bytes| STANDARD.encode(bytes))
+            .map_err(|_| Error::Record("history cursor encoding failed"))
+        })
+        .transpose()
+}
+
 /// The hierarchy version and last path [`children_cursor`] encoded.
 fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> {
     let invalid = || Error::Stream(StreamError::InvalidArgument);
@@ -874,7 +1061,10 @@ where
                 .await;
             if matches!(
                 &result,
-                Ok(AgentReply::Diff { .. } | AgentReply::Usage { .. })
+                Ok(AgentReply::Diff { .. }
+                    | AgentReply::Usage { .. }
+                    | AgentReply::Events { .. }
+                    | AgentReply::Content { .. })
             ) {
                 // The source may have awaited IO. No path or patch leaves after
                 // its original call credential or current host policy is revoked.
