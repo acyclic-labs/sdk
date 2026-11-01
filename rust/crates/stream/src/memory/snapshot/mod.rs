@@ -387,7 +387,7 @@ fn reconstruct(
     Some(state)
 }
 
-fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), RestoreError> {
+fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), StreamError> {
     for _ in 0..input.len().ok_or_else(invalid)? {
         let flags = input.u8().ok_or_else(invalid)?;
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
