@@ -127,6 +127,7 @@ impl RequestManifest {
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestHeader {
+    compose_tools: bool,
     model: Model,
     tools: Vec<crate::tool::ToolDefinition>,
     max_output_tokens: Option<u32>,
@@ -134,6 +135,7 @@ struct RequestHeader {
 
 #[derive(Serialize)]
 struct HeaderView<'a> {
+    compose_tools: bool,
     model: &'a Model,
     tools: &'a [crate::tool::ToolDefinition],
     max_output_tokens: Option<u32>,
@@ -371,6 +373,7 @@ async fn stage_request_inner(
         return stage_json(journal, operation, key, request, io).await;
     }
     let header = HeaderView {
+        compose_tools: request.compose_tools,
         model: &request.model,
         tools: &request.tools,
         max_output_tokens: request.max_output_tokens,
@@ -503,6 +506,7 @@ async fn load_request_inner(
     }
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: header.compose_tools,
             model: header.model,
             tools: header.tools,
             max_output_tokens: header.max_output_tokens,

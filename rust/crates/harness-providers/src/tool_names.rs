@@ -56,7 +56,7 @@ pub(crate) struct Names<'a> {
 }
 
 fn names(request: &ModelRequest) -> impl Iterator<Item = &str> {
-    request.tools.iter().map(|tool| tool.name.as_str()).chain(
+    request.model_tools().map(|tool| tool.name.as_str()).chain(
         request
             .messages
             .iter()

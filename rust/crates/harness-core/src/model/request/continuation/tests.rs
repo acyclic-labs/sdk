@@ -10,6 +10,7 @@ fn text(value: &str) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
+        compose_tools: false,
         model: Model::new("scripted".into(), "continuation".into(), "1".into())?,
         messages: (0..count).map(|_| text("retained text")).collect(),
         tools: Vec::new(),

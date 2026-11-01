@@ -25,6 +25,7 @@ fn provider() -> HostModel {
 fn prepared(revision: &str) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("accounting".into(), "model".into(), revision.into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,

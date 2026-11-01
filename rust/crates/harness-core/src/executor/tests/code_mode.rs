@@ -16,7 +16,7 @@ impl ToolPolicy for InnerApproval {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
     {
-        let decision = if invocation.name == "run_js" {
+        let decision = if invocation.name == "code" {
             ToolPolicyDecision::Allow
         } else {
             ToolPolicyDecision::RequireApproval {
@@ -45,7 +45,7 @@ fn executor(
         crate::tool::json_projection_schema(object),
     )?;
     let js = crate::tools::catalog()
-        .find(|spec| spec.name == "run_js")
+        .find(|spec| spec.name == "code")
         .unwrap()
         .bind()?;
     tools.register((js, None), &mut None, None)?;
@@ -53,14 +53,14 @@ fn executor(
         ScriptedModelProvider::new([
             tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "program".into(),
-                "run_js".into(),
+                "code".into(),
                 json!({"code":code}),
             ))]),
             done_turn(),
         ])
         .with_token_counter(fixture_token_count),
     );
-    let mut grants = vec!["tool:call:run_js", capability::INTERACTION_ROUTE];
+    let mut grants = vec!["tool:call:code", capability::INTERACTION_ROUTE];
     if grant_echo {
         grants.push("tool:call:example.echo");
     }
@@ -108,6 +108,245 @@ fn result(model: &ScriptedModelProvider) -> Value {
         .unwrap()
 }
 
+fn logs(journal: &Journal) -> Value {
+    let mut entries = journal
+        .1
+        .lock()
+        .unwrap()
+        .values()
+        .filter_map(|(_, bytes)| {
+            let value: Value = serde_json::from_slice(bytes).ok()?;
+            (value["kind"] == "code.call").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|entry| entry["ordinal"].as_u64().unwrap());
+    Value::Array(entries)
+}
+
+fn tool_notice_table(request: &ModelRequest) -> Value {
+    let mut json = String::new();
+    let mut complete = false;
+    for message in &request.messages {
+        let Some((notices, _)) = message.content.notice_parts() else {
+            continue;
+        };
+        for notice in notices
+            .iter()
+            .filter(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+        {
+            assert!(!complete, "tool table continued after its final fragment");
+            assert_eq!(notice.body["offset"].as_u64(), Some(json.len() as u64));
+            json.push_str(notice.body["json"].as_str().unwrap());
+            complete = notice.body["complete"].as_bool().unwrap();
+        }
+    }
+    assert!(complete, "tool table did not finish");
+    serde_json::from_str(&json).unwrap()
+}
+
+#[tokio::test]
+async fn custom_code_executor_preserves_other_native_declarations() -> Result<()> {
+    let (mut executor, model, echo) = executor("42", allowed()?, true)?;
+    let object = json!({"type":"object"});
+    let mut tools = echo_tools(
+        echo.clone(),
+        object.clone(),
+        object.clone(),
+        crate::tool::json_projection_schema(object),
+    )?;
+    let mut custom = crate::tools::catalog()
+        .find(|spec| spec.name == "code")
+        .unwrap()
+        .bind()?;
+    custom.executor = echo.clone();
+    custom.projection = Arc::new(crate::tool::JsonToolProjection);
+    custom.definition.revision = "custom".into();
+    tools.register((custom, None), &mut None, None)?;
+    executor.tools = tools;
+    executor.execute(input(), &Journal::default()).await?;
+    let requests = model.requests();
+    assert!(!requests[0].compose_tools);
+    assert_eq!(requests[0].model_tools().count(), 2);
+    assert!(
+        !requests[0]
+            .messages
+            .iter()
+            .any(|message| message.content.notice_parts().is_some())
+    );
+    assert_eq!(result(&model)["code"], "42");
+    assert_eq!(echo.0.load(Ordering::SeqCst), 1);
+    let mut forged = requests[0].clone();
+    forged.compose_tools = true;
+    let forged = crate::model::PreparedModelRequest::prepare(forged, executor.limits, None)?;
+    assert!(
+        StockExecution::ordinary(&executor)
+            .validate_response_request(&forged)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn large_tool_tables_split_without_losing_schemas_or_changing_the_prefix() -> Result<()> {
+    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "program".into(),
+                "code".into(),
+                json!({"code":"await tools.late({value:42})"}),
+            ))]),
+            done_turn(),
+        ])
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: 1_048_576,
+            output_tokens: Some(16_384),
+        })
+        .with_token_counter(fixture_token_count),
+    );
+    executor.provider = model.clone();
+    let mut late = executor
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    late.definition.name = "late".into();
+    late.definition.description = "escaped \" \\ \n \u{1f600}".repeat(8000);
+    late.definition.input_schema["description"] = late.definition.description.clone().into();
+    let expected = late.definition.clone();
+    executor.tools.register((late, None), &mut None, None)?;
+    executor = executor.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:late",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    executor.limits.render_bytes = 65_536;
+    let turn = input();
+    let journal = Journal::default();
+    executor.execute(turn.clone(), &journal).await?;
+    let requests = model.requests();
+    let table = tool_notice_table(&requests[0]);
+    assert_eq!(
+        table
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "late"),
+        Some(&serde_json::to_value(expected).unwrap())
+    );
+    let notices = requests[0]
+        .messages
+        .iter()
+        .filter(|message| message.content.notice_parts().is_some())
+        .collect::<Vec<_>>();
+    assert!(notices.len() > 1);
+    for message in notices {
+        assert!(serde_json::to_vec(&message.content).unwrap().len() <= 65_536);
+        message
+            .content
+            .validate_limits(executor.limits, &mut None)?;
+    }
+    assert_eq!(result(&model)["value"], 42);
+    assert_eq!(
+        requests[0].messages,
+        requests[1].messages[..requests[0].messages.len()]
+    );
+    executor.execute(turn, &journal).await?;
+    assert_eq!(model.requests().len(), 2);
+    // An allowance smaller than framing refuses instead of waiting or looping.
+    executor.limits.render_bytes = 1;
+    let mut context = crate::context::Context::default();
+    assert!(
+        StockExecution::ordinary(&executor)
+            .code_tools_notice(&mut context, &requests[0].tools)
+            .is_err()
+    );
+    assert!(context.messages.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dynamic_tools_update_notices_and_program_bindings_without_changing_declarations()
+-> Result<()> {
+    let (first, first_model, _) = executor("typeof tools.late", allowed()?, false)?;
+    first.execute(input(), &Journal::default()).await?;
+    assert_eq!(result(&first_model), "undefined");
+    let (mut second, second_model, echo) = executor(
+        "(await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
+        allowed()?,
+        true,
+    )?;
+    let mut tool = second
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    tool.definition.name = "late".into();
+    second.tools.register((tool, None), &mut None, None)?;
+    second = second.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:late",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let journal = Journal::default();
+    second.execute(input(), &journal).await?;
+    assert_eq!(result(&second_model), 85);
+    assert_eq!(echo.0.load(Ordering::SeqCst), 2);
+    let before = first_model.requests();
+    let after = second_model.requests();
+    assert_eq!(
+        before[0].model_tools().collect::<Vec<_>>(),
+        after[0].model_tools().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        after[0]
+            .model_tools()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code"]
+    );
+    assert_eq!(tool_notice_table(&before[0]).as_array().unwrap().len(), 1);
+    let changed = tool_notice_table(&after[0]);
+    assert_eq!(changed.as_array().unwrap().len(), 3);
+    assert_eq!(changed[2]["name"], "late");
+    assert_eq!(changed[2]["input_schema"], json!({"type":"object"}));
+    assert_eq!(
+        after[0].messages,
+        after[1].messages[..after[0].messages.len()]
+    );
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
+    assert_eq!(logs(&journal)[0]["input_bytes"], 12);
+    assert_eq!(logs(&journal)[0]["output_bytes"], 12);
+    // Removing the capability updates the same notice and the next VM table.
+    let (mut revoked, revoked_model, _) =
+        executor("typeof tools['example.echo']", allowed()?, true)?;
+    revoked.tools.remove_from_model("example.echo")?;
+    revoked.execute(input(), &Journal::default()).await?;
+    assert_eq!(result(&revoked_model), "undefined");
+    assert_eq!(
+        tool_notice_table(&revoked_model.requests()[0])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_log() -> Result<()> {
     for approved in [false, true] {
@@ -133,10 +372,10 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         drop(approvals);
         executor.execute(input.clone(), &journal).await?;
         let value = result(&model);
-        assert_eq!(value["calls"][0]["tool"], "example.echo");
-        assert_eq!(value["calls"][0]["ok"], approved);
+        assert_eq!(logs(&journal)[0]["tool"], "example.echo");
+        assert_eq!(logs(&journal)[0]["ok"], approved);
         if approved {
-            assert_eq!(value["value"]["value"], 42);
+            assert_eq!(value["value"], 42);
         } else {
             assert!(
                 value["error"]
@@ -151,13 +390,13 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             input.operation_id,
             0,
             "program".into(),
-            "run_js".into(),
+            "code".into(),
             json!({"code":"await tools['example.echo']({value: 42})"}),
             None,
         )?;
         let loads = journal.4.load(Ordering::SeqCst);
         let ExecutionProgress::Ready(replayed) = execution
-            .run_js(
+            .code(
                 &journal,
                 (input.operation_id, 0),
                 &invocation,
@@ -179,6 +418,66 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         let records = journal.0.lock().unwrap();
         assert_eq!(records.iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), usize::from(approved));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()> {
+    struct Observe(Arc<Journal>);
+    impl ToolExecutor for Observe {
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            Box::pin(async {
+                let observed = logs(&self.0);
+                assert_eq!(observed.as_array().unwrap().len(), 1);
+                assert_eq!(observed[0]["tool"], "example.echo");
+                assert_eq!(observed[0]["ok"], true);
+                assert_eq!(observed[0]["call_id"], "program");
+                assert!(observed[0].get("value").is_none());
+                assert!(!self.0.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "program")));
+                Ok(ToolResult { value: json!({}) })
+            })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let (mut executor, model, _) = executor(
+        "await tools['example.echo']({value:42}); await tools.observe({}); 7",
+        allowed()?,
+        true,
+    )?;
+    let journal = Arc::new(Journal::default());
+    let mut tool = executor
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    tool.definition.name = "observe".into();
+    tool.executor = Arc::new(Observe(journal.clone()));
+    executor.tools.register((tool, None), &mut None, None)?;
+    executor = executor.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:observe",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    executor.execute(input(), journal.as_ref()).await?;
+    assert_eq!(result(&model), 7);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
     Ok(())
 }
 
@@ -231,7 +530,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
         input.operation_id,
         0,
         "program".into(),
-        "run_js".into(),
+        "code".into(),
         json!({"code":code}),
         None,
     )?;
@@ -240,7 +539,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
         role: ModelRole::Assistant,
         content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
             "program".into(),
-            "run_js".into(),
+            "code".into(),
             json!({"code":code}),
         ))),
     }];
@@ -308,11 +607,11 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
         executor.execute(input(), &journal).await?;
         let value = result(&model);
         assert_eq!(echo.0.load(Ordering::SeqCst), 1);
-        assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-        assert_eq!(value["calls"][0]["ok"], true);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
+        assert_eq!(logs(&journal)[0]["ok"], true);
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
         if code.starts_with('(') {
-            assert_eq!(value["value"], 1);
+            assert_eq!(value, 1);
         } else {
             assert_eq!(value["error"], "failed");
         }
@@ -351,11 +650,11 @@ async fn producerless_promises_fail_after_tool_retirement_and_live_producers_com
                 "JavaScript promise cannot settle: no pending jobs or tool calls"
             );
         } else {
-            assert_eq!(value["value"], 42);
+            assert_eq!(value, 42);
             assert!(value.get("error").is_none());
         }
         assert_eq!(echo.0.load(Ordering::SeqCst), calls);
-        assert_eq!(value["calls"].as_array().unwrap().len(), calls);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), calls);
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), calls);
     }
     Ok(())
@@ -379,11 +678,11 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"], 42);
+    assert_eq!(value, 42);
     assert_eq!(echo.0.load(Ordering::SeqCst), 3);
-    assert_eq!(value["calls"].as_array().unwrap().len(), 3);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 3);
     assert!(
-        value["calls"]
+        logs(&journal)
             .as_array()
             .unwrap()
             .iter()
@@ -395,37 +694,57 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
 
 #[tokio::test]
 async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Result<()> {
-    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.run_js, schema: tools.run_js.input_schema.required})"#;
+    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
     let (executor, model, echo) = executor(code, allowed()?, false)?;
-    executor.execute(input(), &Journal::default()).await?;
+    let journal = Journal::default();
+    executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"]["host"], json!(vec!["undefined"; 10]));
-    assert_eq!(value["value"]["hidden"], "undefined");
-    assert_eq!(value["value"]["bound"], "function");
-    assert_eq!(value["value"]["schema"], json!(["code"]));
+    assert_eq!(value["host"], json!(vec!["undefined"; 10]));
+    assert_eq!(value["hidden"], "undefined");
+    assert_eq!(value["bound"], "function");
+    assert_eq!(value["schema"], json!(["code"]));
     assert_eq!(echo.0.load(Ordering::SeqCst), 0);
-    assert_eq!(value["value"]["refused"], true);
+    assert_eq!(value["refused"], true);
     // Negative control: ordinary JavaScript still runs in this same sandbox.
-    assert_eq!(value["value"]["sum"], 6);
+    assert_eq!(value["sum"], 6);
     Ok(())
 }
 
 #[tokio::test]
-async fn intermediate_data_stays_in_js_and_both_final_values_and_logs_are_paged() -> Result<()> {
+async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
+    let render_bytes = 65_536;
+    let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
+    let code = format!("'x'.repeat({string_bytes})");
+    let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
+    boundary_executor.limits.render_bytes = render_bytes as u64;
+    boundary_executor
+        .execute(input(), &Journal::default())
+        .await?;
+    // Each result retains its complete admitted per-part allowance even though
+    // context framing and the other messages exceed that same byte count.
+    assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
+    let (mut fitting, model, _) = executor("'x'.repeat(40000)", allowed()?, true)?;
+    fitting.limits.render_bytes = render_bytes as u64;
+    let mut turn = input();
+    turn.input = ModelContent::Text("context".repeat(1000));
+    fitting.execute(turn, &Journal::default()).await?;
+    assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
     ] {
-        let (executor, model, _) = executor(code, allowed()?, true)?;
-        executor.execute(input(), &Journal::default()).await?;
+        let (mut executor, model, _) = executor(code, allowed()?, true)?;
+        executor.limits.render_bytes = 65_536;
+        let journal = Journal::default();
+        executor.execute(input(), &journal).await?;
         let value = result(&model);
-        assert!(serde_json::to_vec(&value).unwrap().len() <= super::super::code_mode::OUTPUT_BYTES);
+        assert!(serde_json::to_vec(&value).unwrap().len() <= 65_536);
         if code.starts_with("let") {
-            assert_eq!(value["value"], 4_000_000);
-            assert!(value["omitted_calls"].as_u64().unwrap() > 0);
+            assert_eq!(value, 4_000_000);
+            assert_eq!(logs(&journal).as_array().unwrap().len(), 400);
         } else if code.starts_with("'x'") {
-            assert_eq!(value["value"]["truncated"], true);
+            assert_eq!(value["truncated"], true);
         } else {
             assert!(value["error"].as_str().unwrap().len() <= 2048);
         }
@@ -434,8 +753,8 @@ async fn intermediate_data_stays_in_js_and_both_final_values_and_logs_are_paged(
 }
 
 #[tokio::test]
-async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -> Result<()> {
-    let length = super::super::code_mode::OUTPUT_BYTES + 1;
+async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<()> {
+    let length = 65_536 + 1;
     let name = "x".repeat(length);
     let code = format!(
         "await tools['x'.repeat({length})]({{value:41}}); (await tools['example.echo']({{value:42}})).value"
@@ -451,7 +770,7 @@ async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -
     executor = executor.with_tool_authority(
         RuntimeScope::new(
             Capabilities::new([
-                "tool:call:run_js".to_owned(),
+                "tool:call:code".to_owned(),
                 "tool:call:example.echo".to_owned(),
                 format!("tool:call:{name}"),
                 capability::INTERACTION_ROUTE.to_owned(),
@@ -463,14 +782,15 @@ async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"], 42);
-    assert_eq!(value["omitted_calls"], 1);
+    assert_eq!(value, 42);
+    assert!(value.get("omitted_calls").is_none());
     assert_eq!(echo.0.load(Ordering::SeqCst), 2);
-    assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-    // Negative control: the later fitting entry is retained after the omission.
-    assert_eq!(value["calls"][0]["tool"], "example.echo");
-    assert_eq!(value["calls"][0]["ok"], true);
-    assert!(serde_json::to_vec(&value).unwrap().len() <= super::super::code_mode::OUTPUT_BYTES);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
+    // Both entries are published, independent of the final result size.
+    assert_eq!(logs(&journal)[0]["tool"], name);
+    assert_eq!(logs(&journal)[1]["tool"], "example.echo");
+    assert_eq!(logs(&journal)[1]["ok"], true);
+    assert!(serde_json::to_vec(&value).unwrap().len() <= 65_536);
     assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 2);
     Ok(())
 }
@@ -486,15 +806,16 @@ async fn escaped_diagnostics_fit_the_remaining_page_and_retain_the_call_log() ->
         let code = format!("await tools['example.echo']({{value:42}}); throw {expression}");
         let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
         executor.limits.render_bytes = 4096;
-        executor.execute(input(), &Journal::default()).await?;
+        let journal = Journal::default();
+        executor.execute(input(), &journal).await?;
         let value = result(&model);
         let error = value["error"].as_str().unwrap();
         assert!(!error.is_empty());
         assert!(expected.starts_with(error));
         assert!(serde_json::to_vec(&value).unwrap().len() <= 4096);
         assert_eq!(echo.0.load(Ordering::SeqCst), 1);
-        assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-        assert_eq!(value["calls"][0]["ok"], true);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
+        assert_eq!(logs(&journal)[0]["ok"], true);
         // Negative control: a fitting error is preserved exactly.
         if expression.starts_with("'short") {
             assert_eq!(error, expected);
@@ -556,5 +877,97 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
         ExecutionProgress::Failed(ToolFailureKind::Interrupted)
     ));
     assert!(journal.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. } if call_id == "program")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
+    let (executor, _, _) = executor("42", allowed()?, true)?;
+    let execution = StockExecution::ordinary(&executor);
+    let prior = vec![
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                "old".into(),
+                "example.echo".into(),
+                json!({"value":7}),
+            ))),
+        },
+        ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "old".into(),
+                name: "example.echo".into(),
+                content: crate::model::ToolResultContent::Json {
+                    value: json!({"value":7}),
+                },
+            }),
+        },
+    ];
+    let prepared = execution.prepare_request(&input(), 1, &prior).await?;
+    let request = prepared.request();
+    assert!(request.tools.iter().any(|tool| tool.name == "example.echo"));
+    assert_eq!(
+        request
+            .model_tools()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code"]
+    );
+    // Hiding a declaration must neither drop validation nor admit a bad result.
+    let mut corrupted = request.clone();
+    let result = corrupted
+        .messages
+        .iter_mut()
+        .find_map(|message| match &mut message.content {
+            ModelContent::Part(ModelContentPart::ToolResult { content, .. }) => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    *result = crate::model::ToolResultContent::Json { value: json!(7) };
+    assert!(crate::model::PreparedModelRequest::prepare(corrupted, executor.limits, None).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Result<()> {
+    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn(["first", "second"].map(|id| {
+                ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    id.into(),
+                    "code".into(),
+                    json!({"code":"'x'.repeat(40000)"}),
+                ))
+            })),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count),
+    );
+    executor.provider = model.clone();
+    executor.limits.render_bytes = 65_536;
+    let mut turn = input();
+    turn.input = ModelContent::Text("context".repeat(1000));
+    let journal = Journal::default();
+    executor.execute(turn.clone(), &journal).await?;
+    let requests = model.requests();
+    let values = requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult {
+                content: crate::model::ToolResultContent::Json { value },
+                ..
+            }) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values[0].as_str().unwrap().len(), 40000);
+    assert_eq!(values[1].as_str().unwrap().len(), 40000);
+    assert!(serde_json::to_vec(&requests[1].messages).unwrap().len() > 65_536);
+    // The same durable exchange remains valid on replay, without a second model call.
+    executor.execute(turn, &journal).await?;
+    assert_eq!(model.requests().len(), 2);
     Ok(())
 }

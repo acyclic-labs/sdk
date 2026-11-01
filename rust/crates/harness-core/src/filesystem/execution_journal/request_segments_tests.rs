@@ -5,6 +5,7 @@ use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRe
 fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("test".into(), "segmented".into(), "1".into())?,
             messages: messages.to_vec(),
             tools: Vec::new(),

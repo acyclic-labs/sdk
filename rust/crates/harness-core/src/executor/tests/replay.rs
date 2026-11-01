@@ -168,6 +168,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
     let model = Model::new("example".into(), "model".into(), "1".into())?;
     let root = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: model.clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -616,6 +617,7 @@ mod prepared_request_reuse_properties {
             content: current,
         });
         let expected = ModelRequest {
+            compose_tools: false,
             model,
             messages: expected_messages,
             tools: Vec::new(),
@@ -686,6 +688,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         let model = Model::new("example".into(), "model".into(), "1".into())?;
         let root = crate::model::PreparedModelRequest::prepare(
             ModelRequest {
+                compose_tools: false,
                 model: model.clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,

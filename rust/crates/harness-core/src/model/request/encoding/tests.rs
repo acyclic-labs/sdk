@@ -9,6 +9,7 @@ fn message(index: usize) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
+        compose_tools: false,
         model: Model::new("scripted".into(), "encoding".into(), "1".into())?,
         messages: (0..count).map(message).collect(),
         tools: Vec::new(),

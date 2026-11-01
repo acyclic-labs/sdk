@@ -56,7 +56,7 @@ impl<'io> StockExecution<'io> {
         #[cfg(not(target_arch = "wasm32"))]
         let composed = if tool.executor.is_code_mode() {
             match self
-                .run_js(journal, identity, invocation, _hook_context)
+                .code(journal, identity, invocation, _hook_context)
                 .await
             {
                 Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),

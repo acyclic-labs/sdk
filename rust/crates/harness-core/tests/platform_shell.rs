@@ -17,7 +17,7 @@ fn default_tool_names_and_shell_contract_are_host_independent() -> Result<()> {
         "write",
         "edit",
         #[cfg(not(target_arch = "wasm32"))]
-        "run_js",
+        "code",
         "spawn",
         "send",
         "wait",

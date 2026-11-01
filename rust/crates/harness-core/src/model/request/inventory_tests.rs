@@ -11,6 +11,7 @@ fn request(count: usize) -> Result<ModelRequest> {
         });
     }
     Ok(ModelRequest {
+        compose_tools: false,
         model: Model::new("test".into(), "inventory".into(), "1".into())?,
         messages,
         tools: vec![crate::tool::ToolDefinition {

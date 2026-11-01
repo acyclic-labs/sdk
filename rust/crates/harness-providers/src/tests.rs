@@ -3,8 +3,8 @@ use acyclic_harness_core::{
     context::ModelContextCapacity,
     conversation::Limits,
     model::{
-        Model, ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
-        ModelRole, PreparedModelRequest,
+        Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage,
+        ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
 };
 use acyclic_stream::BoxProviderFuture;
@@ -358,6 +358,7 @@ pub(super) fn provider_with(
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: provider.model.clone(),
             messages: vec![
                 ModelMessage {
@@ -381,6 +382,114 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
         request_digest: prepared.request_digest(),
     };
     Ok((prepared, dispatch))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol() -> Result<()> {
+    let code = acyclic_harness_core::tools::catalog()
+        .find(|tool| tool.name == "code")
+        .unwrap()
+        .definition()?;
+    for adapter in [
+        Adapter::Chat,
+        Adapter::Responses,
+        Adapter::Anthropic,
+        Adapter::Gemini,
+    ] {
+        let (provider, _) = provider(adapter, 200);
+        let (prepared, _) = request(&provider)?;
+        let mut request = prepared.request().clone();
+        request.tools = vec![code.clone()];
+        request.compose_tools = true;
+        let original = projection::body(&provider, &request)?;
+        let mut late = code.clone();
+        late.name = "late".into();
+        request.tools.push(late);
+        request.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::Notices {
+                notices: vec![acyclic_model_render::Notice {
+                    source: "tools".into(),
+                    kind: "tools.changed".into(),
+                    body: json!({"tools":[{"name":"late", "input_schema":{"type":"object"}}]}),
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            }),
+        });
+        request.messages.extend([
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness_core::model::ToolCall::new(
+                        "old".into(),
+                        "late".into(),
+                        json!({"code":"42"}),
+                    ),
+                )),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "old".into(),
+                    name: "late".into(),
+                    content: acyclic_harness_core::model::ToolResultContent::Json {
+                        value: json!(42),
+                    },
+                }),
+            },
+        ]);
+        let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+        let changed = projection::body(&provider, prepared.request())?;
+        let mut direct = prepared.request().clone();
+        direct.compose_tools = false;
+        let direct = projection::body(&provider, &direct)?;
+        assert!(
+            serde_json::to_string(&direct["tools"])
+                .unwrap()
+                .contains("late")
+        );
+        assert_eq!(original["tools"], changed["tools"]);
+        let (name, schema) = match adapter {
+            Adapter::Chat => (
+                &changed["tools"][0]["function"]["name"],
+                &changed["tools"][0]["function"]["parameters"],
+            ),
+            Adapter::Responses => (
+                &changed["tools"][0]["name"],
+                &changed["tools"][0]["parameters"],
+            ),
+            Adapter::Anthropic => {
+                assert_eq!(original["system"], changed["system"]);
+                (
+                    &changed["tools"][0]["name"],
+                    &changed["tools"][0]["input_schema"],
+                )
+            }
+            Adapter::Gemini => {
+                assert_eq!(original["systemInstruction"], changed["systemInstruction"]);
+                (
+                    &changed["tools"][0]["functionDeclarations"][0]["name"],
+                    &changed["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"],
+                )
+            }
+        };
+        assert_eq!(name, "code");
+        assert_eq!(schema["properties"]["code"]["type"], "string");
+        // The dynamic capability is context, never another native declaration.
+        assert!(
+            !serde_json::to_string(&changed["tools"])
+                .unwrap()
+                .contains("late")
+        );
+        assert!(
+            serde_json::to_string(&changed)
+                .unwrap()
+                .contains("tools.changed")
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -587,6 +696,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
         };
         let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
+            compose_tools: false,
             model: provider.model.clone(),
             max_output_tokens: Some(64),
             tools: vec![tool],

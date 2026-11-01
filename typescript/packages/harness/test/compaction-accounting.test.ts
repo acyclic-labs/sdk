@@ -19,6 +19,7 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
     }
     const replacement = new TextDecoder().decode(new TextEncoder().encode(invalid));
     const request: ModelRequestWire = {
+      compose_tools: false,
       model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
       messages: [{ role: "user", content: replacement }], tools: [], max_output_tokens: 1_024,
     };
@@ -64,6 +65,7 @@ test("generated compaction policy validates actual capacity and finite output in
 
 test("generated provider accounting binds canonical requests, dimensions and portable sums", () => {
   const request: ModelRequestWire = {
+    compose_tools: false,
     model: { provider: "synthetic", name: "byte-counter", revision: "1", options: {} },
     messages: [{ role: "user", content: "é🦀" }],
     tools: [],

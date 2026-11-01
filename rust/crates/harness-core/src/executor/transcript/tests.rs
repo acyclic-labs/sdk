@@ -23,6 +23,7 @@ async fn segmented_reopen_releases_decoder_scratch_on_success_and_failure() -> R
     let journal = journal.as_ref();
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("test".into(), "custody".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -120,6 +121,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
     let other = other_issuer.verifier(&mut None)?;
     let prepared = crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: Model::new("test".into(), "proof".into(), "1".into())?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,

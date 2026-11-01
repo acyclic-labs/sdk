@@ -11,14 +11,31 @@ pub struct ContextInsertion {
 }
 
 impl ContextInsertion {
-    pub(super) fn insert(
+    pub(crate) fn insert(
         self,
         context: &mut Context,
         prefix_messages: usize,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
+        Self::insert_batch(
+            std::iter::once(self.message),
+            self.local_index,
+            context,
+            prefix_messages,
+            io,
+        )
+    }
+
+    pub(crate) fn insert_batch(
+        messages: impl ExactSizeIterator<Item = ModelMessage>,
+        local_index: usize,
+        context: &mut Context,
+        prefix_messages: usize,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let count = messages.len();
         let index = prefix_messages
-            .checked_add(self.local_index)
+            .checked_add(local_index)
             .filter(|index| *index <= context.messages.len())
             .ok_or_else(|| {
                 stock_boundary(
@@ -31,19 +48,22 @@ impl ContextInsertion {
             .current_input_index
             .map(|current| {
                 if current as usize >= index {
-                    current.checked_add(1).ok_or_else(|| {
-                        stock_boundary(
-                            io,
-                            ErrorCode::Invalid,
-                            "optional context input position overflow",
-                        )
-                    })
+                    u32::try_from(count)
+                        .ok()
+                        .and_then(|count| current.checked_add(count))
+                        .ok_or_else(|| {
+                            stock_boundary(
+                                io,
+                                ErrorCode::Invalid,
+                                "optional context input position overflow",
+                            )
+                        })
                 } else {
                     Ok(current)
                 }
             })
             .transpose()?;
-        let wanted = context.messages.len().checked_add(1).ok_or_else(|| {
+        let wanted = context.messages.len().checked_add(count).ok_or_else(|| {
             stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -60,7 +80,7 @@ impl ContextInsertion {
             if let Some(work) = work.as_deref_mut() {
                 work.admit_copy(shifted as u64)?;
             }
-            context.messages.insert(index, self.message);
+            context.messages.splice(index..index, messages);
             if let Some(work) = work.as_deref_mut() {
                 work.copy_bytes(shifted as u64)?;
             }

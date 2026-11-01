@@ -86,17 +86,17 @@ impl ToolSpec {
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     #[cfg(not(target_arch = "wasm32"))]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &RUN_JS];
+    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &CODE];
     #[cfg(target_arch = "wasm32")]
     let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT];
     specs.into_iter()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-static RUN_JS: ToolSpec = ToolSpec {
-    name: "run_js",
+static CODE: ToolSpec = ToolSpec {
+    name: "code",
     revision: "1",
-    description: "Run JavaScript for multi-step reads, filters and loops over tools. Use await tools[name](arguments), with each tool's existing JSON input schema; tool functions also expose input_schema. The final expression is returned with a compact call log. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain their normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
+    description: "Run JavaScript for multi-step reads, filters, loops and batches of tools. Use await tools[name](arguments) or Promise.all for independent calls, with each tool's existing JSON input schema; functions expose input_schema. tools.changed notices carry ordered JSON tool-table fragments: concatenate body.json by body.offset until body.complete. The table is refreshed for each program. Only the final expression is returned; call logs stream to tool-output files. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
     hook_names: &[],
     binding: ToolBinding::Volume,
     input: || {
@@ -105,7 +105,7 @@ static RUN_JS: ToolSpec = ToolSpec {
         )
     },
     output: object,
-    projection_schema: command_projection,
+    projection_schema: |_| Ok(crate::tool::json_projection_schema(json!({}))),
     executor: |_| Arc::new(super::code_mode::CodeMode),
     projection: |_| Arc::new(super::code_mode::CodeMode),
 };

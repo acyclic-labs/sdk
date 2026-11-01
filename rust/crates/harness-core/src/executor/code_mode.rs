@@ -6,9 +6,6 @@ use tokio_util::sync::CancellationToken;
 mod allocator;
 mod interpreter;
 
-// Output is a page, not a script/call-count limit. Overflow is reported explicitly.
-pub(super) const OUTPUT_BYTES: usize = 64 * 1024;
-
 struct Call {
     name: allocator::BridgeText,
     arguments: allocator::BridgeText,
@@ -23,8 +20,11 @@ impl Drop for Stop {
 }
 
 #[derive(Serialize)]
-struct CallLog {
-    tool: String,
+struct CallLog<'a> {
+    kind: &'static str,
+    call_id: &'a str,
+    ordinal: u64,
+    tool: &'a str,
     ok: bool,
     input_bytes: usize,
     output_bytes: u64,
@@ -34,6 +34,164 @@ type CallResult<'a> =
     std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
 
 impl StockExecution<'_> {
+    pub(super) fn code_tools_notice(
+        &self,
+        context: &mut crate::context::Context,
+        tools: &[crate::tool::ToolDefinition],
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            offset: usize,
+            json: &'a str,
+            complete: bool,
+        }
+        #[derive(Serialize)]
+        struct Notice<'a> {
+            source: &'static str,
+            kind: &'static str,
+            body: Body<'a>,
+            wake: bool,
+            coalesce_key: Option<&'static str>,
+        }
+        #[derive(Serialize)]
+        struct Content<'a> {
+            kind: &'static str,
+            notices: [Notice<'a>; 1],
+        }
+        fn content(json: &str, offset: usize, complete: bool) -> Content<'_> {
+            Content {
+                kind: "notices",
+                notices: [Notice {
+                    source: "tools",
+                    kind: "tools.changed",
+                    body: Body {
+                        offset,
+                        json,
+                        complete,
+                    },
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            }
+        }
+        let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
+        #[cfg(feature = "filesystem")]
+        let funded = self
+            .io
+            .map(|io| io.encode(&tools, u64::MAX, false))
+            .transpose()?;
+        #[cfg(not(feature = "filesystem"))]
+        let funded: Option<acyclic_stream::OwnedBytes> = None;
+        let table = match funded {
+            Some(bytes) => bytes,
+            None => serde_json::to_vec(tools)
+                .map(Into::into)
+                .map_err(|_| invalid("tool table encoding failed"))?,
+        };
+        #[cfg(feature = "filesystem")]
+        let _table_hold = self.io.map(|io| io.guard_bytes(&table)).transpose()?;
+        let table = std::str::from_utf8(&table).map_err(|_| invalid("tool table is not UTF-8"))?;
+        crate::model::charge_items(self.io, table.len() as u64)?;
+        // Charge actual JSON escaping, with worst-case offset and completion
+        // framing. A schema larger than one part is split without truncation.
+        let overhead = with_history_io(self.io, |work| {
+            json::json_byte_length(&content("", usize::MAX, false), u64::MAX, work)
+        })?;
+        let maximum = self
+            .stock
+            .limits
+            .render_bytes
+            .checked_sub(overhead)
+            .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))?;
+        let index = context
+            .current_input_index
+            .map_or(context.messages.len(), |index| index as usize + 1);
+        let mut matched = 0;
+        let mut pending = Vec::new();
+        let mut offset = 0;
+        while offset < table.len() {
+            let remaining = &table[offset..];
+            let mut bytes = 0;
+            let mut end = 0;
+            for (index, character) in remaining.char_indices() {
+                let size = match character {
+                    '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+                    character if character < '\u{20}' => 6,
+                    character => character.len_utf8() as u64,
+                };
+                if size > maximum - bytes {
+                    break;
+                }
+                bytes += size;
+                end = index + character.len_utf8();
+            }
+            if end == 0 {
+                return Err(invalid("render allowance cannot advance a tool notice"));
+            }
+            let notice = content(&remaining[..end], offset, offset + end == table.len());
+            #[cfg(feature = "filesystem")]
+            let funded = self
+                .io
+                .map(|io| io.encode(&notice, u64::MAX, false))
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let funded: Option<acyclic_stream::OwnedBytes> = None;
+            let bytes = match funded {
+                Some(bytes) => bytes,
+                None => serde_json::to_vec(&notice)
+                    .map(Into::into)
+                    .map_err(|_| invalid("tool notice encoding failed"))?,
+            };
+            #[cfg(feature = "filesystem")]
+            let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+            #[cfg(feature = "filesystem")]
+            let decoded = self
+                .io
+                .map(|io| {
+                    io.decode(
+                        std::marker::PhantomData::<ModelContent>,
+                        &bytes,
+                        crate::wire::ErrorCode::Invalid,
+                    )
+                })
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let decoded: Option<(ModelContent, crate::conversation::ContentHold<'_>)> = None;
+            let decoded = match decoded {
+                Some((message, hold)) => (message, Some(hold)),
+                None => (
+                    serde_json::from_slice(&bytes)
+                        .map_err(|_| invalid("tool notice decoding failed"))?,
+                    None,
+                ),
+            };
+            let decoded = (
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: decoded.0,
+                },
+                decoded.1,
+            );
+            if pending.is_empty() && context.messages.get(index + matched) == Some(&decoded.0) {
+                matched += 1;
+            } else {
+                stock_vec_push(&mut pending, retain_preparation(decoded)?, self.io)?;
+            }
+            offset += end;
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        // Move the suffix once for the whole batch, independently of part count.
+        crate::context::ContextInsertion::insert_batch(
+            stock_into_iter(pending, self.io)?,
+            index + matched,
+            context,
+            0,
+            self.io,
+        )
+    }
+
     pub(super) fn restore_js_context(
         &self,
         value: &Value,
@@ -70,7 +228,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    pub(super) fn run_js<'a>(
+    pub(super) fn code<'a>(
         &'a self,
         journal: &'a dyn ExecutionJournal,
         identity: (OperationId, u32),
@@ -86,7 +244,7 @@ impl StockExecution<'_> {
                     stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Invalid,
-                        "run_js requires code",
+                        "code requires a JavaScript source string",
                     )
                 })?;
             let definitions =
@@ -110,8 +268,9 @@ impl StockExecution<'_> {
                         )
                     })?,
             };
-            let maximum = OUTPUT_BYTES
-                .min(usize::try_from(self.stock.limits.render_bytes).unwrap_or(usize::MAX));
+            let maximum = usize::try_from(self.stock.limits.render_bytes)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(crate::tool::schema::json_envelope_bytes()?);
             let token = CancellationToken::new();
             let stop = Stop(token.clone());
             // Bounded credit: one call is handed to the sole stock dispatcher at a
@@ -126,13 +285,10 @@ impl StockExecution<'_> {
                 definitions,
                 send,
                 token,
-                maximum / 2,
+                maximum,
                 allocator,
                 interpreter::INTERRUPT_BUDGET,
             )));
-            let mut log = Vec::new();
-            let mut log_bytes = 0;
-            let mut omitted = 0_u64;
             let mut ordinal = 0_u64;
             let mut inner_context = Vec::new();
             let program = loop {
@@ -163,12 +319,23 @@ impl StockExecution<'_> {
                         let ok = result.is_ok();
                         let (value, _result_hold) = match result { Ok(result) => result, Err(message) => (Value::String(message), None) };
                         let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
-                        let entry = CallLog { tool: stock_string_copy(&call.name.value, self.io)?, ok, input_bytes, output_bytes };
-                        let bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&entry, u64::MAX, work))?.saturating_add(1);
-                        if bytes <= (maximum / 4 - log_bytes) as u64 {
-                            log_bytes += bytes as usize;
-                            stock_vec_push(&mut log, entry, self.io)?;
-                        } else { omitted = omitted.saturating_add(1); }
+                        let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
+                        let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
+                        #[cfg(feature = "filesystem")]
+                        let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+                        // The ordinary journal publishes one immutable tool-output
+                        // file per settled call. Following that directory streams
+                        // logs without retaining call history in the caller or VM.
+                        tokio::select! {
+                            biased;
+                            cancelled = journal.model_cancellation() => {
+                                stop.0.cancel();
+                                let _ = worker.await;
+                                cancelled?;
+                                return Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled));
+                            }
+                            result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
+                        }
                         #[derive(Serialize)]
                         struct Reply<'a> { ok: bool, value: &'a Value }
                         let reply = Reply { ok, value: &value };
@@ -196,12 +363,11 @@ impl StockExecution<'_> {
             }
             let value = match program {
                 Ok(value) => {
-                    serde_json::json!({"value": value, "calls": log, "omitted_calls": omitted})
+                    serde_json::json!({"value": value})
                 }
                 Err(mut error) => {
-                    let mut value =
-                        serde_json::json!({"error": "", "calls": log, "omitted_calls": omitted});
-                    // Reserve the exact wrapper and log before fitting escaped text.
+                    let mut value = serde_json::json!({"error": ""});
+                    // Reserve the exact wrapper before fitting escaped text.
                     let overhead = with_history_io(self.io, |work| {
                         crate::executor::json::json_byte_length(&value, maximum as u64, work)
                     })?;
@@ -212,7 +378,13 @@ impl StockExecution<'_> {
                     value
                 }
             };
-            stock_json_bound(&value, maximum as u64, self.io)?;
+            // Only the projected result consumes render capacity. The private
+            // receipt wrapper is never part of the model's output.
+            stock_json_bound(
+                value.get("value").unwrap_or(&value),
+                maximum as u64,
+                self.io,
+            )?;
             let mut context = Vec::new();
             for message in stock_into_iter(inner_context, self.io)? {
                 let ModelContent::Text(text) = message.content else {
@@ -233,7 +405,7 @@ impl StockExecution<'_> {
                 stock_vec_push(&mut context, Value::String(text), self.io)?;
             }
             Ok(ExecutionProgress::Ready(ToolResult {
-                value: serde_json::json!({"version":1,"output":value,"context":context}),
+                value: serde_json::json!({"version":2,"output":value,"context":context}),
             }))
         })
     }

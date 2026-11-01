@@ -136,6 +136,7 @@ async fn check_projection(
     let encoded_work = bytes.len() as u64;
     let request = PreparedModelRequest::prepare(
         ModelRequest {
+            compose_tools: false,
             model: provider.model().clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
