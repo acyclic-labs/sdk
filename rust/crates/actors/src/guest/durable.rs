@@ -23,6 +23,7 @@ pub struct WebSocketAutoResponse {
 /// Dropping an observer never cancels that producer. The original decided
 /// failure remains reachable after the host retires its live socket entry.
 pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
+    /// Joins the original producer and retains its decided failure after retirement.
     fn completion(
         self: Arc<Self>,
     ) -> acyclic_stream::BoxProviderFuture<

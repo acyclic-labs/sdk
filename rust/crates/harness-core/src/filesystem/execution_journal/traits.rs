@@ -241,14 +241,14 @@ where
             }
             let identity = indexed_publication::contribution_identity(&contributions, io)?;
             let ExecutionEvent::ToolStarted { publication, .. } = event else {
-                return Err(stock_boundary(
+                return Err(crate::filesystem::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "remote dispatch requires its original tool start",
                 ));
             };
             if publication.is_some() && *publication != identity {
-                return Err(stock_boundary(
+                return Err(crate::filesystem::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "remote dispatch differs from its original tool start",

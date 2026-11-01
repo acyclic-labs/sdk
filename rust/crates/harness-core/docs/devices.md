@@ -14,13 +14,15 @@ host that admitted those connections. Other Actor namespaces keep their own
 handlers. A device opens its original Stream Session Actor socket with
 `DeviceRunner::attach`, then passes that socket to `DeviceRunner::serve`.
 
-`TargetDirectory` implements the ordinary `TargetResolver`. Its one `follow`
+`TargetDirectory` retains the same admitted socket host and implements the
+ordinary `TargetResolver`. Its one `follow`
 observes presence; `for_agent` shares that subscription and roster while binding
 another agent's original grant and home executor. Bind the resulting resolver
 through `runtime::Bindings.targets`. There is no fallback when a named device is
 offline. The device's Open and Close events publish its presence, including
 Close(Runtime) after host recovery. An ended presence producer invalidates the
-shared roster.
+shared roster through a retained offline snapshot. Unchanged observations reuse
+the roster's canonical encoding and digest.
 
 The resolver queues a Run in the same commit as the tool-journal claim and the
 owning Actor's activation. The Run binds the original agent, tool operation,
@@ -44,7 +46,10 @@ A terminal operation head prevents another handover of that operation. A
 replayed queue sequence is also refused by the physical connection's high-water
 mark. Ending a session publishes one immutable Lost marker covering all its
 unfinished operations, without enumerating them. An Exit already committed
-before Close remains recoverable. Losing a connection or current grant drops the
+before Close remains recoverable. Before dispatch the selected executor pins
+the original actor/socket completion. Failed Close publication ends that same
+observation even if storage follow stays healthy; it drains one accepted run
+cut and retains uncertainty without requiring a successfully published marker. Losing a connection or current grant drops the
 same Machine stream and reports uncertainty; it never redispatches the command
 or certifies physical cleanup from expiry alone.
 
@@ -58,7 +63,7 @@ original idempotent releases when its journal publication retries.
 The real native integration control runs with:
 
 ```sh
-cargo test -p acyclic-harness-core --features filesystem-local,native-execution,machines --test machine-workspace device_runner::committed_device_handover_runs_once_and_archive_fences_its_grant -- --exact
+cargo test -p acyclic-harness-core --features filesystem-local,native-execution,machines --test main machine_workspace::device_runner::committed_device_handover_runs_once_and_archive_fences_its_grant -- --exact
 ```
 
 It retains the actual local Machine, authenticated Actor socket, committed
