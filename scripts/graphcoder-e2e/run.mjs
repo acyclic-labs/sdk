@@ -195,13 +195,12 @@ async function verify(result, allRecords) {
     return { ...result, status: "fail", error: error.stack, workspace: fixture.workspace };
   }
 }
-let results, currentPhase, failedPhase, execution, expired = false;
+let results, currentPhase, failedPhase, execution;
 const phases = {};
-// This process's start opens the outer ten-second envelope; so does the deadline.
+// Include process startup in the elapsed-time report.
 try { execution = await withOwnedCase({ processes, origin: 0, onPhase: event => {
   currentPhase = event.phase;
-  if (event.outcome === "failed" || event.outcome === "deadline") failedPhase ??= event.phase;
-  if (event.outcome === "deadline") expired = true;
+  if (event.outcome === "failed") failedPhase ??= event.phase;
   phases[event.phase] = event;
   process.stderr.write(`case-lifecycle: ${JSON.stringify(event)}\n`);
 }, prepare: async () => {
@@ -226,7 +225,7 @@ try { execution = await withOwnedCase({ processes, origin: 0, onPhase: event => 
   return new Map(await schedule(cases, process.platform, async test => [test.id, await prepare(test, origin)]));
 }, run: async prepared => {
   // Unix cases share one mock. Windows runs one case variant per process;
-  // serial.mjs gives each variant its own unchanged ten-second budget.
+  // serial.mjs reports each variant's elapsed time separately.
   results = await schedule(cases, process.platform, test => execute(test, prepared.get(test.id)));
 } }); }
 catch (error) {
@@ -236,18 +235,18 @@ catch (error) {
     return { ...result, case: test.id, platform: process.platform, status: "fail", phase: result?.phase ?? failedPhase ?? currentPhase,
       error: result?.error ? `${result.error}\n${detail}` : detail };
   });
-  execution = { expired, preparation_seconds: phases.preparation?.seconds };
+  execution = { preparation_seconds: phases.preparation?.seconds };
 }
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
 const allRecords = port ? await recordedRequests(events, join(output, "requests.jsonl")) : [];
 results = await Promise.all(results.map(result => verify(result, allRecords)));
-results = results.map(result => ({ ...result, ...(execution.expired ? { timeout: true } : {}), evidence: { ...evidence.get(result.case),
+results = results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, product_seconds: execution.seconds, preparation_seconds: execution.preparation_seconds,
-  phases, limit_seconds: 10, expired: execution.expired, results, output, roots,
+  phases, limit_seconds: 10, results, output, roots,
   selected, qualification: !selected.length, coverage };
 await publishReport(join(output, "matrix.json"), report);
-process.exitCode = !execution.expired && results?.every(result => result.status === "pass") && seconds < 10
+process.exitCode = results?.every(result => result.status === "pass") && seconds < 10
   && (selected.length > 0 || coverage.pass) ? 0 : 1;

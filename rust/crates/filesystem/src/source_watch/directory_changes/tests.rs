@@ -98,14 +98,13 @@ fn assert_retired(shared: &Shared) {
     assert!(shared.retired(&shared.lock_reads()));
     assert_eq!(shared.buffer_bytes.load(Ordering::Acquire), 0);
 }
-fn wait_retired(shared: &Shared) -> Instant {
+fn wait_retired(shared: &Shared) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !shared.stop_completed.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(shared.stop_completed.load(Ordering::Acquire));
     assert_retired(shared);
-    deadline
 }
 fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
     let name = name
@@ -502,17 +501,17 @@ mod original {
                 Err(DemandError::OriginalWorkPoisoned)
             ));
         });
+        let (complete, completed) = std::sync::mpsc::channel();
+        watch.observe_data_drop(complete)?;
         drop(protection);
         drop(watch);
-        let deadline = wait_retired(&completion);
+        wait_retired(&completion);
         birth.with_original_leaf(|work| {
             assert_eq!(work.budget, budget);
             assert!(work.live_allocation_bytes() > 0);
         });
         drop(completion);
-        while owner.upgrade().is_some() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert!(completed.recv().is_err(), "original watch payload retired");
         assert!(owner.upgrade().is_none());
         Ok(())
     }

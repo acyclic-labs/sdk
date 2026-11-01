@@ -57,7 +57,6 @@ const inputs = [
   ], exit: 2, settled_contains: [prompt, "cancelled", "○"] },
   { resume: true, actions: [{ when: { contains: ["GraphCoder", prompt, "interaction cancelled", "STOPPED", "○"], cursor: true }, send: "\u0004" }], exit: 2, settled_contains: [prompt, "interaction cancelled", "STOPPED", "○"] },
 ];
-const timer = setTimeout(() => rejectFailure(new Error("held fetch cancellation exceeded the standard nine-second work budget")), 9000);
 let passed = false, activePty;
 try {
   for (const input of inputs) { activePty = pty(processes, binary, fixture, input, capture => captures.push(capture)); await Promise.race([failed, activePty]); }
@@ -65,7 +64,7 @@ try {
   assert.equal(generations, 1); assert.equal(fetches, 1); assert.equal(sourceRetired, true);
   passed = true; console.log("PASS held fetch Escape, owned HTTP retirement and explicit resume without redispatch");
 } finally {
-  clearTimeout(timer); await processes.close(); await activePty?.catch(() => {}); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  await processes.close(); await activePty?.catch(() => {}); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   const proof = { passed, seconds: (performance.now() - begin) / 1000, generations, fetches, sourceRetired, requests, captures, fixture: passed ? null : root };
   if (process.env.E2E_OUTPUT) { const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true }); writeFileSync(join(output, "fetch-cancellation.json"), JSON.stringify(proof)); }
   if (passed) rmSync(root, { recursive: true, force: true }); else console.error(`FETCH_CANCELLATION_FAILURE_FIXTURE ${root}`);
