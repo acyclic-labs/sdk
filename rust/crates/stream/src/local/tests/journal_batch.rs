@@ -16,88 +16,96 @@ fn frames(
         .collect()
 }
 
-#[tokio::test]
-async fn owned_frame_batches_reopen_in_order_and_release_original_work()
+#[test]
+fn owned_frame_batches_reopen_in_order_and_release_original_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    for count in [1, 16, 256] {
-        let root = tempfile::tempdir()?;
-        let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
-        let meter = Arc::new(crate::test_meter::Meter::local());
-        let work = crate::native::Work::new(meter.original())?;
-        let frames = frames(count, Some(work.clone()))?;
-        let bytes: u64 = frames.iter().map(|frame| frame.encoded.len() as u64).sum();
-        // Exercise the physical boundary under its real publication fence,
-        // then recover the canonical decisions from the resulting real file.
-        let visibility = stream.inner.visibility.write().await;
-        let publication = stream.inner.publication.write().await;
-        let mut revision = stream.inner.revision.subscribe();
-        let (entered, prefix) = tokio::sync::oneshot::channel();
-        let (release, released) = std::sync::mpsc::sync_channel(0);
-        let mut entered = Some(entered);
-        let writing = tokio::spawn({
-            let stream = stream.clone();
-            async move {
-                let frames = frames.into_iter().enumerate().map(move |(index, frame)| {
-                    if index == 1 {
-                        let _ = entered.take().unwrap().send(());
-                        released.recv().expect("original proposal release lost");
-                    }
-                    frame
-                });
-                stream.persist_frames(frames).await
+    let _serial = super::PERSIST_BLOCKER_TESTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        for count in [1, 16, 256] {
+            let root = tempfile::tempdir()?;
+            let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+            let meter = Arc::new(crate::test_meter::Meter::local());
+            let work = crate::native::Work::new(meter.original())?;
+            let frames = frames(count, Some(work.clone()))?;
+            let bytes: u64 = frames.iter().map(|frame| frame.encoded.len() as u64).sum();
+            // Exercise the physical boundary under its real publication fence,
+            // then recover the canonical decisions from the resulting real file.
+            let visibility = stream.inner.visibility.write().await;
+            let publication = stream.inner.publication.write().await;
+            let mut revision = stream.inner.revision.subscribe();
+            let (entered, prefix) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::sync_channel(0);
+            let mut entered = Some(entered);
+            let writing = tokio::spawn({
+                let stream = stream.clone();
+                async move {
+                    let frames = frames.into_iter().enumerate().map(move |(index, frame)| {
+                        if index == 1 {
+                            let _ = entered.take().unwrap().send(());
+                            released.recv().expect("original proposal release lost");
+                        }
+                        frame
+                    });
+                    stream.persist_frames(frames).await
+                }
+            });
+            if count > 1 {
+                prefix.await?;
+                // The original first write is complete, but the next frame still
+                // holds publication. Its notification cannot admit an observation.
+                assert!(!revision.has_changed()?);
+                assert_eq!(*revision.borrow(), 0);
+                assert_eq!(stream.inner.required()?, 1);
+                stream.await_publication(1).await?;
+                assert_eq!(
+                    stream.inner.journal.lock().unwrap().flushed_sequence,
+                    Some(1)
+                );
+                release.send(())?;
             }
-        });
-        if count > 1 {
-            prefix.await?;
-            // The original first write is complete, but the next frame still
-            // holds publication. Its notification cannot admit an observation.
+            let cursor = writing.await??;
+            revision.changed().await?;
+            assert_eq!(*revision.borrow_and_update(), count);
             assert!(!revision.has_changed()?);
-            assert_eq!(*revision.borrow(), 0);
-            assert_eq!(stream.inner.required()?, 1);
-            stream.await_publication(1).await?;
             assert_eq!(
-                stream.inner.journal.lock().unwrap().flushed_sequence,
-                Some(1)
+                stream.inner.journal.lock().unwrap().append_admissions,
+                1,
+                "one proposal must not repeat offset admission for each frame"
             );
-            release.send(())?;
+            assert_eq!(stream.inner.required()?, count);
+            stream.await_publication(count).await?;
+            drop(publication);
+            drop(visibility);
+            drop(work);
+            meter.assert_refunded();
+            assert_eq!(
+                meter.write_bytes.load(std::sync::atomic::Ordering::SeqCst),
+                bytes
+            );
+            let length = std::fs::metadata(root.path().join(JOURNAL_FILE))?.len();
+            assert_eq!(length, HEADER_BYTES as u64 + bytes);
+            assert_eq!(cursor, length);
+            drop(stream);
+            let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+            assert_eq!(reopened.tail(StreamPath::new("batch")?).await?, count);
+            for sequence in 0..count {
+                assert!(matches!(
+                    reopened.append(super::keyed_append("batch", sequence)?).await?,
+                    AppendOutcome::Committed(receipt) if receipt.tail == sequence + 1
+                ));
+            }
+            assert_eq!(
+                std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
+                HEADER_BYTES as u64 + bytes
+            );
         }
-        let cursor = writing.await??;
-        revision.changed().await?;
-        assert_eq!(*revision.borrow_and_update(), count);
-        assert!(!revision.has_changed()?);
-        assert_eq!(
-            stream.inner.journal.lock().unwrap().append_admissions,
-            1,
-            "one proposal must not repeat offset admission for each frame"
-        );
-        assert_eq!(stream.inner.required()?, count);
-        stream.await_publication(count).await?;
-        drop(publication);
-        drop(visibility);
-        drop(work);
-        meter.assert_refunded();
-        assert_eq!(
-            meter.write_bytes.load(std::sync::atomic::Ordering::SeqCst),
-            bytes
-        );
-        let length = std::fs::metadata(root.path().join(JOURNAL_FILE))?.len();
-        assert_eq!(length, HEADER_BYTES as u64 + bytes);
-        assert_eq!(cursor, length);
-        drop(stream);
-        let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
-        assert_eq!(reopened.tail(StreamPath::new("batch")?).await?, count);
-        for sequence in 0..count {
-            assert!(matches!(
-                reopened.append(super::keyed_append("batch", sequence)?).await?,
-                AppendOutcome::Committed(receipt) if receipt.tail == sequence + 1
-            ));
-        }
-        assert_eq!(
-            std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
-            HEADER_BYTES as u64 + bytes
-        );
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(feature = "test-support")]
