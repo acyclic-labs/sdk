@@ -578,6 +578,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 Ok(())
             }
             Body::Data(data) if input.channel_id != 0 => {
+                if let Err(reason) = self.validate_authority(input.channel_id) {
+                    return self.close_authority(
+                        wire::SessionChannel {
+                            channel_id: input.channel_id,
+                            generation: input.generation,
+                        },
+                        reason,
+                    );
+                }
                 let channel = self.channel(input.channel_id, input.generation)?;
                 if channel.ending.is_some() {
                     return Ok(());

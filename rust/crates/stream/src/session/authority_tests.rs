@@ -9,14 +9,14 @@ use std::sync::{
 
 /// Published trust and clock: trust is swapped before each publication or
 /// the owner's loss resolves a registered change.
-struct State {
+pub(in crate::session) struct State {
     trust: RwLock<Arc<signed::Snapshot>>,
     clock: AtomicU64,
     published: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
     clock_events: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
 }
 impl State {
-    fn new() -> Arc<Self> {
+    pub(in crate::session) fn new() -> Arc<Self> {
         Arc::new(Self {
             trust: RwLock::new(Arc::new(signed::Snapshot::default())),
             clock: AtomicU64::new(signed::NOW),
@@ -24,7 +24,7 @@ impl State {
             clock_events: tokio::sync::watch::channel(Ok(())).0,
         })
     }
-    fn publish(&self, trust: signed::Snapshot, now: u64) {
+    pub(in crate::session) fn publish(&self, trust: signed::Snapshot, now: u64) {
         *self.trust.write().unwrap() = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
         let _ = self.published.send_replace(Ok(()));
@@ -146,7 +146,7 @@ impl AuthorityState for State {
         })
     }
 }
-fn authority(state: Arc<State>) -> Authority {
+pub(in crate::session) fn authority(state: Arc<State>) -> Authority {
     Authority::new(state, "workers:/test".into(), Some("account".into())).unwrap()
 }
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {

@@ -7,15 +7,20 @@ struct Echo {
     gone: std::sync::Mutex<Option<oneshot::Sender<()>>>,
     /// End the socket after its greeting instead of echoing.
     ends: bool,
+    received: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 struct EchoInbound {
     frames: mpsc::UnboundedSender<Bytes>,
     gone: Option<oneshot::Sender<()>>,
+    received: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl SocketInbound for EchoInbound {
     fn receive(&self, frame: Bytes) -> Result<(), StreamError> {
+        if let Some(received) = &self.received {
+            received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         self.frames
             .unbounded_send(frame)
             .map_err(|_| StreamError::Unavailable)
@@ -61,6 +66,7 @@ impl SocketProvider for Echo {
             },
             inbound: Box::new(EchoInbound {
                 frames,
+                received: self.received.clone(),
                 gone: self
                     .gone
                     .lock()
@@ -82,6 +88,117 @@ fn client(sockets: Arc<dyn SocketProvider>) -> Client {
     )
 }
 
+#[tokio::test]
+async fn socket_input_rechecks_authority_after_the_wait_selects_input() -> TestResult {
+    use crate::session::authority::tests::{State, authority};
+    use acyclic_auth::{testing as signed, verify};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for (reason, now) in [("revoked", signed::NOW), ("credential_expired", 1000)] {
+        let state = State::new();
+        let credential =
+            testing::credential_with_grants(vec![acyclic_auth::contract::ResourceGrant {
+                resource: acyclic_auth::contract::ResourcePattern {
+                    name: "actors:/fixture".into(),
+                    prefix: false,
+                },
+                actions: vec!["actors/invoke".into()],
+            }]);
+        let capability = verify::verify(&credential, &signed::Snapshot::default(), signed::NOW)?;
+        let revoked_blocks = if reason == "revoked" {
+            vec![
+                *capability
+                    .block_ids()
+                    .first()
+                    .ok_or("missing signed block")?,
+            ]
+        } else {
+            vec![]
+        };
+        let (sender, receiver) = mpsc::unbounded();
+        let changing = state.clone();
+        let incoming = receiver.map(move |input: Result<wire::SessionFrame, StreamError>| {
+            // Publish only while the original input future is being polled,
+            // after next_frame's pre-wait fence has checked the old authority.
+            if matches!(&input, Ok(wire::SessionFrame {
+                body: Some(Body::Data(wire::SessionData {
+                    item: Some(Item::ActorSocket(bytes)), ..
+                })), ..
+            }) if bytes.as_ref() == b"refused")
+            {
+                changing.publish(
+                    signed::Snapshot {
+                        revoked_blocks: revoked_blocks.clone(),
+                        ..Default::default()
+                    },
+                    now,
+                );
+            }
+            input
+        });
+        let mut greeting = hello(1_000_000, 100);
+        let Some(Body::Hello(hello)) = &mut greeting.body else {
+            return Err("missing greeting".into());
+        };
+        hello.credentials = vec![credential];
+        sender.unbounded_send(Ok(greeting))?;
+        let mut socket = subscribe(1, "events", 0, false);
+        socket.kind = Some(Kind::ActorSocket(Bytes::from_static(b"open")));
+        sender.unbounded_send(Ok(interest(1, vec![socket])))?;
+        let (gone, left) = oneshot::channel();
+        let received = Arc::new(AtomicUsize::new(0));
+        let mut output = serve_on_with_products(
+            Arc::new(MemoryStream::default()),
+            Arc::new(authority(state)),
+            Products {
+                sockets: Some(Arc::new(Echo {
+                    gone: std::sync::Mutex::new(Some(gone)),
+                    ends: false,
+                    received: Some(received.clone()),
+                })),
+                ..Products::default()
+            },
+            "node".into(),
+            Limits::default(),
+            incoming.boxed(),
+            None,
+        )?;
+        for _ in 0..3 {
+            next(&mut output).await?;
+        }
+        sender.unbounded_send(Ok(window(1)))?;
+        assert!(matches!(next(&mut output).await?.body, Some(Body::Data(_))));
+        for bytes in [
+            Bytes::from_static(b"allowed"),
+            Bytes::from_static(b"refused"),
+        ] {
+            assert!(futures::poll!(output.next()).is_pending());
+            sender.unbounded_send(Ok(frame(
+                1,
+                1,
+                Body::Data(wire::SessionData {
+                    item: Some(Item::ActorSocket(bytes.clone())),
+                    ..Default::default()
+                }),
+            )))?;
+            let result = next(&mut output).await?;
+            if bytes.as_ref() == b"allowed" {
+                assert!(matches!(result.body, Some(Body::Data(wire::SessionData {
+                    item: Some(Item::ActorSocket(echo)), ..
+                })) if echo == bytes));
+            } else {
+                assert!(matches!(result.body, Some(Body::Closed(close)) if close.code == reason));
+            }
+            assert_eq!(received.load(Ordering::SeqCst), 1, "{reason}");
+        }
+        assert!(matches!(
+            futures::FutureExt::now_or_never(left),
+            Some(Ok(()))
+        ));
+    }
+    Ok(())
+}
+
 #[test]
 fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult {
     let mut session = super::properties::empty_session(false);
@@ -95,6 +212,7 @@ fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult
         .socket = Some(Box::new(EchoInbound {
         frames,
         gone: Some(gone),
+        received: None,
     }));
     session.record(
         wire::SessionChannel {
@@ -161,6 +279,7 @@ async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> 
     let client = client(Arc::new(Echo {
         gone: std::sync::Mutex::new(Some(gone)),
         ends: false,
+        received: None,
     }));
     client.register_credential(
         0,
@@ -194,6 +313,7 @@ async fn socket_admission_requires_actor_invoke_on_the_resource() -> TestResult 
     let client = client(Arc::new(Echo {
         gone: std::sync::Mutex::new(Some(gone)),
         ends: false,
+        received: None,
     }));
     // The default credential reads streams but cannot invoke actors.
     client.register_credential(0, testing::credential())?;
@@ -211,6 +331,7 @@ async fn a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer(
     let client = client(Arc::new(Echo {
         gone: std::sync::Mutex::new(Some(gone)),
         ends: true,
+        received: None,
     }));
     client.register_credential(
         0,
@@ -269,6 +390,7 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
             sockets: Some(Arc::new(Echo {
                 gone: std::sync::Mutex::new(Some(gone)),
                 ends: false,
+                received: None,
             })),
             ..Products::default()
         },
