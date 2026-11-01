@@ -864,24 +864,26 @@ fn prepare_keyring(
                 next: None,
             });
         }
-        let rolled_back = next.minimum_key_epoch < current.minimum_key_epoch
-            || next.issued_at_unix_seconds < current.issued_at
-            || !current
-                .revoked_keys
-                .iter()
-                .all(|key| next.revoked_key_ids.contains(key))
-            || !current.revoked_blocks.iter().all(|(id, expiry)| {
-                *expiry <= next.issued_at_unix_seconds
-                    || revoked_blocks.get(id).is_some_and(|next| next >= expiry)
-            });
         if current.sequence.checked_add(1) != Some(next.sequence)
             || next.previous_digest != current.digest
-            || rolled_back
+            || next.minimum_key_epoch < current.minimum_key_epoch
+            || next.issued_at_unix_seconds < current.issued_at
         {
             return Err(VerifyError::Trust);
         }
     } else if next.sequence == 0 || (next.sequence == 1 && next.previous_digest != [0; 32]) {
         return Err(VerifyError::Trust);
+    }
+    let revoked_keys: HashSet<_> = next.revoked_key_ids.iter().cloned().collect();
+    if let Some(current) = &account.keyring {
+        let rolled_back = !current.revoked_keys.is_subset(&revoked_keys)
+            || !current.revoked_blocks.iter().all(|(id, expiry)| {
+                *expiry <= next.issued_at_unix_seconds
+                    || revoked_blocks.get(id).is_some_and(|next| next >= expiry)
+            });
+        if rolled_back {
+            return Err(VerifyError::Trust);
+        }
     }
     if next.issued_at_unix_seconds > now {
         return Err(VerifyError::Time);
@@ -927,7 +929,7 @@ fn prepare_keyring(
         issued_at: next.issued_at_unix_seconds,
         root: Arc::from([root]),
         minimum_key_epoch: next.minimum_key_epoch,
-        revoked_keys: next.revoked_key_ids.iter().cloned().collect(),
+        revoked_keys,
         revoked_blocks,
     };
     Ok(PreparedKeyring {
