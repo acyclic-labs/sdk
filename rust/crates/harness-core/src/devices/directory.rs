@@ -647,9 +647,9 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             command,
             grant,
         })?;
-        if record.len() > acyclic_stream::MAX_RECORD_BYTES {
+        if super::records::handover_frame_len(record.len())? > acyclic_stream::MAX_RECORD_BYTES {
             return Err(Error::Invalid(
-                "the command does not fit one device run record".into(),
+                "the command does not fit one device handover frame".into(),
             ));
         }
         Ok(Some(Dispatch {

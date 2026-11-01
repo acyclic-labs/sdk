@@ -39,7 +39,7 @@ const INBOX: &str = "inbox";
 const QUEUE: &str = "queue";
 const HANDOVER: &str = "acyclic.harness.device.handover.v1";
 /// Longest session a device may open with.
-const MAX_SESSION_BYTES: usize = 128;
+pub(super) const MAX_SESSION_BYTES: usize = 128;
 
 fn codec() -> CodecIdentity {
     CodecIdentity {

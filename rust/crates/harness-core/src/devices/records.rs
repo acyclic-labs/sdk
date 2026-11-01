@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 /// The format version of every record here.
 pub const RECORD_VERSION: u32 = 1;
 
-/// Payload chunking keeps JSON byte arrays inside one protective socket frame.
-/// This splits output; it never limits the command's total output.
-pub(super) const OUTPUT_CHUNK_BYTES: usize = 16 * 1024;
+/// A JSON byte consumes at most four bytes, including its separator. Half the
+/// record remains available for report, socket and committed-event metadata.
+/// This partitions output; it never limits the command's total output.
+pub(super) const OUTPUT_CHUNK_BYTES: usize = acyclic_stream::MAX_RECORD_BYTES / 8;
 
 /// Where the devices under one root keep their streams.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,10 +191,46 @@ pub struct Run {
 /// the original Stream sequence, not a second device delivery counter.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct HandoverRecord {
+pub(super) struct HandoverRecord<T = Run> {
     pub(super) v: u32,
     pub(super) sequence: u64,
-    pub(super) run: Run,
+    pub(super) run: T,
+}
+
+/// Admit the complete wire handover before publishing its Run. Its eventual
+/// queue sequence can use every decimal digit of u64. Serialize only the fixed
+/// envelope here; the already encoded Run is embedded unchanged by serde.
+pub(super) fn handover_frame_len(run_bytes: usize) -> Result<usize> {
+    struct Length(usize);
+    impl std::io::Write for Length {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("device handover encoding length overflow"))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut length = Length(0);
+    serde_json::to_writer(
+        &mut length,
+        &HandoverRecord {
+            v: RECORD_VERSION,
+            sequence: u64::MAX,
+            run: (),
+        },
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    // Unit serializes to `null`; replace those four bytes by the actual Run.
+    let text_bytes = (length.0 - b"null".len())
+        .checked_add(run_bytes)
+        .ok_or_else(|| Error::Invalid("device handover encoding length overflow".into()))?;
+    acyclic_actors::sockets::SocketFrame::text_frame_len(text_bytes)
+        .ok_or_else(|| Error::Invalid("device handover encoding length overflow".into()))
 }
 
 /// What happened to a run, as the device's actor records it.
@@ -310,4 +347,74 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> 
         )));
     }
     serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_actors::{guest::SocketPayload, sockets::SocketFrame};
+
+    #[test]
+    fn device_records_admit_complete_frames_and_binary_output() -> Result<()> {
+        let maximum = acyclic_stream::MAX_RECORD_BYTES;
+        // Generated codec inputs exercise the length-prefix boundaries and the
+        // largest eventual queue position, independently of command admission.
+        for size in [0, 127, 128, 16_383, 16_384, maximum - 16, maximum] {
+            let run = "x".repeat(size);
+            let raw = encode(&run)?;
+            let text = String::from_utf8(encode(&HandoverRecord {
+                v: RECORD_VERSION,
+                sequence: u64::MAX,
+                run: &run,
+            })?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            let frame = SocketFrame::Message(SocketPayload::Text { text }).encode();
+            assert_eq!(handover_frame_len(raw.len())?, frame.len());
+            if raw.len() <= maximum && size == maximum - 16 {
+                // The old inner-record check accepted this undeliverable Run.
+                assert!(frame.len() > maximum);
+            }
+        }
+        assert!(handover_frame_len(usize::MAX).is_err());
+
+        let op = OperationId::from_bytes([255; 16]);
+        for stderr in [false, true] {
+            let text = String::from_utf8(encode(&MessageRecord {
+                v: RECORD_VERSION,
+                message: DeviceMessage::Output {
+                    op,
+                    stderr,
+                    data: vec![255; OUTPUT_CHUNK_BYTES],
+                },
+            })?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(
+                SocketFrame::Message(SocketPayload::Text { text })
+                    .encode()
+                    .len()
+                    <= maximum
+            );
+            let event = RunRecord {
+                v: RECORD_VERSION,
+                event: RunEvent::Output {
+                    // Even maximal JSON escaping of the admitted session fits.
+                    session: "\\".repeat(super::super::actor::MAX_SESSION_BYTES),
+                    generation: u64::MAX,
+                    stderr,
+                    data: vec![255; OUTPUT_CHUNK_BYTES],
+                },
+            };
+            assert!(encode(&event)?.len() <= maximum);
+            let old = encode(&MessageRecord {
+                v: RECORD_VERSION,
+                message: DeviceMessage::Output {
+                    op,
+                    stderr,
+                    data: vec![255; 16 * 1024],
+                },
+            })?;
+            assert!(old.len() > maximum);
+        }
+        Ok(())
+    }
 }

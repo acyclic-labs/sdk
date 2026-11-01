@@ -639,6 +639,46 @@ async fn committed_handover(refused_close: bool) -> Result {
         assert_eq!(std::fs::read(&marker_path)?, b"x");
         assert_eq!(provider.tail(paths.queue("desktop")?).await?, 1);
 
+        if !refused_close {
+            let mut binary = run.clone();
+            binary.op = OperationId::new();
+            let binary_op = binary.op;
+            // Capture real child bytes through the original native runner,
+            // socket, inbox and committed operation stream. The old 16 KiB
+            // JSON chunk exceeded one frame for these bytes and lost the link.
+            binary.arguments["command"] = if cfg!(windows) {
+                "[Console]::OpenStandardOutput().Write([byte[]](@(255) * 16384))"
+            } else {
+                "head -c 16384 /dev/zero | LC_ALL=C tr '\\000' '\\377'"
+            }
+            .into();
+            provider.commit(dispatch(binary, b"binary-output")?).await?;
+            let mut request = FollowRequest::new(paths.run("desktop", binary_op)?, 0);
+            request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            let mut events = provider.follow(request).await?;
+            let mut captured = Vec::new();
+            loop {
+                let update = events
+                    .next()
+                    .await
+                    .ok_or("original binary output producer ended")??;
+                let FollowUpdate::Record(record) = update else {
+                    continue;
+                };
+                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                let event = &value["event"];
+                if let Some(output) = event.get("output") {
+                    assert_eq!(output["stderr"], false);
+                    let bytes: Vec<u8> = serde_json::from_value(output["data"].clone())?;
+                    captured.extend(bytes);
+                } else if event.get("started").is_none() {
+                    assert_eq!(event["exit"]["result"]["exit_code"], 0);
+                    break;
+                }
+            }
+            assert_eq!(captured, vec![255; 16 * 1024]);
+        }
+
         // Even another authorized project cannot replace the original mounted
         // selection. The real command is harmless but would leave evidence.
         let mut foreign_run = run.clone();

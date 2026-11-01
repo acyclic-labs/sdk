@@ -216,7 +216,7 @@ impl DeviceRunner {
                     match SocketFrame::decode(&frame) {
                         Ok(SocketFrame::Message(SocketPayload::Text { text })) => {
                             // Only the actor writes here; anything but a run is no command.
-                            let Ok(HandoverRecord { sequence, run, .. }) = decode(text.as_bytes()) else {
+                            let Ok(HandoverRecord { sequence, run, .. }) = decode::<HandoverRecord>(text.as_bytes()) else {
                                 continue;
                             };
                             if handed.is_none_or(|previous| sequence > previous) {
