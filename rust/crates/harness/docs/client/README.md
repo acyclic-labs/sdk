@@ -4,6 +4,9 @@ The [headless event contract](headless.md) describes versioned JSONL output,
 payload acknowledgements, replay identities, final artifacts and paged browsing
 over this same client.
 
+The [committed history contract](history.md) describes paged turn selection,
+conditional file/context restoration, fork identity and current integration limits.
+
 Agent observation uses `AgentClient` over the shared Rust `WireSession` and the
 platform's authenticated Streams `session::Client`. Each focused agent selects
 its `AgentPath::conversation()` and `AgentPath::status()` streams with explicit
