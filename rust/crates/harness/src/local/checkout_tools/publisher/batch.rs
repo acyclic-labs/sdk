@@ -28,6 +28,7 @@ impl CheckoutPublisher {
                             self.tools.clock.now_unix_millis() / 1000,
                             access
                                 .io
+                                .as_ref()
                                 .and_then(crate::store::HistoryIo::original_native_work),
                         )?;
                     }
@@ -123,6 +124,7 @@ impl CheckoutPublisher {
                         self.tools.clock.now_unix_millis() / 1000,
                         access
                             .io
+                            .as_ref()
                             .and_then(crate::store::HistoryIo::original_native_work),
                     )?;
                 }
