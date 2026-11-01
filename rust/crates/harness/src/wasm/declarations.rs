@@ -28,14 +28,14 @@ export type WasmLimitsInput = WasmNativeLimitsWire;
 export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export interface WasmNativeLimitsWire {
-    readonly file_bytes: bigint;
-    readonly path_bytes: bigint;
-    readonly attachments: bigint;
-    readonly render_bytes: bigint;
-    readonly model_steps: bigint;
-    readonly model_events_per_step: bigint;
-    readonly tool_calls_per_step: bigint;
-    readonly context_messages: bigint;
+    readonly file_bytes: bigint | null;
+    readonly path_bytes: bigint | null;
+    readonly attachments: bigint | null;
+    readonly render_bytes: bigint | null;
+    readonly model_steps: bigint | null;
+    readonly model_events_per_step: bigint | null;
+    readonly tool_calls_per_step: bigint | null;
+    readonly context_messages: bigint | null;
 }
 export interface WasmProviderRefWire {
     readonly namespace: string;
@@ -140,14 +140,14 @@ export type WasmModelJsonSchema =
     | boolean
     | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
 export interface WasmModelLimitsInput {
-    readonly file_bytes: number | bigint;
-    readonly path_bytes: number | bigint;
-    readonly attachments: number | bigint;
-    readonly render_bytes: number | bigint;
-    readonly model_steps: number | bigint;
-    readonly model_events_per_step: number | bigint;
-    readonly tool_calls_per_step: number | bigint;
-    readonly context_messages: number | bigint;
+    readonly file_bytes: number | bigint | null;
+    readonly path_bytes: number | bigint | null;
+    readonly attachments: number | bigint | null;
+    readonly render_bytes: number | bigint | null;
+    readonly model_steps: number | bigint | null;
+    readonly model_events_per_step: number | bigint | null;
+    readonly tool_calls_per_step: number | bigint | null;
+    readonly context_messages: number | bigint | null;
 }
 export type WasmModelToolResultContentInput =
     | Readonly<{ kind: "json"; value: unknown }>

@@ -240,11 +240,7 @@ impl AuthorityVerifier {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<[u8; 32]> {
         let mut quota = CodecQuota::new(work, 0)?;
-        let bytes = crate::store::history::canonical_bytes_with_work(
-            value,
-            crate::store::default_projection_read_limits().maximum_bytes,
-            quota.work(),
-        )?;
+        let bytes = crate::store::history::canonical_bytes_with_work(value, None, quota.work())?;
         quota.adopt(bytes.capacity() as u64)?;
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(domain.len() as u64 + 8 + bytes.len() as u64)?;

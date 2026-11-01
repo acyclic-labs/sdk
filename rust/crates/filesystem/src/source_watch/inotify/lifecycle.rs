@@ -94,9 +94,8 @@ impl NativeSourceWatch {
                 &mut cleanup,
                 work,
             )?;
-            // The read buffer and the inbox are reserved here and allocated
-            // only while records are pending.
-            let bytes = (READ_BUFFER_BYTES + hub::INBOX_BYTES) as u64;
+            // Reserve the read chunk. Routed queue backing is funded as it grows.
+            let bytes = READ_BUFFER_BYTES as u64;
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
             work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)?;
             retained = next_retained;
@@ -142,11 +141,11 @@ impl NativeSourceWatch {
                 .store(hub.raw_descriptor(), Ordering::Release);
             subscribed = false;
             initialized
-                .retained_variable_bytes
-                .store(retained - control_bytes, Ordering::Release);
-            initialized
                 .ownership
                 .retain(retained - control_bytes, work)?;
+            initialized
+                .retained_variable_bytes
+                .fetch_add(retained - control_bytes, Ordering::AcqRel);
             transferred = true;
             *initialized
                 .cleanup
@@ -216,6 +215,14 @@ impl NativeSourceWatch {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner) = true;
                     shared.retiring.store(true, Ordering::Release);
+                    if subscribed {
+                        let withdrawn = hub::hub().and_then(|hub| {
+                            hub.withdraw(shared.subscriber, &watches, &ancestors)
+                                .map_err(Into::into)
+                        });
+                        cleaned = cleaned.and(cleanup.record(WRITE, work).and(withdrawn));
+                        subscribed = false;
+                    }
                     cleaned = cleaned.and(shared.clear_measured(work));
                     shared.cancel_cleanup(work);
                 }
@@ -441,6 +448,8 @@ impl NativeSourceWatch {
             return Err(DemandError::Cancelled);
         }
         self.shared.stopping.store(true, Ordering::Release);
+        #[cfg(test)]
+        super::admission_tests::after_stop_admission();
         self.shared.reading_changed.notify_all();
         drop(ancestors);
         drop(watches);

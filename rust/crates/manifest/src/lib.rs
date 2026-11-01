@@ -23,17 +23,6 @@ pub use validation::{
 };
 use wire::Contract;
 
-/// Maximum untrusted JSON size, before allocation or parsing.
-pub const MAX_JSON_BYTES: usize = 1_048_576;
-/// Maximum environments in one deployment.
-pub const MAX_ENVIRONMENTS: usize = 16;
-/// Maximum items in any declaration or selection list.
-pub const MAX_ITEMS: usize = 64;
-/// Maximum UTF-8 bytes in any string, including imported contracts.
-pub const MAX_STRING_BYTES: usize = 2048;
-/// Maximum JSON nodes across the complete document.
-pub const MAX_NODES: usize = 16384;
-
 /// Versioned deployment document; project and account identity come from the deploy call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -346,7 +335,7 @@ pub struct WorkerPatternRoute {
     pub entry: Option<String>,
 }
 
-/// Version discrimination precedes strict v1 decoding; all inputs are size bounded.
+/// Version discrimination precedes strict v1 decoding.
 pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
     let manifest = decode(input)?;
     validate(&manifest)?;
@@ -354,9 +343,6 @@ pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
 }
 
 fn decode(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
-    if input.len() > MAX_JSON_BYTES {
-        return Err(ManifestError::invalid("$", "json-size"));
-    }
     let value: serde_json::Value = serde_json::from_slice(input).map_err(ManifestError::json)?;
     if value
         .get("schemaVersion")

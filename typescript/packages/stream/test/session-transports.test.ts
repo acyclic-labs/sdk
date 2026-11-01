@@ -82,8 +82,9 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
-    const hello = node.received.find(frame => frame.body.case === "hello")!;
-    expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
+    const credential = node.received.find(frame => frame.body.case === "credential")!;
+    expect(credential.body.case === "credential" && credential.body.value.slot).toBe(0);
+    expect(credential.body.case === "credential" && credential.body.value.credential).toEqual(new Uint8Array([1, 2, 3]));
     const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
       .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
     expect(interest?.filter).toEqual(filter);
@@ -184,8 +185,9 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     await Promise.race([node.until(() => node.active === follows.length + 1), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
-    const hello = node.received.find(frame => frame.body.case === "hello")!;
-    expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
+    const credential = node.received.find(frame => frame.body.case === "credential")!;
+    expect(credential.body.case === "credential" && credential.body.value.slot).toBe(0);
+    expect(credential.body.case === "credential" && credential.body.value.credential).toEqual(new Uint8Array([1, 2, 3]));
     const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
       .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
     expect(interest?.filter).toEqual(filter);

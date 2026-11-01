@@ -1,6 +1,7 @@
 //! Header controls can retain an existing admitted page without copying names.
 use super::super::attributes::PackedAttribute;
 use super::*;
+use std::ops::Range;
 
 #[cfg(test)]
 mod tests;
@@ -12,20 +13,13 @@ pub(crate) struct PreparedHeaderControls {
 }
 
 impl PreparedHeaderControls {
-    pub(crate) fn new(meter: &Arc<dyn NativeReadMeter>, maximum: usize) -> io::Result<Self> {
-        Self::new_shape(meter, maximum, MAX_RECORD_KEYS, MAX_RECORD_ATTRIBUTES)
-    }
-
-    pub(super) fn new_shape(
+    pub(crate) fn new_shape(
         meter: &Arc<dyn NativeReadMeter>,
         maximum: usize,
         keys: usize,
         attributes: usize,
     ) -> io::Result<Self> {
-        if maximum > crate::MAX_RECORD_BYTES
-            || keys > MAX_RECORD_KEYS
-            || attributes > MAX_RECORD_ATTRIBUTES
-        {
+        if maximum > crate::MAX_RECORD_BYTES {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let mut allocation = ReadAllocation::new(meter, RecordHeaders::control_bytes())?;
@@ -61,10 +55,10 @@ impl PreparedHeaderControls {
     pub(crate) fn finish(
         self,
         bytes: OwnedBytes,
-        keys: &[Range<usize>],
-        attributes: &[(Range<usize>, Range<usize>)],
+        keys: impl ExactSizeIterator<Item = Range<usize>> + Clone,
+        attributes: impl ExactSizeIterator<Item = (Range<usize>, Range<usize>)> + Clone,
     ) -> io::Result<RecordHeaders> {
-        if keys.is_empty() && attributes.is_empty() {
+        if keys.len() == 0 && attributes.len() == 0 {
             return Ok(RecordHeaders::default());
         }
         let Self {
@@ -80,14 +74,10 @@ impl PreparedHeaderControls {
         else {
             unreachable!("prepared headers use packed storage")
         };
-        if keys.len() > MAX_RECORD_KEYS
-            || keys.len() > data_mut.keys.capacity()
-            || attributes.len() > MAX_RECORD_ATTRIBUTES
-            || attributes.len() > values.capacity()
-        {
+        if keys.len() > data_mut.keys.capacity() || attributes.len() > values.capacity() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        validate(&bytes, keys, attributes, maximum)?;
+        validate(&bytes, keys.clone(), attributes.clone(), maximum)?;
         for range in keys {
             data_mut.keys.push(bytes.slice(range.clone()));
         }
@@ -109,8 +99,8 @@ impl PreparedHeaderControls {
 
 fn validate(
     bytes: &[u8],
-    keys: &[Range<usize>],
-    attributes: &[(Range<usize>, Range<usize>)],
+    keys: impl Iterator<Item = Range<usize>>,
+    attributes: impl Iterator<Item = (Range<usize>, Range<usize>)>,
     maximum: usize,
 ) -> io::Result<()> {
     let mut validation = super::super::validation::Validation::default();

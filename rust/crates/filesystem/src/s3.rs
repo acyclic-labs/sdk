@@ -32,8 +32,6 @@ pub struct S3ListOptions {
     pub continuation: Option<S3ListCursor>,
     /// Maximum combined objects and common prefixes returned.
     pub maximum_keys: u32,
-    /// Hard authenticated namespace entries examined by this request.
-    pub maximum_entries_examined: u32,
 }
 
 impl Default for S3ListOptions {
@@ -44,7 +42,6 @@ impl Default for S3ListOptions {
             start_after: None,
             continuation: None,
             maximum_keys: 1_000,
-            maximum_entries_examined: 100_000,
         }
     }
 }
@@ -73,7 +70,7 @@ pub struct S3List {
     /// Immutable-generation continuation when more matching results exist.
     pub next_continuation: Option<S3ListCursor>,
     /// Exact authenticated namespace entries examined.
-    pub entries_examined: u32,
+    pub entries_examined: u64,
 }
 
 /// Opaque stable S3 listing continuation bound to one generation and query.
@@ -98,8 +95,8 @@ impl S3ListCursor {
         )
     }
 
-    /// Decodes one bounded canonical continuation token.
-    pub fn decode(token: &str, maximum_key_bytes: u32) -> Result<Self, S3Error> {
+    /// Decodes one complete canonical continuation token.
+    pub fn decode(token: &str) -> Result<Self, S3Error> {
         let mut fields = token.split('.');
         let version = fields.next().ok_or(S3Error::InvalidContinuation)?;
         if version != "v1" {
@@ -119,14 +116,11 @@ impl S3ListCursor {
             _ => return Err(S3Error::InvalidContinuation),
         };
         let after = fields.next().ok_or(S3Error::InvalidContinuation)?;
-        if fields.next().is_some() || after.len() > maximum_key_bytes as usize * 2 {
+        if fields.next().is_some() {
             return Err(S3Error::InvalidContinuation);
         }
         let after = hex::decode(after).map_err(|_| S3Error::InvalidContinuation)?;
         let after = String::from_utf8(after).map_err(|_| S3Error::InvalidContinuation)?;
-        if after.len() > maximum_key_bytes as usize {
-            return Err(S3Error::InvalidContinuation);
-        }
         Ok(Self {
             generation,
             after,
@@ -141,22 +135,14 @@ pub struct S3Workspace<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
 }
 
-/// Hard multipart staging bounds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Optional caller policy for multipart staging.
+/// None admits every positive part without a count or byte policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct S3MultipartOptions {
     /// Maximum distinct uploaded part numbers.
-    pub maximum_parts: u32,
+    pub maximum_parts: Option<u32>,
     /// Maximum bytes admitted for any one part.
-    pub maximum_part_bytes: u64,
-}
-
-impl Default for S3MultipartOptions {
-    fn default() -> Self {
-        Self {
-            maximum_parts: 10_000,
-            maximum_part_bytes: 5 * 1024 * 1024 * 1024,
-        }
-    }
+    pub maximum_part_bytes: Option<u64>,
 }
 
 /// One unpublished multipart candidate.
@@ -208,7 +194,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3Workspac
         idempotency_key: IdempotencyKey,
     ) -> Result<S3MultipartUpload<A, O>, S3Error> {
         validate_key(key)?;
-        if options.maximum_parts == 0 || options.maximum_part_bytes == 0 {
+        if options.maximum_parts == Some(0) || options.maximum_part_bytes == Some(0) {
             return Err(S3Error::InvalidRequest("multipart bounds must be positive"));
         }
         Ok(S3MultipartUpload {
@@ -723,18 +709,14 @@ fn queue_listing_task(
     lower_key: String,
     task: ListingTask,
 ) -> Result<(), S3Error> {
-    let next = sequence.checked_add(1).ok_or(S3Error::ListLimit)?;
+    let next = sequence.checked_add(1).ok_or(S3Error::InvalidObject)?;
     pending.insert((lower_key, *sequence), task);
     *sequence = next;
     Ok(())
 }
 
 /// Seek only when every earlier child directory has a flattened `name/` bound below the marker.
-fn direct_child_seek(
-    options: &S3ListOptions,
-    limits: crate::model::VolumeLimits,
-    frontier_key: &str,
-) -> Option<Bound<LogicalName>> {
+fn direct_child_seek(options: &S3ListOptions, frontier_key: &str) -> Option<Bound<LogicalName>> {
     let Some(cursor) = &options.continuation else {
         return None;
     };
@@ -757,19 +739,15 @@ fn direct_child_seek(
     {
         return None;
     }
-    LogicalName::new(
-        NameEncoding::Utf8,
-        name.as_bytes().to_vec(),
-        limits.maximum_component_bytes,
-    )
-    .ok()
-    .map(|name| {
-        if cursor.after_prefix {
-            Bound::Excluded(name)
-        } else {
-            Bound::Included(name)
-        }
-    })
+    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())
+        .ok()
+        .map(|name| {
+            if cursor.after_prefix {
+                Bound::Excluded(name)
+            } else {
+                Bound::Included(name)
+            }
+        })
 }
 
 /// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
@@ -790,7 +768,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
 ) -> Result<S3List, S3Error> {
     let mut pending = BTreeMap::new();
     let mut sequence = 0_u64;
-    let seek = direct_child_seek(options, limits, &frontier_key);
+    let seek = direct_child_seek(options, &frontier_key);
     queue_listing_task(
         &mut pending,
         &mut sequence,
@@ -802,10 +780,10 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
             after: seek.unwrap_or(Bound::Unbounded),
         },
     )?;
-    let maximum = usize::try_from(options.maximum_keys).map_err(|_| S3Error::ListLimit)?;
+    let maximum = usize::try_from(options.maximum_keys).map_err(|_| S3Error::InvalidObject)?;
     let mut result = empty_list();
     let mut last: Option<(String, bool)> = None;
-    let mut examined = 0_u32;
+    let mut examined = 0_u64;
     while let Some((_, task)) = pending.pop_first() {
         match task {
             ListingTask::Directory {
@@ -814,13 +792,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
                 name_prefix,
                 after,
             } => {
-                let remaining = options.maximum_entries_examined - examined;
-                if remaining == 0 {
-                    return Err(S3Error::ListLimit);
-                }
-                let page_limit = LIST_PAGE_ENTRIES
-                    .min(remaining)
-                    .min(options.maximum_keys.saturating_add(1));
+                let page_limit = LIST_PAGE_ENTRIES.min(options.maximum_keys.saturating_add(1));
                 let page = checkout
                     .list_directory_records(
                         &path,
@@ -833,8 +805,10 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
                     .map_err(|failure| S3Error::Workspace(WorkspaceError::engine(failure)))?
                     .value;
                 examined = examined
-                    .checked_add(u32::try_from(page.entries.len()).map_err(|_| S3Error::ListLimit)?)
-                    .ok_or(S3Error::ListLimit)?;
+                    .checked_add(
+                        u64::try_from(page.entries.len()).map_err(|_| S3Error::InvalidObject)?,
+                    )
+                    .ok_or(S3Error::InvalidObject)?;
                 let continuation = if page.has_more {
                     let last_name = page
                         .entries
@@ -994,11 +968,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> S3Multipar
         if part_number == 0 {
             return Err(S3Error::InvalidRequest("part number must be positive"));
         }
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.options.maximum_part_bytes {
+        if self
+            .options
+            .maximum_part_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
             return Err(S3Error::MultipartLimit);
         }
         if !self.parts.contains_key(&part_number)
-            && u32::try_from(self.parts.len()).unwrap_or(u32::MAX) >= self.options.maximum_parts
+            && self
+                .options
+                .maximum_parts
+                .is_some_and(|maximum| self.parts.len() as u64 >= u64::from(maximum))
         {
             return Err(S3Error::MultipartLimit);
         }
@@ -1131,7 +1112,7 @@ fn decode_fixed<const N: usize>(value: Option<&str>) -> Result<[u8; N], S3Error>
 }
 
 fn validate_list_options(options: &S3ListOptions) -> Result<(), S3Error> {
-    if options.maximum_keys == 0 || options.maximum_entries_examined == 0 {
+    if options.maximum_keys == 0 {
         return Err(S3Error::InvalidRequest("list bounds must be positive"));
     }
     if !matches!(options.delimiter, None | Some('/')) {
@@ -1139,13 +1120,6 @@ fn validate_list_options(options: &S3ListOptions) -> Result<(), S3Error> {
     }
     if options.prefix.starts_with('/') || options.prefix.contains("//") {
         return Err(S3Error::InvalidKey);
-    }
-    if options
-        .start_after
-        .as_ref()
-        .is_some_and(|value| value.len() > 32 * 1024)
-    {
-        return Err(S3Error::InvalidRequest("start marker is too large"));
     }
     Ok(())
 }
@@ -1248,9 +1222,6 @@ pub enum S3Error {
     /// Authenticated object shape is invalid.
     #[error("authenticated S3 object shape is invalid")]
     InvalidObject,
-    /// Listing exhausted its caller-supplied work bound.
-    #[error("S3 listing exceeded its authenticated entry bound")]
-    ListLimit,
     /// Multipart staging exceeded an explicit count or byte bound.
     #[error("S3 multipart upload exceeded its bound")]
     MultipartLimit,
@@ -1283,6 +1254,17 @@ mod tests {
     fn listing_cursor_retains_object_prefix_identity() -> Result<(), S3Error> {
         let generation = crate::GenerationId::new(crate::Digest::from_bytes([1; 32]));
         let query = crate::Digest::from_bytes([2; 32]);
+        let long = S3ListCursor {
+            generation,
+            after: "a".repeat(65_537),
+            after_prefix: false,
+            query,
+        };
+        assert_eq!(S3ListCursor::decode(&long.encode())?, long);
+        validate_list_options(&S3ListOptions {
+            start_after: Some(long.after),
+            ..S3ListOptions::default()
+        })?;
         let token = S3ListCursor {
             generation,
             after: "a/".to_owned(),
@@ -1292,10 +1274,10 @@ mod tests {
         .encode();
         assert!(token.starts_with("v1."));
         assert!(matches!(
-            S3ListCursor::decode(&token.replacen("v1.", "v2.", 1), 1_024),
+            S3ListCursor::decode(&token.replacen("v1.", "v2.", 1)),
             Err(S3Error::InvalidContinuation)
         ));
-        let cursor = S3ListCursor::decode(&token, 1_024)?;
+        let cursor = S3ListCursor::decode(&token)?;
         let options = S3ListOptions {
             continuation: Some(cursor),
             ..S3ListOptions::default()
@@ -1309,15 +1291,12 @@ mod tests {
             Some(SelectedKey::Prefix(prefix)) if prefix == "a/"
         ));
         assert!(matches!(
-            S3ListCursor::decode(
-                &format!(
-                    "v1.{}.{}.{}",
-                    "01".repeat(32),
-                    "02".repeat(32),
-                    hex::encode("a/")
-                ),
-                1_024
-            ),
+            S3ListCursor::decode(&format!(
+                "v1.{}.{}.{}",
+                "01".repeat(32),
+                "02".repeat(32),
+                hex::encode("a/")
+            )),
             Err(S3Error::InvalidContinuation)
         ));
         Ok(())
@@ -1463,7 +1442,7 @@ mod tests {
             .as_ref()
             .ok_or("first listing page has no continuation")?
             .encode();
-        let continuation = S3ListCursor::decode(&token, 32 * 1024)?;
+        let continuation = S3ListCursor::decode(&token)?;
         s3.put_object("aa", Bytes::from_static(b"new"), IdempotencyKey::new())
             .await?;
         let second = Box::pin(s3.list_objects(S3ListOptions {
@@ -1480,7 +1459,7 @@ mod tests {
             vec!["c"]
         );
         assert!(matches!(
-            S3ListCursor::decode("v1.invalid", 32 * 1024),
+            S3ListCursor::decode("v1.invalid"),
             Err(S3Error::InvalidContinuation)
         ));
         assert!(matches!(
@@ -1491,14 +1470,6 @@ mod tests {
             }))
             .await,
             Err(S3Error::InvalidContinuation)
-        ));
-        assert!(matches!(
-            Box::pin(s3.list_objects(S3ListOptions {
-                maximum_entries_examined: 1,
-                ..S3ListOptions::default()
-            }))
-            .await,
-            Err(S3Error::ListLimit)
         ));
         Ok(())
     }
@@ -1539,7 +1510,7 @@ mod tests {
                 complete = true;
                 break;
             };
-            options.continuation = Some(S3ListCursor::decode(&cursor.encode(), 1_024)?);
+            options.continuation = Some(S3ListCursor::decode(&cursor.encode())?);
         }
         assert!(complete, "listing did not terminate within four pages");
         assert_eq!(
@@ -1662,7 +1633,7 @@ mod tests {
                         let Some(cursor) = page.next_continuation else {
                             break;
                         };
-                        options.continuation = Some(S3ListCursor::decode(&cursor.encode(), 1_024)?);
+                        options.continuation = Some(S3ListCursor::decode(&cursor.encode())?);
                     }
                     assert_eq!(actual, expected.iter().cloned().collect::<Vec<_>>());
                 }
@@ -1692,7 +1663,6 @@ mod tests {
             .list_objects(S3ListOptions {
                 delimiter: None,
                 maximum_keys: 1,
-                maximum_entries_examined: 2,
                 ..S3ListOptions::default()
             })
             .await?;
@@ -1710,7 +1680,6 @@ mod tests {
             .list_objects(S3ListOptions {
                 delimiter: Some('/'),
                 maximum_keys: 2,
-                maximum_entries_examined: 3,
                 ..S3ListOptions::default()
             })
             .await?;
@@ -1740,7 +1709,6 @@ mod tests {
         let with_prefix = s3
             .list_objects(S3ListOptions {
                 maximum_keys: 2,
-                maximum_entries_examined: 4,
                 ..S3ListOptions::default()
             })
             .await?;
@@ -1782,7 +1750,6 @@ mod tests {
         let mut options = S3ListOptions {
             delimiter: None,
             maximum_keys: 1,
-            maximum_entries_examined: 3,
             ..S3ListOptions::default()
         };
         for index in 0..32 {
@@ -1825,7 +1792,6 @@ mod tests {
             .list_objects(S3ListOptions {
                 delimiter: None,
                 maximum_keys: 33,
-                maximum_entries_examined: 34,
                 ..S3ListOptions::default()
             })
             .await?;
@@ -1837,7 +1803,6 @@ mod tests {
             .list_objects(S3ListOptions {
                 delimiter: None,
                 maximum_keys: 1,
-                maximum_entries_examined: 2,
                 continuation: first.next_continuation,
                 ..S3ListOptions::default()
             })
@@ -1866,7 +1831,6 @@ mod tests {
             let mut options = S3ListOptions {
                 delimiter,
                 maximum_keys: 1,
-                maximum_entries_examined: 2,
                 ..S3ListOptions::default()
             };
             options.continuation = Some(S3ListCursor {
@@ -1921,7 +1885,6 @@ mod tests {
         let selected = Box::pin(s3.list_objects(S3ListOptions {
             prefix: "target/".to_owned(),
             delimiter: None,
-            maximum_entries_examined: 1,
             ..S3ListOptions::default()
         }))
         .await?;
@@ -1931,7 +1894,6 @@ mod tests {
 
         let absent = Box::pin(s3.list_objects(S3ListOptions {
             prefix: "absent/".to_owned(),
-            maximum_entries_examined: 1,
             ..S3ListOptions::default()
         }))
         .await?;

@@ -70,10 +70,9 @@ fn id(value: &Value) -> Result {
 }
 
 fn key(value: &Value) -> Result {
-    let len = bytes(value)?.len();
-    (len > 0 && len <= crate::MAX_IDEMPOTENCY_KEY_BYTES)
-        .then_some(())
-        .ok_or("invalid idempotency key")
+    crate::IdempotencyKey::new(bytes(value)?)
+        .map(|_| ())
+        .map_err(|_| "invalid idempotency key")
 }
 
 fn validate_record_body(value: &Value) -> Result {
@@ -82,9 +81,6 @@ fn validate_record_body(value: &Value) -> Result {
     let value = bytes(field(item, "value")?)?;
     let keys = array(field(item, "keys")?)?;
     let attributes = array(field(item, "attributes")?)?;
-    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
-        return Err("record header count exceeded");
-    }
     let headers = crate::changes::record_headers(
         &value,
         keys.iter()
@@ -236,9 +232,7 @@ fn validate_commit_result(value: &Value) -> Result {
         u64_string(field(item, "committedAtMicros")?)?;
         let appends = array(field(item, "appends")?)?;
         let forks = array(field(item, "forks")?)?;
-        if appends.len().saturating_add(forks.len()) == 0
-            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS
-        {
+        if appends.is_empty() && forks.is_empty() {
             return Err("invalid receipt size");
         }
         for range in appends {
@@ -246,7 +240,7 @@ fn validate_commit_result(value: &Value) -> Result {
             path(field(range, "path")?)?;
             let start = u64_string(field(range, "start")?)?;
             let tail = u64_string(field(range, "tail")?)?;
-            if start >= tail || tail - start > crate::MAX_ITEMS as u64 {
+            if start >= tail {
                 return Err("invalid append range");
             }
         }
@@ -286,9 +280,6 @@ fn validate_mutation(value: &Value) -> Result {
             path(field(item, "source")?)?;
             path(field(item, "destination")?)?;
             let excluded = array(field(item, "exclude")?)?;
-            if excluded.len() > crate::MAX_ITEMS {
-                return Err("too many exclusions");
-            }
             for excluded in excluded {
                 path(excluded)?;
             }

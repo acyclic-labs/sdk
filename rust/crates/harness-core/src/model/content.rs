@@ -165,13 +165,19 @@ impl ModelContent {
         history_step(work, 1)?;
         limits.validate(work)?;
         if let Self::Text(text) = self {
-            return if text.len() as u64 <= limits.render_bytes {
+            return if limits
+                .render_bytes
+                .is_none_or(|maximum| text.len() as u64 <= maximum)
+            {
                 Ok(())
             } else {
                 Err(invalid(work, "model text exceeds render limit"))
             };
         }
-        if self.parts().len() > limits.attachments.saturating_add(1) {
+        if limits
+            .attachments
+            .is_some_and(|maximum| self.parts().len().saturating_sub(1) > maximum.get())
+        {
             return Err(invalid(work, "model content exceeds attachment limit"));
         }
         for part in self.parts() {
@@ -185,7 +191,11 @@ impl ModelContent {
                 }
             }
             match part {
-                ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
+                ModelContentPart::Text { text }
+                    if limits
+                        .render_bytes
+                        .is_some_and(|maximum| text.len() as u64 > maximum) =>
+                {
                     return Err(invalid(work, "model text exceeds render limit"));
                 }
                 ModelContentPart::File { file, policy } => {
@@ -217,7 +227,10 @@ impl ModelContent {
                 .checked_add(1)
                 .ok_or_else(|| invalid(work, "model content reference count overflow"))?;
         }
-        if references > limits.attachments.saturating_add(1) {
+        if limits
+            .attachments
+            .is_some_and(|maximum| references.saturating_sub(1) > maximum.get())
+        {
             return Err(invalid(
                 work,
                 "model content reference count exceeds attachment limit",
@@ -311,14 +324,21 @@ impl ToolResultContent {
         history_step(work, 1)?;
         limits.validate(work)?;
         if let Self::Parts { parts } = self {
-            if parts.len() > limits.attachments.saturating_add(1) {
+            if limits
+                .attachments
+                .is_some_and(|maximum| parts.len().saturating_sub(1) > maximum.get())
+            {
                 return Err(invalid(work, "tool result exceeds attachment limit"));
             }
             let mut references = 0usize;
             for part in parts {
                 history_step(work, 1)?;
                 match part {
-                    ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
+                    ModelDataPart::Text { text }
+                        if limits
+                            .render_bytes
+                            .is_some_and(|maximum| text.len() as u64 > maximum) =>
+                    {
                         return Err(invalid(work, "tool result text exceeds render limit"));
                     }
                     ModelDataPart::File { file, policy } => {
@@ -334,13 +354,19 @@ impl ToolResultContent {
                     ModelDataPart::Text { .. } => {}
                 }
             }
-            if references > limits.attachments.saturating_add(1) {
+            if limits
+                .attachments
+                .is_some_and(|maximum| references.saturating_sub(1) > maximum.get())
+            {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
             }
         }
         // `result_bound` charges the message scan.
         if let Self::Error { message } = self {
-            if message.len() as u64 > limits.render_bytes {
+            if limits
+                .render_bytes
+                .is_some_and(|maximum| message.len() as u64 > maximum)
+            {
                 return Err(invalid(work, "tool error exceeds render limit"));
             }
             if message.is_empty() || message.chars().any(char::is_control) {

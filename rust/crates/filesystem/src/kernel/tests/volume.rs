@@ -60,7 +60,7 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
 #[test]
 fn invalid_config_and_object_kind_fail_closed() {
     let mut invalid = config();
-    invalid.limits.maximum_path_bytes = 0;
+    invalid.limits.maximum_directory_page_entries = 0;
     assert!(matches!(
         encode_volume_created(
             VolumeCreated {
@@ -154,17 +154,6 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
             .is_err()
         );
     }
-
-    let mut depth_overflow = encoded.clone();
-    let depth_offset = config_offset + 8 + 4 + 4;
-    depth_overflow[depth_offset..depth_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(
-        decode_volume_created(&depth_overflow, u64::MAX, &mut |_| Ok::<
-            _,
-            crate::kernel::VolumeCreatedError,
-        >(()))
-        .is_err()
-    );
 
     let mut wrong_kind = encoded;
     let kind_offset = wrong_kind.len() - 33;

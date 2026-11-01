@@ -52,8 +52,8 @@ impl ContextStage for Transform {
 async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
     let input = input();
     let limits = Limits {
-        context_messages: 2,
-        render_bytes: 2048,
+        context_messages: std::num::NonZeroUsize::new(2),
+        render_bytes: Some(2048),
         ..payload_limits()
     };
     let probe = Arc::new(Probe::default());
@@ -72,11 +72,11 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
         let exact = crate::contract::canonical_json_bytes(&projected)?.len() as u64;
         for rejected in [
             Limits {
-                context_messages: 1,
+                context_messages: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             Limits {
-                render_bytes: exact - 1,
+                render_bytes: Some(exact - 1),
                 ..limits
             },
         ] {
@@ -87,7 +87,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
                 .run(
                     &input,
                     Limits {
-                        render_bytes: exact,
+                        render_bytes: Some(exact),
                         ..limits
                     },
                     None
@@ -114,7 +114,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None
@@ -127,7 +127,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..limits
                 },
                 None
@@ -192,4 +192,31 @@ proptest::proptest! {
             extent: ContextExtent::Span { start, end }, representation: ContextRepresentation::Full };
         proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default(), &mut None).is_ok(), start < end && end <= 10);
     }
+}
+
+#[test]
+fn optional_step_allowances_intersect_without_widening_finite_policy() -> Result<()> {
+    for (pinned, admitted, expected) in [
+        (None, None, None),
+        (None, Some(3), Some(3)),
+        (Some(2), None, Some(2)),
+        (Some(2), Some(3), Some(2)),
+    ] {
+        let result = restrict_context_limits(
+            Limits {
+                model_steps: pinned.and_then(std::num::NonZeroUsize::new),
+                ..Limits::default()
+            },
+            Limits {
+                model_steps: admitted.and_then(std::num::NonZeroUsize::new),
+                ..Limits::default()
+            },
+            None,
+        )?;
+        assert_eq!(
+            result.model_steps.map(std::num::NonZeroUsize::get),
+            expected
+        );
+    }
+    Ok(())
 }

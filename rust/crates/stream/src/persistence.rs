@@ -1,8 +1,7 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation, IdempotencyObservation,
-    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire,
-    wire_codec,
+    IdempotencyOutcome, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire, wire_codec,
 };
 use prost::Message;
 
@@ -126,10 +125,7 @@ pub(crate) fn decode<T: Message + Default>(input: &[u8], maximum: usize) -> Resu
 fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamError> {
     match &value.outcome {
         IdempotencyOutcome::Append(AppendOutcome::Committed(receipt)) => {
-            if receipt.start >= receipt.end
-                || receipt.end != receipt.tail
-                || receipt.end - receipt.start > MAX_ITEMS as u64
-            {
+            if receipt.start >= receipt.end || receipt.end != receipt.tail {
                 return Err(StreamError::InvalidArgument);
             }
         }
@@ -145,7 +141,7 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
 }
 
 pub(crate) fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
-    if value.mutations.is_empty() || value.mutations.len() > MAX_ITEMS {
+    if value.mutations.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
     let mut previous: Option<&StreamPath> = None;
@@ -181,7 +177,7 @@ fn validate_records(
     commit_id: CommitId,
     time: &mut Option<u64>,
 ) -> Result<(), StreamError> {
-    if records.len() > MAX_ITEMS || end - start != records.len() as u64 {
+    if end - start != records.len() as u64 {
         return Err(StreamError::InvalidArgument);
     }
     for (index, record) in records.iter().enumerate() {

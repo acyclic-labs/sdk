@@ -446,78 +446,37 @@ fn owner_only_permissions(path: &Path) -> bool {
     private
 }
 
-fn oversized_merge_preserves_original(
-    metadata: usize,
-    access: usize,
-    remove_size_bound: bool,
-) -> proptest::test_runner::TestCaseResult {
-    let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
-    let path = root.path().join("auth.json");
-    let mut original = auth(&jwt(0));
-    original["agent_identity"] = json!("m".repeat(metadata));
-    let original = serde_json::to_vec_pretty(&original).unwrap();
-    transport.response = json!({"access_token":"r".repeat(access)});
-    prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
-    prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
-    let mut private = crate::credential_file::create(root.path()).unwrap();
-    private.as_file_mut().write_all(&original).unwrap();
-    private
-        .publish(&path, acyclic_native_runtime::RenameMode::Replace)
-        .unwrap();
-    let permissions = owner_only_permissions(&path);
-    let outcome = if remove_size_bound {
-        // Mutation of stage: use its real writer and atomic publication but
-        // omit only the encoded-size guard. The same oracle must reject it.
-        let mut merged = crate::json(&original).unwrap();
-        merged["tokens"]["access_token"] = transport.response["access_token"].clone();
-        let encoded = crate::projection::encoded_len(&merged).unwrap() as u64 + 1;
-        let mut staged = crate::credential_file::create(root.path()).unwrap();
-        write_staged(
-            &mut staged,
-            &merged,
-            encoded,
-            &mut CredentialIo::new(None).unwrap(),
-        )
-        .unwrap();
-        staged
-            .publish(&path, acyclic_native_runtime::RenameMode::Replace)
-            .unwrap();
-        Ok(())
-    } else {
-        futures::executor::block_on(login.bearer(&transport, None, None)).map(|_| ())
-    };
-    prop_assert!(
-        std::fs::read(&path).unwrap() == original,
-        "original credential bytes changed"
-    );
-    prop_assert_eq!(owner_only_permissions(&path), permissions);
-    prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-    prop_assert!(
-        outcome.is_err_and(|error| {
-            error
-                .to_string()
-                .contains("merged credentials exceed limit")
-        }),
-        "oversized merge was not rejected"
-    );
-    Ok(())
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
-    fn oversized_refresh_merges_preserve_original_bytes_and_owner_only_permissions(
+    fn large_refresh_preserves_metadata_tokens_and_owner_only_permissions(
         metadata in 524_288usize..720_896,
         access in 524_288usize..720_896,
     ) {
-        oversized_merge_preserves_original(metadata, access, false)?;
+        let (root, login, mut transport) = fixture(&jwt(0), 200).unwrap();
+        let path = root.path().join("auth.json");
+        let mut original = auth(&jwt(0));
+        original["agent_identity"] = json!("m".repeat(metadata));
+        let original_bytes = serde_json::to_vec_pretty(&original).unwrap();
+        transport.response = json!({"access_token":"r".repeat(access)});
+        let mut private = crate::credential_file::create(root.path()).unwrap();
+        private.as_file_mut().write_all(&original_bytes).unwrap();
+        private.publish(&path, acyclic_native_runtime::RenameMode::Replace).unwrap();
+        let permissions = owner_only_permissions(&path);
+        let (bearer, account) = futures::executor::block_on(
+            login.bearer(&transport, None, None)
+        ).unwrap();
+        let published: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        prop_assert_eq!(&published["agent_identity"], &original["agent_identity"]);
+        prop_assert_eq!(&published["tokens"]["access_token"], &transport.response["access_token"]);
+        for key in ["id_token", "refresh_token", "account_id"] {
+            prop_assert_eq!(&published["tokens"][key], &original["tokens"][key]);
+        }
+        prop_assert_eq!(bearer, transport.response["access_token"].as_str().unwrap());
+        prop_assert_eq!(account.as_deref(), Some("account"));
+        prop_assert_eq!(owner_only_permissions(&path), permissions);
+        prop_assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
     }
-}
-
-#[test]
-#[should_panic(expected = "original credential bytes changed")]
-fn negative_control_removing_oversized_merge_bound_fails_the_same_property() {
-    oversized_merge_preserves_original(524_288, 524_288, true).unwrap();
 }
 
 #[tokio::test]

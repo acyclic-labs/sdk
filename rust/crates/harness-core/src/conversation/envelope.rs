@@ -168,7 +168,7 @@ impl Envelope {
         io: &PreparationIo,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        io.encode(self, maximum_bytes, true)
+        io.encode(self, Some(maximum_bytes), true)
     }
 
     /// Restores an item with the original bounded decoder and retains its
@@ -245,7 +245,7 @@ pub(crate) fn encode_context_batch(
                 changes: BorrowedChanges(changes),
             },
         },
-        io.remaining()?.bytes_encoded,
+        Some(io.remaining()?.bytes_encoded),
         true,
     )
 }

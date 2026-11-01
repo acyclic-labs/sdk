@@ -205,13 +205,15 @@ fn undecodable_input_answers_a_parse_error_and_ends_the_server() {
     }
 }
 
-/// A client that reads slower than requests arrive.
-struct Slow(Written);
+/// Each write waits until the client accepts its bytes.
+struct Credited(std::sync::mpsc::SyncSender<Vec<u8>>);
 
-impl Write for Slow {
+impl Write for Credited {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        self.0.write(bytes)
+        self.0
+            .send(bytes.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "MCP reader closed"))?;
+        Ok(bytes.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -229,24 +231,22 @@ fn request_bursts_wait_for_a_slow_reader() {
         input.push_str(&format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#));
         input.push('\n');
     }
-    let output = Written::default();
-    let served = ToolServer {
-        name: "fixture",
-        version: "1",
-        parked: 1,
-        frame_bytes: 256,
-    }
-    .serve(
-        &mut Fixture::default(),
-        io::Cursor::new(input),
-        Slow(output.clone()),
-    );
-    assert!(served.is_ok());
-    let output = output
-        .0
-        .lock()
-        .map(|bytes| bytes.clone())
-        .unwrap_or_default();
+    let (output, reader) = std::sync::mpsc::sync_channel(0);
+    let server = std::thread::spawn(move || {
+        ToolServer {
+            name: "fixture",
+            version: "1",
+            parked: 1,
+            frame_bytes: 256,
+        }
+        .serve(
+            &mut Fixture::default(),
+            io::Cursor::new(input),
+            Credited(output),
+        )
+    });
+    let output = reader.into_iter().flatten().collect::<Vec<_>>();
+    assert!(server.join().expect("MCP server panicked").is_ok());
     let ids = String::from_utf8_lossy(&output)
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())

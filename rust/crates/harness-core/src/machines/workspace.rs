@@ -100,7 +100,7 @@ impl MachinesWorkspace {
     pub async fn shell(
         &self,
         input: ShellInput,
-        maximum_output: u64,
+        maximum_output: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
         self.shell_until(input, Some(maximum_output), None).await
     }

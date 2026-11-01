@@ -31,7 +31,7 @@ impl Hooks {
             (workspace, cwd),
             input.into(),
             registry,
-            65_536,
+            None,
             (Arc::new(|| Ok(())), None),
         )
         .await
@@ -44,7 +44,7 @@ impl Hooks {
         paths: (&Path, &Path),
         input: HookInput<'_>,
         registry: &ToolRegistry,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         control: (HookCheck, Option<acyclic_native_runtime::ProcessWake>),
     ) -> Result<HookOutput> {
         let (workspace, cwd) = paths;
@@ -71,7 +71,7 @@ pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
     owner_check: HookCheck,
-    maximum_bytes: usize,
+    maximum_bytes: Option<usize>,
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
@@ -83,13 +83,13 @@ pub(super) async fn run_hook(
         owner_check,
         wakes,
     };
-    let timeout = Duration::from_millis(hook.timeout_ms);
+    let timeout = hook.timeout_ms.map(Duration::from_millis);
     let input = request.2.clone();
     // Spawning may block; the running hook then holds no worker.
     let (tree, handler) = run_blocking_io(
         move || {
             let mut handler = handler;
-            if maximum_bytes == 0 {
+            if maximum_bytes == Some(0) {
                 return Err(Error::Process(crate::ProcessError::OutputLimit {
                     exit_code: None,
                     message: "hook capture budget exhausted".into(),
@@ -120,7 +120,7 @@ pub(super) async fn run_hook(
     // The spawned capture keeps ownership of the tree until its cleanup
     // finishes, even if this hook's caller is cancelled.
     let outcome = acyclic_native_runtime::spawn(tree.capture(
-        CaptureSchedule::new(timeout),
+        timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
         maximum_bytes,
         Some(OwnedCaptureInput::Literal(input)),
         handler,
@@ -247,7 +247,7 @@ mod tests {
                 command: "echo literal-source".into(),
                 shell: None,
             },
-            timeout_ms: 1_000,
+            timeout_ms: Some(1_000),
             failure: HookFailure::Report,
         };
         let command = hook_command(
@@ -301,7 +301,7 @@ mod tests {
                         matcher: String::new(),
                         hooks: vec![HookSpec {
                             run: HookRun::Executable { executable: name.clone(), argv: vec![] },
-                            timeout_ms: 1_000,
+                            timeout_ms: Some(1_000),
                             failure: HookFailure::Report,
                         }],
                     }])?,

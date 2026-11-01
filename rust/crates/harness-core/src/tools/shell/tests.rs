@@ -7,9 +7,9 @@ proptest! {
     #[test]
     fn command_round_trip_preserves_the_selected_directory(
         command in ".{0,200}", cwd in proptest::option::of(".{0,100}"),
-        timeout_ms in proptest::option::of(any::<u32>()),
+        timeout in proptest::option::of(any::<u32>()),
     ) {
-        let input = ShellInput { command, cwd, timeout_ms, target: None };
+        let input = ShellInput { command, cwd, timeout_ms: timeout, target: None };
         let encoded = serde_json::to_vec(&input).map_err(|error| TestCaseError::fail(error.to_string()))?;
         let restored: ShellInput = serde_json::from_slice(&encoded).map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(&restored, &input);
