@@ -40,24 +40,43 @@ pub async fn prompt(
     let inbox = conversation.send(operation, prompt).await?;
     // Stdin is read only once an approval asks for an answer.
     let mut answers = None;
+    let mut diagnostics = None;
     // Subscribed first, so a reply committed after this read wakes a status.
     let mut status = None;
     loop {
         match conversation.reply(operation, inbox).await? {
             Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
             Reply::Dropped => {
-                eprintln!("graphcoder: {}", conversation.dropped().await?);
+                diagnostic(
+                    &mut diagnostics,
+                    acyclic_native_runtime::InheritedOutput::stderr,
+                    conversation.task(),
+                    &format!("graphcoder: {}\n", conversation.dropped().await?),
+                )
+                .await?;
                 return Ok(1);
             }
             Reply::Pending => {}
         }
         if let Some(status) = status.take() {
             if let Some(reason) = ended(&status) {
-                eprintln!("graphcoder: {reason}");
+                diagnostic(
+                    &mut diagnostics,
+                    acyclic_native_runtime::InheritedOutput::stderr,
+                    conversation.task(),
+                    &format!("graphcoder: {reason}\n"),
+                )
+                .await?;
                 return Ok(1);
             }
             if let Phase::WaitingApproval { id } = status.phase {
-                eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
+                diagnostic(
+                    &mut diagnostics,
+                    acyclic_native_runtime::InheritedOutput::stderr,
+                    conversation.task(),
+                    &format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
+                )
+                .await?;
                 let answers = match &mut answers {
                     Some(answers) => answers,
                     None => answers.insert(stdin_lines()?),
@@ -73,6 +92,26 @@ pub async fn prompt(
             }
         };
     }
+}
+
+// Admit stderr only when a diagnostic exists, and reuse its original writer.
+// The caller retains the formatted message while the OS reactor awaits credit.
+async fn diagnostic<W: AsyncWrite + Unpin>(
+    output: &mut Option<W>,
+    open: impl FnOnce() -> std::io::Result<W>,
+    task: OperationId,
+    message: &str,
+) -> std::io::Result<()> {
+    let output = match output {
+        Some(output) => output,
+        None => output.insert(open()?),
+    };
+    acyclic_native_runtime::obs::waiting(
+        "inherited-output",
+        task,
+        output.write_all(message.as_bytes()),
+    )
+    .await
 }
 
 /// Prints the answer text of the prompt's settled `entry`.
@@ -348,7 +387,15 @@ mod tests {
     #[test]
     fn a_full_answer_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
         for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
-            full_answer_pipe(terminal)?;
+            full_output_pipe(terminal, false)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_full_diagnostic_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
+        for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
+            full_output_pipe(terminal, true)?;
         }
         Ok(())
     }
@@ -360,7 +407,7 @@ mod tests {
         ReaderLost,
     }
 
-    fn full_answer_pipe(terminal: Terminal) -> Result<(), Failure> {
+    fn full_output_pipe(terminal: Terminal, diagnostics: bool) -> Result<(), Failure> {
         let report = WaitReport::default();
         let dispatch =
             tracing::Dispatch::new(crate::lifecycle::subscriber(&report, Some("off".into())));
@@ -402,8 +449,35 @@ mod tests {
             .shared();
             let task = OperationId::from_bytes([19; 16]);
             let line = json!({"id": "original-answer", "text": "settled"});
+            let message = format!("graphcoder: approve request {task}? [y/N] ");
+            let mut diagnostic_output = None;
+            let opened = std::cell::Cell::new(0);
             let operation = async {
-                let writing = emit(&mut output, task, &line);
+                let writing = async {
+                    if diagnostics {
+                        diagnostic(
+                            &mut diagnostic_output,
+                            || {
+                                opened.set(opened.get() + 1);
+                                InheritedOutput::from_file(
+                                    original.as_fd().try_clone_to_owned()?.into(),
+                                )
+                            },
+                            task,
+                            &message,
+                        )
+                        .await?;
+                        diagnostic(
+                            &mut diagnostic_output,
+                            || panic!("a repeated diagnostic must reuse its admitted writer"),
+                            task,
+                            &message,
+                        )
+                        .await
+                    } else {
+                        emit(&mut output, task, &line).await
+                    }
+                };
                 tokio::pin!(writing);
                 poll_fn(|cx| {
                     assert!(writing.as_mut().poll(cx).is_pending());
@@ -465,6 +539,8 @@ mod tests {
                 ),
             }
             diagnostic?;
+            assert_eq!(opened.get(), usize::from(diagnostics));
+            drop(diagnostic_output);
             assert!(report.snapshot().is_empty());
             output.shutdown().await?;
             drop(original);
@@ -477,9 +553,13 @@ mod tests {
                 let mut received = Vec::new();
                 reader.read_to_end(&mut received)?;
                 let expected = if matches!(terminal, Terminal::Drain) {
-                    let mut bytes = serde_json::to_vec(&line)?;
-                    bytes.push(b'\n');
-                    bytes
+                    if diagnostics {
+                        message.repeat(2).into_bytes()
+                    } else {
+                        let mut bytes = serde_json::to_vec(&line)?;
+                        bytes.push(b'\n');
+                        bytes
+                    }
                 } else {
                     Vec::new()
                 };
