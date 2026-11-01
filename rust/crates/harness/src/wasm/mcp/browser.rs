@@ -1,6 +1,6 @@
 //! Browser network callbacks feed the portable Rust HTTP protocol owner.
 
-use super::super::{from_js, js_error, to_js};
+use super::super::{from_js, js_error, optional_from_js, to_js};
 use crate::{
     Error, OperationId, Result,
     mcp::{
@@ -188,16 +188,8 @@ impl WasmMcpHttpTransport {
             Arc::new(BrowserProvider(provider)),
             endpoint,
             session,
-            if maximum_bytes.is_undefined() {
-                None
-            } else {
-                from_js(maximum_bytes)?
-            },
-            if timeout_ms.is_undefined() {
-                None
-            } else {
-                from_js::<Option<u64>>(timeout_ms)?
-            },
+            optional_from_js(maximum_bytes)?,
+            optional_from_js::<u64>(timeout_ms)?,
             None,
         )
         .map(Self)
