@@ -10,7 +10,6 @@ pub struct FsCommand {
     pub volume: Option<String>,
 }
 
-#[cfg(any(test, feature = "filesystem"))]
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
         [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
