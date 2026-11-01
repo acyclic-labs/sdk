@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 //! A waiting turn holds no delivery: parents waiting for their children,
 //! more of them than the runtime admits at once, all complete. The negative
 //! control holds the parent's delivery while it waits, as a blocking `wait`

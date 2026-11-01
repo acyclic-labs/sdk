@@ -14,9 +14,12 @@ fn fixture() -> AuthorityRoot {
 fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result<()> {
     use futures::FutureExt;
     use std::sync::{
-        Arc, Barrier,
+        Arc,
         atomic::{AtomicU64, Ordering},
     };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::sync::Barrier;
 
     struct Clock(AtomicU64);
     impl acyclic_stream::UnixMillisClock for Clock {
@@ -44,7 +47,9 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
     let changes = issuer.trust_changes();
     let changed = changes.changed();
     let mut revisions = issuer.runtime.trust.state();
+    #[cfg(not(target_arch = "wasm32"))]
     let ready = Barrier::new(2);
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::scope(|threads| -> Result<()> {
         let first = threads.spawn(|| {
             ready.wait();
@@ -59,6 +64,11 @@ fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result
         );
         Ok(())
     })?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        issuer.revoke_workload(&child)?;
+        issuer.revoke_workload(&child)?;
+    }
     assert_eq!(
         changed.now_or_never(),
         Some(Ok(())),

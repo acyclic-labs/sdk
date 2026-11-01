@@ -5,6 +5,7 @@ use crate::core::{AggregateKind, AuthorityRoot};
 use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn access_records_share_the_native_budget_and_cover_physical_storage() -> Result<()> {
     use acyclic_fs::access::{Capability, Policy};

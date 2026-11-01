@@ -331,7 +331,8 @@ impl AttestedProvider for Evidence {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl StreamProvider for Evidence {
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
         acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
@@ -613,28 +614,36 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     create(&a, 1).await?;
     let foreign = b.agents().actor(&root_b)?;
     assert!(a.agents().runtime().track(foreign).is_err());
-    let runners: Vec<_> = [a.agents(), b.agents()]
-        .into_iter()
-        .map(|agents| {
-            let agents = Arc::clone(agents);
-            tokio::spawn(async move { agents.run(|_, _| {}).await })
-        })
-        .collect();
-    // The activation log orders b's roots around a's: a reaching its second
-    // root has passed b's first two, and b reaching its third has passed a's.
+    // Both original run futures produce the wakeups observed below and
+    // remain owned here, including their terminal errors.
+    let mut runners = [a.agents(), b.agents()].map(|agents| Box::pin(agents.run(|_, _| {})));
+    let mut advance = |context: &mut std::task::Context<'_>, expected| {
+        for runner in &mut runners {
+            if let std::task::Poll::Ready(result) =
+                std::future::Future::poll(runner.as_mut(), context)
+            {
+                return std::task::Poll::Ready(match result {
+                    Err(error) => Err(Box::<dyn std::error::Error>::from(error)),
+                    Ok(never) => match never {},
+                });
+            }
+        }
+        if (
+            a.agents().runtime().counts().0,
+            b.agents().runtime().counts().0,
+        ) == expected
+        {
+            std::task::Poll::Ready(Ok(()))
+        } else {
+            std::task::Poll::Pending
+        }
+    };
+    futures::future::poll_fn(|context| advance(context, (1, 1))).await?;
+    // These roots are committed by different hosts after discovery starts.
+    // Interleaving their activations also exercises foreign-tree exclusion.
     create(&b2, 3).await?;
     create(&a2, 4).await?;
     create(&b2, 5).await?;
-    let resident = |bound: &Bound<MemoryStream, Objects>| bound.agents().runtime().counts().0;
-    for _ in 0..2_000 {
-        if resident(&a) == 2 && resident(&b) == 3 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
-    assert_eq!((resident(&a), resident(&b)), (2, 3));
-    for runner in runners {
-        runner.abort();
-    }
+    futures::future::poll_fn(|context| advance(context, (2, 3))).await?;
     Ok(())
 }

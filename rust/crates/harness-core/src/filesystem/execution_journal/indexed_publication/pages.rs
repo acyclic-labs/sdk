@@ -3,7 +3,7 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod retained;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use retained::Publication;

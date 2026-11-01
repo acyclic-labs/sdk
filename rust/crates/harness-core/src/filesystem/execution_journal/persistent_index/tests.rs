@@ -7,20 +7,28 @@ fn key(index: u32) -> [u8; 32] {
 
 #[tokio::test]
 async fn immutable_roots_reopen_without_loading_the_index() -> Result<()> {
-    for native in [false, true] {
-        check_roots(native).await?;
+    for _native in [
+        false,
+        #[cfg(not(target_arch = "wasm32"))]
+        true,
+    ] {
+        check_roots(_native).await?;
     }
     Ok(())
 }
 
-async fn check_roots(native: bool) -> Result<()> {
+async fn check_roots(_native: bool) -> Result<()> {
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
     let path = StreamPath::new("index/pages")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+    #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = if native {
+    #[cfg(target_arch = "wasm32")]
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let io = if _native {
         PreparationIo::from_native_work(&work)?
     } else {
         PreparationIo::from_budget(budget, &cancellation)?
@@ -74,7 +82,7 @@ async fn check_roots(native: bool) -> Result<()> {
         );
         let records = io.receipt().authority_records_read - before.authority_records_read;
         eprintln!(
-            "persisted index native={native} keys={} read_records={records}",
+            "persisted index native={_native} keys={} read_records={records}",
             index + 1
         );
         assert!(
