@@ -309,6 +309,8 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             &fixture,
             &model.catalog,
             vec![
+                "--operation",
+                "invalid-input",
                 "--output-format",
                 "jsonl",
                 "--input-format",
