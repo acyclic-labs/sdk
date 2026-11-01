@@ -81,6 +81,14 @@ pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> = LazyLo
 pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
     LazyLock::new(|| start_workers("acyclic-persistence", |parallelism| parallelism.clamp(2, 4)));
 
+// A synchronous inherited sink can retain its write until the peer drains.
+// It must not occupy persistence or host-callback capacity. This work class
+// shares their admission and terminal implementation, and is created only on
+// the first synchronous output submission, never per descriptor or agent.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) static OUTPUT_WORKERS: LazyLock<io::Result<NativeWorkers>> =
+    LazyLock::new(|| start_workers("acyclic-output", std::convert::identity));
+
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initializes the existing native and host I/O services before measured requests are admitted.

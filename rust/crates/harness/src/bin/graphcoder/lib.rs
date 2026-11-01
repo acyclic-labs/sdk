@@ -261,11 +261,11 @@ async fn drive(
         .as_deref()
         .map(usage_export::Output::open)
         .transpose()?;
-    let mut output = if usage_stdout {
+    let mut output = headless::Output::new(if usage_stdout {
         acyclic_native_runtime::InheritedOutput::stderr()?
     } else {
         acyclic_native_runtime::InheritedOutput::stdout()?
-    };
+    });
     let result = if let Some(prompt) = &args.prompt {
         phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await
     } else {

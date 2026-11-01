@@ -200,6 +200,7 @@ impl<T> Future for NativeCompletion<T> {
         }
         #[cfg(windows)]
         if !std::ptr::eq(this.pool, &BLOCKING_WORKERS)
+            && !std::ptr::eq(this.pool, &crate::workers::OUTPUT_WORKERS)
             && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {

@@ -1,7 +1,7 @@
 //! The process boundary inherits the same scope as native workers and entropy.
 use super::*;
 use crate::ProcessCommand;
-use crate::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
+use crate::{OwnedCaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
 use std::{io, process::Output};
 
 /// Original capture arguments, after command and ownership validation.
@@ -12,8 +12,8 @@ pub struct ProcessCapture<'a> {
     pub schedule: crate::CaptureSchedule,
     /// Shared stdout and stderr bound.
     pub maximum: usize,
-    /// Original literal input or exchange allowance.
-    pub input: Option<CaptureInput<'a>>,
+    /// Borrows the original owned input mode and allowance without copying.
+    pub input: Option<&'a OwnedCaptureInput>,
 }
 
 pub(super) type Provider = dyn Fn(

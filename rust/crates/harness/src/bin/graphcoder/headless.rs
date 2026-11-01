@@ -11,12 +11,45 @@ use acyclic_harness::{
     OperationId,
     agent::{ConversationEntry, IntentId, Phase, Reply},
 };
-use acyclic_native_runtime::lines::AsyncLines;
+use acyclic_native_runtime::{InheritedOutput, lines::AsyncLines};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 type Failure = Box<dyn std::error::Error>;
+
+/// The original output owner, unavailable while its owned write is outstanding.
+/// Failure or observer loss consumes it; neither permits a replacement writer.
+pub(super) struct Output(Option<InheritedOutput>);
+
+impl Output {
+    pub(super) fn new(output: InheritedOutput) -> Self {
+        Self(Some(output))
+    }
+
+    async fn write<B: AsRef<[u8]> + Send + 'static>(
+        &mut self,
+        task: OperationId,
+        bytes: B,
+    ) -> std::io::Result<()> {
+        let output = self.0.take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "an earlier write did not return the original output writer",
+            )
+        })?;
+        // The same task scope follows the original descriptor and buffer into
+        // the native producer. Accepted synchronous writes retain both after
+        // observer loss; that loss does not certify their physical completion.
+        let (output, _bytes) = acyclic_native_runtime::obs::waiting(
+            "inherited-output",
+            task,
+            output.write_owned(bytes),
+        )
+        .await?;
+        self.0 = Some(output);
+        Ok(())
+    }
+}
 
 /// Stdin's lines, read off the coordination runtime's blocking slot: an open
 /// stdin's read may never return.
@@ -30,11 +63,11 @@ fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
 /// Send `prompt` as message `operation` and print its answer; rerunning the
 /// operation replays it. An approval request is answered on stdin (`y`
 /// approves); the exit code is 0 once the answer is printed.
-pub async fn prompt(
+pub(super) async fn prompt(
     conversation: &Arc<Conversation>,
     operation: &str,
     prompt: &str,
-    output: &mut (impl AsyncWrite + Unpin),
+    output: &mut Output,
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(operation, prompt).await?;
@@ -51,7 +84,7 @@ pub async fn prompt(
                     &mut diagnostics,
                     acyclic_native_runtime::InheritedOutput::stderr,
                     conversation.task(),
-                    &format!("graphcoder: {}\n", conversation.dropped().await?),
+                    format!("graphcoder: {}\n", conversation.dropped().await?),
                 )
                 .await?;
                 return Ok(1);
@@ -64,7 +97,7 @@ pub async fn prompt(
                     &mut diagnostics,
                     acyclic_native_runtime::InheritedOutput::stderr,
                     conversation.task(),
-                    &format!("graphcoder: {reason}\n"),
+                    format!("graphcoder: {reason}\n"),
                 )
                 .await?;
                 return Ok(1);
@@ -74,7 +107,7 @@ pub async fn prompt(
                     &mut diagnostics,
                     acyclic_native_runtime::InheritedOutput::stderr,
                     conversation.task(),
-                    &format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
+                    format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
                 )
                 .await?;
                 let answers = match &mut answers {
@@ -95,37 +128,29 @@ pub async fn prompt(
 }
 
 // Admit stderr only when a diagnostic exists, and reuse its original writer.
-// The caller retains the formatted message while the OS reactor awaits credit.
-async fn diagnostic<W: AsyncWrite + Unpin>(
-    output: &mut Option<W>,
-    open: impl FnOnce() -> std::io::Result<W>,
+// The original native write retains the formatted message through completion.
+async fn diagnostic(
+    output: &mut Option<Output>,
+    open: impl FnOnce() -> std::io::Result<InheritedOutput>,
     task: OperationId,
-    message: &str,
+    message: String,
 ) -> std::io::Result<()> {
     let output = match output {
         Some(output) => output,
-        None => output.insert(open()?),
+        None => output.insert(Output::new(open()?)),
     };
-    acyclic_native_runtime::obs::waiting(
-        "inherited-output",
-        task,
-        output.write_all(message.as_bytes()),
-    )
-    .await
+    output.write(task, message.into_bytes()).await
 }
 
 /// Prints the answer text of the prompt's settled `entry`.
 async fn print(
     conversation: &Conversation,
     entry: &ConversationEntry,
-    output: &mut (impl AsyncWrite + Unpin),
+    output: &mut Output,
 ) -> Result<u8, Failure> {
     let (_, text) = conversation.turn(entry).await?;
-    acyclic_native_runtime::obs::waiting("inherited-output", conversation.task(), async {
-        output.write_all(text.as_bytes()).await?;
-        output.write_all(b"\n").await
-    })
-    .await?;
+    output.write(conversation.task(), text.into_bytes()).await?;
+    output.write(conversation.task(), [b'\n']).await?;
     Ok(0)
 }
 
@@ -159,18 +184,14 @@ async fn settled(
     })
 }
 
-async fn emit(
-    output: &mut (impl AsyncWrite + Unpin),
-    task: OperationId,
-    line: &Value,
-) -> std::io::Result<()> {
+async fn emit(output: &mut Output, task: OperationId, line: &Value) -> std::io::Result<()> {
     // This one caller-owned frame remains live through its original write.
     // The synchronous serializer never writes to an OS handle or a second queue.
     let mut bytes = serde_json::to_vec(line)?;
     bytes.push(b'\n');
     // The original task is opaque; caller-chosen display/message ids are not
     // diagnostic keys. This scope ends with the original write or its drop.
-    acyclic_native_runtime::obs::waiting("inherited-output", task, output.write_all(&bytes)).await
+    output.write(task, bytes).await
 }
 
 /// The JSONL stream's outstanding prompts.
@@ -192,7 +213,7 @@ impl Outstanding {
     async fn send(
         &mut self,
         conversation: &Conversation,
-        output: &mut (impl AsyncWrite + Unpin),
+        output: &mut Output,
         message: String,
         id: String,
         prompt: String,
@@ -243,7 +264,7 @@ impl Outstanding {
     async fn resend(
         &mut self,
         conversation: &Conversation,
-        output: &mut (impl AsyncWrite + Unpin),
+        output: &mut Output,
     ) -> Result<(), Failure> {
         for (message, id, prompt) in std::mem::take(&mut self.uncertain) {
             self.send(conversation, output, message, id, prompt).await?;
@@ -264,10 +285,10 @@ impl Outstanding {
 /// successfully, once stdin closes and every prompt settled, whether
 /// answered or failed; a prompt still of unknown outcome then fails the
 /// run, and rerunning the operation replays it.
-pub async fn jsonl(
+pub(super) async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,
-    output: &mut (impl AsyncWrite + Unpin),
+    output: &mut Output,
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let mut lines = stdin_lines()?;
@@ -377,15 +398,37 @@ mod tests {
     use futures::FutureExt as _;
     use std::{
         future::{Future as _, poll_fn},
-        io::Read as _,
+        io::{Read as _, Seek as _},
         os::fd::AsFd as _,
         pin::Pin,
         task::Poll,
     };
-    use tokio::io::{AsyncBufReadExt as _, BufReader};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWrite as _, AsyncWriteExt as _, BufReader};
 
     #[test]
     fn a_full_answer_pipe_keeps_report_and_shutdown_runnable() -> Result<(), Failure> {
+        // Redirected output is a synchronous sink: the borrowed adapter refuses
+        // it. The same headless owner must return before the next frame writes.
+        acyclic_native_runtime::coordination_runtime()?.block_on(async {
+            let file = tempfile::tempfile()?;
+            let mut reader = file.try_clone()?;
+            let mut output = Output::new(InheritedOutput::from_file(file)?);
+            let task = OperationId::from_bytes([19; 16]);
+            let line = json!({"id": "original-answer", "text": "settled"});
+            emit(&mut output, task, &line).await?;
+            output
+                .write(task, String::from("original text").into_bytes())
+                .await?;
+            output.write(task, [b'\n']).await?;
+            drop(output);
+            reader.rewind()?;
+            let mut received = Vec::new();
+            reader.read_to_end(&mut received)?;
+            let mut expected = serde_json::to_vec(&line)?;
+            expected.extend_from_slice(b"\noriginal text\n");
+            assert_eq!(received, expected);
+            Ok::<(), Failure>(())
+        })?;
         for terminal in [Terminal::Cancel, Terminal::Drain, Terminal::ReaderLost] {
             full_output_pipe(terminal, false)?;
         }
@@ -431,6 +474,7 @@ mod tests {
                 assert_ne!(written, 0);
                 filled += written;
             }
+            let mut output = Output::new(output);
 
             let request = ReportRequest {
                 request_id: "abcdef0123456789abcdef0123456789".into(),
@@ -464,14 +508,14 @@ mod tests {
                                 )
                             },
                             task,
-                            &message,
+                            message.clone(),
                         )
                         .await?;
                         diagnostic(
                             &mut diagnostic_output,
                             || panic!("a repeated diagnostic must reuse its admitted writer"),
                             task,
-                            &message,
+                            message.clone(),
                         )
                         .await
                     } else {
@@ -522,7 +566,7 @@ mod tests {
                 };
                 (owner, reader, terminate)
             };
-            let ((result, diagnostic), (owner, reader, _terminate)) = tokio::join!(
+            let ((result, report_result), (owner, reader, _terminate)) = tokio::join!(
                 crate::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
                 host,
             );
@@ -538,11 +582,28 @@ mod tests {
                     std::io::ErrorKind::BrokenPipe,
                 ),
             }
-            diagnostic?;
+            report_result?;
             assert_eq!(opened.get(), usize::from(diagnostics));
+            if !matches!(terminal, Terminal::Drain) {
+                let unavailable = if diagnostics {
+                    diagnostic(
+                        &mut diagnostic_output,
+                        || panic!("a consumed diagnostic writer must never be reopened"),
+                        task,
+                        message.clone(),
+                    )
+                    .await
+                } else {
+                    emit(&mut output, task, &line).await
+                };
+                assert_eq!(
+                    unavailable.unwrap_err().kind(),
+                    std::io::ErrorKind::NotConnected,
+                );
+            }
             drop(diagnostic_output);
             assert!(report.snapshot().is_empty());
-            output.shutdown().await?;
+            drop(output);
             drop(original);
             if let Some(mut reader) = reader {
                 if matches!(terminal, Terminal::Cancel) {
