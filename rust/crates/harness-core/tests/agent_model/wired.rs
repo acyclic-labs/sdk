@@ -1554,8 +1554,6 @@ async fn spawn_respects_only_an_explicit_child_limit() -> Result {
     Ok(())
 }
 
-
-
 #[tokio::test]
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};

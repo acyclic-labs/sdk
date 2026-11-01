@@ -72,8 +72,8 @@ pub use machine::{
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
-    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
-    Message, NoticePayload, Phase, RECORD_VERSION, Sender, SpawnRequest, StatusRecord,
+    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId, Message,
+    NoticePayload, Phase, RECORD_VERSION, Sender, SpawnRequest, StatusRecord,
     UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
 pub use reply::{Reply, reply};

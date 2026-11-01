@@ -312,7 +312,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
     };
     let stream = Arc::new(MemoryStream::default());
     let mut capacity = turns()?;
-    capacity.limits.maximum_bytes = 1 << 20;
+    capacity.limits.maximum_bytes = Some(1 << 20);
     let bound = Bound::local_root(
         AuthorityRoot::new(
             "agents",
@@ -341,10 +341,9 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         wake: true,
         coalesce_key: None,
     };
-    // Escaping makes this payload larger than an entire persisted record.
+    // Escaping expands the input; durable records retain only its file reference.
     let notice = event("\0".repeat(32 * 1024));
     let original = acyclic_harness_core::contract::canonical_json_bytes(&notice)?;
-    assert!(original.len() > MAX_RECORD_BYTES);
     let request = intent("notice");
     let staged = bound
         .stage_notice(&agent, &super::user(), &request, &notice)
@@ -398,6 +397,8 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         tool_results: None,
         notices: None,
     };
+    assert!(original.len() > staged.encode()?.len());
+    assert!(original.len() > entry.encode()?.len());
     assert!(staged.encode()?.len() < 4096);
     assert!(entry.encode()?.len() < 8192);
     assert_eq!(ConversationEntry::decode(&entry.encode()?)?, entry);
