@@ -227,15 +227,48 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<&mut V>, W::Error> {
         accounting.check()?;
+        self.existing_mut(key, |items| accounting.charge_items(items))
+    }
+
+    /// Mutably borrows an existing value for its exact retained owner.
+    ///
+    /// The caller serializes the original owner's lifetime and supplies its
+    /// retained observation sink. This path cannot admit new work or funding,
+    /// check cancellation, allocate, insert, or transfer node custody. It lets
+    /// wake and retirement finish after their original admission is cancelled.
+    /// The owner predicate runs only after the complete key matches and before
+    /// exposing the mutable value. A replacement owner is never returned.
+    /// At most 8N branches, one leaf and N key bytes are observed.
+    pub fn get_retained_mut(
+        &mut self,
+        key: [u8; N],
+        exact_owner: impl FnOnce(&V) -> bool,
+        mut visit: impl FnMut(u64),
+    ) -> Option<&mut V> {
+        let result = self.existing_mut(key, |items| {
+            visit(items);
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match result {
+            Ok(value) => value.filter(|value| exact_owner(value)),
+            Err(impossible) => match impossible {},
+        }
+    }
+
+    fn existing_mut<E>(
+        &mut self,
+        key: [u8; N],
+        mut visit: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<&mut V>, E> {
         let mut cursor = self.root.as_mut();
         while let Some(node) = cursor {
-            accounting.charge_items(1)?;
+            visit(1)?;
             match node.kind.as_mut() {
                 Kind::Leaf {
                     key: observed,
                     value,
                 } => {
-                    accounting.charge_items(N as u64)?;
+                    visit(N as u64)?;
                     return Ok((*observed == key).then_some(value));
                 }
                 Kind::Branch {
