@@ -214,6 +214,7 @@
   },
   "file_result": {
     "canonical": {
+      "action": "write",
       "file": {
         "descriptor": {
           "byte_length": 18,
@@ -3303,6 +3304,21 @@
               ],
               "type": "object"
             },
+            "PublicationAction": {
+              "description": "Action authorized at the original publication cut.",
+              "oneOf": [
+                {
+                  "const": "create",
+                  "description": "The original path was absent.",
+                  "type": "string"
+                },
+                {
+                  "const": "write",
+                  "description": "The original path already existed.",
+                  "type": "string"
+                }
+              ]
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -3410,17 +3426,37 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
+          "description": "Successful publication and facts retained in its original operation receipt.",
           "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PublicationAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Action checked by the original writer; absent for immutable object storage."
+            },
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+              "description": "Exact immutable file identity."
+            },
+            "replacements": {
+              "description": "Exact text substitutions performed by the original shared edit planner.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [
             "file"
           ],
-          "title": "FileResult",
+          "title": "PublishedContent",
           "type": "object"
         },
         "projection_schema": {
@@ -3520,41 +3556,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-7"
       },
       "definition_digest": [
-        138,
-        148,
-        55,
-        204,
-        94,
-        85,
-        194,
-        24,
-        121,
-        195,
-        79,
-        5,
-        218,
-        217,
-        84,
-        34,
-        242,
-        15,
-        126,
-        207,
-        14,
-        140,
-        65,
-        21,
-        107,
-        47,
-        58,
-        196,
-        101,
-        227,
+        183,
+        152,
+        171,
+        142,
+        165,
+        253,
+        53,
+        150,
+        1,
+        7,
+        184,
+        162,
+        36,
+        165,
+        248,
+        31,
+        3,
+        228,
+        146,
+        10,
+        166,
+        61,
+        151,
         158,
-        174
+        239,
+        180,
+        30,
+        145,
+        66,
+        207,
+        166,
+        13
       ],
       "variant": "write_full"
     },
@@ -3670,6 +3706,21 @@
               ],
               "type": "object"
             },
+            "PublicationAction": {
+              "description": "Action authorized at the original publication cut.",
+              "oneOf": [
+                {
+                  "const": "create",
+                  "description": "The original path was absent.",
+                  "type": "string"
+                },
+                {
+                  "const": "write",
+                  "description": "The original path already existed.",
+                  "type": "string"
+                }
+              ]
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -3777,17 +3828,37 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
+          "description": "Successful publication and facts retained in its original operation receipt.",
           "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PublicationAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Action checked by the original writer; absent for immutable object storage."
+            },
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+              "description": "Exact immutable file identity."
+            },
+            "replacements": {
+              "description": "Exact text substitutions performed by the original shared edit planner.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [
             "file"
           ],
-          "title": "FileResult",
+          "title": "PublishedContent",
           "type": "object"
         },
         "projection_schema": {
@@ -4057,41 +4128,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-7"
       },
       "definition_digest": [
-        164,
-        109,
-        148,
-        108,
-        117,
-        188,
-        126,
-        111,
-        37,
-        144,
-        115,
-        30,
-        164,
-        176,
-        163,
-        39,
-        69,
-        108,
-        238,
-        225,
-        138,
-        103,
-        70,
-        253,
-        235,
+        94,
+        196,
+        82,
+        51,
         227,
-        96,
-        146,
-        111,
-        63,
-        235,
-        21
+        166,
+        191,
+        92,
+        193,
+        45,
+        135,
+        21,
+        92,
+        20,
+        124,
+        21,
+        221,
+        33,
+        73,
+        171,
+        124,
+        103,
+        91,
+        129,
+        85,
+        243,
+        214,
+        208,
+        140,
+        231,
+        165,
+        9
       ],
       "variant": "write_reference"
     },
@@ -4383,6 +4454,21 @@
               ],
               "type": "object"
             },
+            "PublicationAction": {
+              "description": "Action authorized at the original publication cut.",
+              "oneOf": [
+                {
+                  "const": "create",
+                  "description": "The original path was absent.",
+                  "type": "string"
+                },
+                {
+                  "const": "write",
+                  "description": "The original path already existed.",
+                  "type": "string"
+                }
+              ]
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -4490,17 +4576,37 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
+          "description": "Successful publication and facts retained in its original operation receipt.",
           "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PublicationAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Action checked by the original writer; absent for immutable object storage."
+            },
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+              "description": "Exact immutable file identity."
+            },
+            "replacements": {
+              "description": "Exact text substitutions performed by the original shared edit planner.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [
             "file"
           ],
-          "title": "FileResult",
+          "title": "PublishedContent",
           "type": "object"
         },
         "projection_schema": {
@@ -4600,41 +4706,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-9"
+        "revision": "portable-10"
       },
       "definition_digest": [
-        112,
-        203,
-        69,
-        89,
-        108,
-        174,
-        121,
-        56,
-        46,
-        174,
-        104,
-        78,
-        226,
-        84,
-        249,
-        84,
-        40,
-        28,
-        73,
-        238,
-        39,
-        59,
-        25,
-        254,
-        208,
-        231,
-        5,
-        141,
         41,
-        231,
-        137,
-        116
+        68,
+        59,
+        142,
+        80,
+        109,
+        140,
+        236,
+        215,
+        51,
+        71,
+        89,
+        67,
+        233,
+        116,
+        247,
+        229,
+        237,
+        162,
+        228,
+        193,
+        55,
+        81,
+        190,
+        152,
+        44,
+        211,
+        117,
+        68,
+        145,
+        126,
+        174
       ],
       "variant": "exact_edit_full"
     },
@@ -4946,6 +5052,21 @@
               ],
               "type": "object"
             },
+            "PublicationAction": {
+              "description": "Action authorized at the original publication cut.",
+              "oneOf": [
+                {
+                  "const": "create",
+                  "description": "The original path was absent.",
+                  "type": "string"
+                },
+                {
+                  "const": "write",
+                  "description": "The original path already existed.",
+                  "type": "string"
+                }
+              ]
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -5053,17 +5174,37 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
+          "description": "Successful publication and facts retained in its original operation receipt.",
           "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PublicationAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Action checked by the original writer; absent for immutable object storage."
+            },
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+              "description": "Exact immutable file identity."
+            },
+            "replacements": {
+              "description": "Exact text substitutions performed by the original shared edit planner.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             }
           },
           "required": [
             "file"
           ],
-          "title": "FileResult",
+          "title": "PublishedContent",
           "type": "object"
         },
         "projection_schema": {
@@ -5163,41 +5304,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-patch-4"
+        "revision": "portable-patch-5"
       },
       "definition_digest": [
-        51,
-        40,
-        98,
-        91,
-        44,
-        32,
-        215,
-        102,
-        118,
-        223,
-        165,
-        164,
-        14,
-        47,
-        152,
-        11,
-        228,
-        231,
+        209,
+        101,
         80,
-        138,
-        99,
-        63,
-        78,
-        212,
-        6,
-        168,
-        163,
-        7,
-        29,
         67,
-        212,
-        117
+        222,
+        6,
+        29,
+        185,
+        154,
+        205,
+        133,
+        50,
+        225,
+        167,
+        54,
+        45,
+        114,
+        152,
+        177,
+        162,
+        47,
+        205,
+        152,
+        159,
+        151,
+        108,
+        178,
+        65,
+        43,
+        120,
+        56,
+        217
       ],
       "variant": "patch_edit_full"
     },
