@@ -35,6 +35,13 @@ imports passed with `--ignoreConfig --allowJs --checkJs --noEmit --strict
 --moduleResolution NodeNext --types node`. No project-wide or Windows result is
 claimed. The separate metadata/routing test was typechecked but not executed.
 
+At `1d3c79b78a`, the same real-Cargo control passed 1/1 with caller environment
+`CARGO_TERM_COLOR=always`, 0.549 seconds named execution and 0.596 seconds total.
+Each original Cargo invocation selects `--color=never` so the lock-event adapter
+and assertion receive plain diagnostics independently of caller color policy.
+The toolchain lookup precedes fixture creation, leaving no fixture to clean up
+if that lookup fails. These fixes add no process, timer, channel or syscall.
+
 The previous milestone, #2031, shipped the completed producer-event conversions, typed publication
 conflicts and source-analyzer coverage below. Remaining backend, compiler-fixture
 and terminal readiness conversions are follow-up work; this inventory does not
