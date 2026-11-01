@@ -349,14 +349,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter
         {
             let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
-            let mut work = authority_work(accounting, cancellation)?;
+            let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
             let result = self
                 .fs
                 .inner
                 .authority
                 .fence(volume_authority_id(self.id), expected, &mut work)
                 .await;
-            record_authority_work(accounting, &work)?;
+            finish_authority_work(work)?;
             authority_head = Some(match result? {
                 FenceOutcome::Advanced(head) => head,
                 FenceOutcome::Conflict { actual } => {

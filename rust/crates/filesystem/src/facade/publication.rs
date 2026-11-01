@@ -683,7 +683,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let head = self
                 .authority_head
                 .ok_or(FsError::WritableCheckoutRequiresHead)?;
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let resolved = self
                 .volume
                 .fs
@@ -695,7 +695,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &mut authority,
                 )
                 .await;
-            record_authority_work(&mut accounting, &authority)?;
+            finish_authority_work(authority)?;
             let resolved = resolved.map_err(|error| match error {
                 #[cfg(not(target_arch = "wasm32"))]
                 AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),

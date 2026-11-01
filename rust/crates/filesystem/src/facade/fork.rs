@@ -371,13 +371,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .prepare_fork_commit(&publication, accounting, cancellation)
             .await?;
         accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .fork_workspace(prepared.fork, permit, &mut authority, guard)
             .await;
-        let recorded = record_authority_work(accounting, &authority);
+        let recorded = finish_authority_work(authority);
         Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
         recorded?;
         drop(prepared.hold);

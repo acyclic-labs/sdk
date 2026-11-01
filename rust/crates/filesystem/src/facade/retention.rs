@@ -6,15 +6,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         volume: &Volume<A, O>,
         generation: GenerationId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .retains_generation(volume_authority_id(volume.id), generation, &mut work)
             .await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         result.map_err(Into::into)
     }
 
@@ -113,11 +113,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         authority_id: AuthorityId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<Head, FsError> {
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self.inner.authority.head(authority_id, &mut work).await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
             AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound) => {
@@ -132,15 +132,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         authority_id: AuthorityId,
         operation_id: OperationId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<Option<(Sequence, Digest)>, FsError> {
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .find_operation(authority_id, operation_id, &mut work)
             .await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         let record = result?;
         Ok(record.map(|record| (record.sequence, record.fingerprint)))
     }
@@ -183,13 +183,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )
             .await?;
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .create_first_record(authority_id, commit, &mut authority, None::<&mut ()>)
             .await;
-        record_authority_work(accounting, &authority)?;
+        finish_authority_work(authority)?;
         result.map_err(|error| FsError::from(error.into_error(std::convert::identity)))
     }
 }
