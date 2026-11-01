@@ -40,9 +40,11 @@ proptest! {
                 (json!({"responseId":"original","candidates":[]}),
                  json!({"responseId":"original","candidates":[]})),
                 (json!({"candidates":[{"content":{"parts":[{"text":text}]}}]}),
-                 json!({"responseId":null,"promptFeedback":{"blockReason":null},"candidates":[{"content":{"parts":[{"text":text,"thought":null,"thoughtSignature":null,"functionCall":null}]}}]})),
+                 json!({"responseId":null,"promptFeedback":{"blockReason":null},"candidates":[{"index":null,"content":{"role":null,"parts":[{"text":text,"thought":null,"thoughtSignature":null,"functionCall":null}]},"finishReason":null}]})),
+                (json!({"candidates":[]}),
+                 json!({"promptFeedback":{"blockReason":"BLOCK_REASON_UNSPECIFIED"},"candidates":[{"index":0,"content":{"role":"model"},"finishReason":"FINISH_REASON_UNSPECIFIED"}]})),
                 (json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool"}}]},"finishReason":"STOP"}]}),
-                 json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":null}}]},"finishReason":"STOP"}]})),
+                 json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":{}}}]},"finishReason":"STOP"}]})),
             ]),
         ];
         for (adapter, frames) in cases {
@@ -84,6 +86,7 @@ proptest! {
             (Adapter::Responses, json!({"type":"response.completed","response":{"output":true}})),
             (Adapter::Gemini, json!({"candidates":[{"content":{"parts":[{"functionCall":true}]}}]})),
             (Adapter::Gemini, json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":true}}]}}]})),
+            (Adapter::Gemini, json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"tool","args":null}}]}}]})),
             (Adapter::Anthropic, json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":true}})),
         ] {
             prop_assert!(parse(&mut State::new(16384), adapter, &frame.to_string()).is_err(), "present malformed optional field must refuse");

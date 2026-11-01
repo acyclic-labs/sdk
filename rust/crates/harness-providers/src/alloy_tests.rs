@@ -74,6 +74,19 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     models: BTreeMap::from([(
                         "fixture".into(),
                         ModelSpec {
+                            thinking_levels: false,
+                            tool_profile: match *name {
+                                "anthropic" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Anthropic)
+                                }
+                                "responses" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Openai)
+                                }
+                                "gemini" => {
+                                    Some(acyclic_harness_core::model::NativeToolProfile::Google)
+                                }
+                                _ => None,
+                            },
                             max_context_tokens: None,
                             capacity: ModelContextCapacity {
                                 context_tokens,
@@ -138,6 +151,10 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         let selected = alloy.select(turn(2));
         assert_eq!(selected.model().provider, expected);
         assert_eq!(
+            selected.native_tool_profile(),
+            registry.catalog()[expected].models["fixture"].tool_profile
+        );
+        assert_eq!(
             selected.context_capacity(selected.model())?,
             alloy.capacity()
         );
@@ -161,6 +178,23 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
             );
         }
     }
+    // Removing an explicit family declaration must not recover it from a
+    // familiar provider name, nor mutate an already resolved member.
+    let original = registry.resolve("gemini/fixture")?;
+    let mut custom = registry.catalog()["gemini"].as_ref().clone();
+    custom.models.get_mut("fixture").unwrap().tool_profile = None;
+    registry.register("gemini".into(), custom)?;
+    assert_eq!(
+        registry
+            .resolve_alloy(spec(AlloySelection::RoundRobin), required())?
+            .select(turn(2))
+            .native_tool_profile(),
+        None
+    );
+    assert_eq!(
+        original.native_tool_profile(),
+        Some(acyclic_harness_core::model::NativeToolProfile::Google)
+    );
     for features in [
         ModelFeatures {
             tools: false,

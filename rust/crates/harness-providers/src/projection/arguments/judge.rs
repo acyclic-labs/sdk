@@ -110,7 +110,9 @@ pub(crate) fn call(adapter: Adapter, arguments: &Value) -> Vec<u8> {
         id: "call_0".into(),
         name: "echo".into(),
         arguments,
-        signature: None,
+        native: None,
+        freeform: false,
+        omit_gemini_id: false,
     };
     serde_json::to_vec(&call).unwrap_or_default()
 }

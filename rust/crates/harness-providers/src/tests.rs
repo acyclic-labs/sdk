@@ -237,7 +237,7 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
 pub(super) struct Script {
     adapter: Adapter,
     status: u16,
-    sent: Mutex<Vec<HttpRequest>>,
+    pub(crate) sent: Mutex<Vec<HttpRequest>>,
 }
 
 impl HttpTransport for Script {
@@ -334,6 +334,8 @@ pub(super) fn provider_with(
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
         }),
+        tool_profile: None,
+        thinking_levels: adapter == Adapter::Gemini,
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: Some(1024),
@@ -507,6 +509,8 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         models: BTreeMap::from([(
             "org/model".into(),
             ModelSpec {
+                tool_profile: None,
+                thinking_levels: false,
                 max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
@@ -741,7 +745,7 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
     Ok(())
 }
 
-fn parser_dispatch() -> ModelDispatch {
+pub(crate) fn parser_dispatch() -> ModelDispatch {
     ModelDispatch {
         operation_id: acyclic_harness_core::OperationId::new(),
         step: 0,

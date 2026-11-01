@@ -18,6 +18,9 @@ pub struct ResolvedModel {
     pub(crate) profile: Option<acyclic_harness_core::model::ModelProfileBinding>,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
+    pub(crate) tool_profile: Option<acyclic_harness_core::model::NativeToolProfile>,
+    /// Retained from the same catalog member as capacity at original selection.
+    pub(crate) thinking_levels: bool,
     pub(crate) key: Option<Arc<str>>,
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
@@ -29,6 +32,11 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// The original selected catalog member's tool family, including under
+    /// alloy. Profile admission consumes this value without a naming heuristic.
+    pub fn native_tool_profile(&self) -> Option<acyclic_harness_core::model::NativeToolProfile> {
+        self.tool_profile
+    }
     /// Joins the original registry selection to its admitted epoch profile.
     /// Credentials, endpoint and token counting retain their original owners.
     #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
@@ -43,6 +51,17 @@ impl ResolvedModel {
         }
         let binding = profile.bind_model(&self.model, self.capacity)?;
         crate::projection::validate_profile(self.config.adapter, &binding)?;
+        if self.config.adapter == crate::Adapter::Gemini
+            && matches!(
+                binding.reasoning(),
+                acyclic_model_render::Reasoning::Level(_)
+            )
+            && !self.thinking_levels
+        {
+            return Err(invalid(
+                "Gemini profile admission failed: thinking levels are not advertised by the selected model; recovery: select its provider-default reasoning profile",
+            ));
+        }
         let mut revision = blake3::Hasher::new();
         revision.update(b"acyclic.model-profile-binding.v1\0");
         revision.update(&(self.model.revision.len() as u64).to_be_bytes());
@@ -145,6 +164,8 @@ impl ModelProvider for ResolvedModel {
             profile: self.profile,
             config: self.config.clone(),
             capacity: self.capacity,
+            tool_profile: self.tool_profile,
+            thinking_levels: self.thinking_levels,
             key: self.key.clone(),
             credential_scope: self.credential_scope,
             transport: self.transport.clone(),

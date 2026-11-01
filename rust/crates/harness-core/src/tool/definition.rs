@@ -38,6 +38,13 @@ impl ToolDefinition {
         &'a self,
         name: std::borrow::Cow<'a, str>,
     ) -> acyclic_model_render::ToolDeclaration<'a, super::schema::ModelInput<'a>> {
+        if let Some(format) = self.input_schema.get("x-harness-freeform") {
+            return acyclic_model_render::ToolDeclaration::Freeform {
+                name,
+                description: &self.description,
+                format: super::schema::model_input(format),
+            };
+        }
         acyclic_model_render::ToolDeclaration::Function {
             name,
             description: &self.description,
@@ -135,6 +142,41 @@ impl ToolDefinition {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
+        if let Some(format) = self.input_schema.get("x-harness-freeform") {
+            let format_valid =
+                format
+                    .as_object()
+                    .is_some_and(|fields| match format["type"].as_str() {
+                        Some("text") => fields.len() == 1,
+                        Some("grammar") => {
+                            fields.len() == 3
+                                && matches!(format["syntax"].as_str(), Some("lark" | "regex"))
+                                && format["definition"]
+                                    .as_str()
+                                    .is_some_and(|text| !text.is_empty())
+                        }
+                        _ => false,
+                    });
+            // Custom input has exactly one canonical representation. Its raw
+            // text is moved into this field by the shared stream decoder.
+            if !format_valid
+                || self.input_schema["type"] != "object"
+                || self.input_schema["properties"]
+                    .as_object()
+                    .is_none_or(|fields| fields.len() != 1)
+                || self.input_schema["properties"]["input"]["type"] != "string"
+                || self.input_schema["required"]
+                    .as_array()
+                    .is_none_or(|fields| fields.len() != 1 || fields[0] != "input")
+                || self.input_schema["additionalProperties"] != false
+            {
+                return Err(crate::store::guarded_boundary(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "freeform tool contract is invalid",
+                ));
+            }
+        }
         for schema in [
             &self.input_schema,
             &self.output_schema,

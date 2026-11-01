@@ -77,7 +77,7 @@ const TOOLS_AND_IMAGES: ModelFeatures = ModelFeatures {
     images: true,
 };
 
-const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
+const MODELS: &[(&str, &str, u32, u32, ModelFeatures, bool)] = &[
     // https://platform.claude.com/docs/en/models/overview
     (
         "anthropic",
@@ -85,6 +85,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_000_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "anthropic",
@@ -92,6 +93,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_000_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "anthropic",
@@ -99,6 +101,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_000_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "anthropic",
@@ -106,6 +109,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_000_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     // https://developers.openai.com/api/docs/models
     (
@@ -114,6 +118,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_050_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "openai",
@@ -121,6 +126,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_050_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "openai",
@@ -128,14 +134,23 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_050_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
-    ("openai", "gpt-6-luna", 1_050_000, 128_000, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-6-luna",
+        1_050_000,
+        128_000,
+        TOOLS_AND_IMAGES,
+        false,
+    ),
     (
         "anthropic",
         "claude-sonnet-4-5",
         200_000,
         64_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "anthropic",
@@ -143,6 +158,69 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         200_000,
         64_000,
         TOOLS_AND_IMAGES,
+        false,
+    ),
+    // https://ai.google.dev/gemini-api/docs/models (verified 2026-10-31).
+    // Thinking-level support: https://ai.google.dev/gemini-api/docs/generate-content/thinking
+    // and https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-pro
+    // (verified 2026-11-01). Gemini 2.5 uses token budgets, not levels.
+    // Argon long decode is a separate asynchronous mode; streamGenerateContent
+    // retains the documented synchronous output capacity.
+    (
+        "gemini",
+        "gemini-4-argon",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3.8-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3.6-flash",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3.5-flash-lite",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3.1-flash-lite",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3.1-pro-preview",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
+    ),
+    (
+        "gemini",
+        "gemini-3-flash-preview",
+        1_048_576,
+        65_536,
+        TOOLS_AND_IMAGES,
+        true,
     ),
     (
         "gemini",
@@ -150,6 +228,7 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_048_576,
         65_536,
         TOOLS_AND_IMAGES,
+        false,
     ),
     (
         "gemini",
@@ -157,22 +236,32 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
         1_048_576,
         65_536,
         TOOLS_AND_IMAGES,
+        false,
     ),
-    ("openai", "gpt-4.1", 1_047_576, 32_768, TOOLS_AND_IMAGES),
+    (
+        "openai",
+        "gpt-4.1",
+        1_047_576,
+        32_768,
+        TOOLS_AND_IMAGES,
+        false,
+    ),
     (
         "openai",
         "gpt-4.1-2025-04-14",
         1_047_576,
         32_768,
         TOOLS_AND_IMAGES,
+        false,
     ),
-    ("openai", "gpt-5", 400_000, 128_000, TOOLS_AND_IMAGES),
+    ("openai", "gpt-5", 400_000, 128_000, TOOLS_AND_IMAGES, false),
     (
         "openai",
         "gpt-5-2025-08-07",
         400_000,
         128_000,
         TOOLS_AND_IMAGES,
+        false,
     ),
 ];
 
@@ -186,19 +275,34 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
             let models = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
-                .map(|&(_, name, context_tokens, output_tokens, features)| {
-                    (
-                        name.into(),
-                        crate::ModelSpec {
-                            max_context_tokens: None,
-                            capacity: ModelContextCapacity {
-                                context_tokens,
-                                output_tokens: Some(output_tokens),
+                .map(
+                    |&(_, name, context_tokens, output_tokens, features, thinking_levels)| {
+                        (
+                            name.into(),
+                            crate::ModelSpec {
+                                tool_profile: match id {
+                                    "anthropic" => Some(
+                                        acyclic_harness_core::model::NativeToolProfile::Anthropic,
+                                    ),
+                                    "openai" => {
+                                        Some(acyclic_harness_core::model::NativeToolProfile::Openai)
+                                    }
+                                    "gemini" => {
+                                        Some(acyclic_harness_core::model::NativeToolProfile::Google)
+                                    }
+                                    _ => None,
+                                },
+                                thinking_levels,
+                                max_context_tokens: None,
+                                capacity: ModelContextCapacity {
+                                    context_tokens,
+                                    output_tokens: Some(output_tokens),
+                                },
+                                features,
                             },
-                            features,
-                        },
-                    )
-                })
+                        )
+                    },
+                )
                 .collect();
             (
                 id.into(),

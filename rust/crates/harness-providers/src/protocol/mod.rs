@@ -1,4 +1,5 @@
 pub(crate) mod content;
+pub(crate) mod gemini;
 pub(crate) mod name;
 pub(crate) mod sequence;
 pub(crate) mod shape;

@@ -10,11 +10,18 @@ pub(super) struct Call<'a> {
     pub id: String,
     pub name: Cow<'a, str>,
     pub arguments: &'a Value,
-    pub signature: Option<Value>,
+    pub native: Option<&'a serde_json::value::RawValue>,
+    pub freeform: bool,
+    pub omit_gemini_id: bool,
 }
 
 impl Serialize for Call<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.adapter == Adapter::Gemini
+            && let Some(native) = self.native
+        {
+            return native.serialize(serializer);
+        }
         let mut map = serializer.serialize_map(None)?;
         match self.adapter {
             Adapter::Anthropic => {
@@ -24,10 +31,29 @@ impl Serialize for Call<'_> {
                 map.serialize_entry("input", &Arguments(self.arguments))?;
             }
             Adapter::Responses => {
-                map.serialize_entry("type", "function_call")?;
+                map.serialize_entry(
+                    "type",
+                    if self.freeform {
+                        "custom_tool_call"
+                    } else {
+                        "function_call"
+                    },
+                )?;
                 map.serialize_entry("call_id", &self.id)?;
                 map.serialize_entry("name", &self.name)?;
-                map.serialize_entry("arguments", &JsonString(Arguments(self.arguments)))?;
+                if self.freeform {
+                    map.serialize_entry(
+                        "input",
+                        self.arguments
+                            .get("input")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                serde::ser::Error::custom("freeform input must be a string")
+                            })?,
+                    )?;
+                } else {
+                    map.serialize_entry("arguments", &JsonString(Arguments(self.arguments)))?;
+                }
             }
             Adapter::Chat => {
                 #[derive(Serialize)]
@@ -48,21 +74,19 @@ impl Serialize for Call<'_> {
             Adapter::Gemini => {
                 #[derive(Serialize)]
                 struct Function<'a> {
-                    id: &'a str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    id: Option<&'a str>,
                     name: &'a str,
                     args: Arguments<'a>,
                 }
                 map.serialize_entry(
                     "functionCall",
                     &Function {
-                        id: &self.id,
+                        id: (!self.omit_gemini_id).then_some(self.id.as_str()),
                         name: &self.name,
                         args: Arguments(self.arguments),
                     },
                 )?;
-                if let Some(signature) = &self.signature {
-                    map.serialize_entry("thoughtSignature", signature)?;
-                }
             }
         }
         map.end()
