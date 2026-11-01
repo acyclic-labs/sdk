@@ -52,7 +52,9 @@ impl ModelRequest {
         }
         let mut remaining = limits.render_bytes;
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
-        Self::validate_messages(&mut self.messages, &self.tools, limits, io)?;
+        Self::validate_messages(&mut self.messages, &self.tools, limits, io, |tool| {
+            with_history_io(io, |work| tool.validate(work))
+        })?;
         Ok(remaining)
     }
 
@@ -61,6 +63,7 @@ impl ModelRequest {
         definitions: &[crate::tool::ToolDefinition],
         limits: Limits,
         io: Option<&PreparationIo>,
+        validate_declaration: impl Fn(&crate::tool::ToolDefinition) -> Result<()>,
     ) -> Result<()> {
         #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
@@ -86,7 +89,7 @@ impl ModelRequest {
         let mut tools = BTreeMap::new();
         for tool in definitions {
             charge_items(io, 1)?;
-            with_history_io(io, |work| tool.validate(work))?;
+            validate_declaration(tool)?;
             if tools.insert(tool.name.as_str(), tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }

@@ -27,11 +27,17 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
     for native in [false, true] {
         let mut expected = None;
         let mut full_work = Vec::new();
+        let mut declaration_work = Vec::new();
         for count in [1, 10, 100, 1_000] {
             let measured =
                 crate::test_support::accounted::accounted(native, 16 * 1024 * 1024, false, |io| {
+                    let mut original = request(count)?;
+                    original.tools = tools();
+                    original.tools[0].input_schema = json!({"enum":
+                        (0..count).map(|index| format!("choice-{index}")).collect::<Vec<_>>()
+                    });
                     let prepared = PreparedModelRequest::prepare(
-                        request(count)?,
+                        crate::model::clone_request(&original, Some(io))?,
                         Limits::default(),
                         Some(io),
                     )?;
@@ -56,18 +62,24 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
                     assert_eq!(value.as_ptr(), first, "continuation copied retained text");
                     assert_eq!(continued.messages.last(), Some(&text("new text")));
                     let before = io.receipt();
+                    // The former suffix path also validated the unchanged
+                    // declaration, traversing all three original schemas.
+                    with_history_io(Some(io), |work| continued.tools[0].validate(work))?;
+                    let declaration_items = io.receipt().items_examined - before.items_examined;
+                    let before = io.receipt();
                     continued.validate(Limits::default(), Some(io))?;
                     let full_items = io.receipt().items_examined - before.items_examined;
-                    Ok::<_, Error>((suffix_items, full_items))
+                    Ok::<_, Error>((suffix_items, full_items, declaration_items))
                 })
                 .map_err(|(cause, _)| Error::Storage(cause))?;
-            let (suffix_items, full_items) = measured.0?;
+            let (suffix_items, full_items, declaration_items) = measured.0?;
             assert_eq!(
                 *expected.get_or_insert(suffix_items),
                 suffix_items,
                 "suffix validation revisited history at {count} messages, native={native}"
             );
             full_work.push(full_items);
+            declaration_work.push(declaration_items);
             if native {
                 assert_eq!(
                     measured.5,
@@ -75,12 +87,16 @@ fn suffix_validation_work_is_flat_from_one_to_one_thousand_messages() -> Result<
                 );
             }
             eprintln!(
-                "CONTINUATION_VALIDATION native={native} messages={count} suffix_items={suffix_items} full_items={full_items}"
+                "CONTINUATION_VALIDATION native={native} messages={count} suffix_items={suffix_items} full_items={full_items} declaration_items={declaration_items}"
             );
         }
         assert!(
             full_work.windows(2).all(|pair| pair[1] > pair[0]),
             "full-validation negative control did not grow"
+        );
+        assert!(
+            declaration_work.windows(2).all(|pair| pair[1] > pair[0]),
+            "original declaration-validation negative did not expose repeated schema work"
         );
     }
     Ok(())
@@ -151,6 +167,20 @@ fn result() -> ModelMessage {
 
 #[test]
 fn untrusted_suffixes_keep_full_tool_exchange_validation() -> Result<()> {
+    for field in ["input", "output", "projection"] {
+        let mut original = request(1)?;
+        original.tools = tools();
+        let tool = &mut original.tools[0];
+        match field {
+            "input" => tool.input_schema = json!(17),
+            "output" => tool.output_schema = json!(17),
+            _ => tool.projection_schema = json!(17),
+        }
+        assert!(
+            PreparedModelRequest::prepare(original, Limits::default(), None).is_err(),
+            "fresh declaration bypassed its original {field} schema admission"
+        );
+    }
     let mut bad_role = call();
     bad_role.role = ModelRole::User;
     let mut bad_projection = result();

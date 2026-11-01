@@ -49,6 +49,9 @@ impl RequestContinuation {
                 &self.prepared.request.tools,
                 limits,
                 io,
+                // Only the suffix is mutable; these declarations belong to the
+                // original request admitted under the same limits.
+                |_| Ok(()),
             )?;
             Ok(Some(remaining))
         } else {
