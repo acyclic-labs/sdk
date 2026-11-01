@@ -4,7 +4,7 @@
 use super::{
     FilesystemContentVerifier, FilesystemHost,
     agent_internal::AgentInternalFiles,
-    agent_turns::{AdmittedAgent, TurnAdmission, agent_error},
+    agent_turns::{AdmittedAgent, NoticeBlocks, TurnAdmission, agent_error},
 };
 use crate::{
     Error, OperationId, Result,
@@ -42,6 +42,7 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub cursor: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
+    maximum: Option<u64>,
     admitted: Mutex<Admitted>,
 }
 
@@ -66,6 +67,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         cursor: u64,
         files: Arc<AgentInternalFiles<A, O>>,
         writer: Arc<dyn ContentPublisher>,
+        maximum: Option<u64>,
     ) -> Self {
         Self {
             stream,
@@ -77,6 +79,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             cursor,
             files,
             writer,
+            maximum,
             admitted: Mutex::default(),
         }
     }
@@ -139,8 +142,27 @@ where
                     selected.range.contains(&input.inbox)))
         });
         let mut messages = Vec::new();
+        let mut notices: Option<NoticeBlocks> = None;
+        let flush_notices = |notices: &mut Option<NoticeBlocks>,
+                             messages: &mut Vec<ModelMessage>| {
+            if let Some(notices) = notices.take() {
+                messages.extend(notices.finish().into_iter().map(|content| ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                }));
+            }
+        };
         let mut item = 0_u64;
         for input in inputs {
+            // Coalesce only consecutive unsent events in this frozen cut, using
+            // the same bounded blocks as the turn's initial Notice selection.
+            if let crate::agent::TurnInput::Notice { notice, .. } = &input.input {
+                notices
+                    .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
+                    .push(notice.clone())?;
+                continue;
+            }
+            flush_notices(&mut notices, &mut messages);
             let content = crate::agent::model_input(&input.input).map_err(agent_error)?;
             let external = content.file_refs().cloned().collect::<Vec<_>>();
             // The original inbox read already authorized the event. JSON in a
@@ -227,6 +249,7 @@ where
                 content,
             });
         }
+        flush_notices(&mut notices, &mut messages);
         Ok(Selected {
             operation,
             step,
