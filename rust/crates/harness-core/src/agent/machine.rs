@@ -66,6 +66,8 @@ pub enum SpawnOutcome {
     },
 }
 
+impl super::AgentRecord for SpawnOutcome {}
+
 /// Durable agent state, carried in the actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -228,7 +230,8 @@ impl AgentState {
     /// by the step that applied it. Its child is derived from the intent, and
     /// that step either opened it, found it open, or refused it for exactly
     /// one reason; no later input of the same step closes a child. So the
-    /// outcome is a function of that state, and no state records outcomes.
+    /// outcome is a function of that state. Inbox admission publishes it
+    /// once as `Out::SpawnResolved`; later states cannot reconstruct it.
     #[must_use]
     pub fn spawn_outcome(&self, intent: &IntentId) -> SpawnOutcome {
         let Ok(child) = self.spawned(intent) else {
@@ -338,6 +341,14 @@ pub enum Out {
     GoalCompleted {
         /// Original turn identity, preserved across self-continuations.
         run: crate::OperationId,
+    },
+    /// Publish the consuming step's original client spawn outcome. Turn
+    /// drivers cannot supply this effect; only inbox admission produces it.
+    SpawnResolved {
+        /// Original inbox sequence, which also names the spawning intent.
+        sequence: u64,
+        /// Exact outcome, retained independently of later child settlement.
+        outcome: SpawnOutcome,
     },
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
@@ -572,6 +583,10 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             // A turn in progress keeps the slots its recorded spawns take.
             let free = state.free_children();
             apply_spawns(&mut state, &mut outs, 0, free);
+            outs.push(Out::SpawnResolved {
+                sequence,
+                outcome: state.spawn_outcome(&requested_intent(sequence)?),
+            });
             state
         }
         (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
@@ -674,6 +689,7 @@ fn finalize_step(
             Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
+            | Out::SpawnResolved { .. }
             | Out::GoalCompleted { .. } => {}
         }
     }
@@ -802,6 +818,7 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
+        Out::SpawnResolved { .. } => false,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
@@ -1050,8 +1067,8 @@ pub(super) fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
 
 /// Applies each spawn in `outs[from..]`, in order, to `state`: each sees the
 /// children every earlier spawn of the step opened. A refused spawn creates
-/// nothing and is dropped from `outs`; a requester reads every outcome from
-/// the committed state with [`AgentState::spawn_outcome`].
+/// nothing and is dropped from `outs`. Inbox admission retains its exact
+/// outcome in `Out::SpawnResolved`, published in the same commit.
 fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit: usize) {
     let mut index = from;
     while index < outs.len() {

@@ -1078,7 +1078,15 @@ async fn a_client_spawn_commits_before_the_next_turn_reaches_or_counts_it() -> R
     assert_eq!(*driver.0.lock().expect("seen lock"), None);
     let (client, child) = requested_child(&root, 1)?;
     assert_eq!(spawns(&requested.outs), [client.clone()]);
-    assert_eq!(requested.outs.len(), 1);
+    assert_eq!(
+        requested.outs.last(),
+        Some(&Out::SpawnResolved {
+            sequence: 1,
+            outcome: SpawnOutcome::Spawned {
+                child: child.clone()
+            }
+        })
+    );
     assert_eq!(
         requested.state.spawn_outcome(&client),
         SpawnOutcome::Spawned {
@@ -1177,50 +1185,66 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
 }
 
 #[tokio::test]
-async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_it() -> Result {
+async fn inadmissible_driver_effects_settle_failure_without_publishing_them() -> Result {
     let parent = AgentPath::root(&id(1));
-    let (path, state) = child_of(&parent, 2)?;
     let oversized = vec![b'x'; MAX_RECORD_BYTES + 1];
-    let driver = script(vec![TurnStep {
-        reserved_children: 0,
-        checkpoint: None,
-        outs: vec![
+    for outs in [
+        vec![
             Out::Conversation(oversized),
             Out::Conversation(b"fits".to_vec()),
         ],
-        wait: Wait::Input,
-        drops: None,
-    }]);
-    let stepped = step(
-        &driver,
-        &path,
-        Some(state),
-        2,
-        Wake::Inbox {
+        vec![Out::SpawnResolved {
             sequence: 1,
-            record: InboxRecord::Approval(Approval { id: intent("q1") }),
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let failed = AgentOutcome::Failed {
-        message: INADMISSIBLE_EFFECT.into(),
-    };
-    assert_eq!(
-        stepped.state.phase,
-        Phase::Done {
-            outcome: failed.clone()
-        }
-    );
-    assert!(
-        !stepped
-            .outs
-            .iter()
-            .any(|out| matches!(out, Out::Conversation(_)))
-    );
-    assert!(stepped.outs.iter().any(|out| matches!(
+            outcome: SpawnOutcome::Refused {
+                reason: SpawnRefusal::Limit,
+            },
+        }],
+    ] {
+        let (path, state) = child_of(&parent, 2)?;
+        let driver = script(vec![TurnStep {
+            reserved_children: 0,
+            checkpoint: None,
+            outs,
+            wait: Wait::Input,
+            drops: None,
+        }]);
+        let stepped = step(
+            &driver,
+            &path,
+            Some(state),
+            2,
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Approval(Approval { id: intent("q1") }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let failed = AgentOutcome::Failed {
+            message: INADMISSIBLE_EFFECT.into(),
+        };
+        assert_eq!(
+            stepped.state.phase,
+            Phase::Done {
+                outcome: failed.clone()
+            }
+        );
+        assert!(
+            !stepped
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Conversation(_)))
+        );
+        assert!(stepped.outs.iter().any(|out| matches!(
         out,
         Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
     )));
+        assert!(
+            !stepped
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::SpawnResolved { .. }))
+        );
+    }
     Ok(())
 }

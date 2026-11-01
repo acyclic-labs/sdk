@@ -58,6 +58,16 @@ stream fork and volume fork composition. The child inherits the selected
 conversation prefix and retained project generations. The parent keeps its later
 conversation and files. The new brief is staged by the authorized host.
 
+The parent's consuming step publishes the spawn outcome in the same conditional
+commit as the child fork and actor checkpoint. `AgentPath::spawn_result(inbox)`
+names that immutable result outside the inherited agent subtree. The shared host
+checks the exact original spawn input, then follows the result from zero with
+atomic creation waiting. Later parent turns and child closure do not change the
+outcome. Lookup requires one bounded input read and one result follow, independent
+of history length; source errors and EOF return typed failures. An unissued or
+non-spawn input is refused before waiting. Runtime delivery failures retain their
+existing queued-input semantics; an open provider is not proof of actor progress.
+
 Complete lazy-workspace restoration still requires retained source, overlay and
 shadow state to join the authored generation in the original filesystem commit.
 The current selected-generation fork can fail with `spawned project has no

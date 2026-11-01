@@ -8,20 +8,18 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, Error, ForkAdopted, INBOX, InboxRecord,
-    IntentId, Sender, Spawn, SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive,
-    handler::Agents, send, submit,
+    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, AgentRecord, Error, ForkAdopted, INBOX,
+    InboxRecord, IntentId, Sender, Spawn, SpawnOutcome, SpawnVolumes, Submitted, TurnDriver,
+    archive, handler::Agents, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
     guest::{Composer, Handler},
-    local::{Clock, Runtime, State, Store},
+    local::{Clock, Runtime, Store},
 };
-use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
-};
-use futures::{StreamExt as _, TryStreamExt as _};
+use acyclic_stream::{CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider};
+use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -240,10 +238,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         super::reply(&*self.provider, &state, cursor, id, inbox).await
     }
 
-    /// What `parent`'s step did with the spawn named `intent` that its inbox
-    /// record `sequence` requested: the outcome that step committed, never a
-    /// guess from an earlier state, however many steps later it is asked.
-    /// Waits, on the parent's actor state stream, for that step to commit.
+    /// The original consuming step's immutable spawn outcome. One follow
+    /// waits atomically for its creation, or replays its sole result after any
+    /// later parent/child work. The result, child fork and actor checkpoint
+    /// share one conditional commit. Source failure or EOF is a typed error.
     /// An intent not named by `sequence` is a conflict, refused before IO.
     pub async fn spawned(
         &self,
@@ -256,100 +254,51 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 "spawn intent differs from its inbox sequence",
             ));
         }
-        let actor = self.actor(parent)?;
-        let store = self.runtime.store();
-        let path = store.path(&actor).map_err(actor_error)?;
-        loop {
-            // Follow from the tail read before the load, so a step committing
-            // after the load is never missed.
-            let tail = match self.provider.tail(path.clone()).await {
-                Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
-                Err(error) => return Err(Error::Stream(error)),
-            };
-            let consumed = store
-                .load(&actor)
-                .await
-                .map_err(actor_error)?
-                .state()
-                .and_then(|state| state.cursor(INBOX))
-                .is_some_and(|cursor| cursor > sequence);
-            if consumed {
-                return self.applied(&path, sequence, intent).await;
-            }
-            let mut committed = acyclic_stream::records_only(
-                self.provider
-                    .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
-                    .await
-                    .map_err(Error::Stream)?,
-            );
-            match committed.next().await {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
-            }
+        if sequence.checked_add(1).is_none() {
+            return Err(Error::Record("spawn input cursor overflow"));
         }
-    }
-
-    /// The outcome of the spawn the step consuming inbox record `sequence`
-    /// applied, from the actor state history at `path`: the first state whose
-    /// inbox cursor passes `sequence` is that step's commit. History is append-only and
-    /// cursors only advance, so this is O(log history) reads.
-    async fn applied(
-        &self,
-        path: &StreamPath,
-        sequence: u64,
-        intent: &IntentId,
-    ) -> Result<SpawnOutcome, Error> {
-        let tail = self
-            .provider
-            .tail(path.clone())
-            .await
-            .map_err(Error::Stream)?;
-        let (mut low, mut high) = (0, tail);
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let passed = self
-                .committed(path, middle)
-                .await?
-                .cursor(INBOX)
-                .is_some_and(|cursor| cursor > sequence);
-            if passed {
-                high = middle;
-            } else {
-                low = middle + 1;
-            }
-        }
-        if low == tail {
-            return Err(Error::Record("no committed step consumed the spawn"));
-        }
-        let state = self.committed(path, low).await?;
-        let checkpoint = state.checkpoint().ok_or(Error::Record(
-            "the step consuming the spawn has no checkpoint",
-        ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
-    }
-
-    /// Actor state record `sequence` of the state stream at `path`.
-    async fn committed(&self, path: &StreamPath, sequence: u64) -> Result<State, Error> {
-        let mut records = self
+        // An unissued or non-spawn input has no producer for this result.
+        // Authenticate the exact immutable input before opening the wait.
+        let input = self
             .provider
             .read(ReadRequest {
                 key: None,
-                path: path.clone(),
+                path: parent.inbox()?,
                 from: sequence,
                 limit: 1,
                 at_least: Default::default(),
             })
             .await
-            .map_err(Error::Stream)?;
-        let record = records
+            .map_err(Error::Stream)?
             .try_next()
             .await
             .map_err(Error::Stream)?
-            .filter(|record| record.sequence == sequence)
-            .ok_or(Error::Record("actor state history is incomplete"))?;
-        State::decode(&record.value).map_err(actor_error)
+            .ok_or(Error::Record("spawn input was not committed"))?;
+        if input.sequence != sequence
+            || !matches!(InboxRecord::decode(&input.value)?, InboxRecord::Spawn(_))
+        {
+            return Err(Error::Conflict("spawn result input is not a spawn request"));
+        }
+        drop(input);
+        let mut request = acyclic_stream::FollowRequest::new(parent.spawn_result(sequence)?, 0);
+        request.when_absent = acyclic_stream::WhenAbsent::Wait;
+        let record = acyclic_stream::records_only(
+            self.provider.follow(request).await.map_err(Error::Stream)?,
+        )
+        .try_next()
+        .await
+        .map_err(Error::Stream)?
+        .ok_or(Error::Stream(StreamError::Unavailable))?;
+        if record.sequence != 0 {
+            return Err(Error::Record("spawn result skipped its original outcome"));
+        }
+        let outcome = SpawnOutcome::decode(&record.value)?;
+        if let SpawnOutcome::Spawned { child } = &outcome
+            && parent.child(&super::AgentId::derive(&parent.id(), intent.as_str()))? != *child
+        {
+            return Err(Error::Record("spawn result names another child"));
+        }
+        Ok(outcome)
     }
 
     /// Prepares, without IO, the one commit creating root agent

@@ -244,6 +244,13 @@ impl AgentPath {
         stream(&format!("{STATUSES}/{}", self.id()))
     }
 
+    /// Immutable outcome of the spawn requested at this agent's inbox sequence.
+    /// Like actor state and status, it is outside the inherited subtree: a
+    /// child's creating commit can publish this result beside its stream fork.
+    pub fn spawn_result(&self, sequence: u64) -> Result<StreamPath, Error> {
+        stream(&format!("harness/spawn-results/{}/{sequence}", self.id()))
+    }
+
     /// Close marker stream; its existence refuses every later inbox append.
     pub fn closed(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CLOSED}", self.text))

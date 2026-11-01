@@ -13,6 +13,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[path = "runtime/spawn.rs"]
+mod spawn;
+
 /// Spawns child `c` on its first turn and idles afterwards.
 #[derive(Default)]
 struct Spawner(AtomicUsize);
@@ -466,9 +469,12 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
 
 #[tokio::test]
 async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
+    use acyclic_stream::{ReadRequest, StreamProvider};
+    use futures::TryStreamExt as _;
+
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
-        provider,
+        provider.clone(),
         Spawner(AtomicUsize::new(1)),
         ActorReference::new(b"account", b"agents", b"owner")?,
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
@@ -514,6 +520,52 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         }
     );
     assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+    let result = provider
+        .read(ReadRequest {
+            key: None,
+            path: root.spawn_result(inbox)?,
+            from: 0,
+            limit: 2,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].sequence, 0);
+    // Result, consumed input checkpoint and child adoption are the SAME
+    // publication, not a later acknowledgement or independently built index.
+    assert_eq!(
+        store(&provider)?
+            .load(&host.actor(&root)?)
+            .await?
+            .follow_request()
+            .preceding,
+        Some(result[0].commit_id)
+    );
+    let adoption = provider
+        .read(ReadRequest {
+            key: None,
+            path: child.inbox()?,
+            from: inbox + 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .expect("child adoption");
+    assert_eq!(adoption.commit_id, result[0].commit_id);
+    // There is no result producer for adoption or an unissued input.
+    for sequence in [0, inbox + 1] {
+        let name = IntentId::try_from(format!("request:{sequence}"))?;
+        let rejected = host.spawned(&root, sequence, &name);
+        futures::pin_mut!(rejected);
+        assert!(matches!(
+            futures::poll!(rejected),
+            std::task::Poll::Ready(Err(_))
+        ));
+    }
     assert!(matches!(
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
