@@ -98,7 +98,7 @@ pub(crate) use file::{
     with_file_admission, with_file_scope, write_bounded_in_place,
 };
 mod claim;
-pub use claim::{ClaimCheck, StoreClaim, StoreHandle};
+pub use claim::{ClaimCheck, StoreClaim, StoreClaimRelease, StoreHandle};
 mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,

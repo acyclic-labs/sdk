@@ -104,21 +104,35 @@ fn a_reopen_after_the_last_provider_waits_for_the_store_to_close()
         // A latch on the close: the journal stays open, as it does while
         // the last provider's detached work or its final flush runs.
         let closing = Arc::clone(&provider.inner.journal);
+        let released = closing
+            .lock()
+            .map_err(|_| "closing journal was poisoned")?
+            .claim
+            .release_observer();
         drop(provider);
-        let reopen = tokio::spawn({
+        let mut reopen = tokio::spawn({
             let root = directory.path().to_path_buf();
             async move { LocalStream::open(&root, LocalStreamLimits::default()).await }
         });
-        // The reopen can finish only by failing while the store closes.
-        let early = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-            while !reopen.is_finished() {
-                tokio::task::yield_now().await;
+        let mut registration = tokio::task::spawn_blocking(move || released.wait_registered());
+        tokio::select! {
+            result = &mut reopen => {
+                // Release the actual close producer before joining the observer,
+                // including when a defective reopen skipped its closing wait.
+                drop(closing);
+                let _ = registration.await;
+                let reason = match result {
+                    Ok(Ok(_)) => "reopen admitted before its closing registration".to_owned(),
+                    Ok(Err(error)) => format!("reopen refused before its closing registration: {error}"),
+                    Err(error) => format!("reopen task failed before its closing registration: {error}"),
+                };
+                return Err(reason.into());
             }
-        })
-        .await;
-        assert!(early.is_err(), "a reopen found the closing store open");
+            result = &mut registration => { result??; }
+        }
+        assert!(!reopen.is_finished(), "a reopen found the closing store open");
         drop(closing);
-        let reopened = tokio::time::timeout(std::time::Duration::from_secs(5), reopen).await???;
+        let reopened = reopen.await??;
         assert_eq!(reopened.tail(path).await?, 1);
         // A live provider still refuses a second open in this process.
         assert!(matches!(

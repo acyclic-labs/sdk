@@ -21,7 +21,12 @@ fn a_claim_excludes_a_second_claim_until_it_is_released() -> io::Result<()> {
     // Another name for the same file is the same claim.
     let alias = directory.path().join(".").join("owner.lock");
     assert!(contended(StoreClaim::acquire(&alias)));
+    let released = claim.release_observer();
     drop(claim);
+    // The original release is retained even before an observer is armed.
+    released
+        .wait()
+        .map_err(|error| io::Error::new(error.kind(), error))?;
     assert_eq!(
         std::fs::metadata(&path)?.len(),
         0,
@@ -29,6 +34,44 @@ fn a_claim_excludes_a_second_claim_until_it_is_released() -> io::Result<()> {
     );
     drop(StoreClaim::acquire(&path)?);
     Ok(())
+}
+
+#[test]
+fn closing_claim_release_retains_the_original_native_failure() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("owner.lock");
+    let claim = StoreClaim::acquire(&path)?;
+    let released = claim.release_observer();
+    let late = released.clone();
+    std::fs::rename(&path, directory.path().join("original.lock"))?;
+    std::fs::create_dir(&path)?;
+    // This is the real OS error the original release open will encounter.
+    let refused = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .err()
+        .ok_or_else(|| io::Error::other("opening a directory as a writable claim succeeded"))?;
+    std::thread::scope(|scope| -> io::Result<()> {
+        let waiting = scope.spawn(|| released.wait());
+        let registered = late.wait_registered();
+        // Every path releases the actual producer before joining its waiter.
+        drop(claim);
+        registered.map_err(|error| io::Error::new(error.kind(), error))?;
+        let failed = waiting
+            .join()
+            .map_err(|_| io::Error::other("release waiter panicked"))?
+            .err()
+            .ok_or_else(|| io::Error::other("failed physical release reported success"))?;
+        assert_eq!(failed.kind(), refused.kind());
+        assert_eq!(failed.raw_os_error(), refused.raw_os_error());
+        let retained = late
+            .wait()
+            .err()
+            .ok_or_else(|| io::Error::other("late observer lost release failure"))?;
+        assert!(Arc::ptr_eq(&failed, &retained));
+        Ok(())
+    })
 }
 
 #[test]

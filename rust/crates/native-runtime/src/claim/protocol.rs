@@ -72,9 +72,6 @@ pub(super) struct Table<Key> {
 
 struct Shard<Key> {
     entries: crate::sync::Mutex<HashMap<Key, Entry>>,
-    /// Signalled whenever an entry is removed, so that an acquire waiting
-    /// on a closing claim takes the store over as that claim's release ends.
-    removed: crate::sync::Condvar,
 }
 
 struct Entry {
@@ -86,11 +83,20 @@ struct Entry {
 
 /// The handles a claim's owner gave out. Once it gave some and every one
 /// has dropped, the claim is closing: its owner's last work drains and its
-/// release follows without fail, so an acquire in this process waits for
-/// that release rather than reporting the store open.
+/// release follows, so an acquire in this process waits for that release
+/// result rather than reporting the store open.
 pub(super) struct Handles {
     issued: AtomicBool,
     live: AtomicUsize,
+    release: crate::sync::Mutex<ReleaseState>,
+    released: crate::sync::Condvar,
+}
+
+#[derive(Default)]
+struct ReleaseState {
+    outcome: Option<Result<(), std::sync::Arc<io::Error>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    registered: bool,
 }
 
 impl Handles {
@@ -98,6 +104,8 @@ impl Handles {
         Self {
             issued: AtomicBool::new(false),
             live: AtomicUsize::new(0),
+            release: crate::sync::Mutex::new(ReleaseState::default()),
+            released: crate::sync::Condvar::new(),
         }
     }
 
@@ -113,6 +121,68 @@ impl Handles {
     fn closing(&self) -> bool {
         self.issued.load(Ordering::SeqCst) && self.live.load(Ordering::SeqCst) == 0
     }
+
+    pub(super) fn wait(&self) -> Result<(), std::sync::Arc<io::Error>> {
+        let mut release = self
+            .release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(any(test, feature = "test-support"))]
+        if release.outcome.is_none() && !release.registered {
+            // This is the actual keyed Condvar registration: publication and
+            // its atomic unlock/wait share the release producer's mutex.
+            release.registered = true;
+            self.released.notify_all();
+        }
+        loop {
+            if let Some(outcome) = &release.outcome {
+                return outcome.clone();
+            }
+            release = self
+                .released
+                .wait(release)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn wait_registered(&self) -> Result<(), std::sync::Arc<io::Error>> {
+        let mut release = self
+            .release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if release.registered {
+                return Ok(());
+            }
+            match &release.outcome {
+                Some(Err(error)) => return Err(std::sync::Arc::clone(error)),
+                Some(Ok(())) => {
+                    return Err(std::sync::Arc::new(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "claim released before a closing waiter registered",
+                    )));
+                }
+                None => {}
+            }
+            release = self
+                .released
+                .wait(release)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn complete(&self, outcome: io::Result<()>) {
+        let mut release = self
+            .release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if release.outcome.is_none() {
+            release.outcome = Some(outcome.map_err(std::sync::Arc::new));
+            drop(release);
+            self.released.notify_all();
+        }
+    }
 }
 
 impl<Key: Clone + Eq + Hash> Table<Key> {
@@ -120,7 +190,6 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
         Self {
             shards: std::array::from_fn(|_| Shard {
                 entries: crate::sync::Mutex::new(HashMap::new()),
-                removed: crate::sync::Condvar::new(),
             }),
         }
     }
@@ -145,19 +214,15 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
     /// Waits while a claim of this process on the file `key` is closing:
     /// its handles are gone and only its release remains.
     fn await_closing(&self, key: &Key) -> io::Result<()> {
-        let shard = self.shard(key)?;
-        let mut entries = shard
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while entries
+        let closing = self
+            .entries(key)?
             .get(key)
-            .is_some_and(|entry| entry.handles.closing())
-        {
-            entries = shard
-                .removed
-                .wait(entries)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .filter(|entry| entry.handles.closing())
+            .map(|entry| crate::sync::Arc::clone(&entry.handles));
+        if let Some(closing) = closing {
+            closing
+                .wait()
+                .map_err(|error| io::Error::new(error.kind(), error))?;
         }
         Ok(())
     }
@@ -216,8 +281,6 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if entries.get(key).is_some_and(|entry| entry.token == token) {
             entries.remove(key);
-            drop(entries);
-            shard.removed.notify_all();
         }
     }
 }
@@ -432,7 +495,35 @@ impl<H: Host> Claim<H> {
 
 impl<H: Host> Drop for Claim<H> {
     fn drop(&mut self) {
-        let _ = self.release();
-        self.host.table().remove(&self.key, self.token);
+        let mut releasing = Releasing {
+            claim: self,
+            outcome: None,
+        };
+        let outcome = releasing.claim.release();
+        releasing.outcome = Some(outcome);
+    }
+}
+
+/// Publish only after the original release attempt and exact-token removal.
+/// Unwinding that attempt is a terminal failure, never a successful handoff.
+struct Releasing<'a, H: Host> {
+    claim: &'a mut Claim<H>,
+    outcome: Option<io::Result<()>>,
+}
+
+impl<H: Host> Drop for Releasing<'_, H> {
+    fn drop(&mut self) {
+        self.claim
+            .host
+            .table()
+            .remove(&self.claim.key, self.claim.token);
+        self.claim
+            .handles
+            .complete(self.outcome.take().unwrap_or_else(|| {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "claim release producer unwound before its terminal result",
+                ))
+            }));
     }
 }
