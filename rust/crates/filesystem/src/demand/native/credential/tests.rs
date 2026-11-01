@@ -4,6 +4,84 @@ use std::sync::atomic::AtomicUsize;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
+/// Synthetic payload; the finite allocation custody and transport owners are real.
+#[test]
+fn protected_body_retains_original_allocation_through_transport_owners() -> TestResult {
+    use acyclic_auth::operation::ProtectedBytes;
+
+    let mut control_bytes = None;
+    for length in [1024, 1024 * 1024] {
+        let stop = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            crate::performance::work_budget(64, 4 * 1024 * 1024),
+            &stop,
+        )
+        .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        // The supported Bytes::from_owner allocation has one reference count
+        // and the retained owner. Admit it and the payload before allocating.
+        let (layout, _) =
+            std::alloc::Layout::new::<AtomicUsize>().extend(std::alloc::Layout::new::<
+                ProtectedBytes<crate::NativeAllocation>,
+            >())?;
+        let control = layout.pad_to_align().size() as u64;
+        let mut allocation =
+            original.claim(length as u64 + control, 2, crate::WorkCounters::UNCHARGED)?;
+        let payload = zeroize::Zeroizing::new(vec![7; length]);
+        allocation.reconcile_capacity(payload.capacity() as u64 + control)?;
+        let pointer = payload.as_ptr();
+        let mut body = None;
+        let transfer = acyclic_test_support::measure(|| {
+            body = Some(
+                ProtectedBytes::new(payload)
+                    .with_custody(allocation)
+                    .into_bytes(),
+            );
+        });
+        let body = body.ok_or("protected transport owner missing")?;
+        assert_eq!(body.as_ptr(), pointer, "transfer must not copy the payload");
+        assert_eq!((transfer.count_total, transfer.bytes_total), (1, control));
+        if let Some(previous) = control_bytes {
+            assert_eq!(control, previous, "control cannot grow with the payload");
+        }
+        control_bytes = Some(control);
+        let live = original.live_allocation_bytes();
+        assert_eq!(live, baseline + length as u64 + control);
+        let receipt = original.receipt();
+        let mut retained = None;
+        let mut slice = None;
+        let sharing = acyclic_test_support::measure(|| {
+            retained = Some(body.clone());
+            slice = Some(body.slice(1..length - 1));
+        });
+        assert_eq!((sharing.count_total, sharing.bytes_total), (0, 0));
+        assert_eq!(original.receipt(), receipt);
+        // A real full-copy negative control must be visible to the cost oracle.
+        let copy = acyclic_test_support::measure(|| {
+            std::hint::black_box(body.to_vec());
+        });
+        assert!(copy.bytes_total >= length as u64);
+        assert!(copy.bytes_total > transfer.bytes_total);
+
+        stop.cancel();
+        drop(body);
+        assert_eq!(original.live_allocation_bytes(), live);
+        drop(retained);
+        assert_eq!(original.live_allocation_bytes(), live);
+        let slice = slice.ok_or("protected transport slice missing")?;
+        assert_eq!(slice.as_ptr(), pointer.wrapping_add(1));
+        assert_eq!(slice.len(), length - 2);
+        assert!(slice.iter().all(|byte| *byte == 7));
+        drop(slice);
+        assert_eq!(
+            original.live_allocation_bytes(),
+            baseline,
+            "final transport owner must retire its original capacity synchronously"
+        );
+    }
+    Ok(())
+}
+
 /// Synthetic token bytes; the allocation and cache/request owners are real.
 #[tokio::test]
 async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() -> TestResult {
