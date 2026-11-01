@@ -302,7 +302,13 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 _ => b"outside",
             };
             let pending = staged_write(&source.checkout, left, bytes, &pending_work).await?;
-            write(&source, right, 0, exit.as_bytes(), &work).await?;
+            let seed = match exit {
+                "superseded" => b"seed-b",
+                "abandoned" => b"seed-c",
+                "cancelled" => b"seed-d",
+                _ => b"seed-a",
+            };
+            write(&source, right, 0, seed, &work).await?;
             let winner = staged_write(&source.checkout, right, b"newest", &work).await?;
             let reads = objects.entered.load(Ordering::Acquire);
             objects.paused_reads.store(true, Ordering::Release);
