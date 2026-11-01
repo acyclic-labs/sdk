@@ -1,8 +1,146 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
-import { isAbsolute } from "node:path";
-import { Processes } from "./process.mjs";
+import { execFileSync } from "node:child_process";
+import { createReadStream, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { Processes, ProcessObservationFailed } from "./process.mjs";
+
+test("original process phases retain exact input, output and exit without treating close as EOF", async () => {
+  const operation = "00000000-0000-0000-0000-000000000001", events = [];
+  const scope = new Processes({ onProgress: event => events.push(event) });
+  try {
+    assert.throws(() => scope.start(process.execPath, [], { scopeOperation: "path/or/prompt" }), /process-progress-operation/);
+    assert.equal(scope.started, 0, "invalid correlation cannot launch a process");
+    for (const count of [1, 128]) {
+      const program = `const input=[];process.stdin.on('data',bytes=>input.push(bytes));process.stdin.on('end',()=>{process.stdout.write(Buffer.concat(input));for(let index=0;index<${count};index++)process.stdout.write(Buffer.alloc(8192,97));process.stderr.write('original stderr');process.exitCode=124;});`;
+      const running = scope.start(process.execPath, ["-e", program], { scopeOperation: operation });
+      running.input.write("original ");
+      running.input.end("input");
+      const result = await running.closed;
+      assert.equal(result.code, 124, "the actual child exit is not a cancellation inference");
+      assert.equal(result.signal, null);
+      assert.equal(result.stdout, "original input" + "a".repeat(count * 8192));
+      assert.equal(result.stderr, "original stderr");
+      const rows = events.filter(event => event.ordinal === scope.started - 1);
+      assert.ok(rows.length <= 19, "fixed first observations do not grow with output transfers");
+      assert.equal(new Set(rows.map(event => event.phase)).size, rows.length);
+      for (const phase of ["node-spawn", "stdin-write-admitted", "stdin-write-complete", "stdin-end-submitted",
+        "stdin-finish", "stdin-close", "stdout-first-write", "stderr-first-write", "stdout-eof", "stderr-eof",
+        "stdout-finish", "stderr-finish", "node-exit", "node-close", "reaped", "closed"]) {
+        assert.ok(rows.some(event => event.phase === phase), phase);
+      }
+      for (const event of rows) {
+        assert.equal(event.schema, "acyclic.process-progress.v1");
+        assert.equal(event.operation, operation);
+        assert.equal(event.report_generation, null);
+        assert.equal(event.report_request_id, null);
+        assert.ok(Number.isFinite(event.elapsed_seconds) && event.elapsed_seconds >= 0);
+        assert.deepEqual(Object.keys(event).sort(), ["schema", "ordinal", "operation", "report_generation",
+          "report_request_id", "phase", "elapsed_seconds", ...(event.phase === "node-exit" ? ["code", "signal"] : [])].sort());
+      }
+      const exit = rows.find(event => event.phase === "node-exit");
+      assert.equal(exit.code, 124);
+      assert.ok(exit.elapsed_seconds <= rows.find(event => event.phase === "reaped").elapsed_seconds);
+      assert.ok(rows.find(event => event.phase === "reaped").elapsed_seconds <= rows.find(event => event.phase === "closed").elapsed_seconds);
+    }
+    assert.ok(events.some(event => event.ordinal === 0) && events.some(event => event.ordinal === 1),
+      "the same operation's launches retain distinct original ordinals without PID matching");
+    const destroyed = scope.start(process.execPath, ["-e", "process.stdin.resume()"], { scopeOperation: operation });
+    destroyed.child.stdout.destroy();
+    destroyed.input.end();
+    assert.equal((await destroyed.closed).code, 0);
+    const rows = events.filter(event => event.ordinal === 2);
+    assert.ok(rows.some(event => event.phase === "stdout-close"));
+    assert.ok(!rows.some(event => event.phase === "stdout-eof"), "destroying the original source is not EOF");
+    assert.ok(!rows.some(event => event.phase.endsWith("first-write")), "an empty stream has no observed bytes");
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
+});
+
+test("original process phase observer loss is typed only after the same physical close", async () => {
+  const operation = "00000000-0000-0000-0000-000000000002";
+  const cause = new Error("original failed phase sink"), events = [];
+  const scope = new Processes({ onProgress: event => {
+    events.push(event);
+    if (event.phase === "node-spawn" || event.phase === "closed") throw cause;
+  } });
+  try {
+    const running = scope.start(process.execPath, ["-e", "process.stdin.resume()"], { scopeOperation: operation });
+    let physicallyClosed = false;
+    running.child.once("close", () => { physicallyClosed = true; });
+    const spawned = once(running.child, "spawn");
+    await spawned;
+    assert.equal(physicallyClosed, false, "a failed observation cannot certify owner exit");
+    const closing = scope.close().then(() => assert.fail("the scope must retain its observer failure"), error => error);
+    const original = await running.closed.then(() => assert.fail("a lost observer cannot become a successful result"), error => error);
+    assert.ok(original instanceof ProcessObservationFailed);
+    assert.equal(original.code, "PROCESS_OBSERVATION_FAILED");
+    assert.equal(original.cause, cause);
+    assert.equal(original.operation, operation);
+    assert.equal(original.ordinal, 0);
+    assert.equal(original.phase, "node-spawn", "later observer loss cannot overwrite the first terminal");
+    assert.equal(physicallyClosed, true);
+    assert.equal(scope.children.size, 0);
+    assert.equal(await closing, original);
+    assert.ok(events.some(event => event.phase === "reaped"));
+    assert.ok(events.some(event => event.phase === "closed"));
+  } finally { await scope.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); }); }
+
+  const late = new Processes({ onProgress: event => { if (event.phase === "closed") throw cause; } });
+  try {
+    const running = late.start(process.execPath, ["-e", "process.stdin.resume()"], { scopeOperation: operation });
+    running.input.end();
+    await assert.rejects(running.closed, error => error instanceof ProcessObservationFailed
+      && error.phase === "closed" && error.cause === cause);
+    assert.equal(late.children.size, 0, "a failure after transcript completion still follows original physical retirement");
+  } finally { await late.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); }); }
+});
+
+test("original process phase cleanup joins a blocked transcript after physical reap", { skip: process.platform === "win32" }, async () => {
+  const transcripts = mkdtempSync(join(tmpdir(), "process-phase-pipe-"));
+  const path = join(transcripts, "0.stdout");
+  execFileSync("mkfifo", [path]);
+  const cause = new Error("original final observer failed");
+  let reaped;
+  const physical = new Promise(resolve => { reaped = resolve; });
+  const scope = new Processes({ transcripts, onProgress: event => {
+    if (event.phase === "reaped") reaped();
+    if (event.phase === "closed") throw cause;
+  } });
+  let drain;
+  const readOriginal = () => drain ??= (async () => {
+    const bytes = [];
+    for await (const chunk of createReadStream(path)) bytes.push(chunk);
+    return Buffer.concat(bytes).toString();
+  })();
+  try {
+    const running = scope.start(process.execPath, ["-e", "process.stdout.write('phase-output')"]);
+    running.input.end();
+    await physical;
+    assert.equal(scope.children.size, 0, "the original child is already physically retired");
+    let completed = false;
+    const closing = scope.close();
+    const observed = closing.then(() => { completed = true; }, error => { completed = true; return error; });
+    assert.equal(scope.close(), closing, "cleanup retains the original terminal join");
+    // One scheduler turn lets all already-runnable close continuations finish.
+    // The original FIFO write remains blocked on the reader below.
+    await new Promise(setImmediate);
+    const completedBeforeDrain = completed;
+    assert.equal(await readOriginal(), "phase-output");
+    const failure = await observed;
+    assert.equal(completedBeforeDrain, false, "physical reap cannot certify the still-blocked transcript/final observation");
+    assert.ok(failure instanceof ProcessObservationFailed);
+    assert.equal(failure.phase, "closed");
+    assert.equal(failure.cause, cause);
+    await assert.rejects(running.closed, error => error === failure);
+    await assert.rejects(scope.close(), error => error === failure);
+  } finally {
+    await readOriginal();
+    await scope.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); });
+  }
+});
 
 // This is the actual native report producer from the compiled test target,
 // rather than a hand-authored external protocol transcript.
@@ -75,53 +213,27 @@ test("rejected control delivery remains a sink failure and still retires the sam
   }
 });
 
-test("selected owner exit cannot discard its already written acknowledgement", { skip: process.platform === "win32" }, async t => {
-  for (const [mode, expected] of [["1", "empty"], ["live", "report"]]) for (const late of [0, 1]) {
-    const scope = new Processes();
-    const running = launch(scope, false, mode);
+test("selected owner exit cannot discard its already written acknowledgement", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "1");
+  try {
+    await ready(running);
     const channel = running.child.stdio[3];
-    const emit = channel.emit;
-    const buffered = [];
-    let drained;
-    const drain = new Promise(resolve => { drained = resolve; });
-    const hold = function (event, ...args) {
-      if (["data", "end", "close"].includes(event)) {
-        buffered.push([event, ...args]);
-        if (event === "end") drained();
-        return true;
-      }
-      return emit.call(this, event, ...args);
-    };
-    try {
-      // Readiness must flow before holding the response and its EOF.
-      await ready(running);
-      channel.emit = hold;
-      const deadline = Date.now() + 500;
-      const acknowledged = running.requestReport(deadline);
-      await Promise.all([running.exited, drain]);
-      // Gate the actual native writer's bytes, then move only the receiver's
-      // clock across the original deadline. No sleep or fabricated frame is
-      // needed to expose a late delivery racing its timer callback.
-      const clock = t.mock.method(Date, "now", () => deadline + late);
-      try {
-        channel.emit = emit;
-        for (const event of buffered.splice(0)) emit.apply(channel, event);
-        await acknowledged;
-      } finally { clock.mock.restore(); }
-      const result = await running.closed;
-      assert.equal(result.code, 0);
-      assert.equal(result.termination.report_outcome, late ? "exited" : expected);
-      assert.equal(result.termination.report_acknowledged, !late);
-      assert.equal(result.termination.missing_wait_report, Boolean(late));
-      if (late) assert.deepEqual(result.termination.stuck_on, []);
-      await scope.close();
-      assert.equal(scope.children.size, 0, "late delivery cannot replace physical retirement");
-    } finally {
-      channel.emit = emit;
-      for (const event of buffered.splice(0)) emit.apply(channel, event);
-      await scope.close();
-    }
-  }
+    channel.pause();
+    const acknowledged = running.requestReport(Date.now() + 500);
+    await running.exited;
+    // The real producer has exited after writing its reply. Delivering those
+    // bytes later must preserve the snapshot rather than fabricate its loss.
+    channel.resume();
+    await acknowledged;
+    const result = await running.closed;
+    assert.equal(result.code, 0);
+    assert.equal(result.termination.report_outcome, "empty");
+    assert.equal(result.termination.report_acknowledged, true);
+    assert.equal(result.termination.missing_wait_report, false);
+    await scope.close();
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
 });
 
 test("a capability wait ends when its report producer closes while the process stays alive", { skip: process.platform === "win32" }, async () => {

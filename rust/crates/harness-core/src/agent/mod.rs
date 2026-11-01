@@ -47,8 +47,8 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
-    TurnOutputs, approval_intent, expand_attachments, model_input, roster_message, turn_id,
-    turn_roster, turn_segment,
+    TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent, encode_user_input, expand_attachments,
+    model_input, roster_message, turn_id, turn_roster, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

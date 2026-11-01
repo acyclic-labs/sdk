@@ -10,18 +10,62 @@ import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost} from './native-host.mjs';
 
+// Host process success also requires its own successful model-turn terminal.
+export function assertNativeCompletion(host,result,answer) {
+ assert.equal(result.code,0,result.stderr);
+ let terminal,text,completed=false;
+ for(const line of result.stdout.split('\n')) {
+  if(!line)continue;
+  const event=JSON.parse(line);
+  if(host==='codex') {
+   if(event.type==='turn.started') {text=undefined;completed=false;}
+   if(event.type==='turn.failed'||event.type==='error') {
+    const error=new Error('native Codex turn failed',{cause:event});error.code='NATIVE_HOST_MODEL_FAILED';throw error;
+   }
+   if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
+   if(event.type==='turn.completed')completed=true;
+  } else if(host==='claude-code') {
+   if(event.type==='result')terminal=event;
+  } else if(host==='pi') {
+   const message=event.type==='message_end'?event.message:undefined;
+   if(message?.role!=='assistant')continue;
+   terminal=message;
+   if(message.stopReason==='error') {
+    const error=new Error(message.errorMessage,{cause:message});
+    error.code=message.errorMessage.startsWith('step=admit Pi keyless Responses provider:')
+     ?'UNSUPPORTED_NATIVE_KEYLESS_PROVIDER':'NATIVE_HOST_MODEL_FAILED';
+    throw error;
+   }
+  } else {
+   throw new Error('step=validate native terminal; recovery=select codex, claude-code or pi');
+  }
+ }
+ if(host==='codex')assert.equal(completed,true,'native Codex terminal missing');
+ else if(host==='claude-code') {
+  assert.ok(terminal,'native Claude terminal missing');
+  assert.equal(terminal.subtype,'success','native Claude turn failed');
+  assert.equal(terminal.is_error,false,'native Claude turn failed');
+  text=terminal.result;
+ } else {
+  assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
+  text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
+ }
+ assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
+}
+
+
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
 // permission hook, which the owner's approval policy answers; Claude Code
 // approves the same coordination tools by its native allow list.
-async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt}) {
+export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,installed=true,input=false}) {
  if(host==='codex') {
   const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
-  return {policy,args:[...policy,'exec','--json',prompt]};
+  return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
   // Foundry's Messages endpoint with its documented gateway mode: no key,
@@ -31,8 +75,8 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermi
   const settings=join(root,'claude-policy.json');
   await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
   const policy=['--model','claude-haiku-5-5','--settings',settings,'--permission-mode','default',
-   '--plugin-dir',join(packageRoot,'claude'),'--add-dir',workspace];
-  return {policy,args:['-p',prompt,'--output-format','stream-json','--verbose',...policy]};
+   ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
+  return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
  env.ACYCLIC_E2E_MODEL_URL=url;
  const policy=['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
@@ -43,11 +87,15 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermi
 // production package, install through the shipping CLI or the host's native
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's mock endpoint.
-export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer}) {
+export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute}) {
  const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
- assert.ok(fixture.url,'step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs');
+ let endpoint;
+ try {endpoint=new URL(fixture.url);}
+ catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}
+ assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1',
+  'step=admit mock endpoint; recovery=supply the original loopback fixture.url');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
  env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
@@ -89,12 +137,13 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const {policy,args}=await launch(host,{url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt});
+  const configuration={url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt};
+  const {policy,args}=await launchNativeHost(host,configuration);
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
+  if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
-  assert.equal(completed.code,0,completed.stderr);
-  assert.ok(completed.stdout.includes(answer),'native answer missing');
+  assertNativeCompletion(host,completed,answer);
  } catch(error) {
   throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
  }

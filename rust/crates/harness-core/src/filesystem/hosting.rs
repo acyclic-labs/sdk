@@ -34,6 +34,14 @@ use acyclic_fs::{
 };
 use std::sync::Arc;
 
+enum StagedInput<'a> {
+    Text {
+        source: &'a str,
+        text: Option<&'a str>,
+    },
+    Content(&'a crate::model::ModelContent),
+}
+
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 /// The turn host of a binding's agents.
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
@@ -859,9 +867,18 @@ where
         intent: &IntentId,
         (source, text): (&str, &str),
     ) -> Result<FileRef, Error> {
-        self.staged_input(agent, kind, by, intent, (source, Some(text)))
-            .await?
-            .ok_or(Error::Record("a staged input is missing its file"))
+        self.staged_input(
+            agent,
+            kind,
+            by,
+            intent,
+            StagedInput::Text {
+                source,
+                text: Some(text),
+            },
+        )
+        .await?
+        .ok_or(Error::Record("a staged input is missing its file"))
     }
 
     /// The text [`Self::stage_text`] already staged for this input, if any:
@@ -877,8 +894,33 @@ where
         intent: &IntentId,
         source: &str,
     ) -> Result<Option<FileRef>, Error> {
-        self.staged_input(agent, kind, by, intent, (source, None))
-            .await
+        self.staged_input(
+            agent,
+            kind,
+            by,
+            intent,
+            StagedInput::Text { source, text: None },
+        )
+        .await
+    }
+
+    /// Stages ordered text and immutable file references through the same
+    /// sender/intent publication as text input. Every reference must already
+    /// be readable under this agent's admission; input cannot grant access.
+    /// Retries retain the original bytes and reject changed content.
+    ///
+    /// # Errors
+    /// Invalid user content, an ungranted file, changed intent, or store failure.
+    pub async fn stage_prompt(
+        &self,
+        agent: &AgentPath,
+        by: &Sender,
+        intent: &IntentId,
+        content: &crate::model::ModelContent,
+    ) -> Result<FileRef, Error> {
+        self.staged_input(agent, "message", by, intent, StagedInput::Content(content))
+            .await?
+            .ok_or(Error::Record("a staged input is missing its file"))
     }
 
     /// Stages `text` once, or with `None` only observes what was staged.
@@ -888,13 +930,37 @@ where
         kind: &str,
         by: &Sender,
         intent: &IntentId,
-        (source, text): (&str, Option<&str>),
+        input: StagedInput<'_>,
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
             .await
             .map_err(turn)?;
+        let encoded;
+        let (source, payload, extension) = match input {
+            StagedInput::Text { source, text } => (
+                source.as_bytes(),
+                text.map(|text| (text.as_bytes(), "text/plain")),
+                "txt",
+            ),
+            StagedInput::Content(content) => {
+                encoded = crate::agent::encode_user_input(content).map_err(turn)?;
+                for file in content.file_refs() {
+                    crate::conversation::ContentGrant::verify_read(
+                        &authority.verifier,
+                        &authority.scope,
+                        file,
+                    )
+                    .map_err(turn)?;
+                }
+                (
+                    encoded.as_slice(),
+                    Some((encoded.as_slice(), crate::agent::USER_INPUT_MEDIA_TYPE)),
+                    "json",
+                )
+            }
+        };
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
         // Like the inbox's intent key, the staged input is the sender's own:
         // two senders' same intent never share an operation.
@@ -908,7 +974,7 @@ where
         let operation = OperationId::from_bytes(operation);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let path = || format!("inputs/{operation}-{}.txt", blake3::hash(source.as_bytes()));
+        let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
             &authority.private.volume,
@@ -918,7 +984,7 @@ where
             None,
         )
         .map_err(turn)?;
-        let Some(text) = text else {
+        let Some((bytes, media_type)) = payload else {
             let (staged, _) = publisher
                 .observe_staged_once(
                     operation,
@@ -939,8 +1005,8 @@ where
             .stage_once(
                 operation,
                 &path,
-                text.as_bytes(),
-                "text/plain",
+                bytes,
+                media_type,
                 kind,
                 ContentAccess::default(),
             )

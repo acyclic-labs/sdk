@@ -602,7 +602,7 @@ where
         Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice())
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), None)
             .await
     }
 
@@ -611,7 +611,7 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self.journal(self.admit(agent)?, &[]).await?;
+        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None).await?;
         Ok(journal)
     }
 
@@ -628,15 +628,17 @@ where
         &self,
         admitted: AdmittedAgent<'_>,
         external: &[FileRef],
+        context: Option<&mut TurnContext<'_>>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
+        let local_root = admitted.parent.is_none();
         let AgentAuthority {
             issuer,
-            scope,
-            grants: capabilities,
+            mut scope,
+            grants: mut capabilities,
             verifier,
             private,
         } = admitted.authority(external).await?;
@@ -644,13 +646,49 @@ where
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
         // configured file bound limits admitted content, never the turn.
-        let reader = FilesystemContentVerifier::new(
+        let mut reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
             &verifier,
             &scope,
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
+        // Open only the committed input envelopes under their original grant.
+        // Their validated ordered contents become the selection before deriving
+        // the exact-file closure, including files on an ancestor's private volume.
+        for file in external {
+            crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
+        }
+        if let Some(context) = context {
+            context.expand_inputs(reader.as_ref()).await?;
+            let mut inherited = Vec::new();
+            for file in context.files() {
+                if let Err(error) =
+                    crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)
+                {
+                    if !local_root {
+                        return Err(error);
+                    }
+                    inherited.push(file.read_capability(&mut None)?);
+                }
+            }
+            if !inherited.is_empty() {
+                // Local history delegates only these immutable files. An admitted
+                // workload retains its original ceiling and cannot mint this grant.
+                inherited.extend(capabilities.iter().map(str::to_owned));
+                capabilities = Capabilities::new(inherited);
+                scope = issuer
+                    .issue(None, "agent", &capabilities, scope.agent())
+                    .await?;
+                reader = FilesystemContentVerifier::new(
+                    Arc::clone(&self.host),
+                    &verifier,
+                    &scope,
+                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    None,
+                )?;
+            }
+        }
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
             &private.volume,
@@ -798,7 +836,7 @@ struct TurnContext<'a> {
     /// Latest roster message in `settled`, indexed while selecting history.
     roster_at: Option<usize>,
     turn: OperationId,
-    input: &'a ModelContent,
+    input: ModelContent,
     policy: Option<&'a FileRef>,
 }
 
@@ -850,11 +888,23 @@ impl<'a> TurnContext<'a> {
             settled,
             roster_at,
             turn,
-            input,
+            input: input.clone(),
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
         })
+    }
+
+    /// Decode each selected input once, retaining its ordered exact references
+    /// for both grant derivation and the eventual model selection.
+    async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
+        for (_, _, input, _) in &mut self.settled {
+            let original = std::mem::replace(input, ModelContent::Text(String::new()));
+            *input = crate::agent::expand_attachments(original, reader).await?;
+        }
+        let original = std::mem::replace(&mut self.input, ModelContent::Text(String::new()));
+        self.input = crate::agent::expand_attachments(original, reader).await?;
+        Ok(())
     }
 
     /// Compare the current bytes with the immutable roster actually rendered,
@@ -961,7 +1011,7 @@ impl<'a> TurnContext<'a> {
             let text = staged_text(reader, &output).await?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
-                content: crate::agent::expand_attachments(content, reader).await?,
+                content,
             });
             message_ids.push(message_id(settled, ModelRole::User));
             messages.push(ModelMessage {
@@ -1022,7 +1072,7 @@ where
             let history = self.history(&admitted, agent).await?;
             // The turn's grant is derived from its context, before the turn
             // can observe anything: every file the context can reach.
-            let context = TurnContext::new(agent, history, turn, input)?;
+            let mut context = TurnContext::new(agent, history, turn, input)?;
             let checkpoint = context
                 .checkpoint
                 .as_ref()
@@ -1030,21 +1080,11 @@ where
             let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = crate::core::until_turn_stopped(
                 Some(stop.clone()),
-                self.journal(admitted, &external),
+                self.journal(admitted, &external, Some(&mut context)),
             )
             .await?;
-            // Every file the context reaches is readable under the turn's
-            // grant, by the one shared read check, before the turn runs: a
-            // missing grant fails here whichever input arrived first, not on
-            // whichever path happens to read the file.
-            let verifier = bindings.issuer.verifier(&mut None)?;
-            for file in &external {
-                crate::conversation::ContentGrant::verify_read(&verifier, &bindings.scope, file)?;
-            }
-            // The executor runs the input with its attachments listed, read
-            // under the grant above at the manifest's pinned length.
-            let input =
-                &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
+            let input = std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
+            let input = &input;
             // Append a roster only when this rendered history lacks it. Losing
             // its announcing turn or compacting starts a new base; no retained
             // message is rewritten. Stage once per distinct roster. A
