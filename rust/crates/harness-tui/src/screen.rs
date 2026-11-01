@@ -45,7 +45,7 @@ pub struct Screen<'a> {
     /// Committed usage and estimated token charge, formatted by the query
     /// consumer from the shared projection and borrowed from its cache.
     /// The consumer caches wrapping for the viewport width. Empty reserves no
-    /// footer space; short screens preserve status before these rows.
+    /// footer space; short screens preserve status and prompt before these rows.
     pub usage: &'a [Line<'a>],
     /// Status hints and attention, independent of the usage summary.
     pub status: Line<'a>,
@@ -200,7 +200,10 @@ impl Screen<'_> {
             status_height,
         );
         remaining.height -= status_height;
-        let usage_height = cells(self.usage.len()).min(remaining.height);
+        let prompt_height = PromptBox::new(input, 0)
+            .height(area.width, area.height)
+            .min(remaining.height);
+        let usage_height = cells(self.usage.len()).min(remaining.height - prompt_height);
         let usage = Rect::new(
             area.x,
             remaining.bottom() - usage_height,
@@ -208,9 +211,6 @@ impl Screen<'_> {
             usage_height,
         );
         remaining.height -= usage_height;
-        let prompt_height = PromptBox::new(input, 0)
-            .height(area.width, area.height)
-            .min(remaining.height);
         let prompt = Rect::new(
             area.x,
             remaining.bottom() - prompt_height,
