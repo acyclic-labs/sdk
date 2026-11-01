@@ -1,6 +1,115 @@
 use super::*;
 use crate::Fs;
 
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn collecting_checkout_retirement_preserves_the_other_checkout_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let workspace = fs
+        .create_workspace("checkout-slot-credit", WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    workspace.write_text("/entry", "payload").await?;
+    let original = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    workspace
+        .write_text("/unrelated", "next generation")
+        .await?;
+    let selected = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+
+    for include_retained_slot in [false, true] {
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        // The original shared-ledger control outlives individual checkouts.
+        drop(
+            crate::kernel::allocation::retained::RetainedAllocation::claim(0, 0, &mut accounting)?,
+        );
+        let baseline = accounting
+            .standalone_parts()
+            .ok_or(crate::WorkError::Overflow)?
+            .0
+            .live_bytes();
+        let selected_checkout = workspace
+            .open_checkout(
+                GenerationSelector::Exact(selected.id()),
+                CheckoutMode::read_only_pinned(),
+                &mut accounting,
+                &cancellation,
+            )
+            .await?;
+        let selected_live = accounting
+            .standalone_parts()
+            .ok_or(crate::WorkError::Overflow)?
+            .0
+            .live_bytes();
+        let mut original_checkout = workspace
+            .open_checkout(
+                GenerationSelector::Exact(original.id()),
+                CheckoutMode::read_only_pinned(),
+                &mut accounting,
+                &cancellation,
+            )
+            .await?;
+        assert!(original_checkout.bytes < original_checkout.value.logical_owned_bytes());
+        if include_retained_slot {
+            // Negative control: release the slot here and through its original lease.
+            original_checkout.bytes = original_checkout.value.logical_owned_bytes();
+        }
+        let retired = original_checkout.retire(&mut accounting);
+        let after = accounting
+            .standalone_parts()
+            .ok_or(crate::WorkError::Overflow)?
+            .0
+            .live_bytes();
+        if include_retained_slot {
+            assert!(retired.is_err() || after != selected_live);
+            drop(selected_checkout);
+        } else {
+            retired?;
+            assert_eq!(
+                after, selected_live,
+                "retirement consumed another checkout's credit"
+            );
+            selected_checkout.retire(&mut accounting)?;
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(crate::WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                baseline,
+            );
+        }
+    }
+    let read = selected
+        .read_range_if_unchanged(
+            &original,
+            "/entry",
+            crate::ByteRange {
+                offset: 0,
+                length: 7,
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(read.value.bytes.as_ref(), b"payload");
+    drop((read, selected, original, workspace));
+    let released = fs
+        .local_root_release_barrier()
+        .ok_or("local root has no release barrier")?;
+    drop(fs);
+    released.released().await;
+    Ok(())
+}
+
 async fn comparison_peak(
     workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
     selected: GenerationId,

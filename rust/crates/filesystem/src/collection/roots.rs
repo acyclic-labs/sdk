@@ -98,6 +98,13 @@ impl CheckoutRoots {
         root_parent_bytes(&self.working) + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
     }
 
+    /// Slot quota retires with its original lease, independently of scratch.
+    pub(crate) fn retained_slot_bytes(&self) -> u64 {
+        self.hold.as_ref().map_or(0, |_| {
+            crate::foundation::usize_to_u64(std::mem::size_of::<Slot>())
+        })
+    }
+
     /// Tags freshly admitted vectors, excluding shared slot backing.
     pub(crate) fn attach_control_custody(&mut self, owner: &Arc<crate::kernel::ProofDataCustody>) {
         self.working_control =

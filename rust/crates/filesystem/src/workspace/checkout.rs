@@ -151,7 +151,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .checkout_accounted(selector, mode, accounting, cancellation)
             .await?;
         let bytes = if accounting.standalone_parts().is_some() {
-            checkout.logical_owned_bytes()
+            checkout.scratch_owned_bytes()
         } else {
             0
         };
