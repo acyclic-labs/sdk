@@ -618,7 +618,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         opened: false,
                         notices: Some(notices),
                     })?),
-                    reserved_children: 0,
                     outs: Vec::new(),
                     wait: Wait::Continue,
                     drops: None,

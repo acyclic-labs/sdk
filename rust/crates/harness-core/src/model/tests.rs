@@ -16,7 +16,7 @@ fn notice_admission_bounds_metadata_and_the_whole_batch() -> Result<()> {
         coalesce_key: Some("files".into()),
     };
     let limits = Limits {
-        render_bytes: 1024,
+        render_bytes: Some(1024),
         ..Limits::default()
     };
     let admit = |notices| {

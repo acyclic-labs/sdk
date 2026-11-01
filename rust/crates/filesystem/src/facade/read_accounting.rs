@@ -37,9 +37,7 @@ pub(crate) fn readonly_cleanup_standalone(
         return Ok(());
     };
     let keep = before.checked_add(retained).ok_or(WorkError::Overflow)?;
-    allocations
-        .release_scratch_to(keep)
-        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))
+    allocations.release_scratch_to(keep)
 }
 
 #[cfg(test)]

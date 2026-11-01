@@ -1351,7 +1351,6 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
             self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: if self.pause {
