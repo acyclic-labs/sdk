@@ -23,6 +23,124 @@ fn schedule() -> Schedule {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn actor_record_encoding_retains_original_native_credit_and_refuses_before_construction()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        guest::{Checkpoint, CodecIdentity, Subscription},
+        local::Store,
+    };
+    use acyclic_stream::StreamProviderExt as _;
+    use acyclic_stream::{CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream, StreamPath};
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), StreamPath::new("native-record/actors")?);
+    let actor = ActorReference::new(b"account", b"agents", b"owner")?;
+    let subscription = StreamPath::new("native-record/input")?;
+    let effects = store.create(
+        &actor,
+        BTreeMap::from([(
+            "input".into(),
+            Subscription {
+                path: subscription.clone(),
+                cursor: 0,
+            },
+        )]),
+        Some(Checkpoint {
+            codec: CodecIdentity {
+                name: "native-record".into(),
+                version: "1".into(),
+            },
+            bytes: bytes::Bytes::from_static(b"original checkpoint"),
+        }),
+    )?;
+    let mut request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: Vec::new(),
+        idempotency_key: IdempotencyKey::new(b"native-record".to_vec())?,
+    };
+    for effect in effects {
+        request.conditions.extend(effect.conditions);
+        request.mutations.push(effect.mutation);
+    }
+    assert!(matches!(
+        provider.commit(request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let snapshot = store.load(&actor).await?;
+    let state = snapshot.state().ok_or("missing original state")?;
+    let expected = state.encode();
+    let budget = work_budget(1_000_000, 1_000_000);
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let observer = PreparationIo::from_native_work(&work)?;
+    let before_output = work.live_allocation_bytes();
+    let before = work.receipt();
+    let output = state
+        .encode_native(&work.runtime_meter())
+        .map_err(|error| crate::Error::NativeWork {
+            cause: work.runtime_error(error),
+            custody: None,
+        })?;
+    assert_eq!(output.value(), &expected);
+    assert_eq!(
+        work.receipt().allocation_operations - before.allocation_operations,
+        1
+    );
+    assert_eq!(
+        work.receipt().bytes_encoded - before.bytes_encoded,
+        expected.len() as u64
+    );
+    assert_eq!(
+        work.receipt().bytes_copied - before.bytes_copied,
+        (b"\xffAST\x01".len()
+            + b"native-record".len()
+            + b"1".len()
+            + b"original checkpoint".len()
+            + b"input".len()
+            + subscription.as_str().len()) as u64
+    );
+    assert_eq!(
+        work.live_allocation_bytes() - before_output,
+        output.value().capacity() as u64
+    );
+    drop(observer);
+    cancellation.cancel();
+    assert_eq!(output.value(), &expected);
+    assert!(state.encode_native(&work.runtime_meter()).is_err());
+    drop(output);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+
+    for field in 0..4 {
+        let cancellation = CancellationToken::new();
+        let mut denied = budget;
+        match field {
+            0 => denied.peak_allocation_bytes = 0,
+            1 => denied.allocation_operations = 0,
+            2 => denied.bytes_encoded = 0,
+            _ => denied.bytes_copied = 0,
+        }
+        let work = NativeMaterializationWork::new(denied, &cancellation)
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        // The ordinary encoder is the actual unobserved-allocation negative.
+        assert_eq!(state.encode(), expected);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert!(state.encode_native(&work.runtime_meter()).is_err());
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert_eq!(work.receipt().bytes_encoded, 0);
+        assert_eq!(work.receipt().bytes_copied, 0);
+        assert_eq!(work.receipt().backend_write_operations, 0);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn file_admission_keeps_original_credit_and_refuses_index_or_owner_substitution() -> Result<()> {
     let expected = schedule();

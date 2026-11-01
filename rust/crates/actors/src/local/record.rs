@@ -62,10 +62,82 @@ struct SubscriptionRecord {
     cursor: u64,
 }
 
+// Encoded backing always retires before its original construction credit.
+struct EncodingBuffer<C> {
+    record: Vec<u8>,
+    custody: C,
+}
+
 impl State {
     /// This state as its durable record.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
+        match self.encode_with(|len| {
+            Ok::<_, std::convert::Infallible>(EncodingBuffer {
+                record: Vec::with_capacity(len),
+                custody: (),
+            })
+        }) {
+            Ok(encoded) => encoded.record,
+            Err(impossible) => match impossible {},
+        }
+    }
+
+    /// Encode the same durable record with its original native work owner.
+    /// Output allocation and codec work are admitted before construction.
+    /// The returned backing retains its original credit through caller drop
+    /// or cancellation. This does not fund the source state or a publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn encode_native(
+        &self,
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<acyclic_stream::NativeStreamOutput<Vec<u8>>> {
+        use acyclic_native_runtime::{NativeCodecReservation, NativeCodecWork, ReadAllocation};
+        let copied = STATE_FORMAT_V1.len()
+            + self.checkpoint.as_ref().map_or(0, |checkpoint| {
+                checkpoint.codec.name.len()
+                    + checkpoint.codec.version.len()
+                    + checkpoint.bytes.len()
+            })
+            + self
+                .subscriptions
+                .iter()
+                .map(|(id, subscription)| id.len() + subscription.path.as_str().len())
+                .sum::<usize>()
+            + self
+                .metadata
+                .iter()
+                .map(|(key, value)| key.len() + value.len())
+                .sum::<usize>();
+        let mut encoded = self.encode_with(|len| {
+            let actual = NativeCodecWork {
+                encoded: len as u64,
+                copied: copied as u64,
+                hashed: 0,
+            };
+            let codec = NativeCodecReservation::new(meter.as_ref(), actual)?;
+            let mut allocation = ReadAllocation::new(meter, len)?;
+            let mut record = Vec::new();
+            record
+                .try_reserve_exact(len)
+                .map_err(|error| meter.allocation_failed(error))?;
+            allocation.reconcile_capacity(record.capacity())?;
+            Ok::<_, std::io::Error>(EncodingBuffer {
+                record,
+                custody: (allocation, codec, actual),
+            })
+        })?;
+        encoded.custody.1.record(encoded.custody.2)?;
+        Ok(acyclic_stream::NativeStreamOutput::new(
+            encoded.record,
+            encoded.custody.0,
+        ))
+    }
+
+    fn encode_with<C, E>(
+        &self,
+        allocate: impl FnOnce(usize) -> Result<EncodingBuffer<C>, E>,
+    ) -> Result<EncodingBuffer<C>, E> {
         // The generated scalar writer has no owned variable fields. Encode
         // checkpoint and subscriptions below from their original backing.
         let payload = Record {
@@ -96,7 +168,7 @@ impl State {
         } else {
             uint64::encoded_len(9, &self.journal_tail)
         };
-        let mut record = Vec::with_capacity(
+        let mut encoded = allocate(
             STATE_FORMAT_V1.len()
                 + nonzero_len(1, self.epoch)
                 + checkpoint_len.map_or(0, |len| framed_len(2, len))
@@ -104,7 +176,8 @@ impl State {
                 + payload.encoded_len()
                 + metadata_len
                 + journal_len,
-        );
+        )?;
+        let mut record = &mut encoded.record;
         record.extend_from_slice(STATE_FORMAT_V1);
         encode_nonzero(1, self.epoch, &mut record);
         if let Some(checkpoint) = &self.checkpoint {
@@ -136,7 +209,7 @@ impl State {
         if self.journal_tail != 0 {
             uint64::encode(9, &self.journal_tail, &mut record);
         }
-        record
+        Ok(encoded)
     }
 
     /// The state a durable record holds.
