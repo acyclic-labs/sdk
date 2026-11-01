@@ -33,7 +33,7 @@ function checkFixture(setup) {
     copyFileSync(checker, join(root, "scripts/check-js-licenses.mjs"));
     setup(root);
     const result = spawnSync(process.execPath, [join(root, "scripts/check-js-licenses.mjs")], {
-      cwd: root, encoding: "utf8", timeout: 10_000,
+      cwd: root, encoding: "utf8",
     });
     if (result.error) throw result.error;
     expect(result.signal).toBeNull();

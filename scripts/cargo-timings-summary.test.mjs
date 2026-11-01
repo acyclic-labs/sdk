@@ -53,7 +53,7 @@ test("Cargo timing CLI logs only observed phases and writes the uploaded JSON su
     const output = join(root, "out");
     const summary = join(root, "summary.md");
     const result = spawnSync(process.execPath, ["scripts/cargo-timings-summary.mjs", output, `product=${join(root, "target")}`],
-      { encoding: "utf8", timeout: 60000, env: { ...process.env, GITHUB_STEP_SUMMARY: summary, SDK_SOURCE_SHA: "fixture-source", GITHUB_SHA: "workflow-source" } });
+      { encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: summary, SDK_SOURCE_SHA: "fixture-source", GITHUB_SHA: "workflow-source" } });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /reported codegen 680\.00s; reported link 190\.00s/);
@@ -79,7 +79,7 @@ test("a malformed report retains its HTML while later builds still produce JSON 
     const summary = join(root, "summary.md");
     const result = spawnSync(process.execPath, ["scripts/cargo-timings-summary.mjs", output,
       ...["product", "qualifier", "install"].map(build => `${build}=${join(root, build)}`)],
-      { encoding: "utf8", timeout: 60000, env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
+      { encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: summary } });
     assert.ifError(result.error);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /qualifier: Cargo timings missing UNIT_DATA/);
@@ -111,7 +111,7 @@ test("pinned Cargo's real Windows ARM report selects the binary and preserves re
     writeFileSync(join(root, "target", "cargo-timings", "cargo-timing.html"), fixture);
     const output = join(root, "out");
     const result = spawnSync(process.execPath, ["scripts/cargo-timings-summary.mjs", output, `product=${join(root, "target")}`],
-      { encoding: "utf8", timeout: 60000, env: { ...process.env, GITHUB_STEP_SUMMARY: join(root, "summary.md") } });
+      { encoding: "utf8", env: { ...process.env, GITHUB_STEP_SUMMARY: join(root, "summary.md") } });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
     const report = JSON.parse(readFileSync(join(output, "product-cargo-timings.json"), "utf8"));

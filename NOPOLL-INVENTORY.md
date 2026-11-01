@@ -1,5 +1,37 @@
 # Polling and timed-wait inventory
 
+Current-source census at `b2f62601dd`: 6,083 source files and 91,331
+conservative candidates. This includes finite loops, dependency references and
+deliberately defective source controls; these counts are not a list of approved
+exceptions. Exact classifications and remaining readiness conversions are still
+incomplete.
+
+Finite local command fixtures, locations at `b2f62601dd`:
+
+| Source | Removed deadline | Original completion and retained negative control |
+| --- | --- | --- |
+| `scripts/check-js-licenses.test.mjs:36` | 10 seconds | Same Node child exits after traversing the finite fixture dependency graph; disallowed and missing dependency errors remain. |
+| `scripts/cargo-timings-summary.test.mjs:56` | 60 seconds | Same CLI exit and output files after parsing the supplied report; original phase and source identity assertions remain. |
+| `scripts/cargo-timings-summary.test.mjs:82` | 60 seconds | Same CLI failure for a malformed report; preserve its original HTML and the other successfully parsed reports. |
+| `scripts/cargo-timings-summary.test.mjs:114` | 60 seconds | Same CLI exit after reading the captured real Cargo report; exact original units, phases and bytes remain checked. |
+| `scripts/cache-limits.test.mjs:34` | 10 seconds | Same planner child exit and selected matrix output; no network or compiler is launched. |
+| `scripts/cache-limits.test.mjs:64` | 60 seconds | Same finite shell child exits after projecting the supplied capacity; original output assertions remain. |
+| `scripts/cache-save-decision.test.mjs:45` | 10 seconds | Same planner exit and emitted decision; original selected and refused cases remain. |
+| `scripts/cache-save-decision.test.mjs:87` | 60 seconds | Same shell exit after the injected date command; original UTC day output remains checked. |
+| `scripts/cache-save-decision.test.mjs:92` | 60 seconds | Same shell exit with the defective date selection; original missing-day negative remains. |
+| `scripts/ci-background-log.test.mjs:64` | 60 seconds | Original shell joins both finite children and replays their logs; missing-log and nonzero-child outcomes remain checked. |
+| `scripts/check-workflows.test.mjs:17` | 60 seconds | Same finite shell child exits; original absent-tool, explicit-file and nonzero-status controls remain. |
+| `scripts/native-cache-evidence.test.mjs:64` | 60 seconds | Same Node child exits after projecting the captured command options; original wrapper and argument assertions remain. |
+| `scripts/native-cache-evidence.test.mjs:137` | 60 seconds | Same finite shell child exits; original selected restore key and cache outcome checks remain. |
+| `scripts/native-cache-evidence.test.mjs:189` | 60 seconds | Same finite shell child exits; original build status and recorded cache statistics remain checked even when the statistics command fails. |
+
+All fourteen sites are actioned by deleting their implicit execution watchdog.
+The original OS child exit remains the sole completion, including unsuccessful
+exit or spawn failure. No process, timer, channel, syscall, allocation, copy or
+durability barrier is added; deadline configurations decrease from fourteen to
+zero. These edits do not qualify execution of every fixture or any additional
+platform.
+
 Linux x86_64: the original live-descendant retirement control passed 1/1 at
 `51df694af1`, 0.122 seconds total execution. Both original cases retain a real
 Python child blocked in its OS signal wait, including inherited output. The

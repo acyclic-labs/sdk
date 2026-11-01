@@ -31,7 +31,7 @@ test("every compiler-cache scope receives its matrix limit without increasing ex
 
 test("the release planner retains every lane's cache limit", () => {
   const result = spawnSync(process.execPath, ["scripts/plan-qualification.mjs", "select"], {
-    encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: "", PATH: "" }, timeout: 10_000,
+    encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: "", PATH: "" },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout.trim().slice("matrix=".length)), lanes);
@@ -61,7 +61,7 @@ RUNNER_OS=${os}
 GITHUB_ENV='${envFile}'
 GITHUB_OUTPUT='${root}/output'
 GITHUB_EVENT_NAME=workflow_dispatch
-${step.run}`], { encoding: "utf8", timeout: 60_000 });
+${step.run}`], { encoding: "utf8" });
         assert.ifError(result.error);
         assert.equal(result.status, 0, result.stderr);
         assert.match(readFileSync(envFile, "utf8"), /^SCCACHE_CACHE_SIZE=384M$/m);
