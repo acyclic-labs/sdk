@@ -95,7 +95,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             FilePublication::Replace(expected) => expected,
             FilePublication::Authorized(..) => None,
         };
-        let mut transaction = if authorized.is_some() || matches!(publication, FilePublication::Replace(_)) {
+        let mut transaction = if authorized.is_some()
+            || matches!(publication, FilePublication::Replace(_))
+        {
             let selected;
             let pinned = match authorized {
                 Some(generation) => generation,

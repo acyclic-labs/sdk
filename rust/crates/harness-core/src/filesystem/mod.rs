@@ -312,11 +312,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
                 let original_action = upload_replay_action(&original_receipt, io)?;
                 if opened.id() != root.id() || needs_binding {
-                    let (_, fence) = self.authorize_content_write(
-                        &root, grant, provisional.path(), Some(original_action), ceiling, io,
-                    )?.await?;
+                    let (_, fence) = self
+                        .authorize_content_write(
+                            &root,
+                            grant,
+                            provisional.path(),
+                            Some(original_action),
+                            ceiling,
+                            io,
+                        )?
+                        .await?;
                     if needs_binding {
-                        self.bind_content_operation(&root, opened.id(), operation, (fence, grant), active_io)?.await?;
+                        self.bind_content_operation(
+                            &root,
+                            opened.id(),
+                            operation,
+                            (fence, grant),
+                            active_io,
+                        )?
+                        .await?;
                     }
                 }
                 self.authorize_content_write(
@@ -390,17 +404,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
             let authorized_generation = self.generation_ref_id(authorized_selection.id(), io)?;
             let root_fence = if opened.id() != root.id() || needs_binding {
-                let (_, fence) = self.authorize_content_write(
-                    &root, grant, provisional.path(), Some(original_action), ceiling, io,
-                )?.await?;
+                let (_, fence) = self
+                    .authorize_content_write(
+                        &root,
+                        grant,
+                        provisional.path(),
+                        Some(original_action),
+                        ceiling,
+                        io,
+                    )?
+                    .await?;
                 if needs_binding {
-                    self.bind_content_operation(&root, opened.id(), operation, (fence, grant), active_io)?.await?;
+                    self.bind_content_operation(
+                        &root,
+                        opened.id(),
+                        operation,
+                        (fence, grant),
+                        active_io,
+                    )?
+                    .await?;
                 }
                 (opened.id() != root.id()).then_some(fence)
             } else {
                 None
             };
-            let generation_hold = io.map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?)).transpose()?;
+            let generation_hold = io
+                .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
+                .transpose()?;
             let authorized_generation = (authorized_generation, generation_hold);
             let absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)

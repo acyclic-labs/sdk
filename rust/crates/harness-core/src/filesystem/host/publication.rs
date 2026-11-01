@@ -220,7 +220,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .ok_or_else(|| io.invalid("missing content workspace binding"))?
                         .id(),
                     &request,
-                    &recorded.0.0,
+                    &recorded.0.file,
+                    recorded.0.action,
                     io,
                 )
                 .await?,

@@ -118,7 +118,8 @@ pub fn prepare<T>(
         invocation.executable = search.resolve(program).map_err(io)?;
     }
     invocation.argv = arguments;
-    invocation.standard_input = standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
+    invocation.standard_input =
+        standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,
