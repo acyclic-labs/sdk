@@ -7,10 +7,13 @@ use tokio::sync::{mpsc, oneshot};
 const MEMORY_BYTES: usize = 1024 * 1024 * 1024;
 pub(super) const INTERRUPT_BUDGET: u64 = 1_000_000_000;
 
-struct Reply(acyclic_stream::OwnedBytes);
+struct Reply(Option<acyclic_stream::OwnedBytes>);
 impl<'js> rquickjs::IntoJs<'js> for Reply {
     fn into_js(self, ctx: &rquickjs::Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
-        let text = std::str::from_utf8(&self.0).map_err(|_| rquickjs::Error::Unknown)?;
+        let Some(bytes) = self.0 else {
+            return Ok(rquickjs::Value::new_undefined(ctx.clone()));
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| rquickjs::Error::Unknown)?;
         // The host credit remains live until the engine owns its copy.
         rquickjs::String::from_str(ctx.clone(), text).map(rquickjs::String::into_value)
     }
@@ -80,8 +83,9 @@ pub(super) async fn run(
                     const invoke = async (name, args) => {
                         pending++;
                         try {
-                            const reply = parse(await stable(rpc(name, stringify(args))));
+                            const response = await stable(rpc(name, stringify(args)));
                             if (name === null) return;
+                            const reply = parse(response);
                             if (!reply.ok) throw new ErrorType(reply.value);
                             return reply.value;
                         } finally {
