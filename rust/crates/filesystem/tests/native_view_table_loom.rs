@@ -1,11 +1,10 @@
-//! Dedicated command: `cargo rustc --test native_view_table_loom ... --features model-checking -- --cfg loom`.
+//! Build the unified `main` test with cfg(loom), then select `native_view_table_loom::`.
 //!
 //! Model of the production shared-instance view table: callbacks admitted
 //! through `enter`, retirement through the owner, and a concurrent insert.
 #![cfg(loom)]
 
-#[path = "../src/sync.rs"]
-mod sync;
+use crate::sync;
 
 #[path = "../src/native_mount/shared/view_table.rs"]
 mod view_table;

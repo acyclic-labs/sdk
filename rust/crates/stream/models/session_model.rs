@@ -7,8 +7,9 @@ mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");
 }
+use acyclic_stream::wire;
 pub use error::StreamError;
-#[path = "../src/session/sync.rs"]
+#[path = "../src/runtime/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
 
@@ -17,8 +18,6 @@ mod checked;
 #[path = "../../stream-napi/src/eager.rs"]
 mod eager;
 mod native_registration;
-#[path = "../src/session/policy.rs"]
-mod policy;
 #[path = "../src/session/client/progress.rs"]
 mod progress;
 mod outbound {
@@ -30,7 +29,7 @@ mod gate {
     include!("gate.rs");
 }
 mod signal {
-    include!("../src/session/signal.rs");
+    include!("../src/runtime/signal.rs");
     include!("signal.rs");
 }
 type ReleaseSender = Arc<signal::Signal<credit::Released>>;
@@ -92,45 +91,62 @@ fn cursor(broken: bool) {
     });
 }
 
-fn opaque_cursor(broken: bool) {
+// The retired child-only opaque consumer is mapped in README.md. The retained
+// oracle races the real anchored record/progress cut against generation fencing.
+fn anchored_cursor(broken: bool, progress_update: bool) {
     loom::model(move || {
-        let cursor = Arc::new(progress::Progress::new(0));
+        let cursor = Arc::new(progress::Progress::with_preceding(0, Some([1; 32])));
         let consuming = Arc::clone(&cursor);
-        let consuming = loom::thread::spawn(move || consuming.consume_opaque(1, 0, b"child"));
+        let consuming = loom::thread::spawn(move || {
+            if progress_update {
+                consuming.consume_progress(1, 1, [2; 32])
+            } else {
+                consuming.consume_record(1, 0, [2; 32])
+            }
+        });
         let moving = Arc::clone(&cursor);
         let moving = loom::thread::spawn(move || {
             let early = if broken {
-                Some(moving.position()?.1)
+                Some(moving.subscription()?.preceding)
             } else {
                 None
             };
-            moving.fence()?;
-            let (next, opaque) = moving.position()?;
-            Ok::<_, StreamError>((next, early.unwrap_or(opaque)))
+            assert_eq!(moving.fence()?, 2);
+            let position = moving.subscription()?;
+            Ok::<_, StreamError>((position.next, early.unwrap_or(position.preceding)))
         });
         let consumed = consuming.join().unwrap().unwrap();
         let position = moving.join().unwrap().unwrap();
         assert_eq!(
             position,
             if consumed {
-                (1, b"child".to_vec())
+                (1, Some([2; 32]))
             } else {
-                (0, Vec::new())
+                (0, Some([1; 32]))
             },
-            "resume must atomically retain the opaque cursor"
+            "resume must atomically retain the anchored cursor"
         );
-        assert!(!cursor.consume_opaque(1, position.0, b"stale").unwrap());
-        assert_eq!(cursor.position().unwrap(), position);
+        assert!(!cursor.consume_record(1, position.0, [3; 32]).unwrap());
+        assert!(!cursor.consume_progress(1, position.0 + 1, [3; 32]).unwrap());
+        let retained = cursor.subscription().unwrap();
+        assert_eq!((retained.next, retained.preceding), position);
+        assert!(retained.opaque.is_empty());
     });
 }
 #[test]
-fn child_consumption_and_movement_keep_one_cursor() {
-    opaque_cursor(false);
+fn anchored_consumption_and_movement_keep_one_cursor() {
+    anchored_cursor(false, false);
+    anchored_cursor(false, true);
 }
 #[test]
-#[should_panic(expected = "resume must atomically retain the opaque cursor")]
-fn opaque_cursor_negative_control_splits_the_resume_cut() {
-    opaque_cursor(true);
+#[should_panic(expected = "resume must atomically retain the anchored cursor")]
+fn anchored_record_negative_control_splits_the_resume_cut() {
+    anchored_cursor(true, false);
+}
+#[test]
+#[should_panic(expected = "resume must atomically retain the anchored cursor")]
+fn anchored_progress_negative_control_splits_the_resume_cut() {
+    anchored_cursor(true, true);
 }
 
 #[test]
@@ -187,11 +203,7 @@ proptest::proptest! {
     fn reserved_capacity_is_available_only_to_credited_channels(
         frames in 2_usize..1024, largest in 1_usize..65536,
     ) {
-        let room = policy::room(frames, 4 * largest, frames - 1, 0, largest, true);
-        proptest::prop_assert!(!policy::enabled(true, 0, room, false));
-        proptest::prop_assert!(policy::enabled(false, 0, room, true));
-        let full = policy::room(frames, 4 * largest, frames, 0, largest, true);
-        proptest::prop_assert!(!policy::enabled(false, 0, full, true));
+        acyclic_stream::session::verify_reserved_capacity(frames, largest);
     }
 }
 

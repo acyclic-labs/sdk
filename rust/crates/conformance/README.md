@@ -8,9 +8,9 @@ The `inference` feature supplies real-capture adapters for the eight `ModelProvi
 
 The published Stream, Objects v1, Machines and Actors crates expose their shared `conformance` features, with `Backend`, `verify`, `bench` and `suite!(factory)`. AgentHost lives in `acyclic_harness::conformance`; the private agent-host crate re-exports that same implementation for existing adapters. Filesystem publishes portable workspace vectors over its existing public seam, while the historical workload taxonomy and proof producers remain available here. Run suites and benchmarks against independently fresh, disposable state. The Objects suite checks the v1 provider API, including durable local reopening; it makes no claim about a separate v2 contract.
 
-Run the maintained workspace checks from the SDK root with `cargo test --workspace --all-features --locked` and `bun test`. The product-specific gate is `cargo test -p acyclic-plugin --locked`; platform qualification builds and validates the release package. The committed conformance vectors and Rust/TypeScript suites are the single maintained source of compatibility evidence.
+Run the maintained workspace checks from the SDK root with `cargo test --all-features --locked` (the original root default-member set) and `bun test`. The product-specific gate is `cargo test -p acyclic-plugin --locked`; platform qualification builds and validates the release package. The committed conformance vectors and Rust/TypeScript suites are the single maintained source of compatibility evidence.
 
-The same `qualify` binary owns the SDK's Filesystem fixture and diagnostic commands: `fixture`, `roundtrip`, `corpus`, `bench`, `restore-gen`, `mount-smoke`, `mount-smoke2`, `mount-hold`, and `source-probe`. They consume public SDK APIs. The plugin control plane consumes the same public APIs and keeps its end-to-end tests in its own crate.
+The same `qualify` binary owns the SDK's Filesystem fixture and diagnostic commands: `fixture`, `roundtrip`, `corpus`, `bench`, `restore-gen`, `mount-smoke`, `mount-smoke2`, `mount-hold`, and `source-probe`. They consume public SDK APIs. `qualify restore-gen STORE VOLUME_UUID CANONICAL_GENERATION_HEX DEST` takes the hexadecimal encoding of `GenerationId::to_bytes()`, including its sealed storage association. A raw root digest is insufficient and is rejected before opening the store or creating the destination. The plugin control plane consumes the same public APIs and keeps its end-to-end tests in its own crate.
 
 For a measured Filesystem consumer, run `cargo run --locked --release -p acyclic-fs --example bench-fs -- --writes=64`. Add `--batch` to publish one transaction, or `--barrier` to compare the local durability policy. The benchmark then times warm reads and cold reads after reopening, verifies every file, and emits one JSON measurement. These measurements run on demand.
 
@@ -191,3 +191,5 @@ guarantee and the modeled work units used to compose its floor; these coefficien
 are separate from observed counts. Raw ratios remain unqualified while physical
 coverage or the matching durability guarantee is missing. File creation plus
 directory durability is calibrated separately from an in-place flush.
+
+The [tooling qualification plan](../../../docs/tooling-qualification.md) separates logical counters, physical requests, hosted execution and on-demand measurements. Side proof/model/fuzz packages remain explicitly selected; they are not added to ordinary default workspace commands.

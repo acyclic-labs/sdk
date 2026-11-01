@@ -1,3 +1,8 @@
+#[cfg(not(loom))]
+compile_error!(
+    r#"STEP_FAILED publication-models: Loom synchronization is disabled; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-stream-publication-models --features model-checking --test publication"#
+);
+
 mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");

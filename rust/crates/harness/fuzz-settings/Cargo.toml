@@ -7,8 +7,6 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [dependencies]
 libfuzzer-sys = "0.4"
 serde = { version = "=1.0.229", features = ["derive"] }

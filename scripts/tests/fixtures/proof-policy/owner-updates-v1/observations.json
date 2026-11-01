@@ -8,7 +8,7 @@
     {
       "id": "fs339-memory-append",
       "status": "hash_validated_owner_observation",
-      "archive": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "d530919679872c1f478a7163725583222c7f13db2dfa953d6dfa45d1393b86cd",
       "selected": 6,
       "passed": 6,
@@ -21,7 +21,7 @@
       "id": "client-node-existing-wasm",
       "status": "hash_validated_owner_observation",
       "head": "cef1e415194397155569bee6b40d6b3dd48020c8",
-      "archive": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\current-wasm-export.tar.gz",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "dfbf85428f993d3e86a998aa96c1dd9cf42da27068f9c1244373628ebe62ae7f",
       "source_manifest_sha256": "1d0819ab5319300c2fbeea7fa0fe3e22c0de3bf62a55e5328791de388ef304b7",
       "same_artifacts": {
@@ -36,14 +36,14 @@
     {
       "id": "client-old-bounded",
       "status": "captured_historical_control",
-      "archive": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "5399aab7de4d7561d7d4a27732920eb116f74c3d95d0920cd6d55a2d955a907d",
       "scope": "actual old TS production plus executed oracle and output; does not qualify redesigned Rust/WASM A7"
     },
     {
       "id": "client-old-queue",
       "status": "captured_historical_control",
-      "archive": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "b9215fe11f654fab486261ceefa894f71c6c3ede691bf9dcc8f7255806ea22e7",
       "scope": "actual old TS production plus executed oracle and output; does not qualify redesigned Rust/WASM A7"
     },
@@ -66,277 +66,277 @@
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/test-plan.out",
       "bytes": 143280,
       "sha256": "71cdb27149566afbc4702630c89ce3c32bd568769db3665af699beea0f54fb58",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::.bb-fs-segments-records/test-plan.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/append-segments.out",
       "bytes": 827,
       "sha256": "60d7ee901c8de01b218ffa7fe04a5fe1fa1adcc788035d14164ce3001d3af3bc",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::.bb-fs-segments-records/append-segments.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/append-segments.json",
       "bytes": 326,
       "sha256": "6cbf3d93e816bfdd2e0b6ef9d68b2b3c8d398abc4aaf3f0e234a0d82d0cff532",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::.bb-fs-segments-records/append-segments.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/completed.json",
       "bytes": 220,
       "sha256": "fab663eb65b787201603e67af04dab717fb9a9adf14b9c080ff9d0d1078b87a9",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::.bb-fs-segments-records/completed.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/status",
       "bytes": 2,
       "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::.bb-fs-segments-records/status"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/rust/crates/filesystem/src/workspace/content.rs",
       "bytes": 8262,
       "sha256": "6ff0a30a02c2092fde8af08dbd125d090caa63f59bd6b1a646eb010b697eb6af",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/workspace/content.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/rust/crates/filesystem/src/tests/workspace/mod.rs",
       "bytes": 3331,
       "sha256": "5920235a9c6eff4ec98937df0595324d33efaaefab587119ed79e523c0ec03cc",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/mod.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/rust/crates/filesystem/src/tests/workspace/append_segments.rs",
       "bytes": 9814,
       "sha256": "b0fc5faf75292c6da17fb3ebe9f1539d2a23568df569fc4b070dd8d6b92f1127",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/append_segments.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/fs339/admission.json",
       "bytes": 2432,
       "sha256": "32ce245441e4ba9f22387310fb3843af62e0cc81bb35a00fb0cb2cbbe6df8755",
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-339-admission.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/qualification.json",
       "bytes": 45143,
       "sha256": "194075d0cd059a2e2a0daa3d5b267824f8937156b2b415a08687e094efe0f943",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\qualification.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/records/results.json",
       "bytes": 404,
       "sha256": "fb6f327a031853c9d3d7d6c0bd1419f8e0f14597ae6a37b926951e79384f6549",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\records\\results.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/records/node-swarm.log",
       "bytes": 89,
       "sha256": "f5b1aaf0cbfadcdc3a28a99b8f0d60404f1484afbe1da843b3d31a38e0ac03c6",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\records\\node-swarm.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/records/bun-swarm.log",
       "bytes": 824,
       "sha256": "94ed016eae3345d2d880a9f567654061257254a5355bad1b591fa8f56479d277",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\records\\bun-swarm.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/records/artifacts.json",
       "bytes": 1436,
       "sha256": "4bcf78e95686697e77fcb4bc9462aeabd864ed0224cb56eabbf4b7e502c92ea6",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\records\\artifacts.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/macos/current-wasm-mac-receipt.json",
       "bytes": 659,
       "sha256": "77d9b827ca408a70bc863c0dcddb583fb4b915ba89f9c6cf809a8a147cecc0ae",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\macos\\current-wasm-mac-receipt.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/macos/current-wasm-mac-root.txt",
       "bytes": 47,
       "sha256": "db08fa31f7ef7b57dacf4a8a3f6715e4edec9f0eecb9cd7b2256752afee525bf",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\macos\\current-wasm-mac-root.txt"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/macos/current-wasm-mac.log",
       "bytes": 662,
       "sha256": "42a17c4b784dac914f208d26a5e0612f3c7449daf5813851b1fd2cbbfd2c9d7e",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\macos\\current-wasm-mac.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/macos/current-wasm-mac.py",
       "bytes": 1957,
       "sha256": "14486b7bc66bcd204838cba6d3a00da6890b9a3f4a3bd663c0fa1dac2262dae3",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\macos\\current-wasm-mac.py"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/macos/source-qualification.sha256",
       "bytes": 65,
       "sha256": "4ddc2dd6e168d926147598067d16669cf7bf355338172334a97e7e1028ea5f42",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\macos\\source-qualification.sha256"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before-records/metrics.log",
       "bytes": 414,
       "sha256": "904a2d7460b2e61a3fe96919f3777bbbd9955b34fd89e5aabe4a7631a24a9112",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before-records/metrics.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before-records/pagination-metrics.json",
       "bytes": 579,
       "sha256": "fdf433b1535130a76bda5db8d4e2c9d1ffc6f2615b8cb22d8d7d0aa8c673abe2",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before-records/pagination-metrics.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before-records/negative.log",
       "bytes": 1484,
       "sha256": "8346bcb443791c599a1ff56a3917cf0eed8ca945a0774bea71027d727610c770",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before-records/negative.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before-records/result.json",
       "bytes": 47,
       "sha256": "13f463266200cc5869bd287896c48288f736ea538f628c53d24db6f0845f48d0",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before-records/result.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before.test.ts",
       "bytes": 1336,
       "sha256": "64a9840e8d698a57bfa1aa80c9c116807805ff1f589cada851ccacf7fb1988b4",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before.test.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before.ts",
       "bytes": 1216,
       "sha256": "d8d77894ab828f1ad7df09baa781878e67cce4da3abfba4c04c9d5becfd5d61f",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/.bb-client-bounded-before.sh",
       "bytes": 1118,
       "sha256": "d87d4057fe4a0bd434f69ad380d020d12b2a97400646cb13fb9bcbbfccf00ea3",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::.bb-client-bounded-before.sh"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/bounded/typescript/packages/harness/src/pagination.ts",
       "bytes": 3680,
       "sha256": "c6b3f739c5274c9af2132d6cbd834e19d0637328e435009eca2f49972febbb09",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\bounded-before-export.tar.gz::typescript/packages/harness/src/pagination.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/generation.log",
       "bytes": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/generation.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/preflight.log",
       "bytes": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/preflight.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/metrics.json",
       "bytes": 654,
       "sha256": "03e38b074a49829dd3eda8b216a9919216788668f5c11dd42212ac51aa7a4ab1",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/metrics.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/metrics.log",
       "bytes": 445,
       "sha256": "76ff8ab117edb861c3ba8a0c6122d1808c8bb47bb250de49d4ccb83ac279db46",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/metrics.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/results.json",
       "bytes": 327,
       "sha256": "efa0cf42cb07f2c22e8af3849c8ebbcf912470462df35f61705a6fab5ead3e04",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/results.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before-records/negative.log",
       "bytes": 4361,
       "sha256": "81076fb4b93db91c7c0f029330cd025b59c64b6cd245e9c37bf58d2dd949077b",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before-records/negative.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before.ts",
       "bytes": 1198,
       "sha256": "6e42d3409428cad674c65f941d34b9c474b8d3c6b5725e19f99b8bd3125e2feb",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before.test.ts",
       "bytes": 343,
       "sha256": "cc0a2fe7e4bab8911a6a187d5ae304067923852d09c3eb772f4c31b78b72f839",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before.test.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/.bb-client-queue-before.sh",
       "bytes": 1592,
       "sha256": "f775081b7e5da423c58a780cbfa9555b8569eca4ce6ab6022c58ffc3abba8665",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::.bb-client-queue-before.sh"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/typescript/packages/stream/src/session-queue.ts",
       "bytes": 3110,
       "sha256": "bb07de5b4f57694a0cd1acf16c78137bab773803fde9dbcce2e3d18c97f324f4",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::typescript/packages/stream/src/session-queue.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/client/before/queue/typescript/packages/stream/src/types.ts",
       "bytes": 11131,
       "sha256": "76e329dead46d0991918d5204f15d4fc8655073b2d40cbf1b15db33e72e0fdc4",
-      "origin": "Q:\\lanes\\client-perf-evidence\\1508-cef1e4151943-node-wasm\\before\\queue-before-export.tar.gz::typescript/packages/stream/src/types.ts"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/rb-fs/handoff.json",
       "bytes": 3183,
       "sha256": "5cfc8d93235b4b1ff364ebbce6db64df3435dcf2a7144b5fe6daad46e5da5f96",
-      "origin": "Q:\\lanes\\verify\\handoffs\\rb-fs.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/client-perf.md",
       "bytes": 9626,
       "sha256": "477165686a550c5ad7fb4ff3440c72c79b6bc45edae64b54f0c1e5bdde51b465",
-      "origin": "Q:\\lanes\\redesign\\api\\client-perf.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/fs-concurrency.md",
       "bytes": 13856,
       "sha256": "84ef59d8396e45ea6e6e678389ad22380f605cb3b415caf1bae60b137b91e7e6",
-      "origin": "Q:\\lanes\\redesign\\api\\fs-concurrency.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/verify-client.md",
       "bytes": 6374,
       "sha256": "646e1e8086e1772641e059aa266d5eb724e78f514415ee797e6ed51decc32b0d",
-      "origin": "Q:\\lanes\\redesign\\verify-to-client-perf.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/ui-dataflow-historical.md",
       "bytes": 1971,
       "sha256": "ba661fa1172c1049d2ae99382c60aa748d1e22aed8196dd095ef1fc16f38a5a5",
-      "origin": "Q:\\lanes\\verify\\handoffs\\ui-dataflow.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/client-review1.md",
       "bytes": 1172,
       "sha256": "b432fcdd3cc8058b98b9e460db465032895b31fb9e4dcd6b00ee3b7fea872551",
-      "origin": "Q:\\lanes\\redesign\\client.review1.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/streams-handover-steer.md",
       "bytes": 633,
       "sha256": "826b91b59630eb70ce4aafb9b17270145491c9be8efb34da8162d4fdc72ce3de",
-      "origin": "Q:\\lanes\\steers\\streams-to-verify-20261026T0138Z.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-updates-v1/contracts/hostability-steer.md",
       "bytes": 1198,
       "sha256": "942c5b1766e061a42e6ce91d6eb462a7cdd3d22bae7ea18930cf993dbcedb63e",
-      "origin": "Q:\\lanes\\steers\\rx-hostability-to-verify-20261026T014253Z.md"
+      "origin": "[private-metadata-removed]"
     }
   ],
   "interpretation": "Raw real output and sources, independently hash checked where specified; all redesigned obligations remain unqualified. Owner-reported Cloud gate has no raw receipt here. FS338 zero-byte staging diagnosis is fixture max_source_bytes=0, not a demonstrated production invariant failure."

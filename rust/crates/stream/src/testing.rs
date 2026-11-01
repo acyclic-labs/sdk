@@ -12,6 +12,8 @@ use std::sync::{
 };
 
 mod provider;
+mod sample;
+pub use sample::{Sample, SampleStart};
 
 /// Request classes used by every primitive's conformance budgets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

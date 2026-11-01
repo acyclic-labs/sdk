@@ -1,3 +1,5 @@
+#![cfg(kani)]
+
 #[path = "../../../crates/harness-core/src/agent/slots.rs"]
 mod slots;
 

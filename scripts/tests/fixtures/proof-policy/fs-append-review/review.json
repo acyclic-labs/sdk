@@ -3,7 +3,7 @@
   "kind": "source_review_not_runtime_qualification",
   "captured_at": "2026-10-26T01:23:48.966382+00:00",
   "owner": "fs-concurrency",
-  "owner_worktree": "Q:\\wt\\fs-concurrency",
+  "owner_worktree": "[private-metadata-removed]",
   "owner_head_at_capture": "390e8f927252f432c0047d4f5b27cb8619e2e087",
   "reviewed_sources": [
     {
@@ -43,7 +43,7 @@
     }
   ],
   "rejected_run": {
-    "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-338-dispatch.log",
+    "origin": "[private-metadata-removed]",
     "repo_log": "docs/proofs/evidence/fs-append-review/segments-338-dispatch.log",
     "log_sha256": "714ba3cca882fac34eb5c103fbe7955d17bf4fb5cfca622f02f3ffa4980c3449",
     "base_commit": "390e8f927252f432c0047d4f5b27cb8619e2e087",

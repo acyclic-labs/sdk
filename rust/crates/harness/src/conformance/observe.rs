@@ -18,6 +18,7 @@ pub(crate) struct Observed {
     pub requests: RequestLedger,
     // A history-read sentinel, independent of the aggregate request budget.
     pub history_reads: AtomicUsize,
+    counter_only: bool,
     calls: AtomicUsize,
     commit_count: AtomicUsize,
     capture: Option<Mutex<Capture>>,
@@ -38,6 +39,7 @@ impl Observed {
             inner,
             requests: RequestLedger::new(),
             history_reads: AtomicUsize::new(0),
+            counter_only: false,
             calls: AtomicUsize::new(0),
             commit_count: AtomicUsize::new(0),
             capture: None,
@@ -51,6 +53,14 @@ impl Observed {
     pub fn capturing(inner: Arc<dyn StreamProvider>) -> Self {
         Self {
             capture: Some(Mutex::default()),
+            ..Self::new(inner)
+        }
+    }
+
+    /// Count dispatches without retaining requests or consulting fault state.
+    pub fn counters(inner: Arc<dyn StreamProvider>) -> Self {
+        Self {
+            counter_only: true,
             ..Self::new(inner)
         }
     }
@@ -99,6 +109,9 @@ impl Observed {
         &self,
         operation: impl std::future::Future<Output = Result<T, StreamError>> + ProviderTask,
     ) -> Result<T, StreamError> {
+        if self.counter_only {
+            return operation.await;
+        }
         let at = self.calls.fetch_add(1, Ordering::SeqCst);
         let fault = {
             let mut crash = self.crash.lock().unwrap_or_else(|e| e.into_inner());
@@ -191,6 +204,10 @@ impl StreamProvider for Observed {
         '_,
         std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
+        if self.counter_only {
+            self.requests.record(RequestClass::Data);
+            return self.inner.write(request);
+        }
         match request {
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
@@ -219,19 +236,25 @@ impl StreamProvider for Observed {
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.requests.record(RequestClass::Data);
-        self.history_reads.fetch_add(1, Ordering::SeqCst);
+        if !self.counter_only {
+            self.history_reads.fetch_add(1, Ordering::SeqCst);
+        }
         self.io(self.inner.read(request)).await
     }
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
         self.capture(|capture| capture.follows.push((request.path.clone(), request.from)));
         self.requests.record(RequestClass::Data);
-        self.history_reads.fetch_add(1, Ordering::SeqCst);
+        if !self.counter_only {
+            self.history_reads.fetch_add(1, Ordering::SeqCst);
+        }
         self.io(self.inner.follow(request)).await
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.requests.record(RequestClass::Data);
-        self.history_reads.fetch_add(1, Ordering::SeqCst);
+        if !self.counter_only {
+            self.history_reads.fetch_add(1, Ordering::SeqCst);
+        }
         self.io(self.inner.read_commit(id)).await
     }
 }
@@ -325,3 +348,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "observe/tests.rs"]
+mod counter_tests;

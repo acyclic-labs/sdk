@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+acyclic-stream = { path = "..", default-features = false, features = ["session", "model-checking"] }
 thiserror = "2.0"
 futures = "0.3.31"
 loom = { version = "0.7.2", features = ["futures"] }
@@ -13,9 +14,7 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 [[test]]
 name = "session_model"
 path = "session_model.rs"
-
-[workspace]
-members = ["."]
+required-features = ["model-checking"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

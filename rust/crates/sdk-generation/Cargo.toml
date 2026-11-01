@@ -1,12 +1,11 @@
 [package]
+autotests = false
 name = "sdk-generation"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.98"
 publish = false
 default-run = "sdk-generation"
-
-[workspace]
 
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
@@ -22,7 +21,7 @@ tempfile = "=3.27.0"
 [dev-dependencies]
 sha2 = "0.10"
 sdk-docs = { path = "../sdk-docs", features = ["test-support"] }
-proptest = "=1.11.0"
+proptest = "1.11.0"
 toml = "=0.9.8"
 
 [[bin]]
@@ -37,3 +36,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 model-checking = []
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

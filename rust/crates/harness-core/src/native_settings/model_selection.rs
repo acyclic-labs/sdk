@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Deserialize, crate::HeapLayout)]
+#[derive(Deserialize)]
 struct ModelSettings {
     model: Option<String>,
     model_provider: Option<String>,

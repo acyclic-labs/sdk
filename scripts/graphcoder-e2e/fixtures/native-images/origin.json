@@ -1,7 +1,7 @@
 {
   "captured_at": "2026-10-26T02:40:25.662219+00:00",
   "invalid": {
-    "source": "Q:/lanes/mac-live/local-main-37b-evidence/recovery-evidence-20261026T010912Z.tar.gz",
+    "source": "[private-path-removed]",
     "archive_sha256": "0952b3df5c9bd96c860df5f1c2e31aa2b3f520bc0baf50845c3d366b7b4a03ed",
     "image_sha256": "4c744b0533cd4bf03609e2ec0a14a677626cbbd1f7347c5e120fe01e0a4f883f",
     "cargo_record": "actual compiler-artifact line for acyclic_fs-8be2919aa4d38e1e; JSON whitespace normalized only"
@@ -26,6 +26,6 @@
   "linux": {
     "source": "/usr/bin/true",
     "sha256": "8a63c98320173f79e263115e10cefc170155e47d1fd4b5a70e4429d2699cae28",
-    "capture": "read-only ssh bb2 pathlib /usr/bin/true; no test/build run"
+    "capture": "read-only ssh Linux pathlib /usr/bin/true; no test/build run"
   }
 }

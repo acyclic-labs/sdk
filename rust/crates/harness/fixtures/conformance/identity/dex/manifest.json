@@ -1,5 +1,5 @@
 {
-  "source": "bb2 isolated Dex v2.44.0; public disposable account; no production credentials",
+  "source": "Linux isolated Dex v2.44.0; public disposable account; no production credentials",
   "captured_at": "2026-10-26T21:24:55.592659+00:00",
   "issuer": "http://127.0.0.1:15482/dex",
   "audience": "conformance-turns",

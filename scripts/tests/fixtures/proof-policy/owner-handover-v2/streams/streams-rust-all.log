@@ -27,7 +27,7 @@ warning: missing documentation for the crate
 warning: `acyclic-stream` (test "wave1_recovery") generated 1 warning
 warning: `acyclic-stream` (lib test) generated 1 warning
     Finished `test` profile [optimized + debuginfo] target(s) in 41.30s
-     Running unittests src/lib.rs (/home/var/targets/cx-streams/debug/deps/acyclic_stream-288fcc65addba3c5)
+     Running unittests src/lib.rs ([private-path-removed])
 
 running 380 tests
 test changes::native::tests::invalid_native_changes_are_rejected_before_allocating ... ok

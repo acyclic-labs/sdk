@@ -7,7 +7,7 @@
   "build_identity": "exact complete uploaded manifests, including uncommitted canonical-root P1 and extras; never clean HEAD only",
   "runs": {
     "341": {
-      "archive": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "79ebc63afc23094afedeaa7ec3516ed2dc8f7f1470888cf4bb1c3906085b529a",
       "compiled_source_manifest_sha256": "965dc8afef58c4711d37fe4d16e5007656e99cab8030faedcb00b5015ed40429",
       "executable_sha256": "b84bd23b25f4e61628a8dfbf258fa14ee306558c02e86b417d2e260d12d9b48a",
@@ -15,7 +15,7 @@
       "seconds": 0.3196044689975679
     },
     "342": {
-      "archive": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar",
+      "archive": "[private-metadata-removed]",
       "archive_sha256": "70763c93851e4e3c5951406dede8f8d1157da04769f98075c4cc461e0ced9de5",
       "compiled_source_manifest_sha256": "2bb9f015b071b4732296907a256bfcd888e8f15dab5cf0200754100f0a2f57a9",
       "executable_sha256": "7cd60adff9dc5caebeec6fac2ac32642c609a35321d7a31d5a26720b67a65a81",
@@ -55,127 +55,127 @@
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/test-plan.out",
       "sha256": "b64172e4adf28822e5d1bd64e4ab4ef18a341ec640fd6b47f9f2dd2a0c63377e",
       "bytes": 145332,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::.bb-fs-segments-records/test-plan.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/append-segments.out",
       "sha256": "f913d53102cdc64763923660498195e9623d847f4c91be2ecf7e2bc49619d5f9",
       "bytes": 1298,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::.bb-fs-segments-records/append-segments.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/append-segments.json",
       "sha256": "051cc3c6238703df2640985184ad391f06bdc187fd99c88e4664f9c0ca7a28b7",
       "bytes": 325,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::.bb-fs-segments-records/append-segments.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/completed.json",
       "sha256": "915bc2bf22f27f1bce1c0cf65fcbed0f78f3ea962a902ac98006f944d7f68f7e",
       "bytes": 220,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::.bb-fs-segments-records/completed.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/status",
       "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
       "bytes": 2,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::.bb-fs-segments-records/status"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/rust/crates/filesystem/src/workspace/content.rs",
       "sha256": "d4682cea956ae4d6705b9435b4dd279a28769aae6a995fa6af0c5dff8ae1f7ed",
       "bytes": 8426,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/workspace/content.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/rust/crates/filesystem/src/tests/workspace/mod.rs",
       "sha256": "5920235a9c6eff4ec98937df0595324d33efaaefab587119ed79e523c0ec03cc",
       "bytes": 3331,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/mod.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/rust/crates/filesystem/src/tests/workspace/append_segments.rs",
       "sha256": "e99c5e949a7711c1431a79f60c41ac8187d13e7454721ce33ac1c8c90717d58c",
       "bytes": 18344,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/append_segments.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/341/admission.json",
       "sha256": "93f90dd2032fea1508cd6a8f6bc49fbccaa2a540948a0b4d2fae7803b8b1703c",
       "bytes": 2431,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-341-admission.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/mutations.json",
       "sha256": "51ff5466e0acb39e010b81a9613232aacf28eb6e450cc1ca6493892305e0d12d",
       "bytes": 265,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/mutations.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/mutant.rs",
       "sha256": "bc8861faa43692ecccd7d22035a47d027f18e96313ef7f9b9b4b90e80f39df41",
       "bytes": 8427,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/mutant.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/negative-fence.out",
       "sha256": "104f70b3c83962c8b5742cea60e0f7e30841159f5e6c20646e2573e0bb13c06c",
       "bytes": 811,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/negative-fence.out"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/negative-fence.json",
       "sha256": "e120cd1ca2ec8ddc5772a751036c159e724a6a59bed832a9c249d05980a67814",
       "bytes": 357,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/negative-fence.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/completed.json",
       "sha256": "0d4e6772c06831cf7c58089e4a0ac90bdba2230c011cd08f2576e0fbab02f2dd",
       "bytes": 255,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/completed.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/status",
       "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
       "bytes": 2,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::.bb-fs-segments-records/status"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/rust/crates/filesystem/src/workspace/content.rs",
       "sha256": "d4682cea956ae4d6705b9435b4dd279a28769aae6a995fa6af0c5dff8ae1f7ed",
       "bytes": 8426,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/workspace/content.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/rust/crates/filesystem/src/tests/workspace/mod.rs",
       "sha256": "5920235a9c6eff4ec98937df0595324d33efaaefab587119ed79e523c0ec03cc",
       "bytes": 3331,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/mod.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/rust/crates/filesystem/src/tests/workspace/append_segments.rs",
       "sha256": "e99c5e949a7711c1431a79f60c41ac8187d13e7454721ce33ac1c8c90717d58c",
       "bytes": 18344,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-export\\.bb-fs-segments.tar::rust/crates/filesystem/src/tests/workspace/append_segments.rs"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/342/admission.json",
       "sha256": "25726445f0c6ed76e49b1132825fd466e2b9539ae48b7cd9d4ce45567bdebc12",
       "bytes": 2468,
-      "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-342-admission.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/owner-signature.log",
       "sha256": "2ef88331d0a1ec7c0a8d2efe9c947db803819ad61f51ed55b5bafd8ddbf0b02a",
       "bytes": 131,
-      "origin": "git -C Q:\\wt\\fs-concurrency verify-commit 083f45f102e0d01e18b809ae83037e80be3ed960"
+      "origin": "git -C [private-metadata-removed] verify-commit 083f45f102e0d01e18b809ae83037e80be3ed960"
     },
     {
       "repo_path": "docs/proofs/evidence/fs-append-eof/handover.md",
       "sha256": "cd15f758b312a7a61ad6351367785555341dcf00aca433c09a0124ed9383ce64",
       "bytes": 22002,
-      "origin": "Q:\\lanes\\redesign\\fs\\handover.md"
+      "origin": "[private-metadata-removed]"
     }
   ]
 }

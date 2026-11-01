@@ -74,15 +74,6 @@ pub(super) fn write_bundle_inner(
     let data_bytes = serde_json::to_vec_pretty(data)?;
     let digest = sha256_hex(&data_bytes);
     let data_path = output_dir.join(&data_file);
-    if data_path.exists() {
-        let existing = fs::read(&data_path)?;
-        if sha256_hex(&existing) != digest {
-            return Err(Error::Invalid(format!(
-                "refusing to rewrite {} with different data",
-                data_path.display()
-            )));
-        }
-    }
     let entry = VersionEntry {
         captured_source: data.source.captured_source.clone(),
         publication_status: data.source.publication_status.clone(),
@@ -93,7 +84,7 @@ pub(super) fn write_bundle_inner(
         data_file,
         data_sha256: digest,
     };
-    let updated_index = merge_version_index(index, &entry, output_dir, mark_latest)?;
+    let updated_index = merge_version_index(index, &entry, mark_latest)?;
     validate_latest_release(&updated_index)?;
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
@@ -122,7 +113,7 @@ pub(super) fn write_bundle_inner(
 pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
     reject_reparse_ancestors(&index_path)?;
-    let mut index = if index_path.exists() {
+    let index = if index_path.exists() {
         let metadata = fs::symlink_metadata(&index_path)?;
         if !metadata.is_file() {
             return Err(Error::Invalid(format!(
@@ -146,22 +137,6 @@ pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Erro
             "unsupported version index schema: {}",
             index.schema
         )));
-    }
-    let mut verified = Vec::new();
-    for entry in index.releases.drain(..) {
-        if entry.publication_status == PublicationStatus::Candidate {
-            index.release_candidates.push(entry);
-        } else {
-            verified.push(entry);
-        }
-    }
-    index.releases = verified;
-    if index
-        .latest
-        .as_ref()
-        .is_some_and(|entry| entry.publication_status == PublicationStatus::Candidate)
-    {
-        index.latest = None;
     }
     validate_version_index(&index, output_dir)?;
     Ok(index)

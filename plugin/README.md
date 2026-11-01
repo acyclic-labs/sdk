@@ -200,7 +200,7 @@ node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/version-
 It checks both install and doctor reject the old host before reading the plugin
 package or changing configuration, and supported doctor retains the sandbox
 roots. Profiles are fresh and contain no login. Windows execution uses the
-shared process host and the fleet's serial Windows runner.
+shared process host and serial Windows execution.
 
 The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:

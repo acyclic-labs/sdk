@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only through bs.ps1 on bb2. Every provider is a disposable local emulator.
+# Run only through the shell on Linux. Every provider is a disposable local emulator.
 # Caller input admission declares no comparison receipts or borrowed artifacts;
 # the uploaded source creates fresh fixtures against ordinary emulator images.
 set -euo pipefail
@@ -10,7 +10,7 @@ minio=
 cleanup() {
     rc=$?
     if (( rc != 0 )); then
-        echo "step=$step failed (exit $rc); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh" >&2
+        echo "step=$step failed (exit $rc); recovery: bash scripts/backends/storage-conformance.sh" >&2
     fi
     for container in "$pg" "$minio"; do
         if [[ -n "$container" ]]; then
@@ -21,8 +21,9 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
-root=$(mktemp -d /mnt/bb/be-storage.XXXXXXXX)
-case "$root" in /mnt/bb/be-storage.*) ;; *) echo "step=setup: unexpected data root $root; recovery: ls -ld /mnt/bb" >&2; exit 2 ;; esac
+scratch=${TMPDIR:-/tmp}
+root=$(mktemp -d "$scratch/acyclic-storage.XXXXXXXX")
+case "$root" in "$scratch"/acyclic-storage.*) ;; *) echo "step=setup: unexpected data root $root; recovery: ls -ld $scratch" >&2; exit 2 ;; esac
 
 step=images
 minio_image=be-storage-minio:RELEASE.2025-10-15T17-29-55Z
@@ -88,9 +89,9 @@ cargo build --locked -p acyclic-conformance --features storage-backends --bin st
 step=canonical-suites
 timeout 60 cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=compile-agent-host-baseline
-cargo test --locked -p acyclic-agent-host-conformance --features local --test local --no-run
+cargo test --locked -p acyclic-agent-host-conformance --features local --test main --no-run
 step=agent-host-baseline
-timeout 60 cargo test --locked -p acyclic-agent-host-conformance --features local --test local
+timeout 60 cargo test --locked -p acyclic-agent-host-conformance --features local --test main
 step=compile-postgres-checks
 cargo build --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
 step=shared-stream-regressions

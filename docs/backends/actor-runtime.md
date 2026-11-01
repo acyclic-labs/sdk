@@ -31,11 +31,11 @@ Multiple filtered subscriptions share a polling budget and rotate the starting
 subscription after budget exhaustion (#1710). Lookahead keeps the original cut
 and releases provider futures on cancellation. AgentHandler uses one inbox.
 
-Validation commands on bb2: `scripts/check-actor-runtime.sh`, actor and
+Validation commands on Linux: `scripts/check-actor-runtime.sh`, actor and
 agent-model tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
 checks cancellation with intervening input and restart. The host suite checks
 saved discovery cursors and in-flight interruption for each backend unchanged.
-On bb2, both native host entries passed in 5.81 seconds and the browser entry
+On Linux, both native host entries passed in 5.81 seconds and the browser entry
 passed in 10.80 seconds. Actor tests, all 34 agent-model tests and strict typed
 forwarding against the generated guest declarations also passed. Workerd runs
 the unchanged Stream and host suites plus packaged-guest restart checks.
@@ -56,7 +56,7 @@ the one existing decoder naturally ignores that field in earlier checkpoints.
 The artifact state encoding and codec version remain the same. Both old and
 new checkpoints take their authoritative inbox cut from Actors' state.
 G50 adds wire refusal and record/alarm reopen controls. Its validation is a
-bb2 compile-only check; the earlier execution receipts above apply to #1709,
+Linux compile-only check; the earlier execution receipts above apply to #1709,
 not this ABI change. No throughput or zero-control claim follows from carrying
 a loaded cut.
 

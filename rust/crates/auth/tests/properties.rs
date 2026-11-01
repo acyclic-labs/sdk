@@ -1,4 +1,5 @@
 //! Shrinking properties exercise the actual contract append and decision algebra.
+#[path = "common/mod.rs"]
 mod common;
 use acyclic_auth::{authority::*, contract::*, *};
 use common::*;

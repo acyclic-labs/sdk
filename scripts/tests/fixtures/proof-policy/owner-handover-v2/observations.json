@@ -64,49 +64,49 @@
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/handover.md",
       "bytes": 14401,
       "sha256": "217ce54befc4325517d46bf18f47611f477ccd1efc6d4c44e7492cc81a50f3a8",
-      "origin": "Q:\\lanes\\redesign\\streams\\handover.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-tests.log",
       "bytes": 37907,
       "sha256": "82a4b8e980672d9f919ee2a33addd45956cbd649b16886484efdc07e233be3cf",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-tests.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-loom.log",
       "bytes": 616,
       "sha256": "79cd09eafcc44c37f64ef4d45e81504cecfb728574339f273e544c787ed442b2",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-loom.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-rust-all.log",
       "bytes": 39735,
       "sha256": "207edd612a483ba66fd101569d211d1b7223f91cbeee8a00885ebe761ba5c08b",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-rust-all.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-ts-tests.log",
       "bytes": 17090,
       "sha256": "1911f341801b90cc903e8d44f86998bcb2f75860ba798e349b3ed02bae3e3661",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-ts-tests.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-generate.log",
       "bytes": 6794,
       "sha256": "f9cf000c9484f92f63ca92f147017b70d52ac94d1991636b726922e05dcf1df2",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-generate.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-wasm.log",
       "bytes": 23806,
       "sha256": "2305fd0ed984221801a01b1373daebbe73353a9b3f7ac8bcbe74a9da74020788",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-wasm.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-tsc.log",
       "bytes": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "origin": "Q:\\lanes\\redesign\\streams\\streams-tsc.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/source/conformance.rs",
@@ -130,25 +130,25 @@
       "repo_path": "docs/proofs/evidence/owner-handover-v2/actors/api.md",
       "bytes": 5199,
       "sha256": "fa43ad0f93603eeb4e0e8df747d5b824f4454bccf027ae5048445075cde75443",
-      "origin": "Q:\\lanes\\redesign\\api\\b-runtime.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/actors/verify-contract.md",
       "bytes": 7747,
       "sha256": "92ba0b0021ff20750f26483ce235d9dadc1406749422cc98725ba4532c1bc316",
-      "origin": "Q:\\lanes\\redesign\\verify-to-b-runtime.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/rb-fs/handoff.json",
       "bytes": 4651,
       "sha256": "ac88f89f01089f0e65825174b1dfa04f3774de12ea8d269bfc786e45e99a530f",
-      "origin": "Q:\\lanes\\verify\\handoffs\\rb-fs.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/owner-handover-v2/rb-fs/owner-steer.md",
       "bytes": 971,
       "sha256": "7936d12ed043382c409cbd1351c021dc4e53983a7e03c4ee38bb793f5a4bcc83",
-      "origin": "Q:\\lanes\\steers\\rb-fs-to-verify-20261026T020500Z.md"
+      "origin": "[private-metadata-removed]"
     }
   ]
 }

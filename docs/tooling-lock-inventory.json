@@ -1,0 +1,183 @@
+{
+  "source": "5d7104588070ad27782d77a23714c2e60735c5a6",
+  "scope": "Cargo dependency locks; other language and tool locks are outside this consolidation",
+  "locks": 29,
+  "nonempty_lines": 57105,
+  "decisions": [
+    {
+      "path": "Cargo.lock",
+      "nonempty_lines": 8135,
+      "source_blob": "52a924b2d8923bd48d390069feb91ebc1a104632",
+      "disposition": "shared product resolution; retained registry identities and canonical compatible member edges"
+    },
+    {
+      "path": "fuzz/Cargo.lock",
+      "nonempty_lines": 3696,
+      "source_blob": "69d56dbeb6f1d7aa2ee488c67c591a880f045338",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/actors/fuzz/Cargo.lock",
+      "nonempty_lines": 3610,
+      "source_blob": "3e9992d04d52bd037f8d71f166387dec42250b9e",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/auth/fuzz/Cargo.lock",
+      "nonempty_lines": 1059,
+      "source_blob": "64701207274f35dcd24af9d477d7d2be093e4c25",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/filesystem/proofs/control-layout/Cargo.lock",
+      "nonempty_lines": 6,
+      "source_blob": "fd64092118097dd1188ab7609f57f667bd5709ca",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/filesystem/proofs/lease-path/Cargo.lock",
+      "nonempty_lines": 14,
+      "source_blob": "368e35c4ca2cb721b2b0faf115c9b0b9ca01f979",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness-providers/fuzz/Cargo.lock",
+      "nonempty_lines": 4741,
+      "source_blob": "bd5700c0aa9de0cffb97b7d6006a6557abe20a78",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness-tui/fuzz/Cargo.lock",
+      "nonempty_lines": 2565,
+      "source_blob": "3a0e0067e1e9c3b5c2040ed36a6c488e707e51e1",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-context/Cargo.lock",
+      "nonempty_lines": 5073,
+      "source_blob": "8536484c2c3323851e901917f47ef1d2de3ee85e",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-native-journal/Cargo.lock",
+      "nonempty_lines": 5538,
+      "source_blob": "da8a42c6129fb92a0a5c98f88a239f5b46ccbb83",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness/fuzz-settings/Cargo.lock",
+      "nonempty_lines": 205,
+      "source_blob": "5d4de97a02708d970b7df05075930ace3ba74c8f",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/harness/tests/ui/native-environment/Cargo.lock",
+      "nonempty_lines": 6,
+      "source_blob": "7cc8f9d1627e37f71f4de32f09259843c775d4e6",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/manifest/fuzz/Cargo.lock",
+      "nonempty_lines": 3684,
+      "source_blob": "ae8cd0f949ef23d90fb17e595e5a2b741f4f5f82",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/markdown/fuzz/Cargo.lock",
+      "nonempty_lines": 365,
+      "source_blob": "90cd8305cb42db6063add8ceacb67bd9ea528d74",
+      "disposition": "retained isolated graph or historical capture; not consolidated"
+    },
+    {
+      "path": "rust/crates/sdk-docs/Cargo.lock",
+      "nonempty_lines": 759,
+      "source_blob": "7c1ad8d478962826bb5da1f961a5d76c595a5f7f",
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
+    },
+    {
+      "path": "rust/crates/sdk-docs/fuzz/Cargo.lock",
+      "nonempty_lines": 232,
+      "source_blob": "36f4f1061f3e9dcd889df1072b56738e27ea3ee3",
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
+    },
+    {
+      "path": "rust/crates/sdk-generation/Cargo.lock",
+      "nonempty_lines": 916,
+      "source_blob": "544b6b513f49201b4d28c9ed261bbbc61e7bbfda",
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
+    },
+    {
+      "path": "rust/crates/sdk-generation/fuzz/Cargo.lock",
+      "nonempty_lines": 770,
+      "source_blob": "e525ed1aa72b0115c474e350c2a1de331a4c2f95",
+      "disposition": "live workspace member consolidated into root resolution; original lock remains Git-addressed; proof and fuzz sources retained"
+    },
+    {
+      "path": "rust/crates/stream/contract-fuzz/Cargo.lock",
+      "nonempty_lines": 2722,
+      "source_blob": "3ae581293966eee4aa304d5b20a3f11802b8bd7b",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/stream/fuzz/Cargo.lock",
+      "nonempty_lines": 3268,
+      "source_blob": "af5398a7c1f913fdd4be8be468d9cefd859f9d3a",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/stream/models/Cargo.lock",
+      "nonempty_lines": 508,
+      "source_blob": "234308f6ebfcf4f86c4ab8ae50a44c505a49d92e",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/crates/stream/publication-models/Cargo.lock",
+      "nonempty_lines": 480,
+      "source_blob": "91dad9fd692e76fd5917553863a3cc35a9908eda",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/fuzz/native-callback-path/Cargo.lock",
+      "nonempty_lines": 78,
+      "source_blob": "507c59e2c41424ecd181c1289d02338027992339",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/fuzz/task-volume/Cargo.lock",
+      "nonempty_lines": 4612,
+      "source_blob": "00a5faa3f27c0d5feb10b0484290ca37d9458b39",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "rust/vendor/tonic-web-wasm-client-0.9.2/Cargo.lock",
+      "nonempty_lines": 513,
+      "source_blob": "e4f09f21b002e8e600aeb60f3e2ba2d3bfd620cd",
+      "disposition": "retained isolated graph or historical capture; not consolidated"
+    },
+    {
+      "path": "rust/verification/sdk-fixtures/Cargo.lock",
+      "nonempty_lines": 230,
+      "source_blob": "823ff11fa84c7e82c1a45c8dea2c51967c6783f5",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "scripts/tests/fixtures/proof-policy/canonical-exports-v1/source/Cargo.lock",
+      "nonempty_lines": 4,
+      "source_blob": "babd821802e5157e77897d798bf9a1a2c3c20602",
+      "disposition": "retained isolated graph or historical capture; not consolidated"
+    },
+    {
+      "path": "typescript/packages/stream/fuzz/Cargo.lock",
+      "nonempty_lines": 2869,
+      "source_blob": "76c28facb437174d3c07d0cd38e1d7956af74f5c",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    },
+    {
+      "path": "typescript/packages/stream/models/Cargo.lock",
+      "nonempty_lines": 447,
+      "source_blob": "0c7d18be63e0a4ad3c24607d3d2d0e2f9a40e1f2",
+      "disposition": "compatible member projected into root resolution; original lock remains Git-addressed"
+    }
+  ],
+  "limit": "Original lock inventory and current manifest consolidation decisions; compiler and performance results require their own qualification. Live documentation and generation packages share the root resolution."
+}

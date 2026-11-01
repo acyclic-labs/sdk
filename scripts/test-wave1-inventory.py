@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise proof-credit refusals using captured real BB2 evidence.
+"""Exercise proof-credit refusals using captured real Linux evidence.
 
 The inputs are the committed captures and manifest. Negative controls mutate
 copies of those real observations; no provider/tool-output fixture is invented.
@@ -9,7 +9,6 @@ import copy
 import hashlib
 import importlib.util
 import json
-import shutil
 import sys
 import tempfile
 import unittest
@@ -18,7 +17,7 @@ from unittest.mock import patch
 
 # Imported helpers must not create artifacts before the checker loads.
 sys.dont_write_bytecode = True
-from proof_fixture_paths import CAPTURE_ALIASES, repository_path
+from proof_fixture_paths import CAPTURE_ALIASES, repository_path, captured_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +26,7 @@ class EvidencePolicy(unittest.TestCase):
     def test_shared_capture_bytes_retain_original_receipt_hashes(self):
         references = (MANIFEST['partial_proofs']['append-eof'], MANIFEST['owner_observations']['updates-v1'])
         captures = [capture for reference in references
-                    for capture in json.loads(repository_path(ROOT, reference['repo_receipt']).read_bytes())['captures']]
+                    for capture in json.loads(captured_bytes(repository_path(ROOT, reference['repo_receipt'])))['captures']]
         checked = set()
         for capture in captures:
             logical = capture['repo_path'].replace('docs/proofs/evidence/', 'scripts/tests/fixtures/proof-policy/', 1)
@@ -36,11 +35,23 @@ class EvidencePolicy(unittest.TestCase):
             with self.subTest(capture=logical):
                 shared = repository_path(ROOT, logical)
                 self.assertEqual(shared, repository_path(ROOT, capture['repo_path']))
-                self.assertEqual(hashlib.sha256(shared.read_bytes()).hexdigest(), capture['sha256'])
-                self.assertEqual(shared.stat().st_size, capture['bytes'])
+                self.assertEqual(hashlib.sha256(captured_bytes(shared)).hexdigest(), capture['sha256'])
+                self.assertEqual(len(captured_bytes(shared)), capture['bytes'])
                 self.assertFalse((ROOT / logical).exists())
                 checked.add(logical)
         self.assertEqual(checked, {name for name in CAPTURE_ALIASES if name.endswith('.rs')})
+
+        # Cached original objects cannot hide a same-length distributed change.
+        index = json.loads((ROOT / "scripts/tests/fixtures/proof-policy/redactions.json").read_text(encoding="utf-8"))
+        relative = next(name for name, item in index["files"].items()
+                        if item.get("distribution") != "git-only-source-inventory")
+        path = ROOT / relative
+        actual = Path.read_bytes
+        original = actual(path)
+        corrupted = bytes([original[0] ^ 1]) + original[1:]
+        with patch.object(Path, "read_bytes", lambda source: corrupted if source == path else actual(source)):
+            with self.assertRaisesRegex(ValueError, "capture-integrity"):
+                captured_bytes(path)
 
     def test_shared_entrypoint_mutants_retain_both_executed_hashes(self):
         aliases = {name: shared for name, shared in CAPTURE_ALIASES.items() if name.endswith('.py')}
@@ -51,25 +62,25 @@ class EvidencePolicy(unittest.TestCase):
                 self.assertEqual(source, ROOT / shared)
                 self.assertFalse((ROOT / logical).exists())
                 for original in (logical, shared):
-                    receipt = json.loads((ROOT / original).with_name('receipt.json').read_bytes())
+                    receipt = json.loads(captured_bytes((ROOT / original).with_name('receipt.json')))
                     run = next(run for run in receipt['runs'] if run['label'] == Path(original).stem)
-                    self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),
+                    self.assertEqual(hashlib.sha256(captured_bytes(source)).hexdigest(),
                                      run['implementations']['scripts/check-proof-coverage.py'])
 
     def test_historical_checker_controls_reconstruct_exact_executed_bytes(self):
         captures = ROOT / "scripts/tests/fixtures/proof-policy"
         controls = 0
         for baseline in sorted(captures.glob("policy-*/checker.py")):
-            source = baseline.read_bytes()
+            source = captured_bytes(baseline)
             positive = hashlib.sha256(source).hexdigest()
-            receipt = json.loads(baseline.with_name("receipt.json").read_bytes())
+            receipt = json.loads(captured_bytes(baseline.with_name("receipt.json")))
             runs = {run["checker_sha256"]: run for run in receipt["runs"]}
             self.assertEqual(runs[positive]["exit"], 0)
             mutations = sorted(baseline.parent.glob("*mutation.json"))
             self.assertEqual(len(mutations), len(receipt["runs"]) - 1)
             for path in mutations:
                 with self.subTest(capture=baseline.parent.name, mutation=path.name):
-                    mutation = json.loads(path.read_bytes())
+                    mutation = json.loads(captured_bytes(path))
                     self.assertEqual(positive, mutation["positive_sha256"])
                     before, after = mutation["before"].encode(), mutation["after"].encode()
                     self.assertEqual(source.count(before), 1)
@@ -84,19 +95,19 @@ class EvidencePolicy(unittest.TestCase):
             POLICY.check(True)
 
     def test_one_mode_cannot_claim_qualification_without_a_positive_receipt(self):
-        original_read = Path.read_text
+        original_read = POLICY.captured_bytes
         inventory_path = ROOT / "docs/proofs/wave1-inventory.json"
         for mode in ("memory", "local", "hosted", "wasm_browser"):
             with self.subTest(mode=mode):
                 manifest = copy.deepcopy(MANIFEST)
                 manifest["obligations"][0]["modes"][mode]["status"] = "qualified"
 
-                def read_text(path, *args, **kwargs):
+                def read_capture(path):
                     if path == inventory_path:
-                        return json.dumps(manifest)
-                    return original_read(path, *args, **kwargs)
+                        return json.dumps(manifest).encode()
+                    return original_read(path)
 
-                with patch.object(Path, "read_text", read_text), self.assertRaisesRegex(ValueError, "positive qualification receipt validation has not been implemented"):
+                with patch.object(POLICY, "captured_bytes", read_capture), self.assertRaisesRegex(ValueError, "positive qualification receipt validation has not been implemented"):
                     POLICY.check(False)
 
     def test_captured_old_source_controls_are_valid(self):
@@ -129,7 +140,7 @@ class EvidencePolicy(unittest.TestCase):
                 root = Path(directory)
                 self.copy_evidence(root, original)
                 target = repository_path(root, original["repo_log"])
-                data = target.read_bytes()
+                data = captured_bytes(target)
                 self.assertIn(before.encode(), data)
                 target.write_bytes(data.replace(before.encode(), after.encode()))
                 receipt = dict(original, log_sha256=POLICY.sha256(target), **metadata)
@@ -165,7 +176,7 @@ class EvidencePolicy(unittest.TestCase):
             receipt = self.copy_review(root, original)
             review = json.loads(receipt.read_text(encoding="utf-8"))
             target = repository_path(root, review["rejected_run"]["repo_log"])
-            data = target.read_bytes()
+            data = captured_bytes(target)
             self.assertEqual(data.count(b'"stage": "positive"'), 1)
             target.write_bytes(data.replace(b'"stage": "positive"', b'"stage": "negative"'))
             review["rejected_run"]["log_sha256"] = POLICY.sha256(target)
@@ -175,10 +186,23 @@ class EvidencePolicy(unittest.TestCase):
                 POLICY.check_source_review(reference)
 
     @staticmethod
-    def copy_file(root, relative):
+    def copy_file(root, relative, digest=None):
+        source = repository_path(ROOT, relative)
+        if not source.exists() and digest is not None:
+            index_path = "scripts/tests/fixtures/proof-policy/redactions.json"
+            index = json.loads((ROOT / index_path).read_text(encoding="utf-8"))
+            matches = [name for name, item in index["files"].items()
+                       if item["original_sha256"] == digest]
+            if len(matches) != 1:
+                raise ValueError("historical capture requires one original digest")
+            relative = matches[0]
+            source = repository_path(ROOT, relative)
+            index_copy = repository_path(root, index_path)
+            index_copy.parent.mkdir(parents=True, exist_ok=True)
+            index_copy.write_text(json.dumps(index), encoding="utf-8")
         target = repository_path(root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(repository_path(ROOT, relative), target)
+        target.write_bytes(captured_bytes(source))
         return target
 
     def test_owner_observations_cannot_be_relabelled_as_proofs(self):
@@ -203,18 +227,18 @@ class EvidencePolicy(unittest.TestCase):
 
     def test_compiled_hst_overrides_replay_exact_captured_bytes(self):
         base = repository_path(ROOT, MANIFEST["hst_reporting"]["repo_receipt"]).parent
-        admission = json.loads((base / "admission.json").read_bytes())
+        admission = json.loads(captured_bytes(base / "admission.json"))
         for name in ("positive-compiled-source.json", "mutant-compiled-source.json"):
             with self.subTest(manifest=name):
-                overlay = json.loads((base / name).read_bytes())
+                overlay = json.loads(captured_bytes(base / name))
                 self.assertEqual(len(overlay["overrides"]), int(name.startswith("mutant")))
                 capture = next(row for row in admission["captures"] if row["repo_path"].endswith("/" + name))
                 content = POLICY.hst_capture(base, name)
                 self.assertEqual(hashlib.sha256(content).hexdigest(), capture["sha256"])
                 self.assertEqual(len(content), capture["bytes"])
-                source = json.loads((base / "source.json").read_bytes())
+                source = json.loads(captured_bytes(base / "source.json"))
                 source["Cargo.lock"] = "0" * 64
-                with patch.object(Path, "read_bytes", lambda path: json.dumps(source).encode() if path == base / "source.json" else json.dumps(overlay).encode()):
+                with patch.object(POLICY, "captured_bytes", lambda path: json.dumps(source).encode() if path == base / "source.json" else json.dumps(overlay).encode()):
                     self.assertNotEqual(hashlib.sha256(POLICY.hst_capture(base, name)).hexdigest(), capture["sha256"])
 
     def test_historical_hst_receipt_does_not_read_current_execution_inputs(self):
@@ -238,7 +262,7 @@ class EvidencePolicy(unittest.TestCase):
 
     def test_current_reference_cannot_borrow_historical_dependency_hash(self):
         receipt = repository_path(ROOT, MANIFEST["hst_reporting"]["repo_receipt"])
-        executed = json.loads(receipt.with_name("source.json").read_bytes())
+        executed = json.loads(captured_bytes(receipt.with_name("source.json")))
         reference = copy.deepcopy(MANIFEST["entrypoints"][0])
         historical_hash = executed[reference["file"]]
         self.assertNotEqual(historical_hash, reference["sha256"])
@@ -255,7 +279,7 @@ class EvidencePolicy(unittest.TestCase):
                 target = self.copy_file(root, original["repo_receipt"])
                 admission = json.loads(target.read_text())
                 for capture in admission["captures"]:
-                    copied = self.copy_file(root, capture["repo_path"])
+                    copied = self.copy_file(root, capture["repo_path"], capture["sha256"])
                     if copied.name == "endpoint-unqualified.out":
                         rows = [json.loads(line) for line in copied.read_text().splitlines()]
                         if label == "promote":
@@ -264,7 +288,7 @@ class EvidencePolicy(unittest.TestCase):
                             rows.pop()
                         copied.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
                         capture.update(sha256=POLICY.sha256(copied), bytes=copied.stat().st_size)
-                source = json.loads(repository_path(root, original["repo_receipt"]).with_name("source.json").read_bytes())
+                source = json.loads(captured_bytes(repository_path(root, original["repo_receipt"]).with_name("source.json")))
                 for name in source:
                     if name.endswith(("conformance/wave1/coverage.rs", "conformance/wave1.rs", "tests/wave1_coverage.rs", "examples/wave1-conformance.rs", "scripts/qualify-wave1-coverage.py")):
                         self.copy_file(root, name)
@@ -290,7 +314,7 @@ class EvidencePolicy(unittest.TestCase):
                 target = self.copy_file(root, original["repo_receipt"])
                 receipt = json.loads(target.read_text())
                 for capture in receipt["captures"]:
-                    self.copy_file(root, capture["repo_path"])
+                    self.copy_file(root, capture["repo_path"], capture["sha256"])
                 parts = key.split(".")
                 destination = receipt if len(parts) == 1 else receipt[parts[0]]
                 destination[parts[-1]] = value
@@ -319,7 +343,7 @@ class EvidencePolicy(unittest.TestCase):
             target = self.copy_file(root, original["repo_receipt"])
             receipt = json.loads(target.read_text())
             for capture in receipt["captures"]:
-                copied = self.copy_file(root, capture["repo_path"])
+                copied = self.copy_file(root, capture["repo_path"], capture["sha256"])
                 if copied.name == "current-wasm-mac-receipt.json":
                     mac = json.loads(copied.read_text())
                     key = next(key for key in mac["artifacts"] if key.endswith(".wasm"))
@@ -341,9 +365,9 @@ class EvidencePolicy(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 target = self.copy_file(root, original["repo_receipt"])
-                receipt = json.loads(target.read_bytes())
+                receipt = json.loads(captured_bytes(target))
                 for capture in receipt["captures"]:
-                    self.copy_file(root, capture["repo_path"])
+                    self.copy_file(root, capture["repo_path"], capture["sha256"])
                 receipt[field] = ["hosted"] if field == "qualified_modes" else True
                 target.write_text(json.dumps(receipt))
                 reference = dict(original, sha256=POLICY.sha256(target))
@@ -359,7 +383,7 @@ class EvidencePolicy(unittest.TestCase):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 target = self.copy_file(root, original['repo_receipt'])
-                receipt = json.loads(target.read_bytes())
+                receipt = json.loads(captured_bytes(target))
                 for capture in receipt['captures']:
                     self.copy_file(root, capture['repo_path'])
                 receipt[field] = ['hosted'] if field == 'qualified_modes' else True
@@ -373,7 +397,7 @@ class EvidencePolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = self.copy_file(root, original['repo_receipt'])
-            receipt = json.loads(target.read_bytes())
+            receipt = json.loads(captured_bytes(target))
             for capture in receipt['captures']:
                 self.copy_file(root, capture['repo_path'])
             receipt['controls']['independent_reads'] = 'production_fault'

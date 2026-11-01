@@ -2,6 +2,91 @@
 # Publishable SDK families, private qualification/binding crates, and the
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
+  "compatibility",
+  "examples/sdk-services",
+  "fuzz",
+  "plugin",
+  "plugin/identity",
+  "rust/crates/actors",
+  "rust/crates/actors-napi",
+  "rust/crates/actors-wasm",
+  "rust/crates/actors/fuzz",
+  "rust/crates/auth",
+  "rust/crates/auth-wasm",
+  "rust/crates/auth/fuzz",
+  "rust/crates/collections",
+  "rust/crates/conformance",
+  "rust/crates/conformance/agent-host",
+  "rust/crates/conformance/cloudflare",
+  "rust/crates/contract-derive",
+  "rust/crates/differential",
+  "rust/crates/filesystem",
+  "rust/crates/filesystem-base",
+  "rust/crates/filesystem-napi",
+  "rust/crates/filesystem-wasm",
+  "rust/crates/filesystem-wire",
+  "rust/crates/filesystem/fuzz",
+  "rust/crates/filesystem/proofs/control-layout",
+  "rust/crates/filesystem/proofs/lease-path",
+  "rust/crates/grpc-observability",
+  "rust/crates/harness",
+  "rust/crates/harness-client",
+  "rust/crates/harness-conformance",
+  "rust/crates/harness-core",
+  "rust/crates/harness-fuzz",
+  "rust/crates/harness-mock-model",
+  "rust/crates/harness-providers",
+  "rust/crates/harness-providers/fuzz",
+  "rust/crates/harness-search",
+  "rust/crates/harness-tui",
+  "rust/crates/harness-tui/fuzz",
+  "rust/crates/harness/fuzz-context",
+  "rust/crates/harness/fuzz-native-journal",
+  "rust/crates/harness/fuzz-settings",
+  "rust/crates/harness/src/bin/graphcoder",
+  "rust/crates/harness/tests/ui/native-environment",
+  "rust/crates/host-platform",
+  "rust/crates/inference",
+  "rust/crates/inference-wasm",
+  "rust/crates/machines",
+  "rust/crates/machines-wasm",
+  "rust/crates/manifest",
+  "rust/crates/manifest/fuzz",
+  "rust/crates/model-render",
+  "rust/crates/markdown",
+  "rust/crates/markdown-work",
+  "rust/crates/napi-progress-test",
+  "rust/crates/native-runtime",
+  "rust/crates/objects",
+  "rust/crates/objects-wasm",
+  "rust/crates/observability",
+  "rust/crates/proto-codegen",
+  "rust/crates/protobuf-json",
+  "rust/crates/sdk-docs",
+  "rust/crates/sdk-docs/file-identity",
+  "rust/crates/sdk-docs/fuzz",
+  "rust/crates/sdk-generation",
+  "rust/crates/sdk-generation/fuzz",
+  "rust/crates/stream",
+  "rust/crates/stream-napi",
+  "rust/crates/stream/contract-fuzz",
+  "rust/crates/stream/fuzz",
+  "rust/crates/stream/models",
+  "rust/crates/stream/publication-models",
+  "rust/crates/test-support",
+  "rust/crates/workers",
+  "rust/fuzz",
+  "rust/fuzz/native-callback-path",
+  "rust/fuzz/task-volume",
+  "rust/proofs/model-epochs",
+  "rust/proofs/spawn-slots",
+  "rust/verification/sdk-fixtures",
+  "typescript/packages/stream/fuzz",
+  "typescript/packages/stream/models",
+]
+# Keep ordinary root commands on the original SDK package set. Fuzz, proof,
+# generator and compiler-negative packages run only when explicitly selected.
+default-members = [
   "examples/sdk-services",
   "rust/crates/actors",
   "rust/crates/actors-napi",
@@ -56,7 +141,7 @@ members = [
   "plugin",
   "plugin/identity",
 ]
-exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2"]
+exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/napi-3.15.0"]
 resolver = "2"
 
 [workspace.package]
@@ -86,7 +171,7 @@ icu_casemap = { version = "=2.3.0", default-features = false, features = ["compi
 writeable = "=0.6.4"
 jsonschema = { version = "0.60.1", default-features = false }
 js-sys = "0.3.94"
-napi = { version = "3.14.2", features = ["async", "napi8", "serde-json"] }
+napi = { version = "=3.15.0", features = ["async", "napi8", "serde-json"] }
 napi-derive = "3.6.12"
 # The macOS FSEvents backend links CoreServices, which would load it into every
 # process at start; acyclic-fs loads FSEvents itself when a watch starts.
@@ -219,6 +304,9 @@ opt-level = 3
 
 [profile.dev.package.blake3]
 opt-level = 3
+
+[patch.crates-io]
+napi = { path = "rust/vendor/napi-3.15.0" }
 
 # Capability admission verifies Ed25519 chains throughout retained history. Keep
 # the scalar arithmetic optimized on native targets without x86 SIMD backends.

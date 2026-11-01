@@ -778,3 +778,5 @@ mod archives;
 mod dependency;
 
 mod archive_codec;
+
+mod archive_decoder_oracle;

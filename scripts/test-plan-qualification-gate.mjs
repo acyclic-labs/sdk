@@ -26,5 +26,5 @@ test("the workspace gate uses sixteen CPUs while short independent workspaces us
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(gate.runner));
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const body = script.match(/^  gate\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n)/m)?.[1] ?? assert.fail("missing gate");
-  assert.match(body, /^    nextest --workspace --all-features --locked$/m);
+  assert.match(body, /^    sdk_workspace nextest --all-features --locked$/m);
 });

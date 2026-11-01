@@ -1,6 +1,5 @@
 name: SDK Static
-# CI tests nothing: compiles and tests run on the build box before merge. This
-# required check only rejects a lockfile that disagrees with the manifests.
+# Reject a lockfile that disagrees with the manifests.
 on:
   pull_request: null
   push:

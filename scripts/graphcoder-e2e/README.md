@@ -6,10 +6,10 @@ ConPTY preparation has no local PowerShell compiler entry point: cross-build
 `scripts/graphcoder-conpty.cs` and supply its executable as
 `E2E_CONPTY_HOST` before running a Windows PTY case.
 The Windows process host is the shared native-runtime `acyclic-process-host`
-binary. `scripts/windows-test.sh` cross-builds and exports it with the selected
-test artifacts; `scripts/windows-runner.py::admitted_host` verifies the complete
-source and successful Cargo receipt before its absolute executable is supplied
-as `E2E_PROCESS_HOST`. Changed host source requires a matching producer export.
+binary. Build it with `cargo build --locked -p acyclic-native-runtime --bin acyclic-process-host`
+for the target platform, then supply its absolute executable as `E2E_PROCESS_HOST`.
+Use the same source revision as GraphCoder and retain the successful Cargo output
+and executable digest. Changed host source requires a matching build.
 External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.
@@ -32,14 +32,14 @@ headless selections load only their own runtime dependencies.
 
 ```sh
 node scripts/graphcoder-e2e/helpers.mjs
-# Linux/bb2: real FUSE mount custody, including the process-only negative control.
+# Linux/Linux: real FUSE mount custody, including the process-only negative control.
 python3 scripts/graphcoder-e2e/mount.test.py
 node scripts/graphcoder-e2e/coverage.mjs
 node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mock-model
 ```
 
 Use the serial matrix on every OS to avoid concurrent native mounts and PTYs
-competing inside a shared deadline. On Windows run it under the fleet's
+competing inside a shared deadline. On Windows run it under the shared
 `Global\AcyclicWindowsTestRun` mutex. Each case suite retains
 the ten-second limit, including its filesystem variants. The aggregate receipt
 requires every case and variant exactly once; total matrix time is recorded
@@ -59,7 +59,7 @@ and the nine-second active scope stay unchanged. A failed partition is retained;
 collection does not execute or retry any case.
 
 Set `E2E_SCRATCH_ROOT` to an absolute owned directory before any Windows
-invocation; this lane uses `D:/lane-scratch/e2e-gate/`. Windows has no system-temp
+invocation. Windows has no system-temp
 fallback. The old independent `E2E_WORKSPACE_ROOT` and `E2E_NTFS_ROOT` selectors
 are rejected. Fixture profiles, temporary files, helper workers, Git and the
 mock all use the same scratch ownership boundary. `E2E_OUTPUT` can separately
