@@ -23,9 +23,10 @@ impl Ticket {
         owner: &P,
         append: GuardedAppend,
         seal: Option<SharedSeal>,
+        publication: SubmittedPublication,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<AppendOutcome, crate::FsError> {
+    ) -> Result<(AppendOutcome, SubmittedPublication), crate::FsError> {
         let cancelled = accounting.cancellation_wait(cancellation)?;
         tokio::pin!(cancelled);
         {
@@ -36,6 +37,7 @@ impl Ticket {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             prepared.append = Some(append);
             prepared.seal = seal;
+            prepared.publication = Some(publication);
         }
         let leader = self.index.is_some_and(|index| {
             self.group
@@ -85,8 +87,12 @@ impl Ticket {
                     .outcome
                     .take()
                     .ok_or(crate::FsError::InvalidAuthorityHistory)?;
+                let publication = prepared
+                    .publication
+                    .take()
+                    .ok_or(crate::FsError::InvalidAuthorityHistory)?;
                 self.settled = true;
-                return Ok(outcome);
+                return Ok((outcome, publication));
             }
             wait_for_notification(notified.as_mut(), cancelled.as_mut()).await?;
         }
@@ -358,11 +364,24 @@ fn distribute(group: &Group, outcome: crate::AppendGroupOutcome) -> Result<(), c
                     })?;
             }
             for (proposal, outcome) in state.selected().zip(receipts.drain(..)) {
-                proposal
+                let mut prepared = proposal
                     .prepared
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .outcome = Some(outcome);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Only this newly committed member authenticates the prepared
+                // generation. An idempotent receipt can name a different root;
+                // the existing engine reauthenticates that outcome on delivery.
+                if matches!(outcome, AppendOutcome::Committed(_))
+                    && let Some(publication) = prepared.publication.as_mut()
+                {
+                    publication.published = publication
+                        .authentication
+                        .value
+                        .pending
+                        .take()
+                        .and_then(|pending| pending.publish(&outcome));
+                }
+                prepared.outcome = Some(outcome);
             }
             drop(receipts);
             drop(allocation);
