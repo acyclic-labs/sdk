@@ -354,17 +354,38 @@ impl Conversation {
 
     /// The binding of `request`, which `agent` waits on.
     async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
-        match self.pending_approval(request).await? {
+        self.approval_binding(request)
+            .await?
+            .ok_or_else(|| Error::Conflict("no such approval is pending".into()))
+    }
+
+    /// The exact action binding approval `request` shows its approver, or
+    /// `None` once it is no longer pending. A client answers with it through
+    /// [`Self::decide_with_binding`].
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn approval_binding(&self, request: &IntentId) -> Result<Option<ApprovalBinding>> {
+        Ok(match self.pending_approval(request).await? {
             Some(Interaction::Approval {
                 operation_id,
                 action_digest,
                 ..
-            }) => Ok(ApprovalBinding {
+            }) => Some(ApprovalBinding {
                 operation_id,
                 action_digest,
             }),
-            _ => Err(Error::Conflict("no such approval is pending".into())),
-        }
+            _ => None,
+        })
+    }
+
+    /// The agent's current phase, from its latest status: a reconnecting
+    /// client's pending approval, independent of any saved event cursor.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn phase(&self) -> Result<Phase> {
+        Ok(self.settlement().await?.2)
     }
 
     /// Reads all of `target` on `agent`, one bounded range at a time.

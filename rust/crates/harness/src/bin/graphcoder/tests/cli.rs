@@ -297,6 +297,16 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         vec!["--output-format", "jsonl", "sessions"],
         vec!["--output-schema", "missing.json", "exec", "hello"],
         vec!["--output-format", "jsonl", "--output", "-", "exec", "hello"],
+        vec![
+            "--output-format",
+            "jsonl",
+            "--output",
+            "shared.json",
+            "--event-cursor",
+            "shared.json",
+            "exec",
+            "hello",
+        ],
     ] {
         let refused = graphcoder(&fixture, &model.catalog, args, "").await;
         assert!(!refused.status.success());

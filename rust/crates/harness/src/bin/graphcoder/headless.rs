@@ -4,7 +4,7 @@
 //! conversation entry commits with; the frontend keeps only its outstanding
 //! prompts.
 use acyclic_harness::OperationId;
-use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply};
+use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply, TurnOutcome};
 use acyclic_harness::local::{
     Event,
     agent_conversation::{Conversation, Sent, ended},
@@ -628,7 +628,18 @@ async fn settled(
     Ok(match reply {
         Reply::Answered { entry, origin, .. } => {
             let inbox = origin.as_ref().map_or(entry.inbox, |origin| origin.inbox);
-            Some(answer(conversation, id, &entry, inbox).await?)
+            // Only a completed turn is an answer. A cancelled turn's partial
+            // output is never a result, so it cannot replace a final artifact.
+            match entry.outcome {
+                TurnOutcome::Completed => Some(answer(conversation, id, &entry, inbox).await?),
+                TurnOutcome::Cancelled => {
+                    Some(json!({"id": id, "inbox": inbox, "error": "turn cancelled"}))
+                }
+                TurnOutcome::RestoreConflict => {
+                    let (_, text) = conversation.turn(&entry).await?;
+                    Some(json!({"id": id, "inbox": inbox, "error": text}))
+                }
+            }
         }
         Reply::Dropped => {
             Some(json!({"id": id, "inbox": inbox, "error": conversation.dropped().await?}))
@@ -832,9 +843,9 @@ impl Outstanding {
 /// `{"approve": request, "binding": shown, "approved": bool}` or
 /// `{"cancel": true}`. A prompt is
 /// message `operation:id`, so rerunning the operation replays it. Each settled
-/// prompt prints `{"id", "inbox", "text"}` (or `"error"`), each approval
-/// request `{"approval": request}`. An ended agent is terminal: it admits
-/// no further input, so every prompt it leaves unanswered, outstanding when
+/// prompt prints `{"id", "inbox", "text"}` (or `"error"`, including for a
+/// cancelled turn), each approval request `{"approval": request, "binding"}`.
+/// An ended agent is terminal: it admits no further input, so every prompt it leaves unanswered, outstanding when
 /// it ends or sent later, is answered with its reason; an exact replay of a
 /// prompt it answered still prints its saved answer. A prompt whose send
 /// outcome is unknown is resent exactly at the next event. Exits,
@@ -873,6 +884,17 @@ pub(super) async fn jsonl(
     let mut announced = None;
     let mut approval = None;
     let mut drain = None;
+    // A saved cursor may already be past the status that announced the
+    // pending approval. Text input answers it from the current phase, read
+    // once at reconnect; replay of that same status does not prompt twice.
+    if projection.is_some()
+        && input_format == super::args::InputFormat::Text
+        && let Phase::WaitingApproval { id } = conversation.phase().await?
+    {
+        eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
+        approval = Some(id.clone());
+        announced = Some(id);
+    }
     if let Some(prompt) = initial_prompt {
         outstanding
             .send(
@@ -1153,7 +1175,17 @@ pub(super) async fn jsonl(
                 if let Phase::WaitingApproval { id } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
-                    emit(output, &json!({"approval": id.as_str()}), event_operation).await?;
+                    // The decision input requires the exact shown binding;
+                    // one no longer pending was already decided elsewhere.
+                    let binding = match event_operation {
+                        Some(_) => None,
+                        None => conversation.approval_binding(id).await?,
+                    };
+                    let line = match &binding {
+                        Some(binding) => json!({"approval": id.as_str(), "binding": binding}),
+                        None => json!({"approval": id.as_str()}),
+                    };
+                    emit(output, &line, event_operation).await?;
                     if input_format == super::args::InputFormat::Text {
                         eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
                         approval = Some(id.clone());

@@ -165,7 +165,8 @@ pub fn main_with(
                 .transpose()?;
             let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
             if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
-                let recovery = headless::Recovery::capture(generated.then_some(operation.as_str()))?;
+                let recovery =
+                    headless::Recovery::capture(generated.then_some(operation.as_str()))?;
                 let step = if error.is::<headless::PreparationFailure>() {
                     "prepare_output"
                 } else {
@@ -178,8 +179,14 @@ pub fn main_with(
                     )
                 })?;
                 if output.available() {
-                    headless::terminal_error(output, operation, &error.to_string(), step, &recovery)
-                        .await?;
+                    headless::terminal_error(
+                        output,
+                        operation,
+                        &error.to_string(),
+                        step,
+                        &recovery,
+                    )
+                    .await?;
                 }
             }
             result

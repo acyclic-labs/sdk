@@ -160,6 +160,22 @@ impl Args {
                 "output projection: usage export also selects stdout; recovery: graphcoder --usage-jsonl usage.jsonl --output-format jsonl exec 'TASK'",
             );
         }
+        // Each writer replaces its own file whole; one shared destination
+        // would let a later writer erase an earlier one's committed content.
+        let files = [&self.output, &self.event_cursor, &self.usage_jsonl];
+        let files = files
+            .iter()
+            .filter_map(|path| path.as_deref())
+            .filter(|path| path.as_os_str() != "-");
+        if files
+            .clone()
+            .enumerate()
+            .any(|(index, path)| files.clone().skip(index + 1).any(|other| other == path))
+        {
+            return Err(
+                "output files: --output, --event-cursor and --usage-jsonl must name distinct files; recovery: graphcoder --output-format jsonl --output final.json --event-cursor cursor.json exec 'TASK'",
+            );
+        }
         Ok(())
     }
 }
