@@ -163,7 +163,11 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             data: b"child result".to_vec(),
             reads: AtomicUsize::new(0),
         });
-        let bound = provider.bind_content(reader.clone(), 4096)?;
+        let mut bound = provider;
+        bound.files = crate::files::Files {
+            reader: Some(reader.clone()),
+            maximum_bytes: 4096.min(bound.files.maximum_bytes),
+        };
         let mut files = crate::files::resolve(&bound.files, prepared.request(), None).await?;
         let actual = projection::body_with_files(&bound, prepared.request(), &mut files)?;
         assert!(
@@ -214,10 +218,6 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                     )),
                 },
                 ModelMessage {
-                    role: ModelRole::User,
-                    content: ModelContent::Part(notice.clone()),
-                },
-                ModelMessage {
                     role: ModelRole::Tool,
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "call".into(),
@@ -226,6 +226,10 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                             value: json!("done"),
                         },
                     }),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(notice.clone()),
                 },
                 ModelMessage {
                     role: ModelRole::User,

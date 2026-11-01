@@ -22,6 +22,23 @@ pub(super) fn push_with_successor<'a>(
     mut next: Message<'a>,
     allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
+    if adapter == Adapter::Gemini
+        && let Message::Notice(notice) = next
+    {
+        let part = Item::GeminiNotice(notice.into_wire());
+        if let Some(Message::Gemini {
+            role: "user",
+            parts,
+        }) = messages.last_mut()
+        {
+            parts.push(part);
+            return Ok(());
+        }
+        next = Message::Gemini {
+            role: "user",
+            parts: vec![part],
+        };
+    }
     if adapter == Adapter::Responses
         && messages
             .last()
