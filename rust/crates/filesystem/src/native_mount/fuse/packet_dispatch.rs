@@ -224,7 +224,7 @@ impl FuseProjection {
         } else {
             response
         };
-        let mut output = PacketOutput::new(response, minimum_payload(request)?)?;
+        let mut output = PacketOutput::new(response, request.minimum_payload?)?;
         let mut retained_work = None;
         let result = self.core.request(|work| {
             retained_work = Some(work.clone());
@@ -664,30 +664,6 @@ impl FuseProjection {
             _ => Err(libc::ENOSYS.into()),
         }
     }
-}
-
-fn minimum_payload(request: &PacketRequest<'_>) -> Result<usize, i32> {
-    Ok(match request.opcode {
-        1 | 6 | 8 | 9 | 13 => 128,
-        3 | 4 => 104,
-        14 | 27 => 16,
-        35 => 144,
-        16 | 46 | 47 => 8,
-        17 => 80,
-        15 | 28 | 44 => {
-            let mut input = PacketInput::new(request.body);
-            input.take(16)?;
-            usize::try_from(input.u32()?).map_err(|_| libc::EOVERFLOW)?
-        }
-        22 | 23 => {
-            let mut input = PacketInput::new(request.body);
-            match input.u32()? {
-                0 => 8,
-                size => usize::try_from(size).map_err(|_| libc::EOVERFLOW)?,
-            }
-        }
-        _ => 0,
-    })
 }
 
 fn encode_xattr(output: &mut PacketOutput<'_>, value: &[u8], size: u32) -> Result<(), i32> {

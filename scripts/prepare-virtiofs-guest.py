@@ -35,19 +35,17 @@ def run(step, command, **kwargs):
 
 
 def fetch(url, limit):
-    for attempt in range(2):
-        try:
-            with urllib.request.urlopen(url, timeout=60) as response:
-                contents = response.read(limit + 1)
-            if len(contents) > limit:
-                raise ValueError("release response exceeds its admitted artifact size")
-            return contents
-        except (OSError, ValueError) as error:
-            if attempt:
-                raise RuntimeError(
-                    f"step=fetch public guest tool: {error}; "
-                    f"recovery: curl --fail --location --max-time 60 {shlex.quote(url)}"
-                ) from error
+    try:
+        with urllib.request.urlopen(url, timeout=None) as response:
+            contents = response.read(limit + 1)
+        if len(contents) > limit:
+            raise ValueError("release response exceeds its admitted artifact size")
+        return contents
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"step=fetch public guest tool: {error}; "
+            f"recovery: curl --fail --location {shlex.quote(url)}"
+        ) from error
 
 
 def digest(contents):

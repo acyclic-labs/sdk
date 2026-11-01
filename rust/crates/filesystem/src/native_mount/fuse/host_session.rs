@@ -3,7 +3,7 @@
 use super::host_io::{HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
 use super::packet::PacketRequest;
-use super::packet_buffers::{PacketBufferPool, maximum_write};
+use super::packet_buffers::{PacketBufferPool, PacketBuffers, maximum_write};
 use super::packet_response::PacketResponse;
 use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
@@ -59,7 +59,7 @@ impl HostSession {
         let _stop_on_failure = HandshakeStop(self);
         let mut buffers = self.buffers.take(0)?;
         while !self.protocol.ready() {
-            if !self.serve(&mut buffers.input, &mut buffers.output)? {
+            if !self.serve(&mut buffers)? {
                 self.work.admit(crate::WorkCounters::UNCHARGED)?;
                 return Err(libc::ENODEV.into());
             }
@@ -75,13 +75,14 @@ impl HostSession {
         )
     }
 
-    fn serve(&self, input: &mut [u8], output: &mut [u8]) -> Result<bool, NativeMountError> {
-        let length = match self.io.receive(input)? {
+    fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
+        let capacity = buffers.input.len();
+        let length = match self.io.receive(&mut buffers.input)? {
             Received::Closed => return Ok(false),
             Received::Wake => return Ok(true),
             Received::Packet(length) => length,
         };
-        let packet = input.get(..length).ok_or(libc::EPROTO)?;
+        let packet = buffers.input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
@@ -96,12 +97,17 @@ impl HostSession {
             Ok(())
         };
         if !owner_allowed(self.owner_uid, &request) {
+            let output = buffers
+                .output
+                .get_mut(..super::packet::OUTPUT_HEADER)
+                .ok_or(libc::ENOBUFS)?;
             return self
                 .protocol
                 .reject(&request, output, libc::EACCES, publish)
                 .map_err(super::packet_dispatch::PacketFailure::into_native_error)
                 .map(|()| true);
         }
+        let output = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
         match self.protocol.publish(&request, output, publish) {
             // The negative reply physically completed. Its actual typed cause
             // remains in the original core. Continue serving refusals while
@@ -121,7 +127,7 @@ impl super::packet_workers::PacketWorkers for HostSession {
 
     fn run_worker(&self, index: u32) -> Result<(), NativeMountError> {
         let mut buffers = self.buffers.take(index)?;
-        while self.serve(&mut buffers.input, &mut buffers.output)? {}
+        while self.serve(&mut buffers)? {}
         Ok(())
     }
 }
