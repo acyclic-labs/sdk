@@ -361,7 +361,7 @@ async fn complete_failures_obey_pinned_render_limits() -> Result<()> {
         ]));
         let tool = Arc::new(DiagnosticTool(text, count, AtomicUsize::new(0)));
         let limits = Limits {
-            render_bytes,
+            render_bytes: Some(render_bytes),
             ..Limits::default()
         };
         let executor = uncompacted_executor(

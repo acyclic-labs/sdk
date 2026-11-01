@@ -96,7 +96,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .0
             .capture_records_many_with_accounting(
                 exact_regions.value,
-                self.volume.config.limits.maximum_checkout_dependencies,
                 accounting,
                 cancellation,
                 None,
@@ -196,6 +195,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
+            let (_, region) = regions.get(index).ok_or(WorkError::Overflow)?;
             let file_id = match region {
                 DependencyRegion::ContentRange { file_id, .. }
                 | DependencyRegion::FileLength(file_id)
@@ -242,13 +242,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             )
         {
             return Err(OperationFailure::before_work(FsError::MutationNotAllowed));
-        }
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if operations.capacity() > maximum {
-            return Err(OperationFailure::before_work(
-                FsError::ExcessiveMutationCapacity,
-            ));
         }
         crate::heap_future::in_heap_measured(
             move |budget| async move {
@@ -318,11 +311,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             allocation: mut operations_allocation,
             ..
         } = input;
-        let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
-            .unwrap_or(usize::MAX);
-        if operations.capacity() > maximum {
-            return Err(FsError::ExcessiveMutationCapacity);
-        }
         #[cfg(not(target_arch = "wasm32"))]
         if let KernelOwnedAllocation::NativeOriginal(guard) = &operations_allocation {
             let bytes = Self::mutation_input_owned_bytes(&operations, accounting)?;
@@ -340,10 +328,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let captured = self
             .capture_mutation_dependencies_with_accounting(&operations, accounting, cancellation)
             .await?;
-        let extension = self.dependencies.proof().prepare_mutations(
-            captured.value,
-            self.volume.config.limits.maximum_checkout_dependencies,
-        )?;
+        let extension = self
+            .dependencies
+            .proof()
+            .prepare_mutations(captured.value)?;
         let staged_names = extension.retained_name_bytes_with_step(|| {
             accounting.charge(WorkCounters {
                 items_examined: 1,
@@ -533,7 +521,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 .capture_many_with_accounting(
                     GenerationId::from_root(self.root.base),
                     input,
-                    self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,
                     cancellation,
                 )
@@ -638,12 +625,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if selected.value.is_empty() {
                 return selected.retire(accounting);
             }
-            let maximum = u32::try_from(selected.value.len()).unwrap_or(u32::MAX);
             let (records, allocation) = crate::kernel::lookup_file_records_async_with_accounting(
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 &selected.value,
-                maximum,
                 DecodeLimits::for_volume(self.volume.config),
                 accounting,
                 cancellation,
@@ -685,7 +670,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         self.dependencies.extend_observations(
             std::mem::take(&mut dependencies.value),
             &mut dependencies.allocation,
-            self.volume.config.limits.maximum_checkout_dependencies,
             accounting,
             cancellation,
         )

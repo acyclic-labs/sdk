@@ -212,7 +212,7 @@ fn a_replay_without_a_scripted_process_refuses_the_os() {
                 ProcessCapture {
                     command: &command,
                     schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-                    maximum: 1,
+                    maximum: Some(1),
                     input: None,
                 },
                 &mut || Ok(()),

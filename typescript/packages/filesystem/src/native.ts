@@ -262,8 +262,8 @@ function createNativeAdapter() {
         async captureBaseline(sourceRoot, maximumPaths, maximumExtentSpans) {
           return captureResult(await raw.captureBaseline(sourceRoot, maximumPaths, maximumExtentSpans));
         },
-        watch(sourceRoot, maximumQueuedChanges, recursive) {
-          return adaptWatcher(raw.watch(sourceRoot, maximumQueuedChanges, recursive));
+        watch(sourceRoot, recursive) {
+          return adaptWatcher(raw.watch(sourceRoot, recursive));
         },
         cancel() { raw.cancel(); },
       };

@@ -26,9 +26,6 @@ from .backends.base import Backend
 from .log import DecisionLog
 from .swarm import Swarm, FunctionAgent
 
-MAX_INPUT_CHARS = 1_200
-
-
 @dataclass
 class GateVerdict:
     decision: str            # allow | ask | deny
@@ -48,8 +45,6 @@ def render_tool_call(payload: dict, task: Optional[str] = None) -> str:
     if payload.get("command") and not inp:
         inp = {"command": payload["command"]}
     body = json.dumps(inp, ensure_ascii=False, indent=1)
-    if len(body) > MAX_INPUT_CHARS:
-        body = body[:MAX_INPUT_CHARS] + "\n... (truncated)"
     lines = []
     if task:
         lines += ["Task the agent is working on:", task.strip(), ""]
@@ -67,7 +62,7 @@ GATE_QUESTIONS = [
 
 class Gate:
     def __init__(self, backend: Backend, log: Optional[DecisionLog] = None, *, task: Optional[str] = None,
-                 deny_at: float = 1.01, ask_at: float = 0.6, timeout_s: float = 8.0, agent: str = "gate"):
+                 deny_at: float = 1.01, ask_at: float = 0.6, timeout_s: Optional[float] = None, agent: str = "gate"):
         """deny_at / ask_at: P(destructive) thresholds. Defaults never deny; ask above 0.6."""
         self.backend = backend
         self.log = log if log is not None else DecisionLog()

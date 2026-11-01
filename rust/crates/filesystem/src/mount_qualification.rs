@@ -2,16 +2,12 @@
 //!
 //! A receipt is a report, not an authentication credential. Verification binds
 //! its complete passing coverage to the caller's intended release artifact.
-use io::Read as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-
-// Preserve the native verifier's existing input bound at the shared ingress.
-const MAXIMUM_RECEIPT_BYTES: usize = 65_536;
 
 /// Release identity supplied by the consumer, never inferred from the verifier.
 #[derive(Clone, Copy)]
@@ -95,9 +91,6 @@ pub enum ReceiptError {
     /// The receipt or executable could not be read.
     #[error("read native mount receipt or release executable: {0}")]
     Read(#[from] io::Error),
-    /// The receipt exceeds the existing native input bound.
-    #[error("native mount receipt exceeds the existing 65536-byte input bound")]
-    TooLarge,
     /// Required fields, field types or JSON syntax are invalid.
     #[error("parse native mount receipt: {0}")]
     Parse(#[from] serde_json::Error),
@@ -112,21 +105,14 @@ pub enum ReceiptError {
 ///
 /// # Errors
 ///
-/// Returns an error for unreadable inputs, oversized or malformed reports,
+/// Returns an error for unreadable inputs, malformed reports,
 /// incomplete or failed coverage, and release identity or digest mismatches.
 pub fn verify(
     receipt: impl io::Read,
     executable: impl io::Read,
     target: ReleaseTarget<'_>,
 ) -> Result<Value, ReceiptError> {
-    let mut bytes = Vec::new();
-    receipt
-        .take((MAXIMUM_RECEIPT_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAXIMUM_RECEIPT_BYTES {
-        return Err(ReceiptError::TooLarge);
-    }
-    let report: Receipt = serde_json::from_slice(&bytes)?;
+    let report: Receipt = serde_json::from_reader(receipt)?;
     let mut hash = blake3::Hasher::new();
     hash.update_reader(executable)?;
     if !valid(&report, &hash.finalize().to_hex(), target) {

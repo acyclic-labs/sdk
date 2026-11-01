@@ -13,8 +13,8 @@ pub fn check(input: &[u8]) {
     expected.sort_all_objects();
     let raw = serde_json::from_slice::<Box<serde_json::value::RawValue>>(input).unwrap();
     let bounds = JsonBounds {
-        maximum_bytes: 131_072,
-        maximum_items: 1_048_576,
+        maximum_bytes: Some(131_072),
+        maximum_items: Some(1_048_576),
         maximum_depth: 256,
     };
     let compact = json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();

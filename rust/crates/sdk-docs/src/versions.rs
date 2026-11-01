@@ -113,7 +113,8 @@ pub(super) fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Re
     Ok(())
 }
 
-/// Encode a documentation version as an injective, portable path segment.
+/// Projects a complete documentation version onto one portable storage key.
+/// The immutable document and index retain and verify the original version.
 pub fn safe_version(version: &str) -> Result<String, Error> {
     if version.is_empty() {
         return Err(Error::Invalid(format!(
@@ -121,35 +122,25 @@ pub fn safe_version(version: &str) -> Result<String, Error> {
         )));
     }
 
-    // Keep ordinary lowercase names readable. Unsafe names use a literal
-    // `~` plus lowercase UTF-8 hex so URL handling cannot decode them before
-    // the static server performs its filesystem lookup. Excluding `~` from
-    // the readable alphabet keeps this mapping injective.
-    let encoded = if version
-        .as_bytes()
-        .iter()
-        .all(|byte| is_portable_version_byte(*byte))
-        && !version.ends_with('.')
+    // Inline portable names and short hex encodings fit one physical native
+    // component. Longer logical names use the same SHA-256 identity as other
+    // immutable documentation objects; publication and reopen still verify
+    // the complete original version in both the document and its index.
+    if version.len() > 255 {
+        return Ok(format!("~h{}", sha256_hex(version.as_bytes())));
+    }
+    if version.as_bytes().iter().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(*byte, b'.' | b'-' | b'_')
+    }) && !version.ends_with('.')
         && !is_windows_reserved_segment(version)
     {
-        version.to_owned()
-    } else {
-        hex_version(version.as_bytes())
-    };
-    if encoded.len() > 255 {
-        return Err(Error::Invalid(format!(
-            "version path segment exceeds 255 bytes: {version:?}"
-        )));
+        return Ok(version.to_owned());
     }
-    Ok(encoded)
-}
-
-pub(super) fn is_portable_version_byte(byte: u8) -> bool {
-    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
-}
-
-pub(super) fn hex_version(bytes: &[u8]) -> String {
-    hex_digest("~", bytes)
+    if version.len() > (255 - 1) / 2 {
+        return Ok(format!("~h{}", sha256_hex(version.as_bytes())));
+    }
+    // `~h` is disjoint from both readable names and lowercase hexadecimal.
+    Ok(hex_digest("~", version.as_bytes()))
 }
 
 pub(super) fn is_windows_reserved_segment(segment: &str) -> bool {

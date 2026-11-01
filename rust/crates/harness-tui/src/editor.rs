@@ -330,9 +330,6 @@ impl Editor {
             }
         } else {
             self.kills.push(killed);
-            if self.kills.len() > 32 {
-                self.kills.remove(0);
-            }
         }
         self.replace(range, "", now_ms, 2, true, false);
         self.kill_active = true;

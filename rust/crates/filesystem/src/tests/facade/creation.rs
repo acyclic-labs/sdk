@@ -114,7 +114,6 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work() -> Te
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.cancelled".to_vec(),
-        128,
     )?;
     cancelled(
         volume

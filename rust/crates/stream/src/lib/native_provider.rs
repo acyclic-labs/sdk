@@ -139,10 +139,10 @@ pub trait NativeStreamProvider: StreamProvider {
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum_record_bytes: usize,
+        capacity: crate::PreparedRecordCapacity,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
-        let _ = (request, maximum_record_bytes);
+        let _ = (request, capacity);
         NativeProviderFuture::ready_observed(
             crate::native::span!("acyclic.stream.prepare_commit"),
             Ok(Err(StreamError::Unsupported)),

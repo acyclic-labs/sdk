@@ -29,7 +29,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
     ) -> Result<FileRef> {
-        validate_edit_bound(maximum_bytes)?;
+        validate_edit_bound(Some(maximum_bytes))?;
         source.validate(&mut None)?;
         if is_internal_path(source.path()) {
             return Err(Error::Unauthorized(
@@ -45,7 +45,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &replacement.old_text,
             &replacement.new_text,
             false,
-            maximum_bytes,
+            Some(maximum_bytes),
             &mut allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;

@@ -206,9 +206,8 @@ impl<'a> ProofMeter<'a> {
     pub(super) fn clone_key<F: crate::kernel::persistent_btree::Format>(
         &self,
         key: &F::Key,
-        maximum: u32,
     ) -> Result<(F::Key, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| F::try_clone_key(key, maximum, &mut |step| observe(step)))
+        self.decode_steps(|observe| F::try_clone_key(key, &mut |step| observe(step)))
     }
 }
 
@@ -625,22 +624,12 @@ impl<'a> ProofSet<'a> {
         })
     }
 
-    pub(super) fn insert(
-        &mut self,
-        object: ObjectId,
-        maximum: Option<u64>,
-    ) -> Result<bool, crate::FsError> {
+    pub(super) fn insert(&mut self, object: ObjectId) -> Result<bool, crate::FsError> {
         let mut next_count = None;
         self.meter.with_accounting(|accounting| {
             self.index
                 .get_or_try_insert_with(Self::key(object), accounting, |accounting| {
                     let count = self.count.checked_add(1).ok_or(WorkError::Overflow)?;
-                    let observed = usize_to_u64(count);
-                    if let Some(maximum) = maximum {
-                        if observed > maximum {
-                            return Err(ClosureError::TooManyObjects { observed, maximum }.into());
-                        }
-                    }
                     let copied = WorkCounters {
                         bytes_copied: usize_to_u64(size_of::<ObjectId>()),
                         ..WorkCounters::UNCHARGED
@@ -683,7 +672,7 @@ pub(super) fn set_insert(
     entries: &mut ProofSet<'_>,
     key: ObjectId,
 ) -> Result<bool, crate::FsError> {
-    entries.insert(key, None)
+    entries.insert(key)
 }
 
 #[cfg(test)]

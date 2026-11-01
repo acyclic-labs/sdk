@@ -308,7 +308,7 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum_record_bytes: usize,
+        capacity: acyclic_stream::PreparedRecordCapacity,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
         // A prepared commit's final record arrives only at `finish`, after
@@ -318,8 +318,7 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
         if self.attestor.is_some() {
             return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
         }
-        self.inner
-            .native_prepare_commit(request, maximum_record_bytes, meter)
+        self.inner.native_prepare_commit(request, capacity, meter)
     }
 }
 
@@ -589,7 +588,11 @@ mod tests {
         let prepared = acyclic_stream::NativeStreamProvider::native_prepare_commit(
             &attested,
             request,
-            64,
+            acyclic_stream::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
             work.runtime_meter(),
         )
         .await?;

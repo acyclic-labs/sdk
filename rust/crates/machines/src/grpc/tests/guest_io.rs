@@ -268,76 +268,80 @@ fn command_bounds_are_checked_before_dispatch() {
 
 #[tokio::test]
 async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
-    let (machine, io, shutdown, task) = fixture().await;
-    let source = format!(
-        "read -r line; printf '%s' \"$line\"; #{}",
-        "é😀".repeat(16_000)
-    );
-    let mut argv = vec![
-        "bash".into(),
-        "--noprofile".into(),
-        "--norc".into(),
-        "-c".into(),
-        source,
-        String::new(),
-    ];
-    argv.extend(std::iter::repeat_n("argument".into(), 65));
-    let stdin = [0, 255, 10].repeat(50_000);
-    let command = ExecCommand::new(argv.clone(), None)
-        .unwrap()
-        .with_stdin(stdin.clone())
-        .with_cwd("/workspace/sub directory".into())
-        .unwrap()
-        .with_expiry(4_102_444_800_000)
-        .with_output_limit(4);
-    let output = machine.exec(command).await.unwrap();
-    let sender = io.sender();
-    for value in [
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stdout as i32,
-            bytes: vec![0, 255],
-        }),
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stderr as i32,
-            bytes: vec![254, 10],
-        }),
-        wire::exec_output::Output::ExitCode(7),
-    ] {
-        sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+    for maximum in [None, Some(4)] {
+        let (machine, io, shutdown, task) = fixture().await;
+        let source = format!(
+            "read -r line; printf '%s' \"$line\"; #{}",
+            "é😀".repeat(16_000)
+        );
+        let mut argv = vec![
+            "bash".into(),
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            source,
+            String::new(),
+        ];
+        argv.extend(std::iter::repeat_n("argument".into(), 65));
+        let stdin = [0, 255, 10].repeat(50_000);
+        let mut command = ExecCommand::new(argv.clone(), None)
+            .unwrap()
+            .with_stdin(stdin.clone())
+            .with_cwd("/workspace/sub directory".into())
+            .unwrap()
+            .with_expiry(4_102_444_800_000);
+        if let Some(maximum) = maximum {
+            command = command.with_output_limit(maximum);
+        }
+        let output = machine.exec(command).await.unwrap();
+        let sender = io.sender();
+        for value in [
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![0, 255],
+            }),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stderr as i32,
+                bytes: vec![254, 10],
+            }),
+            wire::exec_output::Output::ExitCode(7),
+        ] {
+            sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+        }
+        drop(sender);
+        let captured = capture_exec(output, maximum).await.unwrap();
+        assert_eq!(captured.stdout, [0, 255]);
+        assert_eq!(captured.stderr, [254, 10]);
+        assert_eq!(captured.exit_code, Some(7));
+        assert!(captured.stop.is_none());
+        let request = io.commands.lock().unwrap().first().unwrap().clone();
+        assert_eq!(request.argv, argv);
+        assert_eq!(request.stdin, stdin);
+        assert_eq!(
+            request.start.cwd.as_deref(),
+            Some("/workspace/sub directory")
+        );
+        assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
+        assert_eq!(request.start.maximum_output_bytes, maximum);
+        assert_eq!(request.start.timeout_ms, None);
+        assert!(
+            request.relative_timeout,
+            "the original authority expiry lost its transport deadline"
+        );
+        let output = machine
+            .exec(ExecCommand::new(vec!["cat".into()], None).unwrap())
+            .await
+            .unwrap();
+        let request = io.commands.lock().unwrap().last().unwrap().clone();
+        assert_eq!(request.start.timeout_ms, None);
+        assert_eq!(request.start.expiry_unix_ms, None);
+        assert!(
+            !request.relative_timeout,
+            "an unbounded command without authority expiry gained a transport deadline"
+        );
+        drop(output);
+        stop(shutdown, task).await;
     }
-    drop(sender);
-    let captured = capture_exec(output, 4).await.unwrap();
-    assert_eq!(captured.stdout, [0, 255]);
-    assert_eq!(captured.stderr, [254, 10]);
-    assert_eq!(captured.exit_code, Some(7));
-    assert!(captured.stop.is_none());
-    let request = io.commands.lock().unwrap().first().unwrap().clone();
-    assert_eq!(request.argv, argv);
-    assert_eq!(request.stdin, stdin);
-    assert_eq!(
-        request.start.cwd.as_deref(),
-        Some("/workspace/sub directory")
-    );
-    assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
-    assert_eq!(request.start.maximum_output_bytes, Some(4));
-    assert_eq!(request.start.timeout_ms, None);
-    assert!(
-        request.relative_timeout,
-        "the original authority expiry lost its transport deadline"
-    );
-    let output = machine
-        .exec(ExecCommand::new(vec!["cat".into()], None).unwrap())
-        .await
-        .unwrap();
-    let request = io.commands.lock().unwrap().last().unwrap().clone();
-    assert_eq!(request.start.timeout_ms, None);
-    assert_eq!(request.start.expiry_unix_ms, None);
-    assert!(
-        !request.relative_timeout,
-        "an unbounded command without authority expiry gained a transport deadline"
-    );
-    drop(output);
-    stop(shutdown, task).await;
 }
 
 #[tokio::test]

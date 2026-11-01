@@ -89,8 +89,8 @@ pub(super) fn reply(
     // allocates no payload copies and the common session queue enforces credit.
     let result = stream::once(async move {
         let reply = reply.await?;
-        if reply.is_empty() || reply.len() > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES {
-            return Err(StreamError::LimitExceeded);
+        if reply.is_empty() {
+            return Err(StreamError::InvalidResponse);
         }
         Ok::<_, StreamError>(reply)
     })

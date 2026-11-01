@@ -79,7 +79,9 @@ async function main(): Promise<number> {
         log.note("route", { task: t.task, ...r });
         total += r.cost;
       }
-      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
+      const workerTimeout = str(flags.timeout);
+      const testTimeout = str(flags["test-timeout"]);
+      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: workerTimeout === undefined ? undefined : Number(workerTimeout) * 1000, testTimeoutMs: testTimeout === undefined ? undefined : Number(testTimeout) * 1000, onEvent: say });
       total += res.judgeCost + res.workerCost;
       if (saveStates) {
         const verdict = res.forks.map((f) => `fork ${f.fork.label} (${f.model}): pWin ${f.pWin.toFixed(2)} safe ${f.safe.toFixed(2)} complete ${f.complete.toFixed(2)} tests ${f.probeOk}`).join("\n");
@@ -104,9 +106,10 @@ async function main(): Promise<number> {
 
   arena doctor
   arena route "<task>"
-  arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
+  arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--test-timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
   arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>] [--save-states dir]
       --budget is checked between races (routing + workers + judge so far); a running race is never cut short
+      worker and test deadlines are unlimited unless --timeout or --test-timeout is supplied
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 
 Needs: opencode on PATH and OPENROUTER_API_KEY (env or ./.env). acyclic is optional: with it forks are O(1) mounts and promote is a three-way merge; without it, git worktrees and a patch.`);

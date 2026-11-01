@@ -12,7 +12,7 @@ struct ListFilesInput {
 pub(super) struct LocalListFilesTool<A: 'static, O: 'static> {
     pub(super) verifier: Arc<FilesystemContentVerifier<A, O>>,
     pub(super) volume: VolumeRef,
-    pub(super) maximum_bytes: u64,
+    pub(super) maximum_bytes: Option<u64>,
     pub(super) observed: tokio::sync::Mutex<BTreeMap<OperationId, ListFilesObservation>>,
 }
 
@@ -124,10 +124,10 @@ impl crate::filesystem::UploadRecord for ListFilesInput {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListFilesTool<A, O> {
     fn native_result_copy(
         result: &ToolResult,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
-        let (value, custody) = crate::tool::clone_value(&result.value, Some(maximum_bytes), work)?;
+        let (value, custody) = crate::tool::clone_value(&result.value, maximum_bytes, work)?;
         Ok((ToolResult { value }, custody))
     }
 
@@ -142,7 +142,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
@@ -170,7 +170,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         let maximum_bytes = self
             .maximum_bytes
-            .min(context.effective_scope().limits().render_bytes);
+            .into_iter()
+            .chain(context.effective_scope().limits().render_bytes)
+            .min();
         let _input_custody;
         let (input, custody): (ListFilesInput, _) =
             crate::tool::decode(&invocation.arguments, Some(work))?;
@@ -237,13 +239,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
         };
         let limits = context.effective_scope().limits();
-        let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
+        let maximum_bytes = self
+            .maximum_bytes
+            .into_iter()
+            .chain(limits.render_bytes)
+            .min();
         let mut observed = self.observed.lock().await;
         if let Some(original) = observed.get(&invocation.operation_id) {
             return if original.admission_digest == digest {
@@ -338,7 +344,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                     .arguments
                     .get(key)
                     .and_then(Value::as_str)
-                    .is_some_and(|path| path.len() > context.effective_scope().limits().path_bytes)
+                    .is_some_and(|path| {
+                        context
+                            .effective_scope()
+                            .limits()
+                            .path_bytes
+                            .is_some_and(|maximum| path.len() > maximum.get())
+                    })
                 {
                     return Err(Error::Unauthorized(
                         "list_files path exceeds its effective scope".into(),
@@ -358,7 +370,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         let after = input
             .after
             .map(|name| {
-                LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
+                LogicalName::new(NameEncoding::Utf8, name.into_bytes())
                     .map_err(|error| Error::Invalid(error.to_string()))
             })
             .transpose()?;
@@ -379,7 +391,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         let wire = list_files_page_wire(&generation, &page)?;
         let maximum_bytes = context.map_or(self.maximum_bytes, |context| {
             self.maximum_bytes
-                .min(context.effective_scope().limits().render_bytes)
+                .into_iter()
+                .chain(context.effective_scope().limits().render_bytes)
+                .min()
         });
         let (value, _) = crate::tool::value(&wire, maximum_bytes, None)?;
         Ok(ToolResult { value })
@@ -447,7 +461,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
                         .arguments
                         .get(key)
                         .and_then(Value::as_str)
-                        .is_some_and(|path| path.len() > maximum_path_bytes)
+                        .is_some_and(|path| {
+                            maximum_path_bytes.is_some_and(|maximum| path.len() > maximum.get())
+                        })
                     {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
@@ -494,7 +510,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     self.recheck(&original.result, &invocation, _context.as_ref())
@@ -527,7 +543,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => self
                     .recheck(&original.result, &invocation, _context.as_ref())
@@ -624,7 +640,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
                     kind: "json",
                     value: &result.value,
                 },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
                 Some(work),
             );
         }
