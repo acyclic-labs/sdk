@@ -5,6 +5,7 @@ use super::{Alarm, Error, State, Subscription};
 use crate::guest::{Checkpoint, CodecIdentity};
 use acyclic_stream::StreamPath;
 use prost::Message as _;
+use prost::encoding::{btree_map, bytes as wire_bytes, string, uint64};
 use std::collections::BTreeMap;
 
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
@@ -86,16 +87,39 @@ impl State {
             alarm_deadline_unix_ms: self.alarm.deadline_unix_ms,
             alarm_delivered_generation: self.alarm.delivered_generation,
             paused: self.paused,
-            metadata: self
-                .metadata
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-            journal_tail: self.journal_tail,
+            // Encode the original map below: copying its keys and tree buys
+            // neither a distinct snapshot nor a different durable record.
+            metadata: BTreeMap::new(),
+            journal_tail: 0,
         };
-        let mut record = Vec::with_capacity(STATE_FORMAT_V1.len() + payload.encoded_len());
+        let metadata_len = btree_map::encoded_len(
+            string::encoded_len,
+            wire_bytes::encoded_len,
+            8,
+            &self.metadata,
+        );
+        let journal_len = if self.journal_tail == 0 {
+            0
+        } else {
+            uint64::encoded_len(9, &self.journal_tail)
+        };
+        let mut record = Vec::with_capacity(
+            STATE_FORMAT_V1.len() + payload.encoded_len() + metadata_len + journal_len,
+        );
         record.extend_from_slice(STATE_FORMAT_V1);
         payload.encode_raw(&mut record);
+        btree_map::encode(
+            string::encode,
+            string::encoded_len,
+            wire_bytes::encode,
+            wire_bytes::encoded_len,
+            8,
+            &self.metadata,
+            &mut record,
+        );
+        if self.journal_tail != 0 {
+            uint64::encode(9, &self.journal_tail, &mut record);
+        }
         record
     }
 
@@ -185,6 +209,10 @@ mod tests {
             paused: true,
         };
         let record = state.encode();
+        let original = Record::decode(&record[STATE_FORMAT_V1.len()..]).expect("v1 payload");
+        // The borrowed map uses the original v1 encoder, including default
+        // key/value elision and its position before the journal-tail field.
+        assert_eq!(original.encode_to_vec(), record[STATE_FORMAT_V1.len()..]);
         assert_eq!(State::decode(&record).expect("decodes"), state);
         // Neither an old writer ignoring new fields nor an unversioned input
         // can silently replace this actor's committed metadata and journal cut.
@@ -210,5 +238,15 @@ mod tests {
         );
         // Raw: the record is the artifact bytes plus framing, not ~3.8x them.
         assert!(record.len() < bytes.len() + 200);
+        let mut defaults = state;
+        defaults.journal_tail = 0;
+        defaults.metadata.insert(String::new(), bytes::Bytes::new());
+        let record = defaults.encode();
+        let original = Record::decode(&record[STATE_FORMAT_V1.len()..]).expect("default fields");
+        assert_eq!(original.encode_to_vec(), record[STATE_FORMAT_V1.len()..]);
+        assert_eq!(
+            State::decode(&record).expect("default fields decode"),
+            defaults
+        );
     }
 }

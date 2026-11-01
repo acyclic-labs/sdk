@@ -473,7 +473,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FilesystemCommitOutcome, FsError> {
-        let mut accounting = work.accounting(cancellation);
+        let accounting = work.accounting(cancellation);
         use crate::async_storage::AuthorityComposition as _;
         let Some(composition) = self.inner.authority.composition() else {
             return work.finish(
@@ -486,13 +486,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
                 &accounting,
             );
         };
-        let mut authority = authority_work(&accounting, cancellation).ok();
-        let result = composition
-            .settle(commit, outcome, authority.as_mut())
-            .await;
-        if let Some(authority) = authority {
-            drop(record_authority_work(&mut accounting, &authority));
-        }
+        let result = composition.settle(commit, outcome);
         work.finish(result.map_err(FsError::from), &accounting)
     }
 }

@@ -33,13 +33,12 @@ pub trait AuthorityComposition: ProviderPlatform {
     ) -> impl Future<Output = Result<FilesystemCommitOutcome, crate::AuthorityStoreError>> + ProviderTask;
 
     /// Confirm the complete original request before releasing publication holds.
-    /// Missing refresh work skips only cache refresh, never receipt validation.
+    /// Completion needs no fresh admission and never waits for a cache holder.
     fn settle(
         &self,
         commit: FilesystemCommit,
         outcome: acyclic_stream::CommitOutcome,
-        work: Option<&mut AuthorityWork<'_>>,
-    ) -> impl Future<Output = Result<FilesystemCommitOutcome, crate::AuthorityStoreError>> + ProviderTask;
+    ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError>;
 }
 
 // The default capability is uninhabited: a backend must return None, never an
@@ -71,11 +70,10 @@ impl AuthorityComposition for std::convert::Infallible {
         match *self {}
     }
 
-    async fn settle(
+    fn settle(
         &self,
         _commit: FilesystemCommit,
         _outcome: acyclic_stream::CommitOutcome,
-        _work: Option<&mut AuthorityWork<'_>>,
     ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError> {
         match *self {}
     }

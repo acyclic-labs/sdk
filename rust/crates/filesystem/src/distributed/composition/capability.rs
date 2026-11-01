@@ -31,17 +31,13 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> crate::async_storage::Au
         StreamAuthorityStore::submit(self, commit, work).await
     }
 
-    async fn settle(
+    fn settle(
         &self,
         commit: FilesystemCommit,
         outcome: CommitOutcome,
-        work: Option<&mut AuthorityWork<'_>>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        self.settle_recorded(commit, outcome, async |commit, commit_id| {
-            if let Some(work) = work {
-                self.refresh_committed(commit, commit_id, work).await;
-            }
+        self.settle_recorded(commit, outcome, |commit, commit_id| {
+            self.refresh_committed(commit, commit_id);
         })
-        .await
     }
 }
