@@ -34,6 +34,59 @@ pub(in crate::filesystem) struct InternalRead<A: 'static, O: 'static> {
     generation: acyclic_fs::Generation<A, O>,
 }
 
+/// The original file lookup before preparing a create-once body.
+pub(in crate::filesystem) enum InternalFileCreation<'a, A: 'static, O: 'static> {
+    Existing(OwnedBytes),
+    Vacant(VacantInternalFile<'a, A, O>),
+}
+
+/// An absent file's original owner, path and read bound. Publication still
+/// arbitrates concurrent creators through the original retry identity.
+pub(in crate::filesystem) struct VacantInternalFile<'a, A: 'static, O: 'static> {
+    files: &'a AgentInternalFiles<A, O>,
+    path: &'a str,
+    maximum_bytes: u64,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> VacantInternalFile<'_, A, O> {
+    /// Publishes once without repeating the preflight lookup. A conflicting
+    /// creator's original bytes are read only after publication refuses.
+    pub(in crate::filesystem) async fn create(self, bytes: &[u8]) -> Result<Option<OwnedBytes>> {
+        let Self {
+            files,
+            path,
+            maximum_bytes,
+        } = self;
+        // One retry identity per path: a second, different body conflicts
+        // instead of replacing the first.
+        let key = IdempotencyKey(format!("internal-file:{path}"));
+        let written = files
+            .host
+            .put_internal_content(
+                &files.volume,
+                &files.grant,
+                &internal(path),
+                bytes,
+                "application/json",
+                path.rsplit('/').next().unwrap_or(path),
+                maximum_bytes,
+                &key,
+                InternalContentClass::Interaction,
+                None,
+            )
+            .await;
+        match written {
+            Ok(_) => Ok(None),
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => files
+                .read(path, maximum_bytes)
+                .await?
+                .map(Some)
+                .ok_or(error),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// Pages from one selected directory. The original page owns its allocation
 /// until consumption ends; its last entry also supplies the next cursor.
 pub(in crate::filesystem) struct InternalDirectory<'a, A: 'static, O: 'static> {
@@ -277,33 +330,26 @@ where
         bytes: &[u8],
         maximum_bytes: u64,
     ) -> Result<Option<OwnedBytes>> {
-        if let Some(existing) = self.read(path, maximum_bytes).await? {
-            return Ok(Some(existing));
+        match self.prepare_create(path, maximum_bytes).await? {
+            InternalFileCreation::Existing(existing) => Ok(Some(existing)),
+            InternalFileCreation::Vacant(file) => file.create(bytes).await,
         }
-        // One retry identity per path: a second, different body conflicts
-        // instead of replacing the first.
-        let key = IdempotencyKey(format!("internal-file:{path}"));
-        let written = self
-            .host
-            .put_internal_content(
-                &self.volume,
-                &self.grant,
-                &internal(path),
-                bytes,
-                "application/json",
-                path.rsplit('/').next().unwrap_or(path),
+    }
+
+    /// Looks up the original file before preparing its body. The vacant
+    /// result borrows this exact owner and path through create-once publication.
+    pub(in crate::filesystem) async fn prepare_create<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+    ) -> Result<InternalFileCreation<'a, A, O>> {
+        match self.read(path, maximum_bytes).await? {
+            Some(existing) => Ok(InternalFileCreation::Existing(existing)),
+            None => Ok(InternalFileCreation::Vacant(VacantInternalFile {
+                files: self,
+                path,
                 maximum_bytes,
-                &key,
-                InternalContentClass::Interaction,
-                None,
-            )
-            .await;
-        match written {
-            Ok(_) => Ok(None),
-            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
-                self.read(path, maximum_bytes).await?.map(Some).ok_or(error)
-            }
-            Err(error) => Err(error),
+            })),
         }
     }
 
