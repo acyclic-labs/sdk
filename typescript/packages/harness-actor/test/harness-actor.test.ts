@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { GUEST_ABI_VERSION, materializeActorState, openGuestResponse, type GuestResponseFrame } from "@acyclic-labs/actors";
-import { ActorStateStorage, initializeHosting } from "@acyclic-labs/harness/hosting";
+import { GUEST_ABI_VERSION, openGuestResponse, type GuestResponseFrame } from "@acyclic-labs/actors";
+import { initializeHosting } from "@acyclic-labs/harness/hosting";
 import initializeManifest, { validate, verifyArtifact } from "../../workers/generated/wasm/acyclic_manifest.js";
 import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH, OBJECTS_ENDPOINT } from "../src/bindings.js";
 import { actor } from "../src/harness-actor.js";
@@ -157,36 +157,4 @@ test("a session failure mid-read surfaces its original error code, in the body a
   expect((await frames.next()).value).toEqual({ data: Uint8Array.of(0, 0, 0, 0, 0) });
   await expect(frames.next()).rejects.toMatchObject({ code: "access_denied" });
   expect((await trailers).get("grpc-message")).toBe("access_denied");
-});
-
-test("host metadata, wake rows and journal frames commit as one actor state packet", async () => {
-  const retained: Uint8Array[] = [], commits: { writes: { key: string }[]; journalFrom: string; journal: Uint8Array[]; alarm: unknown }[] = [];
-  const binding = materializeActorState({
-    seed: { metadata: [], journalTail: "0" },
-    async commit(request) { commits.push(request); retained.push(...request.journal); },
-    async readJournal(from, limit) { return retained.slice(Number(from), Number(from) + limit); },
-    fence() {},
-  });
-  const state = new ActorStateStorage(binding);
-  const wakes = state.domain("wakes");
-  const journal = state.journal(changes => wakes.put("changed", JSON.stringify(changes)));
-  expect(await journal.configure(Uint8Array.of(1), 64, Uint8Array.of(2))).toEqual(Uint8Array.of(2));
-  const frame = new Uint8Array(18);
-  expect(await journal.append(0, () => [frame], [["inbox", false]])).toBe(1);
-  expect(commits).toHaveLength(2);
-  expect(commits[1]!.journalFrom).toBe("0");
-  expect(commits[1]!.journal).toEqual([frame]);
-  expect(commits[1]!.writes.map(write => write.key)).toEqual(["journal/bytes", "wakes/changed"]);
-  expect(wakes.get("changed")).toBe(JSON.stringify([["inbox", false]]));
-  const [header, ...frames] = await journal.read(0, 8);
-  expect(new DataView(header!.buffer).getBigUint64(0, true)).toBe(1n);
-  expect(new DataView(header!.buffer).getBigUint64(8, true)).toBe(18n);
-  expect(frames).toEqual([frame]);
-  // A stale index admits nothing and reports the current head.
-  expect(await journal.append(0, () => { throw new Error("admitted at a stale index"); }, [])).toBe(1);
-  await expect(journal.configure(Uint8Array.of(9), 64, Uint8Array.of(2))).rejects.toThrow("configuration differs");
-  // A reopened adapter keeps every domain's deadline: one domain's alarm cannot drop another's.
-  await wakes.alarm(100);
-  await new ActorStateStorage(binding).domain("actor").alarm(200);
-  expect(commits.at(-1)).toMatchObject({ alarm: { type: "set", deadline: "100" } });
 });

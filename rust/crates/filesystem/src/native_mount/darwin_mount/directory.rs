@@ -87,7 +87,8 @@ impl DirectoryRead {
         context: &DarwinMountContext,
         work: &Work,
     ) -> Result<(), NativeMountError> {
-        for _ in 0..MAXIMUM_LISTING_RESTARTS {
+        loop {
+            work.charge(scan_work(1))?;
             if self.epochs.is_none() || self.is_current(context, work)? {
                 return Ok(());
             }
@@ -100,7 +101,6 @@ impl DirectoryRead {
             self.epochs = context.cache_epochs(work)?;
             self.clear_page();
         }
-        Err(driver_errno(libc::ESTALE))
     }
 }
 
@@ -218,7 +218,6 @@ pub(super) fn ensure_directory_page(
         .source
         .authorize_with_meter(&[(crate::access::Action::List, &directory.path)], work)?;
     directory.keep_current(context, work)?;
-    let mut restarts = 0;
     loop {
         work.charge(scan_work(1))?;
         if directory
@@ -240,10 +239,6 @@ pub(super) fn ensure_directory_page(
         )?;
         directory.keep_current(context, work)?;
         if directory.epochs != read_in {
-            restarts += 1;
-            if restarts == MAXIMUM_LISTING_RESTARTS {
-                return Err(driver_errno(libc::ESTALE));
-            }
             continue;
         }
         work.charge(scan_work(page.entries.len() as u64))?;

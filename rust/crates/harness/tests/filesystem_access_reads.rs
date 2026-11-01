@@ -113,7 +113,6 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             &scope,
             &volume,
             VolumeOperation::Write,
-            4096,
             &mut None,
         )?;
         let file = if initialize {
@@ -362,7 +361,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
                 &directory,
                 fixture.file.path(),
                 Some(&generation),
-                4096,
+                Some(4096),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await;
@@ -378,7 +377,6 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     assert!(
@@ -492,7 +490,7 @@ async fn reference_metadata_needs_list_but_known_content_does_not() -> Result<()
                     &grant,
                     fixture.file.path(),
                     Some(&generation),
-                    4096,
+                    Some(4096),
                     acyclic_harness::conversation::ContentAccess::default()
                 )
                 .await,
@@ -552,7 +550,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
                 &grant,
                 "raw",
                 Some(&generation),
-                4096,
+                Some(4096),
                 acyclic_harness::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io),
@@ -571,7 +569,7 @@ async fn private_raw_file_reads_keep_bounds_and_meter_the_supplied_ledger()
                     &grant,
                     "raw",
                     Some(&generation),
-                    3,
+                    Some(3),
                     acyclic_harness::conversation::ContentAccess {
                         ceiling: None,
                         io: Some(&io)
@@ -668,7 +666,7 @@ proptest! {
                 &fixture.issuer.verifier(&mut None)?, &scope, &fixture.volume, "secrets", &mut None,
             )?;
             let allowed = fixture.host.read_private_path(
-                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), 4096, acyclic_harness::conversation::ContentAccess::default(),
+                &fixture.volume, &grant, fixture.file.path(), Some(&fixture.generation()?), Some(4096), acyclic_harness::conversation::ContentAccess::default(),
             ).await.is_ok();
             assert_eq!(allowed, !deny && grants_path && !expired);
             Ok::<_, Box<dyn Error>>(())
@@ -806,7 +804,6 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     let empty = fixture

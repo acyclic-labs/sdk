@@ -9,8 +9,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, MAX_OPEN_CHILDREN,
-        Out, SpawnVolumes, VolumeBinding,
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
+        VolumeBinding,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
@@ -181,9 +181,6 @@ fn children(
     parent: &AgentState,
     requested: &[Requested],
 ) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
-    if requested.len() > MAX_OPEN_CHILDREN {
-        return Err(Error::Record("spawn requests too many children"));
-    }
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
     for Requested { intent, history } in requested {

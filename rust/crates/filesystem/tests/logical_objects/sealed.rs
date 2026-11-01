@@ -374,9 +374,6 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     assert_ne!(blob(recovered).as_bytes(), recovered.digest.as_bytes());
     // Transfer exact CAS bytes across a different writer origin and cold reopen.
     let limits = acyclic_fs::kernel::ClosureLimits {
-        maximum_objects: 16,
-        maximum_files: 8,
-        maximum_object_bytes: 1024 * 1024,
         decode: Default::default(),
         profile: acyclic_fs::FilesystemProfile::Portable,
         symbolic_links: true,

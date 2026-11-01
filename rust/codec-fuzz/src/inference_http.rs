@@ -1,5 +1,5 @@
 //! Exercise the actual route-specific HTTP decoder and response writer.
-use acyclic_inference::{MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, http_codec};
+use acyclic_inference::{MAXIMUM_MESSAGE_BYTES, http_codec};
 use prost::Message;
 use prost_reflect::DynamicMessage;
 use std::sync::OnceLock;
@@ -29,18 +29,15 @@ pub fn check(bytes: &[u8]) {
     let route = &routes[((selector / 2) % routes.len() as u64) as usize];
     if selector & 1 == 0 {
         if let Ok(wire) = http_codec::decode_http_request(&route.path, payload) {
-            assert!(payload.len() <= MAXIMUM_HTTP_JSON_BYTES);
             assert!(wire.len() <= MAXIMUM_MESSAGE_BYTES);
             let canonical = acyclic_protobuf_json::encode(route.method.input(), &wire)
                 .expect("actual HTTP request wire decodes");
-            if canonical.len() <= MAXIMUM_HTTP_JSON_BYTES {
-                let repeated = http_codec::decode_http_request(&route.path, &canonical)
-                    .expect("canonical request fits both transport domains");
-                assert_eq!(
-                    json(&acyclic_protobuf_json::encode(route.method.input(), &repeated).unwrap()),
-                    json(&canonical)
-                );
-            }
+            let repeated = http_codec::decode_http_request(&route.path, &canonical)
+                .expect("canonical request retains its admitted wire frame");
+            assert_eq!(
+                json(&acyclic_protobuf_json::encode(route.method.input(), &repeated).unwrap()),
+                json(&canonical)
+            );
             super::semantic::check(route.method.input().full_name(), &wire);
             let mut trailing = payload.to_vec();
             trailing.extend_from_slice(b" false");
@@ -48,11 +45,9 @@ pub fn check(bytes: &[u8]) {
         }
     } else if let Ok(encoded) = http_codec::encode_http_response(&route.path, payload) {
         assert!(payload.len() <= MAXIMUM_MESSAGE_BYTES);
-        assert!(encoded.len() <= MAXIMUM_HTTP_JSON_BYTES);
-        let wire =
-            acyclic_protobuf_json::decode(route.method.output(), &encoded, MAXIMUM_HTTP_JSON_BYTES)
-                .expect("actual HTTP response JSON decodes")
-                .encode_to_vec();
+        let wire = acyclic_protobuf_json::decode(route.method.output(), &encoded, encoded.len())
+            .expect("actual HTTP response JSON decodes")
+            .encode_to_vec();
         if wire.len() <= MAXIMUM_MESSAGE_BYTES {
             let repeated = http_codec::encode_http_response(&route.path, &wire)
                 .expect("canonical response fits both transport domains");
@@ -73,7 +68,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         let response = http_codec::encode_http_response(&route.path, &output)?;
         // Both directions are positively readmitted before publication.
         http_codec::decode_http_request(&route.path, &request)?;
-        acyclic_protobuf_json::decode(route.method.output(), &response, MAXIMUM_HTTP_JSON_BYTES)
+        acyclic_protobuf_json::decode(route.method.output(), &response, response.len())
             .map_err(|error| format!("HTTP response producer failed for {}: {error:?}; recovery: cargo run --example capture", route.path))?;
         let prefix = u64::try_from(index)?
             .checked_mul(2)

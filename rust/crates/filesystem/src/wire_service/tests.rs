@@ -303,7 +303,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 })),
             ],
             operation: operation(2),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner();
@@ -411,9 +411,9 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(main_head.clone()),
             target: Some(fork_head.clone()),
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -427,7 +427,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 contents: b"new!!".to_vec(),
             }))],
             operation: operation(5),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -437,9 +437,9 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(changed.clone()),
             target: Some(fork_head),
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -483,7 +483,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 },
             ))],
             operation: operation(11),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -509,35 +509,47 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         no_op_after_advance.status,
         wire::JoinStatus::IdempotencyConflict as i32
     );
-    let mut altered_bounds = plan.clone();
-    altered_bounds.maximum_generations += 1;
-    altered_bounds.plan_id = join_plan_id(
-        altered_bounds.source.as_ref().ok_or("missing source")?,
-        altered_bounds
-            .expected_target
-            .as_ref()
-            .ok_or("missing target")?,
-        altered_bounds
-            .common_ancestor
-            .as_ref()
-            .ok_or("missing common ancestor")?,
-        join_history(altered_bounds.history)?,
-        altered_bounds.maximum_generations,
-        altered_bounds.maximum_changes,
-        altered_bounds.maximum_conflicts,
-    )
-    .to_vec();
-    let altered_retry = service
-        .apply_join(Request::new(wire::ApplyJoinRequest {
-            plan: Some(altered_bounds),
-            operation: operation(6),
-        }))
-        .await?
-        .into_inner();
-    assert_eq!(
-        altered_retry.status,
-        wire::JoinStatus::IdempotencyConflict as i32
-    );
+    for field in 0..3 {
+        let mut altered_bounds = plan.clone();
+        match field {
+            0 => {
+                *altered_bounds
+                    .maximum_generations
+                    .as_mut()
+                    .expect("finite fixture") += 1
+            }
+            1 => altered_bounds.maximum_changes = None,
+            2 => altered_bounds.maximum_conflicts = None,
+            _ => unreachable!(),
+        }
+        altered_bounds.plan_id = join_plan_id(
+            altered_bounds.source.as_ref().ok_or("missing source")?,
+            altered_bounds
+                .expected_target
+                .as_ref()
+                .ok_or("missing target")?,
+            altered_bounds
+                .common_ancestor
+                .as_ref()
+                .ok_or("missing common ancestor")?,
+            join_history(altered_bounds.history)?,
+            altered_bounds.maximum_generations,
+            altered_bounds.maximum_changes,
+            altered_bounds.maximum_conflicts,
+        )
+        .to_vec();
+        let altered_retry = service
+            .apply_join(Request::new(wire::ApplyJoinRequest {
+                plan: Some(altered_bounds),
+                operation: operation(6),
+            }))
+            .await?
+            .into_inner();
+        assert_eq!(
+            altered_retry.status,
+            wire::JoinStatus::IdempotencyConflict as i32
+        );
+    }
     let stale = service
         .apply_join(Request::new(wire::ApplyJoinRequest {
             plan: Some(plan),
@@ -559,7 +571,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 },
             ))],
             operation: operation(10),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -569,9 +581,9 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(further_changed),
             target: Some(advanced_target),
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -631,7 +643,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 contents: b"target".to_vec(),
             }))],
             operation: operation(23),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -646,7 +658,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 contents: b"source".to_vec(),
             }))],
             operation: operation(24),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -656,9 +668,9 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(conflict_source_head),
             target: Some(conflict_target_head.clone()),
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -683,7 +695,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
                 },
             ))],
             operation: operation(26),
-            maximum_conflicts: 32,
+            maximum_conflicts: Some(32),
         }))
         .await?
         .into_inner()
@@ -693,9 +705,9 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         .plan_join(Request::new(wire::PlanJoinRequest {
             source: Some(benign_source_head),
             target: Some(conflict_target_head),
-            maximum_changes: 32,
-            maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_changes: Some(32),
+            maximum_conflicts: Some(8),
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?

@@ -3,8 +3,8 @@ pub(crate) struct MergeFileTableRequest<'a> {
     pub(crate) base: &'a GenerationRoot,
     pub(crate) ours: &'a GenerationRoot,
     pub(crate) theirs: &'a GenerationRoot,
-    pub(crate) maximum_changes: u32,
-    pub(crate) maximum_conflicts: u32,
+    pub(crate) maximum_changes: Option<u32>,
+    pub(crate) maximum_conflicts: Option<u32>,
     pub(crate) content: ContentMerge,
 }
 
@@ -70,7 +70,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
 > {
     Box::pin(async move {
         accounting.check()?;
-        if request.maximum_changes == 0 || request.maximum_conflicts == 0 {
+        if request.maximum_changes == Some(0) || request.maximum_conflicts == Some(0) {
             return Err(FsError::MergeChangeLimit);
         }
         if request.base.volume_id != request.ours.volume_id
@@ -127,7 +127,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         })?;
                         frontier = frontier.checked_add(1).ok_or(WorkError::Overflow)?;
                     }
-                    state.consume(frontier)?;
+                    state.changes.consume(frontier)?;
                     let mut indices = [0, 0];
                     while let Some([left, right]) =
                         next_changes(&ours.value.changes, &theirs.value.changes, &mut indices)
@@ -185,7 +185,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             && (matches!(resolved, OptionalResolution::Conflict)
                                 || resolutions.has_bindings(file, accounting)?)
                         {
-                            if state.remaining_changes == 0 {
+                            if state.changes.remaining == Some(0) {
                                 return Err(FsError::MergeChangeLimit);
                             }
                             let record = merge_directory_record_with_resolutions_async(
@@ -311,7 +311,6 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         store,
                         request.ours.file_table,
                         &mutations.value,
-                        request.maximum_changes,
                         limits,
                         accounting,
                         cancellation,

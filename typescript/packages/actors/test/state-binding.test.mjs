@@ -91,7 +91,7 @@ test('rollback preserves an earlier pending metadata, journal and alarm group', 
   });
   await binding.flush();
   assert.deepEqual(owner.commits,[{
-    writes:[{key:'kept',value:Uint8Array.of(1)}],journalFrom:'0',
+    writes:[{key:'kept',value:Uint8Array.of(1)}],deletions:[],journalFrom:'0',
     journal:[Uint8Array.of(2)],alarm:{type:'set',deadline:'123'},
   }]);
 });

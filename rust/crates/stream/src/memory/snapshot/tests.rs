@@ -181,7 +181,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         path: StreamPath::new("snapshot/retained")?,
         records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
-        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?,
+        idempotency_key: IdempotencyKey::new(vec![b'k'; 131_073])?,
     };
     let first = stream.append(request.clone()).await?;
     let authority = stream.revisions.current();
@@ -196,7 +196,9 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         Err(StreamError::IdempotencyMismatch)
     );
     let mut fresh = request;
-    fresh.idempotency_key = IdempotencyKey::new(Bytes::from_static(b"fresh"))?;
+    let mut next_key = fresh.idempotency_key.as_bytes().to_vec();
+    *next_key.last_mut().ok_or(StreamError::InvalidArgument)? = b'j';
+    fresh.idempotency_key = IdempotencyKey::new(next_key)?;
     assert_eq!(restored.append(fresh).await, Err(StreamError::Capacity));
     Ok(())
 }
@@ -570,22 +572,19 @@ fn corrupt_retained(
     for ordinal in 0..count {
         let flags = input.u8().ok_or_else(invalid)?;
         let mut observation = if flags & RETAINS_REPLAY != 0 {
+            let bytes = input.bytes().ok_or_else(invalid)?;
             Some(crate::persistence::observation_from_wire(
                 crate::persistence::decode::<crate::wire::IdempotencyObservation>(
-                    input.bytes().ok_or_else(invalid)?,
-                    retained_fact_bound().ok_or_else(invalid)?,
+                    bytes,
+                    bytes.len(),
                 )?,
             )?)
         } else {
             None
         };
         let mut envelope = if flags & RETAINS_COMMIT != 0 {
-            Some(crate::persistence::envelope_from_wire(
-                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
-                    input.bytes().ok_or_else(invalid)?,
-                    retained_fact_bound().ok_or_else(invalid)?,
-                )?,
-            )?)
+            let bytes = input.bytes().ok_or_else(invalid)?;
+            Some(crate::persistence::decode_envelope(bytes, bytes.len())?)
         } else {
             None
         };

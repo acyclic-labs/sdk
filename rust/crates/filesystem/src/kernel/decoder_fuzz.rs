@@ -138,7 +138,6 @@ fn check_inner<const OMIT_COMPLETION: bool>(input: &[u8]) -> bool {
         maximum_object_bytes: 4096,
         maximum_page_bytes: 4096,
         maximum_page_items: 32,
-        maximum_name_bytes: 256,
         ..DecodeLimits::default()
     };
     let decoded = decode(kind % 5, bytes, limits, &mut |step| {
@@ -292,7 +291,6 @@ mod tests {
                     name: LogicalName::new(
                         NameEncoding::Utf8,
                         format!("n{number:016x}").into_bytes(),
-                        256,
                     )
                     .unwrap(),
                     file_id: FileId::from_bytes([2; 16]),

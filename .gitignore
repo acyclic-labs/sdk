@@ -22,6 +22,7 @@ node_modules/
 /typescript/packages/*/generated/*
 /typescript/packages/*/src/generated/
 /typescript/packages/*/test/generated/
+/arena/packages/arena/src/generated/
 /typescript/packages/auth/src/contract.ts
 /typescript/packages/actors/src/routes.ts
 /typescript/packages/inference/src/routes.ts

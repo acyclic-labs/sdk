@@ -14,7 +14,7 @@ use crate::{
     tool::{JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{path::Path, sync::Arc};
 
 mod agents;
