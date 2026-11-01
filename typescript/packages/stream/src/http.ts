@@ -72,8 +72,8 @@ export class HttpStreamProvider implements StreamProvider {
     if (request.parent !== undefined) validatePathValue(request.parent);
     if (request.after !== undefined) {
       validatePathValue(request.after);
-      if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+      if (directParent(request.after) !== (request.parent ?? "")) {
+        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
       }
     }
     if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {

@@ -23,8 +23,8 @@ use crate::agent::AgentPath;
 use crate::tool::{ToolExecutor, ToolInvocation, ToolResult};
 use acyclic_machines::MachineState;
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, CommitRequest, ReadRequest,
-    StreamError, StreamProviderExt as _,
+    AppendRecord, BoxProviderFuture, ChildrenPageRequest, CommitCondition, CommitMutation,
+    CommitRequest, ReadRequest, StreamError, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -96,16 +96,18 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// The lifecycle of `targets`, whose bindings live in `stream`.
     ///
     /// # Errors
-    /// When a target name repeats.
+    /// When a target name repeats or is not one canonical path segment.
     pub fn new(stream: Arc<P>, targets: Vec<ProvisionedTarget>) -> Result<Self> {
         let mut names = std::collections::BTreeSet::new();
-        if !targets
-            .iter()
-            .all(|target| names.insert(target.name.as_str()))
-        {
-            return Err(Error::Invalid(
-                "provisioned target names must be unique".into(),
-            ));
+        for target in &targets {
+            acyclic_stream::StreamPath::validate(&target.name).map_err(|_| {
+                Error::Invalid("provisioned target name is not a canonical path segment".into())
+            })?;
+            if target.name.contains('/') || !names.insert(target.name.as_str()) {
+                return Err(Error::Invalid(
+                    "provisioned target names must be unique canonical path segments".into(),
+                ));
+            }
         }
         Ok(Self { stream, targets })
     }
@@ -371,28 +373,79 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     async fn planned_binding(
         &self,
         agent: &AgentPath,
-        target: &str,
+        target: &ProvisionedTarget,
     ) -> Result<Option<MachineBinding>> {
-        if let Some(binding) = self.binding(agent, target).await? {
+        if let Some(binding) = self.binding(agent, &target.name).await? {
             return Ok(Some(binding));
         }
-        if self.original_plan(agent, target).await?.is_none() {
+        if self.original_plan(agent, &target.name).await?.is_none() {
             return Ok(None);
         }
-        self.machine(agent, target).await?;
-        self.binding(agent, target).await
+        self.machine_on(agent, target).await?;
+        self.binding(agent, &target.name).await
+    }
+
+    // The original plan append already indexes ownership in Streams. Keep
+    // only one page. The original agent control joins admitted work before
+    // lifecycle traversal, so its plan membership is fixed; unrelated journal
+    // publication must not invalidate the next seek.
+    fn held_targets<'a>(
+        &'a self,
+        agent: &AgentPath,
+    ) -> Result<impl futures::Stream<Item = Result<&'a ProvisionedTarget>> + 'a> {
+        let request = ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(agent.machines().map_err(agent_error)?),
+            after: None,
+            hierarchy_version: None,
+            limit: 64,
+        };
+        Ok(futures::stream::try_unfold(
+            (
+                Some(request),
+                Vec::<acyclic_stream::Child>::new().into_iter(),
+            ),
+            move |(mut request, mut children)| async move {
+                loop {
+                    if let Some(child) = children.next() {
+                        let name = child.path.as_str().rsplit('/').next().ok_or_else(|| {
+                            Error::Storage("Machine plan path has no target".into())
+                        })?;
+                        let target = self.target(name)?;
+                        return Ok(Some((target, (request, children))));
+                    }
+                    let Some(mut next) = request.take() else {
+                        return Ok(None);
+                    };
+                    drop(children);
+                    let page = self
+                        .stream
+                        .children_page(next.clone())
+                        .await
+                        .map_err(Error::MachineOwnership)?;
+                    next.after = page.next_after;
+                    request = next.after.is_some().then_some(next);
+                    children = page.children.into_iter();
+                }
+            },
+        ))
     }
 
     /// Suspends every Machine `agent` holds: what a paused agent keeps.
     /// Its next exec wakes each one.
+    /// The caller must first join the agent's admitted work, as the original
+    /// [`crate::agent::AgentHost::pause`] control does, so no plan is added.
     ///
     /// # Errors
     /// When a provider refuses or its outcome is uncertain; suspending again
-    /// is harmless.
+    /// is harmless. A failed ownership page retains its original cause in
+    /// [`Error::MachineOwnership`]; no partial traversal is reported as complete.
     pub async fn suspend(&self, agent: &AgentPath) -> Result<()> {
         let pause = OperationId::new();
-        for target in &self.targets {
-            let Some(binding) = self.planned_binding(agent, &target.name).await? else {
+        let targets = self.held_targets(agent)?;
+        futures::pin_mut!(targets);
+        while let Some(target) = targets.try_next().await? {
+            let Some(binding) = self.planned_binding(agent, target).await? else {
                 continue;
             };
             let key = IdempotencyKey::new(format!(
@@ -409,6 +462,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
 
     /// Destroys every Machine `agent` holds, each under the key of
     /// (agent, target): a retry replays the original destruction.
+    /// The caller must first join admitted work and prevent new first use, as
+    /// the original agent closing step does.
     ///
     /// A provider refuses to destroy a fork source while its forks live
     /// ([`acyclic_machines::Precondition::LiveForks`]).
@@ -418,10 +473,14 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// provider admits. Whichever fork closes last finds no live sibling.
     ///
     /// # Errors
-    /// When a provider refuses otherwise or its outcome is uncertain.
+    /// When a provider refuses otherwise or its outcome is uncertain. A failed
+    /// ownership page retains its original cause in
+    /// [`Error::MachineOwnership`]; a retry replays prior releases.
     pub async fn destroy(&self, agent: &AgentPath) -> Result<()> {
-        for target in &self.targets {
-            let Some(mut binding) = self.planned_binding(agent, &target.name).await? else {
+        let targets = self.held_targets(agent)?;
+        futures::pin_mut!(targets);
+        while let Some(target) = targets.try_next().await? {
+            let Some(mut binding) = self.planned_binding(agent, target).await? else {
                 continue;
             };
             let mut holder = agent.clone();

@@ -66,18 +66,12 @@ export class StreamClient {
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const { parent, after, hierarchyVersion, limit } = request;
     const origin = { limit, ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
-    let authored: ChildrenPageRequest;
-    if (after === undefined) {
-      authored = { ...origin, ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
-    } else {
-      if (hierarchyVersion === undefined) throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
-      authored = { ...origin, after, hierarchyVersion: hierarchyVersion.slice() as CommitId };
-    }
+    const authored: ChildrenPageRequest = { ...origin, ...(after === undefined ? {} : { after }), ...(hierarchyVersion === undefined ? {} : { hierarchyVersion: hierarchyVersion.slice() as CommitId }) };
     if (authored.parent !== undefined) validatePathValue(authored.parent);
     if (authored.after !== undefined) {
       validatePathValue(authored.after);
       if (directParent(authored.after) !== (authored.parent ?? "")) {
-        throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
+        throw new StreamError("invalid_cursor", "child continuation must name a direct child");
       }
     }
     if (authored.hierarchyVersion !== undefined && authored.hierarchyVersion.byteLength !== 32) {

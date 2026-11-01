@@ -154,12 +154,6 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
             "children_page" => wire::ChildrenPageRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::children_page_from_wire)
-                .and_then(|request| {
-                    if request.after.is_some() && request.hierarchy_version.is_none() {
-                        return Err(StreamError::InvalidArgument);
-                    }
-                    Ok(request)
-                })
                 .and_then(|request| memory::validate_limit(request.limit)),
             _ => Err(StreamError::InvalidArgument),
         });

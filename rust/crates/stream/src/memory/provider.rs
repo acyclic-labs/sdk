@@ -351,9 +351,6 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
 
 fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
     validate_limit(request.limit)?;
-    if request.after.is_some() && request.hierarchy_version.is_none() {
-        return Err(StreamError::InvalidArgument);
-    }
     if request.after.as_ref().is_some_and(|after| {
         !request.parent.as_ref().map_or_else(
             || !after.as_str().contains('/'),

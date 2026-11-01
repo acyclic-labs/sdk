@@ -178,6 +178,10 @@ pub enum Error {
     #[cfg(feature = "machines")]
     #[error("Machines {0}")]
     Machines(#[source] acyclic_machines::ProviderError),
+    /// The original Machine ownership traversal failed before all holders settled.
+    #[cfg(feature = "machines")]
+    #[error("Machine ownership: {0}")]
+    MachineOwnership(#[source] acyclic_stream::StreamError),
     /// An owned native failure, preserving its cause and existing allocation custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{cause}")]
@@ -513,6 +517,8 @@ impl Error {
             },
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
+            #[cfg(feature = "machines")]
+            Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeBoundary { code, .. }
@@ -583,6 +589,10 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        #[cfg(feature = "machines")]
+        if matches!(self, Self::MachineOwnership(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::Indeterminate(_)
@@ -705,7 +715,7 @@ impl Error {
             | Self::SearchPublicationDeferred => false,
             Self::ModelDiagnostic { .. } => false,
             #[cfg(feature = "machines")]
-            Self::Machines(_) => false,
+            Self::Machines(_) | Self::MachineOwnership(_) => false,
             Self::MountUnavailable { .. } | Self::Process(_) | Self::Allocation(_) => true,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { .. } => true,

@@ -65,6 +65,26 @@ const worker = (value: import("../src/index.js").JsonValue): { readonly worker: 
 };
 
 describe("website Stream contract", () => {
+  test("child seeks progress across unrelated commits while retained fences refuse", async () => {
+    const client = StreamClient.memory();
+    for (const path of ["seek/a", "seek/b"]) {
+      await client.bytes(path).append(new Uint8Array([1]), { idempotencyKey: key(path) });
+    }
+    const first = await client.childrenPage({ parent: "seek", limit: 1 });
+    expect(first.nextAfter).toBe("seek/a");
+    await client.bytes("unrelated/entry").append(new Uint8Array([2]), { idempotencyKey: key("seek-unrelated") });
+    const next = await client.childrenPage({ parent: "seek", after: first.nextAfter!, limit: 1 });
+    expect(next.children.map(child => child.path)).toEqual(["seek/b"]);
+    expect(next.nextAfter).toBeUndefined();
+    await expect(client.childrenPage({ parent: "seek", after: first.nextAfter!, hierarchyVersion: first.hierarchyVersion, limit: 1 }))
+      .rejects.toMatchObject({ code: "hierarchy_changed" });
+    await expect(client.childrenPage({ parent: "seek", after: "foreign/a", limit: 1 }))
+      .rejects.toMatchObject({ code: "invalid_cursor" });
+    expect(JSON.parse(encodeHttpRequest("children/page", toBinary(ChildrenPageRequestSchema,
+      create(ChildrenPageRequestSchema, { parent: "seek", after: "seek/a", limit: 1 })))))
+      .toEqual({ parent: "seek", after: "seek/a", limit: 1 });
+  });
+
   test("opens the local provider without exposing provider setup", async () => {
     const stream = StreamClient.memory().json("runs/memory", answer);
     await stream.append({ answer: 42 }, { idempotencyKey: key("stream.test-70") });

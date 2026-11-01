@@ -421,7 +421,7 @@ impl Child {
     }
 }
 
-/// Bounded hierarchy traversal. A continuation is valid only while the
+/// Bounded direct-child traversal at one authority snapshot per page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPageRequest {
     /// Optional relative stream whose last record is projected under each child.
@@ -430,7 +430,10 @@ pub struct ChildrenPageRequest {
     pub parent: Option<StreamPath>,
     /// Last path from the preceding page; exclusive.
     pub after: Option<StreamPath>,
-    /// Last hierarchy-changing commit returned by the preceding page.
+    /// Optional hierarchy fence returned by a preceding page. When supplied,
+    /// any hierarchy change refuses the page. When absent, `after` seeks in
+    /// the current snapshot; callers requiring stable membership must own
+    /// its lifetime or retain the fence.
     pub hierarchy_version: Option<CommitId>,
     /// Nonzero result bound.
     pub limit: u32,
