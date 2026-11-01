@@ -47,6 +47,18 @@ pub struct ProtectedBytes<C = ()> {
 }
 
 impl ProtectedBytes {
+    /// Serializes one JSON payload directly into protected storage. Partial
+    /// output and replaced backings are scrubbed on success or serialization
+    /// failure. This is one serializer pass, with geometric buffer growth and
+    /// no final payload copy; it supplies neither authority nor capacity credit.
+    pub fn from_json<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Result<Self> {
+        // Match serde_json::to_vec's initial capacity, without its unprotected
+        // reallocations. This is an initial allocation, never a payload limit.
+        let mut writer = JsonWriter(Zeroizing::new(Vec::with_capacity(128)));
+        serde_json::to_writer(&mut writer, value)?;
+        Ok(Self::new(writer.0))
+    }
+
     /// Takes the original protected allocation without copying its bytes.
     pub fn new(bytes: Zeroizing<Vec<u8>>) -> Self {
         Self {
@@ -77,5 +89,27 @@ impl<C: Send + 'static> ProtectedBytes<C> {
 impl<C> AsRef<[u8]> for ProtectedBytes<C> {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+struct JsonWriter(Zeroizing<Vec<u8>>);
+
+impl std::io::Write for JsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let next = self
+            .0
+            .len()
+            .checked_add(bytes.len())
+            .ok_or(std::io::ErrorKind::OutOfMemory)?;
+        if next > self.0.capacity() {
+            let capacity = next.max(self.0.capacity().saturating_mul(2));
+            reserve_protected_bytes(&mut self.0, capacity).map_err(std::io::Error::other)?;
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
