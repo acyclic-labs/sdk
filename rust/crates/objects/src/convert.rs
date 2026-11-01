@@ -147,23 +147,32 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     }
 }
 
-pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<Delete, Error> {
-    match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
-        wire::DeleteStatus::Deleted => Ok(Delete::Deleted),
-        wire::DeleteStatus::Absent => Ok(Delete::Absent),
-        wire::DeleteStatus::Referenced => Ok(Delete::Referenced),
-        wire::DeleteStatus::Unspecified => Err(invalid()),
+pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<crate::Deletion, Error> {
+    let outcome = match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
+        wire::DeleteStatus::Deleted => Delete::Deleted,
+        wire::DeleteStatus::Absent => Delete::Absent,
+        wire::DeleteStatus::Referenced => Delete::Referenced,
+        wire::DeleteStatus::Unspecified => return Err(invalid()),
+    };
+    if outcome != Delete::Deleted && !value.references.is_empty() {
+        return Err(invalid());
     }
+    Ok(crate::Deletion {
+        outcome,
+        references: digests(&value.references)?,
+        revision: None,
+    })
 }
 
 #[cfg(objects_server)]
-pub(crate) fn wire_delete(value: Delete) -> wire::DeleteBlobResponse {
+pub(crate) fn wire_delete(value: crate::Deletion) -> wire::DeleteBlobResponse {
     wire::DeleteBlobResponse {
-        status: match value {
+        status: match value.outcome {
             Delete::Deleted => wire::DeleteStatus::Deleted,
             Delete::Absent => wire::DeleteStatus::Absent,
             Delete::Referenced => wire::DeleteStatus::Referenced,
         } as i32,
+        references: value.references.into_iter().map(Into::into).collect(),
     }
 }
 

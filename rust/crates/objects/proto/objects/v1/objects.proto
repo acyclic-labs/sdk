@@ -115,6 +115,8 @@ enum DeleteStatus {
 }
 message DeleteBlobResponse {
   DeleteStatus status = 1;
+  // Outgoing references of the exact removed envelope; empty unless deleted.
+  repeated Digest references = 2;
 }
 // Ascending digest order strictly after `after`. A blob present for the whole
 // traversal is returned exactly once; one put or deleted meanwhile may or may

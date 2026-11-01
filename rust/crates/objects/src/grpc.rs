@@ -478,10 +478,9 @@ impl Blobs for GrpcObjects {
                 },
                 None
             )?;
-            Ok(Deletion {
-                outcome: convert::delete(&reply.0)?,
-                revision: reply.1,
-            })
+            let mut deletion = convert::delete(&reply.0)?;
+            deletion.revision = reply.1;
+            Ok(deletion)
         })
         .await
     }

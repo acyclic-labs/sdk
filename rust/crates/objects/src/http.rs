@@ -486,10 +486,7 @@ impl Blobs for HttpObjects {
                     },
                 )
                 .await?;
-            Ok(crate::Deletion {
-                outcome: convert::delete(&reply)?,
-                revision: None,
-            })
+            convert::delete(&reply)
         })
         .await
     }

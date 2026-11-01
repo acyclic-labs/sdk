@@ -189,10 +189,9 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
                 },
             )
             .await?;
-        Ok(Deletion {
-            outcome: convert::delete(&reply).map_err(|_| unavailable())?,
-            revision,
-        })
+        let mut deletion = convert::delete(&reply).map_err(|_| unavailable())?;
+        deletion.revision = revision;
+        Ok(deletion)
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
