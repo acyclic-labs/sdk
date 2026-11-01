@@ -332,3 +332,333 @@ async fn refresh_document(
     // Encoded body custody retires with that buffer. Only the decoded document
     // joins the original credential operation and its publication owner.
     let updated = io.json(&body.bytes)?;
+    if !["access_token", "refresh_token", "id_token"]
+        .iter()
+        .any(|field| updated.get(field).is_some())
+    {
+        return Err(invalid("Codex refresh did not return any tokens"));
+    }
+    for field in ["access_token", "refresh_token", "id_token"] {
+        if let Some(value) = updated.get(field) {
+            if value.as_str().is_none_or(|token| token.trim().is_empty()) {
+                return Err(invalid("Codex refresh returned an invalid token"));
+            }
+        }
+    }
+    Ok(updated)
+}
+
+fn token<'a>(auth: &'a Value, field: &str) -> Result<&'a str> {
+    auth["tokens"][field]
+        .as_str()
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| invalid("Codex CLI ChatGPT login is incomplete; sign in again"))
+}
+
+pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Claims {
+        exp: Option<i64>,
+    }
+    let expiry = auth["tokens"]["access_token"]
+        .as_str()
+        .and_then(|token| token.split('.').nth(1))
+        .and_then(|payload| URL_SAFE_NO_PAD.decode(payload).ok())
+        .and_then(|payload| serde_json::from_slice::<Claims>(&payload).ok())
+        .and_then(|claims| claims.exp);
+    if let Some(expiry) = expiry {
+        return expiry <= now.unix_timestamp().saturating_add(300);
+    }
+    auth["last_refresh"]
+        .as_str()
+        .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok())
+        .is_none_or(|last| now - last >= time::Duration::days(8))
+}
+
+fn load(path: &Path, io: &mut CredentialIo) -> Result<(Vec<u8>, Value)> {
+    let bytes = read(path, io)?;
+    let auth = document(&bytes, io)?;
+    Ok((bytes, auth))
+}
+
+fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
+    io.charge(WorkCounters {
+        backend_read_operations: 2,
+        object_probes: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let mut file = File::open(path).map_err(|_| invalid("cannot read Codex auth.json"))?;
+    let length = file
+        .metadata()
+        .map_err(|_| invalid("cannot stat Codex auth.json"))?
+        .len();
+    let length = usize::try_from(length)
+        .map_err(|_| invalid("Codex auth.json length cannot be represented"))?;
+    let capacity = length
+        .checked_add(1)
+        .ok_or_else(|| invalid("Codex auth.json length overflow"))?;
+    io.claim(capacity as u64, 1, WorkCounters::UNCHARGED)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| invalid("cannot allocate Codex auth.json"))?;
+    bytes.resize(capacity, 0);
+    let read_allowance = io
+        .work()
+        .map(|work| {
+            work.reserve_work(WorkCounters {
+                source_bytes_read: capacity as u64,
+                ..WorkCounters::UNCHARGED
+            })
+        })
+        .transpose()?;
+    let mut read = 0;
+    while read < capacity {
+        io.charge(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let count = file
+            .read(&mut bytes[read..])
+            .map_err(|_| invalid("cannot read Codex auth.json"))?;
+        if count == 0 {
+            break;
+        }
+        if let Some(reserved) = &read_allowance {
+            reserved.record_completed(WorkCounters {
+                source_bytes_read: count as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        read += count;
+    }
+    if read != length {
+        return Err(invalid("Codex auth.json changed while reading"));
+    }
+    bytes.truncate(read);
+    Ok(bytes)
+}
+
+fn document(bytes: &[u8], io: &mut CredentialIo) -> Result<Value> {
+    let auth = io.json(bytes)?;
+    validate_auth(&auth)?;
+    Ok(auth)
+}
+
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn decode_auth(bytes: &[u8]) -> Result<Value> {
+    document(bytes, &mut CredentialIo::new(None)?)
+}
+
+fn validate_auth(auth: &Value) -> Result<()> {
+    if auth["auth_mode"]
+        .as_str()
+        .is_some_and(|mode| mode != "chatgpt")
+    {
+        return Err(invalid("Codex auth.json is not a ChatGPT CLI login"));
+    }
+    token(&auth, "access_token")?;
+    Ok(())
+}
+
+/// A concurrent document is not evidence that our refresh was published.
+/// The published branch owns only completion evidence, never a fresh source
+/// revision or immutable contents. The Auth source owner admits those separately.
+enum RefreshPublication {
+    Observed(Value),
+    Published {
+        document: Value,
+        file: acyclic_native_runtime::private_file::PublishedFile,
+    },
+}
+
+/// The original parsed baseline remains immutable until publication. OAuth
+/// updates own only the admitted response and publication timestamp.
+struct RefreshUpdate {
+    tokens: Value,
+    last_refresh: Value,
+}
+
+impl RefreshPublication {
+    fn into_document(self) -> Value {
+        match self {
+            Self::Observed(document) => document,
+            Self::Published { document, file } => {
+                drop(file);
+                document
+            }
+        }
+    }
+}
+
+fn persist_if_unchanged(
+    path: &Path,
+    original: &Value,
+    updated: RefreshUpdate,
+    io: &mut CredentialIo,
+) -> Result<RefreshPublication> {
+    persist_with(path, original, updated, || Ok(()), io)
+}
+
+fn persist_with(
+    path: &Path,
+    original: &Value,
+    updated: RefreshUpdate,
+    before_replace: impl FnOnce() -> Result<()>,
+    io: &mut CredentialIo,
+) -> Result<RefreshPublication> {
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    io.claim(
+        path.as_os_str().len() as u64 * 3 + 1024,
+        16,
+        WorkCounters::UNCHARGED,
+    )?;
+    let absolute = if path.is_absolute() {
+        None
+    } else {
+        Some(std::path::absolute(path).map_err(|_| invalid("cannot resolve Codex auth path"))?)
+    };
+    let path = absolute.as_deref().unwrap_or(path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("Codex auth path needs a parent"))?;
+    // Stage on the same filesystem. A metadata edit does not take credential
+    // ownership: preserve it while publishing the rotated token fields.
+    let (mut observed, current) = load(path, io)?;
+    let Some(mut auth) = merge_refresh(original, &observed, &current, &updated, io)? else {
+        return Ok(RefreshPublication::Observed(current));
+    };
+    let mut file = crate::credential_file::create(parent)
+        .map_err(|_| invalid("cannot create Codex credential update"))?;
+    stage(&mut file, &auth, io)?;
+    before_replace()?;
+    let bytes = read(path, io)?;
+    if bytes != observed {
+        let current = document(&bytes, io)?;
+        let Some(merged) = merge_refresh(original, &bytes, &current, &updated, io)? else {
+            return Ok(RefreshPublication::Observed(current));
+        };
+        auth = merged;
+        stage(&mut file, &auth, io)?;
+        observed = bytes;
+        if read(path, io)? != observed {
+            return Err(acyclic_harness_core::Error::Storage(
+                "Codex credentials changed during publication; retry".into(),
+            ));
+        }
+    }
+    // The CLI does not participate in our lock. This final read + replacement
+    // is still best-effort, not an atomic compare-and-swap against CLI writes.
+    io.charge(WorkCounters {
+        backend_write_operations: 1,
+        durability_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })?;
+    let file = file
+        .publish_retained(path, acyclic_native_runtime::RenameMode::Replace)
+        .map_err(|_| invalid("cannot replace Codex auth.json"))?;
+    Ok(RefreshPublication::Published {
+        document: auth,
+        file,
+    })
+}
+
+fn stage(
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
+    auth: &Value,
+    io: &mut CredentialIo,
+) -> Result<()> {
+    let encoded = (crate::projection::encoded_len(auth)? as u64)
+        .checked_add(1)
+        .ok_or_else(|| invalid("Codex merged credential length overflow"))?;
+    write_staged(file, auth, encoded, io)
+}
+
+fn write_staged(
+    file: &mut acyclic_native_runtime::private_file::StagedFile,
+    auth: &Value,
+    encoded: u64,
+    io: &mut CredentialIo,
+) -> Result<()> {
+    use std::io::{Seek as _, SeekFrom};
+    io.charge(WorkCounters {
+        bytes_encoded: encoded,
+        output_bytes: encoded,
+        backend_write_operations: 3,
+        ..WorkCounters::UNCHARGED
+    })?;
+    file.as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| file.as_file_mut().set_len(0))
+        .map_err(|_| invalid("cannot prepare Codex credential update"))?;
+    serde_json::to_writer(file.as_file_mut(), auth)
+        .map_err(|_| invalid("cannot encode Codex credential update"))?;
+    file.as_file_mut()
+        .write_all(b"\n")
+        .map_err(|_| invalid("cannot flush Codex credential update"))
+}
+
+fn merge_refresh(
+    original: &Value,
+    current_wire: &[u8],
+    current: &Value,
+    refreshed: &RefreshUpdate,
+    io: &mut CredentialIo,
+) -> Result<Option<Value>> {
+    const FIELDS: [&str; 4] = ["account_id", "access_token", "refresh_token", "id_token"];
+    if original["auth_mode"].as_str().unwrap_or("chatgpt")
+        != current["auth_mode"].as_str().unwrap_or("chatgpt")
+        || original["OPENAI_API_KEY"] != current["OPENAI_API_KEY"]
+        || FIELDS
+            .iter()
+            .any(|field| original["tokens"][field] != current["tokens"][field])
+    {
+        return Ok(None);
+    }
+    // The current wire supplies the graph's structural bound without encoding
+    // another copy. Only OAuth's changed string fields need additional storage.
+    let (bytes, nodes) = crate::native::shape(current_wire);
+    let fields = ["access_token", "refresh_token", "id_token"];
+    let mut replacement_bytes = 0u64;
+    for value in fields
+        .iter()
+        .map(|field| &refreshed.tokens[field])
+        .chain(std::iter::once(&refreshed.last_refresh))
+    {
+        // Unchanged omitted fields may be null; refresh responses themselves
+        // have already admitted nonempty token strings.
+        if let Some(text) = value.as_str() {
+            replacement_bytes = replacement_bytes
+                .checked_add(text.len() as u64)
+                .ok_or_else(|| invalid("Codex credential merge size overflow"))?;
+        }
+    }
+    io.graph(
+        bytes
+            .checked_add(replacement_bytes)
+            .ok_or_else(|| invalid("Codex credential merge size overflow"))?,
+        nodes + 8,
+    )?;
+    let mut merged = current.clone();
+    for field in fields {
+        if let Some(value) = refreshed.tokens.get(field) {
+            if merged["tokens"][field] != *value {
+                merged["tokens"][field] = value.clone();
+            }
+        }
+    }
+    merged["last_refresh"] = refreshed.last_refresh.clone();
+    Ok(Some(merged))
+}
+
+#[cfg(test)]
+#[path = "codex_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+pub(crate) fn fixed_now() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(1_792_150_400).expect("fixed fixture timestamp")
+}

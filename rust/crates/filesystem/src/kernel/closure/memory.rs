@@ -624,10 +624,7 @@ impl<'a> ProofSet<'a> {
         })
     }
 
-    pub(super) fn insert(
-        &mut self,
-        object: ObjectId,
-    ) -> Result<bool, crate::FsError> {
+    pub(super) fn insert(&mut self, object: ObjectId) -> Result<bool, crate::FsError> {
         let mut next_count = None;
         self.meter.with_accounting(|accounting| {
             self.index
