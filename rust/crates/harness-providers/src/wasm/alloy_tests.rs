@@ -31,6 +31,7 @@ fn parity(
                 format!("model-{index}"),
                 ModelSpec {
                     tool_profile: None,
+                    thinking_levels: false,
                     max_context_tokens: None,
                     capacity: ModelContextCapacity {
                         context_tokens: capacity,

@@ -322,6 +322,8 @@ pub(super) fn provider_with(
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
         }),
+        tool_profile: None,
+        thinking_levels: adapter == Adapter::Gemini,
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: Some(1024),
@@ -496,6 +498,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             "org/model".into(),
             ModelSpec {
                 tool_profile: None,
+                thinking_levels: false,
                 max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,

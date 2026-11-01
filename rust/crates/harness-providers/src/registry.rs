@@ -114,10 +114,10 @@ impl Registry {
             .get(provider)
             .ok_or_else(|| invalid("unknown model provider"))?
             .clone();
-        let capacity = config
+        let (capacity, tool_profile, thinking_levels) = config
             .models
             .get(name)
-            .map(|entry| entry.capacity)
+            .map(|entry| (entry.capacity, entry.tool_profile, entry.thinking_levels))
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let credential = self.selected_credential(provider, &config)?;
         let key = match &credential {
@@ -188,6 +188,8 @@ impl Registry {
             profile: None,
             config,
             capacity,
+            tool_profile,
+            thinking_levels,
             key,
             credential_scope,
             transport,

@@ -74,6 +74,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     models: BTreeMap::from([(
                         "fixture".into(),
                         ModelSpec {
+                            thinking_levels: false,
                             tool_profile: match *name {
                                 "anthropic" => {
                                     Some(acyclic_harness_core::model::NativeToolProfile::Anthropic)

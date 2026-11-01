@@ -24,6 +24,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
             "m".into(),
             ModelSpec {
                 tool_profile: None,
+                thinking_levels: false,
                 max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
@@ -76,6 +77,7 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
         "gpt-5".into(),
         ModelSpec {
             tool_profile: None,
+            thinking_levels: false,
             max_context_tokens: None,
             capacity: ModelContextCapacity {
                 context_tokens: 32768,

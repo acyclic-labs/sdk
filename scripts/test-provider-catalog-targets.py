@@ -172,6 +172,8 @@ pub fn exercise() -> Result<()> {
     model_source = """
 pub fn model() -> acyclic_harness_providers::ModelSpec {
     acyclic_harness_providers::ModelSpec {
+        tool_profile: None,
+        thinking_levels: false,
         max_context_tokens: None,
         capacity: acyclic_harness::context::ModelContextCapacity {
             context_tokens: 4096, output_tokens: Some(1024),
