@@ -85,6 +85,53 @@ impl AuthorityOperations for Forward {
     fn check(&self, scope: &Scope) -> Result<()> {
         AuthorityOperations::check(&self.native, scope)
     }
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let changed = [("streams:/different", false, &["streams/follow"][..])];
+            let requested = ResourceIssuance {
+                parent: request.parent,
+                grants: if self.different_id {
+                    &changed
+                } else {
+                    request.grants
+                },
+                caller: if self.omit_parent.load(Ordering::SeqCst) {
+                    None
+                } else {
+                    request.caller
+                },
+                now: request.now,
+            };
+            let issued = self
+                .native
+                .issue_resources(context, operation, &requested)
+                .await?;
+            if self.revoke.load(Ordering::SeqCst) {
+                let Custody::Native(root) = &self.native.custody else {
+                    panic!("test source must retain actual native custody");
+                };
+                root.revoke_workload(self.native.caller().1)?;
+            }
+            self.close.lock().expect("test owner lock").take();
+            if self.hold {
+                struct Held<'a>(&'a AtomicUsize);
+                impl Drop for Held<'_> {
+                    fn drop(&mut self) {
+                        self.0.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                let _held = Held(&self.derive_dropped);
+                pending::<()>().await;
+            }
+            Ok(issued)
+        })
+    }
     fn derive<'a>(
         &'a self,
         context: &'a Context,
@@ -238,6 +285,114 @@ fn forwarded(
         source,
         native_owner,
     ))
+}
+
+#[test]
+fn resource_port_fences_signed_substitution_revocation_and_original_owner_loss() -> Result<()> {
+    block_on(async {
+        let grants: &[(&str, bool, &[&str])] = &[("streams:/selected", false, &["streams/follow"])];
+        let operation = OperationId::from_bytes([152; 16]);
+        for (changed, omitted, revoked) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let (root, selected) = fixture()?;
+            let caller = root.bootstrap_scope(
+                "acting-caller",
+                &Capabilities::new(["read"]),
+                Some(AgentId::from_bytes([153; 16])),
+                &mut None,
+            )?;
+            let capability = workload::verify(
+                &root.verifier(&mut None)?,
+                root.audience(),
+                &caller,
+                workload::now(),
+                &mut None,
+            )?;
+            let evidence = capability
+                .trust_evidence()
+                .map_err(workload::unauthorized)?;
+            let (context, _owner) = lifetime(&root, &selected)?;
+            let (port, source, _native_owner) =
+                forwarded(&root, &selected, context, changed, None, false)?;
+            source.omit_parent.store(omitted, Ordering::SeqCst);
+            source.revoke.store(revoked, Ordering::SeqCst);
+            let request = ResourceIssuance {
+                parent: port.caller().1,
+                grants,
+                caller: Some((capability.effective().principal(), &evidence)),
+                now: workload::now(),
+            };
+            let result = port
+                .issue_resources(&port.context, operation, &request)
+                .await;
+            if changed || omitted || revoked {
+                assert!(matches!(result, Err(Error::Unauthorized(_))));
+            } else {
+                let issued = result?;
+                assert!(evidence.contributed_to(&issued));
+                assert_eq!(
+                    issued.effective().principal(),
+                    capability.effective().principal()
+                );
+            }
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        }
+        for (hold, stop_request) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (root, selected) = fixture()?;
+            let (context, owner) = lifetime(&root, &selected)?;
+            let (request_context, request_owner) = lifetime(&root, &selected)?;
+            let (stopped, _remaining) = if stop_request {
+                (request_owner, owner)
+            } else {
+                (owner, request_owner)
+            };
+            let (port, source, _native_owner) =
+                forwarded(&root, &selected, context, false, Some(stopped), hold)?;
+            let selection = ResourceIssuance {
+                parent: port.caller().1,
+                grants,
+                caller: None,
+                now: workload::now(),
+            };
+            let request = port.issue_resources(&request_context, operation, &selection);
+            futures::pin_mut!(request);
+            let wake = Arc::new(Wake::default());
+            let waker = futures::task::waker_ref(&wake);
+            let mut task = std::task::Context::from_waker(&waker);
+            let first = request.as_mut().poll(&mut task);
+            let result = if hold {
+                assert!(first.is_pending());
+                assert!(wake.0.load(Ordering::SeqCst));
+                request
+                    .now_or_never()
+                    .expect("original owner event must settle resource issuance")
+            } else {
+                match first {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => {
+                        panic!("ready resource must observe same-poll owner loss")
+                    }
+                }
+            };
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                source.derive_dropped.load(Ordering::SeqCst),
+                usize::from(hold)
+            );
+            assert!(matches!(
+                port.issue_resources(&request_context, operation, &selection)
+                    .await,
+                Err(Error::Cancelled)
+            ));
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        }
+        Ok(())
+    })
 }
 
 #[test]

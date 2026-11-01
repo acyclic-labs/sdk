@@ -45,7 +45,7 @@ pub(crate) use ownership::{OwnedBytes, owned_buffer, owned_sum};
 pub use authority::{
     AUTHORITY_ID_FORBIDDEN_EXACT, AUTHORITY_ID_FORBIDDEN_SEPARATORS, AdmittedAuthority,
     AggregateKind, Authority, AuthorityIssuer, AuthorityOperations, AuthorityRoot,
-    AuthorityVerifier, CheckpointKind, RuntimeAuthority, Scope, ScopeDerivation,
+    AuthorityVerifier, CheckpointKind, ResourceIssuance, RuntimeAuthority, Scope, ScopeDerivation,
 };
 
 pub use records::EventReference;

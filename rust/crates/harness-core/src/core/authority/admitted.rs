@@ -3,6 +3,8 @@ use super::*;
 use crate::OperationId;
 use acyclic_auth::operation::Context;
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
+mod resources;
+pub use resources::ResourceIssuance;
 
 /// A checkpoint operation, rather than an unrestricted signing oracle.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -128,6 +130,25 @@ pub trait AuthorityOperations: ProviderPlatform {
     /// custody availability. An older guest trust snapshot cannot replace it.
     /// This is synchronous and starts no foreign operation.
     fn check(&self, scope: &Scope) -> Result<()>;
+
+    /// Issue the original resource owner's exact admitted contribution. Only
+    /// trusted resource producers can construct this request. The result is
+    /// sealed public authority; original live custody remains with the caller
+    /// and selected source through issuance and subsequent enrollment.
+    /// Unsupported platforms refuse before dispatching any signing operation.
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        let _ = (context, operation, request);
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "platform resource issuance is unavailable".into(),
+            ))
+        })
+    }
 
     /// Derive a host-attested scope from an authenticated descendant of the
     /// original admission. The platform checks the actual created resource or
@@ -494,6 +515,14 @@ impl AuthorityOperations for AdmittedAuthority {
     fn check(&self, scope: &Scope) -> Result<()> {
         self.check_scope(scope)?;
         self.caller.verifier.verify(scope, &mut None)
+    }
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        Box::pin(Self::issue_resources(self, context, operation, request))
     }
     fn derive<'a>(
         &'a self,

@@ -3,7 +3,9 @@ use super::*;
 mod admitted;
 mod runtime;
 mod runtime_signing;
-pub use admitted::{AdmittedAuthority, AuthorityOperations, CheckpointKind, ScopeDerivation};
+pub use admitted::{
+    AdmittedAuthority, AuthorityOperations, CheckpointKind, ResourceIssuance, ScopeDerivation,
+};
 pub use runtime::RuntimeAuthority;
 pub(crate) use runtime::until_turn_stopped;
 mod verified_scope;

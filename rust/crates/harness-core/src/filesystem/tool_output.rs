@@ -114,8 +114,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(calls) = calls {
             grants.push((calls, false, invoke));
         }
-        let capability =
-            issuer.resource_credential(&authority.scope, &grants, None, seconds(clock.as_ref()))?;
+        let capability = authority
+            .issuer
+            .resource_credential(&crate::core::ResourceIssuance {
+                parent: &authority.scope,
+                grants: &grants,
+                caller: None,
+                now: seconds(clock.as_ref()),
+            })
+            .await?;
         let principal = capability.effective().principal().id.clone();
         let credential = capability.encode().to_vec();
         Ok(AgentObservation {
