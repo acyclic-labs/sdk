@@ -7,13 +7,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &'a Workspace<A, O>,
         grant: &'a ContentGrant,
         path: &'a str,
-        replay: bool,
+        replay: Option<super::super::host::PublicationAction>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (Option<Generation<A, O>>, acyclic_fs::access::PolicyFence),
+            (
+                Option<(Generation<A, O>, super::super::host::PublicationAction)>,
+                acyclic_fs::access::PolicyFence,
+            ),
         >,
     > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -43,10 +46,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .0
                 .publication_fence()
                 .ok_or_else(|| io.invalid("missing write policy fence"))?;
-            if replay {
-                if !view.0.decide(Action::Create, path, access_now()?).allowed {
-                    require(&view.0, Action::Write, path, io)?;
-                }
+            if let Some(action) = replay {
+                require(&view.0, action.policy(), path, io)?;
                 return Ok((None, fence));
             }
             // Refuse before probing existence when neither mutation can succeed.
@@ -62,6 +63,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Check the target and every missing parent. Existing parents need no
             // disclosure grant: create-only inboxes must remain usable without List.
             let mut candidate = path;
+            let mut original_action = super::super::host::PublicationAction::Create;
             loop {
                 let prefix = absolute
                     .0
@@ -79,6 +81,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         Action::Create
                     };
                     require(&view.0, action, candidate, io)?;
+                    if candidate == path && present {
+                        original_action = super::super::host::PublicationAction::Write;
+                    }
                 }
                 let Some((parent, _)) = candidate.rsplit_once('/') else {
                     break;
@@ -87,7 +92,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             // Move the already authenticated cut into publication. Reopening
             // its reference or sampling a newer head cannot retain this fact.
-            Ok((Some(generation), fence))
+            Ok((Some((generation, original_action)), fence))
         })
     }
 }

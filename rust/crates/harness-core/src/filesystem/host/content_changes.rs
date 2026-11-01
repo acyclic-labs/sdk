@@ -600,10 +600,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     }
                     let metadata_path = content_metadata_path_io(change.path(), true, Some(io))?;
                     if let Some(file) = &record.file {
-                        let bytes = io.encode(
-                            &(file, Option::<&GenerationRef>::None),
-                            io.remaining()?.bytes_encoded,
-                            true,
+                        let bytes = encode_upload_receipt(
+                            file,
+                            None,
+                            if record.source.is_some() {
+                                PublicationAction::Write
+                            } else {
+                                PublicationAction::Create
+                            },
+                            Some(io),
                         )?;
                         io.sdk(
                             transaction

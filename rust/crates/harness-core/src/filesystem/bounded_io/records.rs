@@ -183,23 +183,19 @@ impl UploadRecord for FileRef {
         FileRef::logical_owned_bytes(self)
     }
 }
-impl PreparationRecord for (FileRef, Option<crate::resources::GenerationRef>) {
+impl PreparationRecord for super::super::host::UploadReceipt {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         self.logical_owned_bytes().map(Some)
     }
 }
-impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
+impl UploadRecord for super::super::host::UploadReceipt {
     fn logical_owned_bytes(&self) -> Result<u64> {
-        self.0
-            .logical_owned_bytes()?
-            .checked_add(
-                self.1
-                    .as_ref()
-                    .map(|generation| generation.logical_owned_bytes())
-                    .transpose()?
-                    .unwrap_or(0),
-            )
-            .ok_or_else(|| Error::Invalid("upload generation ownership overflow".into()))
+        crate::core::owned_sum([
+            self.file.logical_owned_bytes()?,
+            self.expected_generation
+                .as_ref()
+                .map_or(Ok(0), |generation| generation.logical_owned_bytes())?,
+        ])
     }
 }
 

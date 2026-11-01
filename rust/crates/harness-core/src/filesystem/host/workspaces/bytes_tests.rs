@@ -342,7 +342,7 @@ fn publication_children_retain_only_owned_polling_handles() {
     type Transaction = acyclic_fs::Transaction<MemoryAuthorityBackend, MemoryObjectBackend>;
     let authorization = retained_operation_bytes(
         |(host, workspace, grant): (&'static Host, &'static Workspace, &'static ContentGrant)| {
-            host.authorize_content_write(workspace, grant, "file", false, None, None)
+            host.authorize_content_write(workspace, grant, "file", None, None, None)
         },
     );
     let retained_read = retained_operation_bytes(

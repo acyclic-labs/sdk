@@ -240,6 +240,80 @@ async fn creation_retains_its_authorized_cut_before_transaction_start() -> Resul
             &IdempotencyKey::new("overwrite")?, None, access).await,
             Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
         );
+        let (_broad_issuer, broad, _) = publication_grants(&volume, agent)?;
+        let overwrite_key = IdempotencyKey::new("authorized-overwrite")?;
+        host.put_content(
+            &volume,
+            &broad,
+            "created",
+            b"second",
+            "text/plain",
+            "created",
+            64,
+            &overwrite_key,
+            None,
+            access,
+        )
+        .await?;
+        // A create receipt stays a create even after another operation replaces
+        // the path; recovery must not classify it against the mutable head.
+        let original = host
+            .put_content(
+                &volume,
+                &grant,
+                "created",
+                b"first",
+                "text/plain",
+                "created",
+                64,
+                &IdempotencyKey::new("created")?,
+                None,
+                access,
+            )
+            .await?;
+        let original_key = IdempotencyKey::new("created")?;
+        let recovered = host
+            .content_for_operation_record_io(
+                PublicationLookup {
+                    volume: &volume,
+                    key: &original_key,
+                    expected_path: Some("created"),
+                    maximum_bytes: 64,
+                    internal_class: None,
+                    purpose: PublicationPurpose::WriteReceipt,
+                    scope: grant.policy_scope(),
+                    ceiling: None,
+                },
+                io.as_ref(),
+            )
+            .await?;
+        assert_eq!(recovered.map(|(file, _)| file), Some(original));
+        // Create permission cannot recover an operation whose original action
+        // was overwrite, even with the exact original request and payload.
+        assert!(matches!(
+            host.put_content(&volume, &grant, "created", b"second", "text/plain", "created", 64,
+                &overwrite_key, None, access).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
+        ));
+        assert!(matches!(
+            host.content_for_operation_record_io(PublicationLookup {
+                volume: &volume,
+                key: &overwrite_key,
+                expected_path: Some("created"),
+                maximum_bytes: 64,
+                internal_class: None,
+                purpose: PublicationPurpose::WriteReceipt,
+                scope: grant.policy_scope(),
+                ceiling: None,
+            }, io.as_ref()).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
+        ));
+        assert_eq!(
+            host.read(&workspace, None, "/created", 64, None)
+                .await?
+                .as_ref(),
+            b"second"
+        );
         let key = IdempotencyKey::new("raced")?;
         armed.store(true, std::sync::atomic::Ordering::SeqCst);
         // Real mutation after authorization, before the original transaction.
@@ -530,12 +604,14 @@ impl InternalPublicationCase<'_> {
             .host
             .read(workspace, None, &metadata_path, 4096, None)
             .await?;
-        let (staged, expected): (FileRef, Option<GenerationRef>) =
+        let staged: UploadReceipt =
             serde_json::from_slice(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(staged.path(), path);
-        assert!(expected.is_none());
+        assert_eq!(staged.version, 1);
+        assert_eq!(staged.file.path(), path);
+        assert!(staged.expected_generation.is_none());
+        assert_eq!(staged.action, PublicationAction::Create);
         assert_eq!(
-            crate::contract::canonical_json_bytes(&(staged, expected))?,
+            crate::contract::canonical_json_bytes(&staged)?,
             record.as_ref()
         );
         Ok(single_record)

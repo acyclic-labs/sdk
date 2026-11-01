@@ -198,7 +198,8 @@ pub(crate) use keys::map_error;
 pub(in crate::filesystem) use keys::{content_metadata_path_io, content_receipt_path_io};
 pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use publication::{
-    content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
+    PublicationAction, UploadReceipt, decode_content_metadata, encode_upload_receipt,
+    upload_replay_action,
 };
 pub(in crate::filesystem) use reads::read_generation;
 

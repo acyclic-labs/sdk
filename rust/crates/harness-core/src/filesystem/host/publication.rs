@@ -1,6 +1,107 @@
 use super::*;
 use std::marker::PhantomData;
 
+/// The action decided against the original authenticated publication cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::filesystem) enum PublicationAction {
+    Create,
+    Write,
+}
+
+impl PublicationAction {
+    pub(in crate::filesystem) const fn policy(self) -> acyclic_fs::access::Action {
+        match self {
+            Self::Create => acyclic_fs::access::Action::Create,
+            Self::Write => acyclic_fs::access::Action::Write,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub(in crate::filesystem) struct UploadReceipt {
+    pub version: u8,
+    pub file: FileRef,
+    pub expected_generation: Option<GenerationRef>,
+    pub action: PublicationAction,
+}
+
+#[derive(Serialize)]
+struct UploadReceiptRef<'a> {
+    pub version: u8,
+    pub file: &'a FileRef,
+    pub expected_generation: Option<&'a GenerationRef>,
+    pub action: PublicationAction,
+}
+
+impl UploadReceipt {
+    pub(in crate::filesystem) fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
+        if self.version != 1 {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "unsupported upload receipt version",
+            ));
+        }
+        crate::executor::with_history_io(io, |work| self.file.validate(work))
+    }
+}
+
+#[derive(Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+struct ReplayAction<'a> {
+    version: u8,
+    action: PublicationAction,
+    #[serde(borrow, rename = "file")]
+    _file: &'a serde_json::value::RawValue,
+    #[serde(borrow, rename = "expected_generation")]
+    _expected_generation: Option<&'a serde_json::value::RawValue>,
+}
+
+/// The subsequent canonical request comparison validates the complete original
+/// file and source identity. Borrow them here instead of copying that graph.
+pub(in crate::filesystem) fn upload_replay_action(
+    bytes: &[u8],
+    io: Option<&PreparationIo>,
+) -> Result<PublicationAction> {
+    let (record, _hold) = match io {
+        Some(io) => {
+            let (record, hold) = io.decode_seed(
+                PhantomData::<ReplayAction<'_>>,
+                bytes,
+                crate::executor::json::JsonValueSchema::None,
+                crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
+                crate::wire::ErrorCode::Storage,
+            )?;
+            (record, Some(hold))
+        }
+        None => (
+            crate::executor::json::json_from_slice_bounded(
+                PhantomData::<ReplayAction<'_>>,
+                bytes,
+                crate::executor::json::JsonBounds {
+                    maximum_bytes: bytes.len() as u64,
+                    maximum_items: u64::MAX,
+                    maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+                },
+                None,
+                Some(crate::executor::json::JsonValueSchema::None),
+                &mut |_| Ok(()),
+            )?,
+            None,
+        ),
+    };
+    if record.version != 1 {
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Storage,
+            "unsupported upload receipt version",
+        ));
+    }
+    Ok(record.action)
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::filesystem) enum PublicationPurpose {
     WriteReceipt,
@@ -79,24 +180,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let receipt_path = (receipt_path, hold);
         let receipt =
             read_generation(&original, &receipt_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
-        let receipt = if internal_class.is_some() {
-            recover_internal_upload_receipt(&original, receipt_identity, receipt, Some(io)).await?
-        } else {
-            receipt
-        };
         let hold = io.guard_bytes(&receipt)?;
         let receipt = (receipt, hold);
         let recorded = io.decode(
-            PhantomData::<(FileRef, Option<GenerationRef>)>,
+            PhantomData::<UploadReceipt>,
             &receipt.0,
             crate::wire::ErrorCode::Storage,
         )?;
-        recorded.0.0.validate(&mut Some(&mut io.history_io()))?;
+        recorded.0.validate(Some(io))?;
         let version = bounded_io::hex_key(&operation.into_bytes(), Some(io))?;
         let _version_hold = io.guard_owned(version.capacity() as u64)?;
-        if recorded.0.0.volume() != volume
-            || recorded.0.0.version() != version
-            || expected_path.is_some_and(|path| path != recorded.0.0.path())
+        if recorded.0.file.volume() != volume
+            || recorded.0.file.version() != version
+            || expected_path.is_some_and(|path| path != recorded.0.file.path())
         {
             return Err(stock_boundary(
                 Some(io),
@@ -104,9 +200,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "original upload metadata differs from requested identity",
             ));
         }
-        InternalContentClass::require_path(internal_class, recorded.0.0.path(), Some(io))?;
+        InternalContentClass::require_path(internal_class, recorded.0.file.path(), Some(io))?;
         let view = self
-            .receipt_access(&workspace, original.id(), &request, &recorded.0.0, io)
+            .receipt_access(
+                &workspace,
+                original.id(),
+                &request,
+                &recorded.0.file,
+                recorded.0.action,
+                io,
+            )
             .await?;
         let root_view = if workspace.id() != root.id() {
             Some(
@@ -144,6 +247,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: acyclic_fs::GenerationId,
         request: &PublicationLookup<'_>,
         file: &FileRef,
+        action: PublicationAction,
         io: &'a PreparationIo,
     ) -> Result<super::super::access::CompiledAccess<'a>> {
         let PublicationLookup {
@@ -207,22 +311,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         if write_receipt {
-            if !view
-                .0
-                .decide(
-                    acyclic_fs::access::Action::Create,
-                    file.path(),
-                    super::super::access::access_now()?,
-                )
-                .allowed
-            {
-                super::super::access::require(
-                    &view.0,
-                    acyclic_fs::access::Action::Write,
-                    file.path(),
-                    io,
-                )?;
-            }
+            super::super::access::require(&view.0, action.policy(), file.path(), io)?;
         } else {
             super::super::access::require(
                 &view.0,
@@ -248,53 +337,31 @@ const UPLOAD_RECORD_BYTES: u64 = 6
         + 32 * crate::conversation::MAX_LABEL_BYTES as u64
         + 1024);
 
-// Older internal writes kept the FileRef index and the canonical receipt at
-// separate paths. New writes use the tuple-shaped index as their receipt.
-pub(in crate::filesystem) async fn recover_internal_upload_receipt<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    original: &acyclic_fs::Generation<A, O>,
-    identity: &str,
-    receipt: acyclic_stream::OwnedBytes,
+pub(in crate::filesystem) fn encode_upload_receipt(
+    file: &FileRef,
+    expected_generation: Option<&GenerationRef>,
+    action: PublicationAction,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    if receipt.trim_ascii_start().first() != Some(&b'{') {
-        return Ok(receipt);
-    }
-    drop(receipt);
-    let path = content_receipt_path_io(identity, false, true, io)?;
-    let _hold = io
-        .map(|io| io.guard_owned(path.capacity() as u64))
-        .transpose()?;
-    read_generation(original, &path, UPLOAD_RECORD_BYTES, io).await
-}
-
-pub(in crate::filesystem) fn content_metadata_matches(
-    metadata: &[u8],
-    file: &FileRef,
-    receipt: &[u8],
-    io: Option<&PreparationIo>,
-) -> Result<bool> {
-    if metadata == receipt {
-        return Ok(true);
-    }
-    let legacy = match io {
-        Some(io) => io.encode(file, UPLOAD_RECORD_BYTES, false)?,
-        None => acyclic_stream::OwnedBytes::from(
-            serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
-        ),
+    let receipt = UploadReceiptRef {
+        version: 1,
+        file,
+        expected_generation,
+        action,
     };
-    Ok(metadata == legacy.as_ref())
+    match io {
+        Some(io) => io.encode(&receipt, io.remaining()?.bytes_encoded, true),
+        None => crate::contract::canonical_json_bytes(&receipt).map(Into::into),
+    }
 }
 
 async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     original: &acyclic_fs::Generation<A, O>,
-    recorded: &(FileRef, Option<GenerationRef>),
+    recorded: &UploadReceipt,
     receipt: &acyclic_stream::OwnedBytes,
     io: &PreparationIo,
 ) -> Result<()> {
-    let canonical = io.encode(&(&recorded.0, &recorded.1), UPLOAD_RECORD_BYTES, true)?;
+    let canonical = io.encode(recorded, UPLOAD_RECORD_BYTES, true)?;
     let hold = io.guard_bytes(&canonical)?;
     let canonical = (canonical, hold);
     if canonical.0.as_ref() != receipt.as_ref() {
@@ -304,14 +371,14 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "original upload receipt is not canonical",
         ));
     }
-    let metadata_path = content_metadata_path_io(recorded.0.path(), true, Some(io))?;
+    let metadata_path = content_metadata_path_io(recorded.file.path(), true, Some(io))?;
     let hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, hold);
     let metadata =
         read_generation(original, &metadata_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
-    if !content_metadata_matches(&metadata.0, &recorded.0, &canonical.0, Some(io))? {
+    if metadata.0.as_ref() != canonical.0.as_ref() {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
@@ -321,24 +388,19 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(())
 }
 
-/// Decode current publication records and the FileRef indexes written before them.
+/// Decode the versioned publication record through the original funded codec.
 pub(in crate::filesystem) fn decode_content_metadata<'a>(
     bytes: &[u8],
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    if bytes.trim_ascii_start().first() == Some(&b'{') {
-        return io.decode(
-            PhantomData::<FileRef>,
-            bytes,
-            crate::wire::ErrorCode::Storage,
-        );
-    }
-    let ((file, expected), mut hold) = io.decode(
-        PhantomData::<(FileRef, Option<GenerationRef>)>,
+    let (record, mut hold) = io.decode(
+        PhantomData::<UploadReceipt>,
         bytes,
         crate::wire::ErrorCode::Storage,
     )?;
-    drop(expected);
+    record.validate(Some(io))?;
+    let file = record.file;
+    drop(record.expected_generation);
     hold.substitute(file.logical_owned_bytes()?)?;
     Ok((file, hold))
 }
@@ -347,7 +409,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn recovered_upload<'a>(
         &self,
         original: &acyclic_fs::Generation<A, O>,
-        mut recorded: ((FileRef, Option<GenerationRef>), DecodeReservation<'a>),
+        mut recorded: (UploadReceipt, DecodeReservation<'a>),
         request: &PublicationLookup<'_>,
         io: &'a PreparationIo,
     ) -> Result<(FileRef, Option<acyclic_stream::OwnedBytes>)> {
@@ -355,10 +417,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         recorded
             .0
-            .0
+            .file
             .pin_version(version, &mut Some(&mut io.history_io()))?;
         let bytes = self
-            .read_retained_file(original, &recorded.0.0, request.maximum_bytes, Some(io))?
+            .read_retained_file(original, &recorded.0.file, request.maximum_bytes, Some(io))?
             .await?;
         let hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, hold);
@@ -366,8 +428,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
         recorded.1.adopt(version_bytes)?;
-        drop(recorded.0.1.take());
-        recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
+        drop(recorded.0.expected_generation.take());
+        recorded
+            .1
+            .substitute(recorded.0.file.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
         let payload = if request.purpose == PublicationPurpose::Content {
             if let Some(hold) = bytes.1 {
@@ -377,6 +441,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
-        Ok((self.seal_publication(recorded.0.0, Some(io))?, payload))
+        Ok((self.seal_publication(recorded.0.file, Some(io))?, payload))
     }
 }

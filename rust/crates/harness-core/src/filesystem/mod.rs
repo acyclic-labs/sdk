@@ -268,16 +268,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let receipt_path =
                 content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
             let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
-            let receipt_bytes = match io {
-                Some(io) => io.encode(
-                    &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
-                    true,
-                )?,
-                None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
-                    &(&provisional, expected_generation),
-                )?),
-            };
             let root = self.open(&workspace, io).await?;
             // Host records stay with the same volume owner as their readers
             // and journal. User content follows the selected project branch.
@@ -289,19 +279,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(binding) => binding,
                 None => (self.select_current_workspace(&root, active_io).await?, None),
             };
-            if needs_binding {
-                let (_generation, fence) = self
-                    .authorize_content_write(&root, grant, provisional.path(), true, ceiling, io)?
-                    .await?;
-                self.bind_content_operation(
-                    &root,
-                    opened.id(),
-                    operation,
-                    (fence, grant),
-                    active_io,
-                )?
-                .await?;
-            }
             let prior = active_io.sdk(
                 opened
                     .operation_generation(operation, active_io, active_io.cancellation())
@@ -317,32 +294,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let root_authorization = if opened.id() != root.id() {
-                let (_generation, fence) = self
-                    .authorize_content_write(
-                        &root,
-                        grant,
-                        provisional.path(),
-                        prior.is_some(),
-                        ceiling,
-                        io,
-                    )?
-                    .await?;
-                Some(fence)
-            } else {
-                None
-            };
-            let root_fence = root_authorization;
-            let (authorized_selection, policy_fence) = self
-                .authorize_content_write(
-                    &opened,
-                    grant,
-                    provisional.path(),
-                    prior.is_some(),
-                    ceiling,
-                    io,
-                )?
-                .await?;
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, io).await?;
             }
@@ -359,12 +310,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         + 1024);
                 let original_receipt =
                     read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
-                let original_receipt = if internal_class.is_some() {
-                    recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
-                        .await?
-                } else {
-                    original_receipt
-                };
+                let original_action = upload_replay_action(&original_receipt, io)?;
+                if opened.id() != root.id() || needs_binding {
+                    let (_, fence) = self.authorize_content_write(
+                        &root, grant, provisional.path(), Some(original_action), ceiling, io,
+                    )?.await?;
+                    if needs_binding {
+                        self.bind_content_operation(&root, opened.id(), operation, (fence, grant), active_io)?.await?;
+                    }
+                }
+                self.authorize_content_write(
+                    &opened,
+                    grant,
+                    provisional.path(),
+                    Some(original_action),
+                    ceiling,
+                    io,
+                )?
+                .await?;
+                let receipt_bytes =
+                    encode_upload_receipt(&provisional, expected_generation, original_action, io)?;
                 if original_receipt.as_ref() != receipt_bytes.as_ref() {
                     return Err(stock_boundary(
                         io,
@@ -375,7 +340,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 drop(original_receipt);
                 let indexed =
                     read_generation(&prior, &metadata_path, receipt_bytes.len() as u64, io).await?;
-                if !content_metadata_matches(&indexed, &provisional, &receipt_bytes, io)? {
+                if indexed.as_ref() != receipt_bytes.as_ref() {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
@@ -412,11 +377,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
-            let authorized_selection = authorized_selection.ok_or_else(|| {
-                stock_boundary(io, crate::wire::ErrorCode::Storage,
-                    "fresh publication has no authorized generation")
-            })?;
+            let (authorized_selection, policy_fence) = self
+                .authorize_content_write(&opened, grant, provisional.path(), None, ceiling, io)?
+                .await?;
+            let (authorized_selection, original_action) =
+                authorized_selection.ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "fresh publication has no authorized generation",
+                    )
+                })?;
             let authorized_generation = self.generation_ref_id(authorized_selection.id(), io)?;
+            let root_fence = if opened.id() != root.id() || needs_binding {
+                let (_, fence) = self.authorize_content_write(
+                    &root, grant, provisional.path(), Some(original_action), ceiling, io,
+                )?.await?;
+                if needs_binding {
+                    self.bind_content_operation(&root, opened.id(), operation, (fence, grant), active_io)?.await?;
+                }
+                (opened.id() != root.id()).then_some(fence)
+            } else {
+                None
+            };
             let generation_hold = io.map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?)).transpose()?;
             let authorized_generation = (authorized_generation, generation_hold);
             let absolute = crate::executor::with_history_io(io, |work| {
@@ -439,6 +422,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 policy_fence
             };
+            let receipt_bytes =
+                encode_upload_receipt(&provisional, expected_generation, original_action, io)?;
             let mut mutations = crate::model::vec_with_capacity(6, io)?;
             if let Some((parent, _)) = absolute.rsplit_once('/')
                 && !parent.is_empty()
