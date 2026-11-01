@@ -465,7 +465,7 @@ mod tests {
                 Err(Error::Storage(_))
             ));
             assert!(
-                crate::agent::TurnOutputs::partial(&*files, OperationId::from_bytes([9; 16]))
+                crate::agent::TurnOutputs::partial(&*files, OperationId::from_bytes([10; 16]))
                     .await?
                     .is_empty()
             );
