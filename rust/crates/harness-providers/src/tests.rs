@@ -406,7 +406,15 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         request.tools.push(late);
         request.messages.push(ModelMessage {
             role: ModelRole::User,
-            content: ModelContent::Text(json!({"kind":"tools.changed", "tools":[{"name":"late", "input_schema":{"type":"object"}}]}).to_string()),
+            content: ModelContent::Part(ModelContentPart::Notices {
+                notices: vec![acyclic_model_render::Notice {
+                    source: "tools".into(),
+                    kind: "tools.changed".into(),
+                    body: json!({"tools":[{"name":"late", "input_schema":{"type":"object"}}]}),
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            }),
         });
         request.messages.extend([
             ModelMessage {

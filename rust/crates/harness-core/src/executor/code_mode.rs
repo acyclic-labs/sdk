@@ -43,13 +43,39 @@ impl StockExecution<'_> {
             return Ok(());
         }
         #[derive(Serialize)]
-        struct Notice<'a> {
-            kind: &'static str,
+        struct Body<'a> {
             tools: &'a [crate::tool::ToolDefinition],
         }
-        let notice = Notice {
-            kind: "tools.changed",
-            tools,
+        #[derive(Serialize)]
+        struct Notice<'a> {
+            source: &'static str,
+            kind: &'static str,
+            body: Body<'a>,
+            wake: bool,
+            coalesce_key: Option<&'static str>,
+        }
+        #[derive(Serialize)]
+        struct Content<'a> {
+            kind: &'static str,
+            notices: [Notice<'a>; 1],
+        }
+        #[derive(Serialize)]
+        struct Message<'a> {
+            role: ModelRole,
+            content: Content<'a>,
+        }
+        let notice = Message {
+            role: ModelRole::User,
+            content: Content {
+                kind: "notices",
+                notices: [Notice {
+                    source: "tools",
+                    kind: "tools.changed",
+                    body: Body { tools },
+                    wake: false,
+                    coalesce_key: None,
+                }],
+            },
         };
         #[cfg(feature = "filesystem")]
         let funded = self
@@ -74,32 +100,40 @@ impl StockExecution<'_> {
         {
             _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
         }
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
-            stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "tool notice is not UTF-8",
-            )
-        })?;
+        #[cfg(feature = "filesystem")]
+        let decoded = self
+            .io
+            .map(|io| {
+                io.decode(
+                    std::marker::PhantomData::<ModelMessage>,
+                    &bytes,
+                    crate::wire::ErrorCode::Invalid,
+                )
+            })
+            .transpose()?;
+        #[cfg(not(feature = "filesystem"))]
+        let decoded: Option<(ModelMessage, crate::conversation::ContentHold<'_>)> = None;
+        let message = match decoded {
+            Some(decoded) => retain_preparation(decoded)?,
+            None => serde_json::from_slice(&bytes).map_err(|_| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "tool notice decoding failed",
+                )
+            })?,
+        };
         // The active input cursor is already authenticated. Insert immediately
         // after it, keeping the same prefix when later model steps add results.
         let index = context
             .current_input_index
             .map_or(context.messages.len(), |index| index as usize + 1);
-        if context.messages.get(index).is_some_and(|message| {
-            message.role == ModelRole::User
-                && matches!(&message.content, ModelContent::Text(existing) if existing == text)
-        }) {
+        if context.messages.get(index) == Some(&message) {
             return Ok(());
         }
         crate::context::ContextInsertion {
             local_index: index,
-            // System messages become a top-level prefix on some protocols.
-            // An appended user-context notice keeps those prefixes unchanged.
-            message: ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text(stock_string_copy(text, self.io)?),
-            },
+            message,
         }
         .insert(context, 0, self.io)
     }

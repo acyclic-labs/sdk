@@ -175,11 +175,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             .messages
             .iter()
             .find_map(|message| {
-                let ModelContent::Text(text) = &message.content else {
-                    return None;
-                };
-                let value: Value = serde_json::from_str(text).ok()?;
-                (value["kind"] == "tools.changed").then_some(value)
+                let (notices, _) = message.content.notice_parts()?;
+                notices
+                    .iter()
+                    .find(|notice| notice.source == "tools" && notice.kind == "tools.changed")
+                    .map(|notice| notice.body.clone())
             })
             .unwrap()
     };
