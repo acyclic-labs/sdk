@@ -1,5 +1,6 @@
 use super::*;
 use crate::local::host_owner::SessionAction;
+use std::time::Duration;
 
 #[test]
 fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {

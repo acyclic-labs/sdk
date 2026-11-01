@@ -401,6 +401,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             agent: root.clone(),
             target: ReadTarget::ToolOutput {
                 path: "../outside".into(),
+                at: None,
             },
             offset: 0,
         }),

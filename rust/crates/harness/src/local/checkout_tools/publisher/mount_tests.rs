@@ -147,7 +147,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             .observe_staged_once(
                 operation,
                 None,
-                64,
+                Some(64),
                 crate::conversation::ContentAccess::default(),
             )?
             .await;
@@ -166,7 +166,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
                 .observe_staged_once(
                     operation,
                     None,
-                    64,
+                    Some(64),
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?
@@ -578,7 +578,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
     };
     let observe = move |operation| async move {
         publisher
-            .observe_staged_once(operation, Some(1024), access())?
+            .observe_staged_once(operation, None, Some(1024), access())?
             .await
             .map(|(file, _)| file)
     };

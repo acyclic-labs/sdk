@@ -1099,7 +1099,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     };
     let runtime = &harness.agents.get().expect("hosted agent runtime").runtime;
     let settlement = tokio::select! {
-        result = settled(&agents, &child) => result.map(|_| ()),
+        result = settled(&harness, &agents, &child) => result.map(|_| ()),
         result = runtime.completion() => result,
     };
     if let Err(error) = settlement {
@@ -1163,7 +1163,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .send("parent-write", "write parent seed")
         .await?;
     tokio::select! {
-        result = settled(&agents, &root) => result.map(|_| ())?,
+        result = settled(&harness, &agents, &root) => result.map(|_| ())?,
         result = runtime.completion() => result?,
     }
     assert_eq!(provider.request_count(), 4);

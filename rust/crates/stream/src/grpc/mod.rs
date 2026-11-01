@@ -23,7 +23,7 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, CommitId, CommitOutcome, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
 
@@ -33,7 +33,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::{AppendRequest, StreamPath};
+use crate::{AppendRequest, CommitOutcome, StreamPath};
 #[cfg(test)]
 mod receipt_tests;
 mod server;
