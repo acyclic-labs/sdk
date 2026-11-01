@@ -4312,21 +4312,21 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/tests/hosts/managed-session.py:119` | Owner exit recheck/timed join | Close original bridge stdin and join its original process/tree retirement; nonzero status is typed. | Actioned; source only |
 | `plugin/tests/hosts/shared-mount-scale.py:96` | Owner readiness sleep/recheck | Same existing workspace owner bridge ready record or EOF/error; retain actual mount sampler and population assertions. | Actioned; source only |
 | `plugin/tests/hosts/shared-mount-scale.py:189` | Owner timed exit join | Same original bridge stdin EOF and exit result. | Actioned; source only |
-| `plugin/tests/hosts/shared-mount-scale.py:203` | Owner timed cleanup join | Same original bridge stdin EOF and exit result; the independent MCP bridge wait is still pending. | Actioned for owner; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:203` | Owner timed cleanup join | Same original bridge stdin EOF and exit result; the independent MCP bridge now joins its original cancellation/exit without a timed fallback. | Actioned for owner; source only |
 | `plugin/tests/hosts/managed-session.py:53` | Fixed blocked-input child hold | Original externally controlled native child cancellation/exit event; preserve the real backpressure and tree-retirement oracle. | Pending |
 | `plugin/tests/hosts/managed-session.py:81` | Fixed descendant hold | Original process-tree cancellation/physical descendant exit event; no automatic hold expiry may satisfy the oracle. | Pending |
 | `plugin/tests/hosts/managed-session.py:84` | Fixed native session hold | Original native session cancellation/exit event, retaining real capture and merge assertions. | Pending |
 | `plugin/tests/hosts/managed-session.py:145` | Child file readiness recheck | Original child file publication notification joined to its actual early-exit/owner terminal. | Pending |
 | `plugin/tests/hosts/managed-session.py:158` | Blocked-input file readiness recheck | Original first-byte producer publication notification plus native child terminal; preserve blocked remaining input. | Pending |
-| `plugin/tests/hosts/managed-session.py:79` | Nested MCP timed exit | Original nested stdin EOF, MCP reply and physical child exit. | Pending |
-| `plugin/tests/hosts/managed-session.py:101` | Implicit workspace command timeout | Original workspace command reply and process error/exit; no user-selected deadline established. | Pending |
-| `plugin/tests/hosts/managed-session.py:115` | MCP exit recheck/timed join | Original MCP stdin EOF and physical process exit. | Pending |
-| `plugin/tests/hosts/managed-session.py:130` | Implicit native help command timeout | Original real executable output and exit; preserve native flag/version oracle. | Pending |
-| `plugin/tests/hosts/managed-session.py:133` | Implicit host launch timeout | Original host launch result and physical command exit. | Pending |
-| `plugin/tests/hosts/managed-session.py:193` | Timed MCP cleanup/fallback kill | Original MCP cancellation/EOF and physical retirement terminal. | Pending |
-| `plugin/tests/hosts/shared-mount-scale.py:101` | Implicit host launch timeout | Original host launch result and command exit. | Pending |
-| `plugin/tests/hosts/shared-mount-scale.py:110` | Implicit workspace command timeout | Original workspace reply/error and command exit. | Pending |
-| `plugin/tests/hosts/shared-mount-scale.py:187` | Timed MCP exit join | Original stdin EOF and physical bridge exit. | Pending |
+| `plugin/tests/hosts/managed-session.py:79` | Nested MCP timed exit | Original nested stdin EOF, MCP reply and physical child exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:101` | Implicit workspace command timeout | Original workspace command reply and process error/exit; no user-selected deadline established. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:115` | MCP exit recheck/timed join | Original MCP stdin EOF and physical process exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:130` | Implicit native help command timeout | Original real executable output and exit; preserve native flag/version oracle. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:133` | Implicit host launch timeout | Original host launch result and physical command exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:193` | Timed MCP cleanup/fallback kill | Original MCP cancellation/EOF and physical retirement terminal. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:101` | Implicit host launch timeout | Original host launch result and command exit. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:110` | Implicit workspace command timeout | Original workspace reply/error and command exit. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:187` | Timed MCP exit join | Original stdin EOF and physical bridge exit. | Actioned; source only |
 | `plugin/identity/src/lib.rs:660` | Product device readiness retry | Product owner must expose original approval completion or an honest caller-observed pending result; interval/token reattempt is not transient transport backoff. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original request/timer registration and explicit deterministic clock advancement after its producer event. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Same explicit registered-operation event; no continuously runnable sampling task. | Pending; product owner |
@@ -4334,3 +4334,5 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original login cancellation/settlement event followed by deterministic poll-count assertion. | Pending; product owner |
 
 The existing identity receipt/key re-send and failed-revocation caller re-send tests are not automatic retry loops. Their exact identities and real failure controls remain. This plugin extension is not a complete repository census and authorizes no surviving readiness delay.
+
+The subsequent Python consumer deletion removes the remaining hardcoded two-second subprocess and MCP exit windows in these same two files. Actual command output/status, stdin EOF, cancellation and original OS process-exit events remain. Nested finally paths join the nested MCP, outer MCP and original workspace owner even if an earlier cleanup raises. The sampler's redundant pre-terminate poll is removed; Popen retains its original signal/exit identity handling. Added process starts, tasks, timers, channels, requests, payload copies or barriers for this subsequent deletion: zero. These joins do not close the separate child marker/hold sites or the shared process report window. Source-only; no real-binary result is claimed.

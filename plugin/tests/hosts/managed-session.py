@@ -75,8 +75,11 @@ if prompt=='recursive':
   assert (cwd/'first.txt').read_text()=='native'
   assert not (cwd/'.acyclic-sdk').exists(),'nested custody was authored into the child project'
  finally:
-  if mcp:mcp.close()
-  nested.stdin.close();assert nested.wait(timeout=2)==0
+  try:
+   if mcp:mcp.close()
+  finally:
+   try:nested.stdin.close()
+   finally:assert nested.wait()==0
 if prompt=='cancelled':
  child=subprocess.Popen(['sh','-c','sleep 30'])
  (cwd/'descendant.pid').write_text(str(child.pid))
@@ -94,7 +97,7 @@ if prompt=='resumed':
   with (root/'owner.log').open('w+') as log:
    owner=start_workspace_owner(graphcoder,workspace,state,root,env,log)
  def client(action):
-  result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True,timeout=2)
+  result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
  def start_bridge(task):
   global bridge,mcp
@@ -107,9 +110,14 @@ if prompt=='resumed':
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
  def close_bridge():
   global bridge,mcp
-  if mcp:mcp.close();mcp=None
-  if bridge and bridge.poll() is None:bridge.stdin.close();assert bridge.wait(timeout=2)==0,(root/'bridge.log').read_text()[-1200:]
-  bridge=None
+  previous_mcp,mcp=mcp,None
+  previous_bridge,bridge=bridge,None
+  try:
+   if previous_mcp:previous_mcp.close()
+  finally:
+   if previous_bridge:
+    try:previous_bridge.stdin.close()
+    finally:assert previous_bridge.wait()==0,(root/'bridge.log').read_text()[-1200:]
  def stop_owner():
   global owner
   previous,owner=owner,None
@@ -118,10 +126,10 @@ if prompt=='resumed':
   # Native global policy flags must precede exec; this is checked without a model.
   base=[real_codex,'--sandbox','workspace-write','--ask-for-approval','never','--add-dir',str(workspace),'exec','--json','--cd',str(workspace)]
   for tail in (['--help'],['resume','fixture-id','--help']):
-   parsed=subprocess.run(base+tail,cwd=workspace,env=env,capture_output=True,text=True,timeout=2)
+   parsed=subprocess.run(base+tail,cwd=workspace,env=env,capture_output=True,text=True)
    assert parsed.returncode==0,parsed.stderr[-1000:]
   start_owner()
-  launched=subprocess.run([acyclic,'host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],cwd=workspace,env=env,capture_output=True,text=True,timeout=2)
+  launched=subprocess.run([acyclic,'host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],cwd=workspace,env=env,capture_output=True,text=True)
   assert launched.returncode==0,(launched.stdout,launched.stderr)
   parent=json.loads((workspace/'root-launch.json').read_text())['task'];start_bridge(parent)
   print('NATIVE_FIXTURE_PASS root-launch',flush=True)
@@ -178,10 +186,6 @@ if prompt=='resumed':
    if error.is_file():print('FIXTURE_NATIVE_ERROR',view.name,error.read_text()[-4000:],flush=True)
   raise
  finally:
-  if mcp:mcp.close()
-  if bridge and bridge.poll() is None:
-   bridge.stdin.close()
-   try:bridge.wait(timeout=2)
-   except subprocess.TimeoutExpired:bridge.kill();bridge.wait(timeout=2)
-  stop_owner()
+  try:close_bridge()
+  finally:stop_owner()
 assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'

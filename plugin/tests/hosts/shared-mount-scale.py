@@ -91,7 +91,7 @@ sys.exit(17)
             gates = []
             try:
                 launch = subprocess.run([binary, 'host', host, '--', *flags], cwd=workspace,
-                                        env=env, capture_output=True, text=True, timeout=2)
+                                        env=env, capture_output=True, text=True)
                 assert launch.returncode == 0, launch.stderr
                 parent = json.loads((workspace / 'root.json').read_text())
                 task = parent['task']
@@ -100,7 +100,7 @@ sys.exit(17)
                     print(json.dumps({'host': host, 'step': 'workspace command', 'action': action}), flush=True)
                     result = subprocess.run([binary, '__workspace'], cwd=workspace, env=env,
                                             input=json.dumps(action), text=True,
-                                            capture_output=True, timeout=2)
+                                            capture_output=True)
                     assert result.returncode == 0, result.stderr
                     return json.loads(result.stdout)
 
@@ -177,7 +177,7 @@ sys.exit(17)
                     assert (workspace / (reference + '.txt')).read_text() == reference
                     assert (path / (reference + '.txt')).read_text() == reference
                 bridge.stdin.close()
-                assert bridge.wait(timeout=2) == 0
+                assert bridge.wait() == 0
                 previous, owner = owner, None
                 stop_workspace_owner(previous)
                 elapsed = time.monotonic() - started
@@ -191,9 +191,9 @@ sys.exit(17)
                 for gate in gates:
                     gate.close()
                 try:
-                    if bridge is not None and bridge.poll() is None:
+                    if bridge is not None:
                         bridge.terminate()
-                        bridge.wait(timeout=2)
+                        bridge.wait()
                 finally:
                     if owner is not None:
                         stop_workspace_owner(owner)
