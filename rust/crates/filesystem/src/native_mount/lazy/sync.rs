@@ -28,6 +28,15 @@ struct PreparedPublication<'a, A: 'static, O: 'static, E> {
     operation: crate::OperationId,
 }
 
+struct PublicationState<'a, F> {
+    permit: crate::PublicationPermit,
+    work: &'a crate::NativeMaterializationWork,
+    cancellation: &'a CancellationToken,
+    before_publication: &'a mut F,
+    acknowledged: &'a mut Option<crate::NativePublicationSnapshot>,
+    accounting_failure: &'a mut Option<MountSourceError>,
+}
+
 impl<A, O, D, S> LazyMountSource<A, O, D, S>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -56,12 +65,16 @@ where
         let mut accounting_failure = None;
         let result = self
             .apply_publication(
-                permit,
+                &mut PublicationState {
+                    permit,
+                    work,
+                    cancellation,
+                    before_publication,
+                    acknowledged,
+                    accounting_failure: &mut accounting_failure,
+                },
                 &mut crate::kernel::KernelAccounting::native(work, cancellation),
-                acknowledged,
-                before_publication,
                 selected,
-                &mut accounting_failure,
             )
             .await;
         if result.is_err()
@@ -82,23 +95,16 @@ where
 
     async fn apply_publication<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
+        publication: &mut PublicationState<'_, F>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
-        before_publication: &mut F,
         selected: SelectedPublication<'_>,
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
+        let (work, cancellation) = (publication.work, publication.cancellation);
         // Every binding of a shared source advances its epoch when any of
         // them observes a change, such as the root refreshing for a sibling's
         // spawn. Lookups follow that epoch; a publication follows it too
@@ -124,14 +130,7 @@ where
             })
             .transpose()?;
         if let Some(published) = self
-            .recover_publication(
-                permit,
-                accounting,
-                before_publication,
-                acknowledged,
-                (selected, selected_proof),
-                accounting_failure,
-            )
+            .recover_publication(publication, accounting, (selected, selected_proof))
             .await?
         {
             return Ok(published);
@@ -141,15 +140,7 @@ where
         let (removals, captured_records) = self.removal_inputs(&mut input)?;
         let dirty = self.dirty_detached_records(work).await?;
         if removals.is_empty() && dirty.value.is_empty() && selected.is_none() {
-            return self
-                .publish_clean(
-                    permit,
-                    accounting,
-                    before_publication,
-                    acknowledged,
-                    accounting_failure,
-                )
-                .await;
+            return self.publish_clean(publication, accounting).await;
         }
         let PreparedPublication {
             operation,
@@ -187,12 +178,9 @@ where
         self.install_publication(candidate, &installed, &mut carrier, cancellation)
             .await?;
         self.complete_publication(
-            permit,
+            publication,
             (context, operation, selected_proof),
             accounting,
-            before_publication,
-            acknowledged,
-            accounting_failure,
         )
         .await
     }
