@@ -24,6 +24,30 @@ pub struct CreateSpec<'a> {
     pub creation: CreationOperation<'a>,
 }
 
+/// One exact-head generation restoration in a composed commit.
+pub struct RestoreSpec<'g, A: 'static, O: 'static> {
+    /// The expected current generation. Concurrent publication refuses the
+    /// complete transaction, including every caller mutation.
+    pub expected: &'g crate::Generation<A, O>,
+    /// Retained source state. A source from another workspace shares its file
+    /// table under a generation root belonging to the destination workspace.
+    pub source: &'g crate::Generation<A, O>,
+    /// Stable operation identity for this restoration.
+    pub operation: OperationId,
+    /// Authorization already admitted by the shared filesystem owner.
+    pub permit: PublicationPermit,
+}
+
+/// Immutable generation created by a prepared workspace fork. It becomes
+/// readable through its workspace when the containing transaction commits.
+#[derive(Clone, Copy, Debug)]
+pub struct ForkedGeneration {
+    /// Destination workspace identity.
+    pub workspace: crate::WorkspaceId,
+    /// Destination generation, sharing its source's immutable file table.
+    pub generation: GenerationId,
+}
+
 impl<P: ?Sized, O> Fs<StreamAuthorityStore<P>, O> {
     /// The Stream provider holding this filesystem's authority, so callers can
     /// compose their own records into the same consistency domain.
@@ -37,9 +61,106 @@ where
     P: crate::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Prepares authenticated restores with the caller's own records in one
+    /// conditional transaction. No volume head changes during preparation.
+    /// The commit retains all proofs and collection/projection guards through
+    /// an unknown outcome; resubmit that exact commit after transport failure.
+    pub async fn prepare_restore_many(
+        &self,
+        restores: &[RestoreSpec<'_, StreamAuthorityStore<P>, O>],
+        commit: &mut FilesystemCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<
+        OperationReceipt<Vec<crate::Generation<StreamAuthorityStore<P>, O>>>,
+        WorkspaceError,
+    > {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let mut guard = commit.guard();
+        let result = async {
+            let mut generations = Vec::with_capacity(restores.len());
+            for restore in restores {
+                let volume = &restore.expected.workspace.volume;
+                if !self.same_deployment(&volume.fs)
+                    || !self.same_deployment(&restore.source.workspace.volume.fs)
+                {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                let (root, head) = volume
+                    .resolve_head_generation(&mut accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::engine)?;
+                if GenerationId::from_root(root) != restore.expected.id() {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+                let copied = if restore.source.workspace_id() == restore.expected.workspace_id() {
+                    None
+                } else {
+                    let paths = Owned::new(None, accounting.claim_owned(0, 0)?, 0);
+                    Some(
+                        self.materialize_forked_generation_root(
+                            restore.source,
+                            restore.expected.workspace_id(),
+                            paths,
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?,
+                    )
+                };
+                let generation_root = copied
+                    .as_ref()
+                    .map_or(restore.source.id().object_id(), |(root, _, _, _)| {
+                        root.value.generation_root
+                    });
+                let prepared = crate::kernel::prepare_publication(
+                    self,
+                    PublishGenerationRequest {
+                        authority_id: volume_authority_id(volume.id),
+                        volume_id: volume.id,
+                        epoch: head.epoch,
+                        expected: head,
+                        operation_id: restore.operation,
+                        generation_root,
+                    },
+                    restore.permit,
+                    closure_limits(volume.config),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
+                .map_err(WorkspaceError::engine)?;
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let contributed = self
+                    .inner
+                    .authority
+                    .contribute_publication(guard.commit(), prepared, &mut authority)
+                    .await;
+                finish_authority_work(authority)?;
+                if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+                if let Some((root, _, _, _)) = copied {
+                    root.retire(&mut accounting)?;
+                }
+                generations.push(crate::Generation {
+                    workspace: restore.expected.workspace.clone(),
+                    id: GenerationId::from_root(generation_root),
+                    publication_closure: None,
+                });
+            }
+            Ok(generations)
+        }
+        .await;
+        if result.is_ok() {
+            guard.disarm();
+        }
+        measured(result, &accounting)
+    }
+
     /// Adds every fork to `commit`, all-or-none with the caller's mutations.
     ///
-    /// Returns each destination's workspace identity, in order. Nothing is
+    /// Returns each destination's workspace and generation, in order. Nothing is
     /// visible until the commit is submitted and committed.
     pub async fn prepare_fork_many(
         &self,
@@ -47,7 +168,7 @@ where
         commit: &mut FilesystemCommit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
+    ) -> MeasuredResult<OperationReceipt<Vec<ForkedGeneration>>, WorkspaceError> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
@@ -77,7 +198,7 @@ where
         commit: &mut FilesystemCommit,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::WorkspaceId, WorkspaceError> {
+    ) -> Result<ForkedGeneration, WorkspaceError> {
         let source = fork.source;
         if !self.same_deployment(&source.workspace.volume.fs) {
             return Err(WorkspaceError::ForeignGeneration);
@@ -126,8 +247,12 @@ where
         recorded?;
         commit.hold(prepared.hold.with_proof(pending));
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
+        let generation = GenerationId::from_root(fork_root.value.generation_root);
         fork_root.retire(accounting)?;
-        Ok(destination_id)
+        Ok(ForkedGeneration {
+            workspace: destination_id,
+            generation,
+        })
     }
 
     /// Adds every fresh workspace to `commit`, all-or-none with the caller's

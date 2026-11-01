@@ -222,6 +222,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let mut data = client
         .follow_data(
             wire::SessionFollow {
+                opening_cut: false,
                 key: None,
                 read_limit: 0,
                 bootstrap_head: false,

@@ -30,7 +30,7 @@ mod reply;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use reply::{
     AgentControlFailure, AgentReply, ChildAgent, MAX_AGENT_REPLY_BYTES, PendingApproval,
-    decode_agent_reply, encode_agent_reply,
+    decode_agent_reply, encode_agent_reply, encoded_agent_reply_size,
 };
 
 #[cfg(any(feature = "agents", feature = "wasm"))]
@@ -46,9 +46,16 @@ pub use acyclic_harness_core::{
     model::ModelContent,
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]
-pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
+pub use agents::{AgentClient, AgentClientError, AgentDelivery, AgentEvent, AgentSelection};
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod acp;
+#[cfg(any(feature = "agents", feature = "wasm"))]
+mod event_projection;
+#[cfg(any(feature = "agents", feature = "wasm"))]
+pub use event_projection::{
+    ApprovalPayloadEvent, EventCursor, EventDrain, EventProjection, ExecutionPayloadEvent,
+    ExecutionPosition, ExecutionStreamEvent, StreamEvent,
+};
 pub mod reader;
 pub use reader::{Reader, ReaderPolicy};
 

@@ -373,6 +373,7 @@ impl SkillPublicationSource {
                 .ok_or(StreamError::Unavailable)??;
             (self.revalidate)()?;
             match update {
+                FollowUpdate::Opening { .. } => {}
                 FollowUpdate::Record(record) => {
                     self.record(record, reader, limits, session).await?
                 }

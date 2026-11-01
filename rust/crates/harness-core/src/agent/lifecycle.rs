@@ -17,7 +17,14 @@ use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, St
 use std::sync::Arc;
 
 /// Participant kind of a closing step's release of the agent's resources.
-pub const CLOSE: &str = "acyclic.harness.agent.close.v1";
+pub const CLOSE: &str = "acyclic.harness.agent.close.v2";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CloseRequest {
+    agent: AgentPath,
+    volumes: Option<(String, Vec<u8>)>,
+}
 
 /// Releases or parks what an agent holds outside its streams.
 pub trait AgentLifecycle: acyclic_stream::ProviderPlatform + 'static {
@@ -30,11 +37,20 @@ pub trait AgentLifecycle: acyclic_stream::ProviderPlatform + 'static {
 }
 
 /// The participant a closing step asks for.
-pub(super) fn close_participant(agent: &AgentPath) -> Participant {
-    Participant {
+pub(super) fn close_participant(
+    agent: &AgentPath,
+    volumes: Option<Participant>,
+) -> Result<Participant, Error> {
+    let request = CloseRequest {
+        agent: agent.clone(),
+        volumes: volumes.map(|participant| (participant.kind, participant.plan.to_vec())),
+    };
+    Ok(Participant {
         kind: CLOSE.to_owned(),
-        plan: agent.as_str().as_bytes().to_vec().into(),
-    }
+        plan: crate::contract::canonical_json_bytes(&request)
+            .map_err(|_| Error::Record("close request does not encode"))?
+            .into(),
+    })
 }
 
 /// The host composer of agent steps: spawned volumes and closing releases.
@@ -80,6 +96,12 @@ impl Composer for AgentComposer {
         // Re-derived from the committed checkpoints, never from the request:
         // the publishing agent is open before this step and closed after it.
         let closed: AgentState = super::checkpoint_state(next).map_err(guest)?;
+        let request: CloseRequest = serde_json::from_slice(&participant.plan).map_err(guest)?;
+        if crate::contract::canonical_json_bytes(&request).map_err(guest)?
+            != participant.plan.as_ref()
+        {
+            return Err(guest("close request is not canonical"));
+        }
         let was_open = match previous {
             Some(previous) => !super::checkpoint_state(previous).map_err(guest)?.closed,
             None => true,
@@ -87,13 +109,32 @@ impl Composer for AgentComposer {
         if !closed.closed
             || !was_open
             || closed.path.id().as_str() != actor.id()
-            || participant.plan.as_ref() != closed.path.as_str().as_bytes()
+            || request.agent != closed.path
         {
             return Err(guest("close request is not this agent's closing step"));
         }
+        let volumes = match request.volumes {
+            Some((kind, plan)) => Some(
+                self.volumes
+                    .as_ref()
+                    .ok_or_else(|| guest("this host composes no volumes"))?
+                    .open(
+                        actor,
+                        previous,
+                        delivered,
+                        next,
+                        &Participant {
+                            kind,
+                            plan: plan.into(),
+                        },
+                    )?,
+            ),
+            None => None,
+        };
         Ok(Box::new(Closing {
             lifecycle,
             agent: closed.path,
+            volumes,
         }))
     }
 }
@@ -102,11 +143,21 @@ impl Composer for AgentComposer {
 struct Closing {
     lifecycle: Arc<dyn AgentLifecycle>,
     agent: AgentPath,
+    volumes: Option<Box<dyn Composition>>,
 }
 
 impl Composition for Closing {
+    fn revalidate(&self, conflicts: &[acyclic_stream::CommitConflict]) -> bool {
+        self.volumes
+            .as_ref()
+            .is_some_and(|volumes| volumes.revalidate(conflicts))
+    }
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
         Box::pin(async move {
+            let request = match &mut self.volumes {
+                Some(volumes) => volumes.seal(request).await?,
+                None => request,
+            };
             self.lifecycle.close(&self.agent).await.map_err(guest)?;
             Ok(request)
         })
@@ -114,8 +165,13 @@ impl Composition for Closing {
 
     fn settle<'a>(
         self: Box<Self>,
-        _outcome: Result<&'a CommitOutcome, &'a StreamError>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
     ) -> GuestFuture<'a, ()> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            match self.volumes {
+                Some(volumes) => volumes.settle(outcome).await,
+                None => Ok(()),
+            }
+        })
     }
 }

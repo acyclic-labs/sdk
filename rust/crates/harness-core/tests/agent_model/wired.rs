@@ -1630,6 +1630,15 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         edit: Arc<Edit>,
     }
     impl<H: TurnHost> TurnHost for EditingHost<H> {
+        fn open_control<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            action: &'a ContextAction,
+            cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+            self.original.open_control(agent, action, cancellation)
+        }
+
         fn open<'a>(
             &'a self,
             agent: &'a AgentState,

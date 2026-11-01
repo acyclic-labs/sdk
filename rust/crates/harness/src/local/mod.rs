@@ -12,6 +12,7 @@ use crate::{
     tool::{Tool, ToolRegistry},
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+pub use acyclic_harness_client::{AgentDelivery, EventDrain, EventProjection};
 use acyclic_stream::LocalStream;
 use std::{
     path::{Path, PathBuf},

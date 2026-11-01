@@ -62,7 +62,8 @@ impl Connection {
             Err(error @ AgentExchangeError::Session(acyclic_stream::StreamError::Unavailable)) => {
                 Err(self.stream_failure(error))
             }
-            result => result.map_err(exchange),
+            result => result
+                .map_err(|error| exchange(format_args!("{} command: {error}", command.kind()))),
         }
     }
 
@@ -72,6 +73,22 @@ impl Connection {
     /// Only when `command` cannot be prepared, before anything is sent.
     pub(super) async fn exchange(&self, command: &AgentCommand) -> Exchange {
         exchanged(&self.controls, command).await
+    }
+
+    /// Select an existing descendant through the same authenticated binding.
+    /// This query allocates no agent, host, process or additional session.
+    pub async fn select(&self, agent: AgentPath) -> Result<Self> {
+        let (controls, tools) = self
+            .controls
+            .select(agent.clone())
+            .await
+            .map_err(exchange)?;
+        Ok(Self {
+            controls,
+            root: agent,
+            tools,
+            _host: self._host.clone(),
+        })
     }
 
     /// The root this connection drives.

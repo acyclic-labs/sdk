@@ -443,6 +443,7 @@ impl Client {
         let path = request.path.clone();
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
+            opening_cut: false,
             key: wire_codec::read_key_to_wire(&request.key),
             read_limit: request.key.as_ref().map_or(0, |_| request.limit),
             bootstrap_head: false,
@@ -525,8 +526,17 @@ impl Client {
                 0,
             )
             .await?;
-        Ok(source.filter_map(move |item| {
-            future::ready(match item {
+        Ok(source.flat_map(move |item| {
+            let opening = match &item {
+                Ok(frame) if progress => match frame.wire().body.as_ref() {
+                    Some(Body::Watermark(mark)) => mark
+                        .opening_tail
+                        .map(|tail| Ok(crate::FollowUpdate::Opening { tail })),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let update = match item {
                 Ok(frame) => match frame.wire().body.as_ref() {
                     Some(Body::Data(_)) => {
                         Some(frame.into_record(&path).map(crate::FollowUpdate::Record))
@@ -543,7 +553,8 @@ impl Client {
                     _ => Some(Err(StreamError::Unavailable)),
                 },
                 Err(error) => Some(Err(error)),
-            })
+            };
+            futures::stream::iter(opening.into_iter().chain(update))
         }))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
@@ -834,6 +845,7 @@ impl Drop for Cursor {
 /// resume never lowers it.
 fn follow_kind(request: crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
+        opening_cut: request.progress,
         key: None,
         read_limit: 0,
         bootstrap_head: false,

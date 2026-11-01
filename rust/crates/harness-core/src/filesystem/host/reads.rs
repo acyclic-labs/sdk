@@ -24,6 +24,103 @@ struct SkillRead<'a> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Resolves a host-owned immutable publication, then uses the same selected
+    /// range reader as execution payloads. Only the internal owner may choose
+    /// this path; no delegated directory grant can reach internal storage.
+    pub(crate) async fn read_internal_range(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        class: InternalContentClass,
+        range: acyclic_fs::ByteRange,
+        io: Option<&PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        grant.require(volume, VolumeOperation::Read, io)?;
+        InternalContentClass::require_path(Some(class), path, io)?;
+        let temporary = PreparationIo::temporary(io)?;
+        let io = temporary.as_ref().or(io);
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
+        let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
+        let (file, reservation) = read_content_metadata(&generation, path, io)
+            .await?
+            .ok_or_else(|| io.invalid("internal publication is absent"))?;
+        if file.volume() != volume || file.path() != path {
+            return Err(io.invalid("internal publication identity differs"));
+        }
+        let (file, reservation) = pin_reference((file, reservation), generation.id(), io)?;
+        let remaining = file
+            .descriptor()
+            .byte_length()
+            .checked_sub(range.offset)
+            .ok_or_else(|| io.invalid("internal read offset is past the immutable file's end"))?;
+        let bytes = self
+            .read_content_range(
+                &file,
+                grant,
+                acyclic_fs::ByteRange {
+                    offset: range.offset,
+                    length: range.length.min(remaining),
+                },
+                Some(io),
+            )
+            .await?;
+        reservation.into_retained()?;
+        drop(workspace_ref);
+        drop(workspace_hold);
+        Ok((file, bytes))
+    }
+
+    /// Reads a bounded selection under the original grant and current policy.
+    /// The immutable descriptor authenticates the selected range; no complete
+    /// payload is materialized. Expiry and revocation fence disclosure too.
+    pub async fn read_content_range(
+        &self,
+        reference: &FileRef,
+        grant: &ContentGrant,
+        range: acyclic_fs::ByteRange,
+        io: Option<&PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        grant.require_file_read(reference, io)?;
+        let length = reference.descriptor().byte_length();
+        if range
+            .offset
+            .checked_add(range.length)
+            .is_none_or(|end| end > length)
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "content range is past the immutable file's end",
+            ));
+        }
+        let temporary = PreparationIo::temporary(io)?;
+        let io = temporary.as_ref().or(io);
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        let bytes = self
+            .read_selection_with_access(grant.policy_scope(), reference, length, true, None, io)
+            .await?
+            .read_range(range)
+            .await?;
+        grant.recheck(Some(io))?;
+        Ok(bytes)
+    }
+
     /// Reads a pinned version using optional preparation accounting.
     ///
     /// Observations cannot be forged or have their selected data replaced:
@@ -634,9 +731,7 @@ fn selected_reference<'a>(
     staged: Option<(FileRef, DecodeReservation<'a>)>,
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
-    let version_hold = io.guard_owned(version.capacity() as u64)?;
-    let reference = if let Some(mut staged) = staged {
+    let reference = if let Some(staged) = staged {
         if staged.0.volume() != volume || staged.0.path() != path {
             return Err(stock_boundary(
                 Some(io),
@@ -648,15 +743,10 @@ fn selected_reference<'a>(
             .0
             .descriptor()
             .verify(bytes, &mut Some(&mut io.history_io()))?;
-        staged
-            .0
-            .pin_version(version, &mut Some(&mut io.history_io()))?;
-        let version_bytes = version_hold.bytes();
-        version_hold.into_retained()?;
-        staged.1.adopt(version_bytes)?;
-        staged.1.substitute(staged.0.logical_owned_bytes()?)?;
-        staged
+        pin_reference(staged, generation, io)?
     } else {
+        let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
+        let version_hold = io.guard_owned(version.capacity() as u64)?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
             FileRef::new(
                 volume.copy(work)?,
@@ -679,6 +769,25 @@ fn selected_reference<'a>(
     Ok(reference)
 }
 
+// Metadata stores the publication operation. A selected read instead names
+// the authenticated filesystem generation containing that protected index.
+fn pin_reference<'a>(
+    mut staged: (FileRef, DecodeReservation<'a>),
+    generation: acyclic_fs::GenerationId,
+    io: &'a PreparationIo,
+) -> Result<(FileRef, DecodeReservation<'a>)> {
+    let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
+    let version_hold = io.guard_owned(version.capacity() as u64)?;
+    staged
+        .0
+        .pin_version(version, &mut Some(&mut io.history_io()))?;
+    let version_bytes = version_hold.bytes();
+    version_hold.into_retained()?;
+    staged.1.adopt(version_bytes)?;
+    staged.1.substitute(staged.0.logical_owned_bytes()?)?;
+    Ok(staged)
+}
+
 async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
@@ -690,7 +799,9 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata = read_generation(
         generation,
         &metadata_path.0,
-        io.remaining()?.source_bytes_read,
+        io.remaining()?
+            .source_bytes_read
+            .min(super::publication::UPLOAD_RECORD_BYTES),
         Some(io),
     )
     .await;

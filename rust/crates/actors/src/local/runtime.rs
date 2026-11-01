@@ -652,6 +652,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         inner.pending = Some((snapshot, *publication));
                         return Err(Error::Stream(source));
                     }
+                    Err(Error::PreconditionChanged) => continue,
                     Err(error) => {
                         inner.observed = None;
                         return Err(error);
@@ -856,6 +857,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                     ));
                 }
+                Err(Error::PreconditionChanged) => {}
                 Err(Error::Unknown {
                     publication,
                     source,

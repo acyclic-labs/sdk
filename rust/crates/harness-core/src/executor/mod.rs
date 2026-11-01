@@ -51,6 +51,10 @@ mod content;
 mod dispatch;
 mod live_reply;
 pub use live_reply::LiveReply;
+mod event_page;
+pub use event_page::{
+    EXECUTION_EVENT_PAGE_RECORDS, ExecutionEventPage, ExecutionPayloadField, event_page,
+};
 mod model_cost;
 mod model_observation;
 pub use model_cost::{
@@ -196,6 +200,7 @@ impl TurnInput {
 
 /// Gapless replay record returned by a durable execution journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ExecutionRecord {
     /// Owning turn execution.
     pub operation_id: OperationId,

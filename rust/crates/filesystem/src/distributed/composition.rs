@@ -37,6 +37,7 @@ pub struct FilesystemCommit {
     authorities: Vec<AuthorityId>,
     contributions: Vec<Contribution>,
     holds: Vec<crate::PublicationHold>,
+    publications: Vec<crate::kernel::PreparedPublication>,
     /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
     sealed: bool,
@@ -83,6 +84,7 @@ impl FilesystemCommit {
             authorities: Vec::new(),
             contributions: Vec::new(),
             holds: Vec::new(),
+            publications: Vec::new(),
             sealed: false,
             owner: None,
             allocation: None,
@@ -143,6 +145,9 @@ impl FilesystemCommit {
     pub(super) fn recorded(mut self) -> RecordedCommit {
         for hold in &mut self.holds {
             hold.created();
+        }
+        for publication in &mut self.publications {
+            publication.recorded();
         }
         RecordedCommit(self)
     }
@@ -249,11 +254,13 @@ impl FilesystemCommit {
 
     fn mark(&self) -> CommitMark {
         CommitMark {
+            deadline: self.request.deadline_unix_millis,
             conditions: self.request.conditions.len(),
             mutations: self.request.mutations.len(),
             authorities: self.authorities.len(),
             contributions: self.contributions.len(),
             holds: self.holds.len(),
+            publications: self.publications.len(),
             owner: self.owner,
         }
     }
@@ -261,11 +268,13 @@ impl FilesystemCommit {
     /// Drops everything added after `mark`. Dropped contributions never
     /// complete, so their actors keep their heads.
     fn rollback(&mut self, mark: CommitMark) {
+        self.request.deadline_unix_millis = mark.deadline;
         self.request.conditions.truncate(mark.conditions);
         self.request.mutations.truncate(mark.mutations);
         self.authorities.truncate(mark.authorities);
         self.contributions.truncate(mark.contributions);
         self.holds.truncate(mark.holds);
+        self.publications.truncate(mark.publications);
         self.owner = mark.owner;
     }
 }
@@ -273,12 +282,14 @@ impl FilesystemCommit {
 /// A position in a [`FilesystemCommit`] that a failed preparation rolls back to.
 #[derive(Clone, Copy)]
 struct CommitMark {
+    deadline: Option<u64>,
     owner: Option<[u8; 16]>,
     conditions: usize,
     mutations: usize,
     authorities: usize,
     contributions: usize,
     holds: usize,
+    publications: usize,
 }
 
 /// Rolls a [`FilesystemCommit`] back to its mark on drop unless disarmed.
@@ -346,6 +357,47 @@ pub(super) fn install_growth<T>(entries: &mut Vec<T>, grown: Option<Vec<T>>) {
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+    /// Joins the canonical append preparation to an external transaction.
+    pub(crate) async fn contribute_publication(
+        &self,
+        commit: &mut FilesystemCommit,
+        publication: crate::kernel::PreparedPublication,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, AuthorityStoreError> {
+        let owner = self.operation_claims().owner_identity();
+        commit.check_owner(owner)?;
+        let append = publication.append();
+        commit.ensure_unclaimed(append.authority_id)?;
+        let Some((actor, revision, projection, mut part)) =
+            self.prepare_contribution(append, work).await?
+        else {
+            return Ok(false);
+        };
+        grow(&mut commit.request.conditions, part.conditions.len(), work)?;
+        grow(&mut commit.request.mutations, part.mutations.len(), work)?;
+        grow(&mut commit.authorities, 1, work)?;
+        grow(&mut commit.contributions, 1, work)?;
+        grow(&mut commit.publications, 1, work)?;
+        commit.request.deadline_unix_millis = match (
+            commit.request.deadline_unix_millis,
+            part.deadline_unix_millis,
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        commit.request.conditions.append(&mut part.conditions);
+        commit.request.mutations.append(&mut part.mutations);
+        commit.authorities.push(append.authority_id);
+        commit.contributions.push(Contribution {
+            actor,
+            revision,
+            projection,
+        });
+        commit.publications.push(publication);
+        commit.bind_owner(owner);
+        Ok(true)
+    }
+
     async fn contribute_creation(
         &self,
         commit: &mut FilesystemCommit,
@@ -571,6 +623,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let FilesystemCommit {
             contributions,
             holds,
+            publications,
             allocation,
             ..
         } = commit.0;
@@ -583,6 +636,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             actor.complete_if_available(revision, projection.seal(commit_id));
         }
         drop(holds);
+        drop(publications);
         drop(allocation);
     }
 }

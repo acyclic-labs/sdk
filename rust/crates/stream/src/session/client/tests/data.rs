@@ -15,6 +15,70 @@ fn subscription(path: &str, delivery: wire::SessionDelivery) -> wire::SessionSub
 }
 
 #[tokio::test]
+async fn opening_cuts_do_not_claim_a_consumed_prefix() -> TestResult {
+    for from in [0, 1] {
+        let provider = Arc::new(MemoryStream::default());
+        append(&provider, "events", 1).await?;
+        let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
+        let client = fixture.client()?.session_client()?;
+        let mut request = subscription("events", wire::SessionDelivery::All);
+        request.resume = Some(cursor(from));
+        if let Some(Kind::Follow(follow)) = &mut request.kind {
+            follow.opening_cut = true;
+        }
+        let mut source = client.subscribe(request).await?;
+        let mut opening = source
+            .next()
+            .await
+            .ok_or("opening source ended")??
+            .into_wire();
+        assert!(matches!(
+            opening.body.as_ref(),
+            Some(Body::Watermark(wire::SessionWatermark {
+                opening_tail: Some(1),
+                after: None,
+                preceding_commit_id,
+                ..
+            })) if preceding_commit_id.is_empty()
+        ));
+        if from == 0 {
+            assert_eq!(
+                source
+                    .next()
+                    .await
+                    .ok_or("backfill source ended")??
+                    .into_record(&StreamPath::new("events")?)?
+                    .sequence,
+                0
+            );
+        }
+        append(&provider, "events", 1).await?;
+        assert_eq!(
+            source
+                .next()
+                .await
+                .ok_or("live source ended")??
+                .into_record(&StreamPath::new("events")?)?
+                .sequence,
+            1
+        );
+        // Mutate the original server delivery to reproduce the invalid claim.
+        // The shared pool must terminate it rather than wait for another record.
+        let Some(Body::Watermark(mark)) = &mut opening.body else {
+            return Err("opening watermark missing".into());
+        };
+        mark.after = Some(cursor(0));
+        fixture.controls.send(Ok(opening))?;
+        assert!(matches!(
+            source.next().await,
+            Some(Err(StreamError::InvalidResponse))
+        ));
+        assert!(source.next().await.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;
@@ -41,6 +105,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
+            opening_cut: false,
             key: None,
             read_limit: 0,
             bootstrap_head: false,

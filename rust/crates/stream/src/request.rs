@@ -482,13 +482,22 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
         if let CommitMutation::Fork {
             source,
             destination,
+            exclude,
             ..
         } = mutation
             && (source == destination
                 || request.mutations.iter().any(|other| {
                     let path = mutation_path(other).as_str();
                     path.strip_prefix(destination.as_str())
-                        .is_some_and(|suffix| suffix.starts_with('/'))
+                        .and_then(|suffix| suffix.strip_prefix('/'))
+                        .is_some_and(|relative| {
+                            !exclude.iter().any(|excluded| {
+                                relative == excluded.as_str()
+                                    || relative
+                                        .strip_prefix(excluded.as_str())
+                                        .is_some_and(|suffix| suffix.starts_with('/'))
+                            })
+                        })
                 }))
         {
             return Err(StreamError::InvalidArgument);

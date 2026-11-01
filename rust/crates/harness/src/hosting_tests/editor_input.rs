@@ -235,6 +235,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 by: by.clone(),
                 id,
                 brief: Box::new(brief),
+                history: None,
             }),
         )
         .await?

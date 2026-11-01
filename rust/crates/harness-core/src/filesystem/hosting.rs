@@ -46,6 +46,8 @@ type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 /// The turn host of a binding's agents.
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
+mod journal;
+
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
 mod guest;
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
@@ -502,6 +504,20 @@ where
             .map_err(turn)
     }
 
+    /// Query current project heads through the selected agent's original grant
+    /// and persisted read policy, without listing project files or old turns.
+    pub async fn project_heads(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Vec<crate::agent::HistoryVolume>, Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        self.turns
+            .project_heads(&state, crate::conversation::VolumeOperation::Read)
+            .await
+            .map_err(turn)
+    }
+
     /// The change follows of this binding's volumes, for the session that
     /// serves its tree.
     ///
@@ -513,159 +529,6 @@ where
         self.volumes
             .change_provider(self.agents.provider().clone())
             .map_err(turn)
-    }
-
-    /// Queries one original inbox input and a bounded execution journal page.
-    /// Adoption's first status supplies the fork cut; inherited inputs are skipped.
-    /// Failed turns remain discoverable without another index or publication.
-    /// `wait` parks a quiet query on the original inbox/journal/actor producers.
-    /// The final flag requires the actor's committed consumed-input fence and
-    /// no retained turn, queue or overflow work at or before that input.
-    pub async fn usage_page(
-        &self,
-        agent: &AgentPath,
-        input: u64,
-        after: u64,
-        wait: bool,
-    ) -> Result<(u64, Option<crate::executor::ModelUsagePage>, bool), Error> {
-        self.admit_path(agent)?;
-        let state = self.agents.state(agent).await?;
-        use crate::agent::AgentRecord as _;
-        use futures::TryStreamExt as _;
-        let provider = self.agents.provider();
-        let mut statuses = provider
-            .read(acyclic_stream::ReadRequest {
-                key: None,
-                path: agent.status()?,
-                from: 0,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
-        let status = statuses
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
-            .filter(|record| record.sequence == 0)
-            .ok_or(Error::Record("usage adoption status is missing"))?;
-        let adopted = crate::agent::StatusRecord::decode(&status.value)?.cursor;
-        let input = input.max(adopted);
-        let tail = crate::agent::inbox_tail(&**provider, agent).await?;
-        if input > tail {
-            return Err(Error::Record(
-                "usage input cursor is past the committed tail",
-            ));
-        }
-        let record = if input == tail {
-            if !wait {
-                return Ok((input, None, false));
-            }
-            let mut request = acyclic_stream::FollowRequest::new(agent.inbox()?, input);
-            request.when_absent = acyclic_stream::WhenAbsent::Wait;
-            loop {
-                let (_, actor_cut) = self.agents.input_progress(agent, input).await?;
-                tokio::select! {
-                    record = self.usage_record(request.clone()) => break Some(record?),
-                    changed = self.usage_record(actor_cut) => { changed?; }
-                }
-            }
-        } else {
-            let mut records = provider
-                .read(acyclic_stream::ReadRequest {
-                    key: None,
-                    path: agent.inbox()?,
-                    from: input,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await
-                .map_err(Error::Stream)?;
-            records.try_next().await.map_err(Error::Stream)?
-        };
-        let record = record
-            .filter(|record| record.sequence == input)
-            .ok_or(Error::Record("committed usage input is missing"))?;
-        let record = crate::agent::InboxRecord::decode(&record.value)?;
-        let queued = match record {
-            crate::agent::InboxRecord::ForkAdopted(adoption) => {
-                if input != adopted
-                    || adoption.forked_at != input
-                    || adoption.agent != agent.id()
-                    || adoption.parent != agent.parent()
-                {
-                    return Err(Error::Record("usage adoption differs"));
-                }
-                adoption.brief.map(|brief| crate::agent::Queued {
-                    inbox: input,
-                    input: crate::agent::TurnInput::Brief {
-                        brief: Box::new(brief),
-                    },
-                })
-            }
-            record => crate::agent::turn_input(input, record),
-        };
-        let journal = if let Some(queued) = queued {
-            Some((
-                self.turns.usage_journal(&state).await.map_err(turn)?,
-                crate::agent::turn_id(&state, &queued.input)?,
-            ))
-        } else {
-            None
-        };
-        loop {
-            // Observe settlement before the journal page: a settled actor can
-            // only name an execution whose original journal writes preceded it.
-            let (settled, actor_cut) = self.agents.input_progress(agent, input).await?;
-            let page = if let Some((journal, operation)) = &journal {
-                crate::executor::usage_page(journal, *operation, agent.as_str(), after)
-                    .await
-                    .map_err(turn)?
-            } else {
-                crate::executor::ModelUsagePage {
-                    items: Vec::new(),
-                    end: after,
-                    next: None,
-                }
-            };
-            if !wait || settled || page.end > after {
-                return Ok((input, Some(page), settled));
-            }
-            // Both continuations start at their original observations, so an
-            // append between the page and this wait remains visible. No task,
-            // timer or status recheck produces readiness.
-            let actor_changed = self.usage_record(actor_cut);
-            if let Some((journal, operation)) = &journal {
-                let journal_changed =
-                    self.usage_record(journal.usage_follow(*operation, page.end).map_err(turn)?);
-                tokio::select! {
-                    result = journal_changed => result?,
-                    result = actor_changed => result?,
-                };
-            } else {
-                actor_changed.await?;
-            }
-        }
-    }
-
-    /// Every query wait names an original producer. A closed producer cannot
-    /// become an empty successful page or leave its consumer hanging.
-    async fn usage_record(
-        &self,
-        request: acyclic_stream::FollowRequest,
-    ) -> Result<acyclic_stream::Record, Error> {
-        use futures::TryStreamExt as _;
-        let updates = self
-            .agents
-            .provider()
-            .follow(request)
-            .await
-            .map_err(Error::Stream)?;
-        acyclic_stream::records_only(updates)
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
-            .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))
     }
 
     /// Reads at most `maximum` bytes of `file` from `offset`, through
@@ -793,6 +656,73 @@ where
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         self.turns.pending_approval(&state).await.map_err(turn)
+    }
+
+    /// Reads the immutable request named by one original status, even after
+    /// that approval settled. A caller supplies no request identity or path.
+    pub async fn read_approval_request(
+        &self,
+        agent: &AgentPath,
+        status: u64,
+        offset: u64,
+        maximum: u64,
+    ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
+        use crate::agent::AgentRecord as _;
+        self.admit_path(agent)?;
+        let record = crate::store::operations::one_record(
+            self.agents.provider(),
+            &agent.status()?,
+            status,
+            &mut None,
+        )
+        .await
+        .map_err(turn)?
+        .ok_or(Error::Record("approval status is absent"))?;
+        let crate::agent::Phase::WaitingApproval { id } =
+            crate::agent::StatusRecord::decode(&record.value)?.phase
+        else {
+            return Err(Error::Record("status names no approval request"));
+        };
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .await
+        .map_err(turn)?;
+        let grant = super::ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &authority.private.volume,
+            crate::conversation::VolumeOperation::Read,
+            u64::MAX,
+            &mut None,
+        )
+        .map_err(turn)?;
+        let path = format!(
+            "{}{}",
+            super::InternalContentClass::Interaction.prefix(),
+            crate::approvals::request_path(id.as_str())
+        );
+        let (file, bytes) = self
+            .volumes
+            .read_internal_range(
+                &authority.private.volume,
+                &grant,
+                &path,
+                super::InternalContentClass::Interaction,
+                acyclic_fs::ByteRange {
+                    offset,
+                    length: maximum,
+                },
+                None,
+            )
+            .await
+            .map_err(turn)?;
+        Ok((bytes, file.descriptor().byte_length()))
     }
 
     /// `principal` decides approval `id` of `agent`, bound to the exact action

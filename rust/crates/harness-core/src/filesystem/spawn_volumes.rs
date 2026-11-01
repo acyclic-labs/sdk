@@ -70,6 +70,8 @@ struct Planned {
     source: Option<VolumeRef>,
     destination: VolumeRef,
     key: [u8; 16],
+    binding: String,
+    history: Option<crate::agent::HistorySelection>,
 }
 
 fn key(child: &AgentPath, name: &str) -> [u8; 16] {
@@ -147,12 +149,14 @@ fn plan(
             source: fork.then(|| source.clone()),
             destination,
             key: key.into_bytes(),
+            binding: binding.name.clone(),
+            history: None,
         }),
     ))
 }
 
 /// [`Participant::kind`] of a spawn's volume request.
-const SPAWN: &str = "acyclic.harness.agent.spawn-volumes.v1";
+const SPAWN: &str = "acyclic.harness.agent.volumes.v1";
 
 /// One spawn the parent's step requests volumes for. Everything else (the
 /// child, its bindings, every fork source and creation) is re-derived from
@@ -161,6 +165,14 @@ const SPAWN: &str = "acyclic.harness.agent.spawn-volumes.v1";
 #[serde(deny_unknown_fields)]
 struct Requested {
     intent: IntentId,
+    history: Option<crate::agent::HistorySelection>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VolumeRequest {
+    children: Vec<Requested>,
+    history: bool,
 }
 
 /// The one planning function: each requested child's bindings and the volumes
@@ -174,14 +186,17 @@ fn children(
     }
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
-    for Requested { intent } in requested {
+    for Requested { intent, history } in requested {
         let child = parent.path.child(&crate::agent::AgentId::derive(
             &parent.path.id(),
             intent.as_str(),
         ))?;
         let mut volumes = Vec::with_capacity(parent.volumes.len());
         for binding in &parent.volumes {
-            let (bound, created) = plan(&child, binding)?;
+            let (bound, mut created) = plan(&child, binding)?;
+            if let Some(created) = &mut created {
+                created.history.clone_from(history);
+            }
             volumes.push(bound);
             planned.extend(created);
         }
@@ -191,11 +206,11 @@ fn children(
 }
 
 /// Canonical request bytes: re-encoding must reproduce them exactly.
-fn requested(participant: &Participant) -> Result<Vec<Requested>, GuestError> {
+fn requested(participant: &Participant) -> Result<VolumeRequest, GuestError> {
     if participant.kind != SPAWN {
         return Err(guest("participant is not a spawn volume request"));
     }
-    let requested: Vec<Requested> = serde_json::from_slice(&participant.plan).map_err(guest)?;
+    let requested: VolumeRequest = serde_json::from_slice(&participant.plan).map_err(guest)?;
     if serde_json::to_vec(&requested).map_err(guest)? != participant.plan.as_ref() {
         return Err(guest("spawn volume request is not canonical"));
     }
@@ -211,14 +226,18 @@ where
         let requested: Vec<Requested> = outs
             .iter()
             .filter_map(|out| match out {
-                Out::Spawn { intent, .. } => Some(Requested {
+                Out::Spawn {
+                    intent, history, ..
+                } => Some(Requested {
                     intent: intent.clone(),
+                    history: history.clone(),
                 }),
                 _ => None,
             })
             .collect();
         let (bindings, planned) = children(parent, &requested)?;
         let mut bindings = bindings.into_iter();
+        let history = outs.iter().any(|out| matches!(out, Out::Conversation(_)));
         for out in outs {
             if let Out::Spawn { volumes, .. } = out {
                 *volumes = bindings
@@ -226,14 +245,17 @@ where
                     .ok_or(Error::Record("spawn bindings are incomplete"))?;
             }
         }
-        if planned.is_empty() {
+        if planned.is_empty() && !history {
             return Ok(None);
         }
         Ok(Some(Participant {
             kind: SPAWN.to_owned(),
-            plan: serde_json::to_vec(&requested)
-                .map_err(|_| Error::Record("spawn volume request does not encode"))?
-                .into(),
+            plan: serde_json::to_vec(&VolumeRequest {
+                children: requested,
+                history,
+            })
+            .map_err(|_| Error::Record("spawn volume request does not encode"))?
+            .into(),
         }))
     }
 }
@@ -280,14 +302,18 @@ where
         if parent.path.id().as_str() != actor.id() {
             return Err(guest("spawn parent is not the publishing actor"));
         }
-        let (_, planned) = children(&parent, &requested).map_err(guest)?;
-        if planned.is_empty() {
+        let (_, planned) = children(&parent, &requested.children).map_err(guest)?;
+        let history = next.conversation_tail > parent.conversation_tail;
+        if requested.history != history || (planned.is_empty() && !history) {
             return Err(guest("spawn volume request creates nothing"));
         }
+        let parent_path = parent.path.clone();
         Ok(Box::new(SpawnFork {
             host: Arc::clone(&self.host),
             cuts: self.cuts.clone(),
             planned,
+            history: history.then_some((parent, next)),
+            parent: parent_path,
             commit: None,
         }))
     }
@@ -298,6 +324,8 @@ struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     cuts: Option<Arc<dyn ForkCuts>>,
     planned: Vec<Planned>,
+    parent: AgentPath,
+    history: Option<(AgentState, AgentState)>,
     commit: Option<FilesystemCommit>,
 }
 
@@ -322,21 +350,64 @@ where
         let mut heads = Vec::new();
         for planned in &self.planned {
             if let Some(source) = &planned.source {
+                let saved = if source.class() == VolumeClass::Project {
+                    match &planned.history {
+                        Some(selection) => {
+                            let at = selection
+                                .conversation
+                                .checked_sub(1)
+                                .ok_or_else(|| guest("history fork cut is empty"))?;
+                            let saved = super::history::read(
+                                fs.stream_provider().as_ref(),
+                                &self.parent,
+                                at,
+                            )
+                            .await
+                            .map_err(guest)?;
+                            if saved.conversation != selection.conversation
+                                || saved.checkpoint != selection.checkpoint
+                            {
+                                return Err(guest(
+                                    "history fork selection differs from its descriptor",
+                                ));
+                            }
+                            Some(
+                                saved
+                                    .volumes
+                                    .into_iter()
+                                    .find(|volume| volume.binding.name == planned.binding)
+                                    .ok_or_else(|| {
+                                        guest("history fork project binding is absent")
+                                    })?,
+                            )
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let source_name = match &saved {
+                    Some(saved) => saved.retained_workspace.clone(),
+                    None => text(source)?,
+                };
                 let workspace = fs
-                    .open_workspace(text(source)?, WorkBudget::UNBOUNDED, &cancellation)
+                    .open_workspace(source_name, WorkBudget::UNBOUNDED, &cancellation)
                     .await
                     .map_err(|failure| guest(failure.error))?
                     .value;
-                let cut = match &self.cuts {
-                    Some(cuts) => cuts
-                        .cut(
-                            source,
-                            &planned.destination,
-                            acyclic_fs::OperationId::from_bytes(planned.key),
-                        )
-                        .await
-                        .map_err(guest)?,
-                    None => None,
+                let cut = match &saved {
+                    Some(saved) => Some(saved.retained_generation),
+                    None => match &self.cuts {
+                        Some(cuts) => cuts
+                            .cut(
+                                source,
+                                &planned.destination,
+                                acyclic_fs::OperationId::from_bytes(planned.key),
+                            )
+                            .await
+                            .map_err(guest)?,
+                        None => None,
+                    },
                 };
                 let at_head = cut.is_none();
                 let generation = match cut {
@@ -381,6 +452,9 @@ where
             }
         }
         let mut commit = FilesystemCommit::new(request);
+        if let Some((parent, next)) = &self.history {
+            super::history::capture(fs, parent, next, &mut commit).await?;
+        }
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| guest(failure.error))?;
@@ -420,6 +494,18 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn revalidate(&self, conflicts: &[acyclic_stream::CommitConflict]) -> bool {
+        self.history.is_some()
+            && !conflicts.is_empty()
+            && conflicts.iter().all(|conflict| {
+                matches!(
+                    conflict,
+                    acyclic_stream::CommitConflict::Head { .. }
+                        | acyclic_stream::CommitConflict::Tail { .. }
+                )
+            })
+    }
+
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
         Box::pin(async move {
             // A sealed commit is frozen: a retry resends its exact bytes and key.

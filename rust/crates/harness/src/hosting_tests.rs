@@ -36,6 +36,8 @@ impl TurnExecutors for Never {
 #[derive(Default)]
 struct Owner {
     denied: AtomicBool,
+    revoke_read: AtomicBool,
+    revoke_query: AtomicBool,
     childless: AtomicBool,
     diff: std::sync::Mutex<Option<QueryPause>>,
     admission: std::sync::Mutex<Option<QueryPause>>,
@@ -50,9 +52,15 @@ impl Platform for Owner {
     fn policy<'a>(
         &'a self,
         _: &'a Principal,
-        _: &'a AgentCommand,
+        command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         let denied = self.denied.load(Ordering::SeqCst);
+        if (matches!(command, AgentCommand::Read { .. })
+            && self.revoke_read.swap(false, Ordering::SeqCst))
+            || self.revoke_query.swap(false, Ordering::SeqCst)
+        {
+            self.denied.store(true, Ordering::SeqCst);
+        }
         Box::pin(async move {
             Ok(if denied {
                 PolicyDecision::Deny
@@ -231,7 +239,7 @@ mod machine_results;
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
     use crate::conversation::{ContentAccess, ContentPublisher};
     use crate::filesystem::{FilesystemContentPublisher, agent_authority};
-    use acyclic_harness_client::{MAX_READ_BYTES, ReadTarget};
+    use acyclic_harness_client::{CommandError, MAX_READ_BYTES, ReadTarget};
     use acyclic_stream::wire as session_wire;
     use futures::StreamExt as _;
 
@@ -244,9 +252,10 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
         &mut None,
     )?;
+    let owner = Arc::new(Owner::default());
     let Serving::Served(server) = serve(
         bound,
-        Arc::new(Owner::default()),
+        owner.clone(),
         &IntentId::try_from("output-root")?,
         RootRequest {
             agent,
@@ -341,31 +350,31 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ..Default::default()
     };
     let missing = connect(None)?;
+    let mut refused = missing.subscribe(subscription.clone()).await?;
     assert!(matches!(
-        missing.subscribe(subscription.clone()).await,
-        Err(StreamError::Unsupported)
+        refused.next().await,
+        Some(Err(StreamError::Unsupported))
     ));
+    assert!(refused.next().await.is_none());
     let connected = connect(Some(Arc::new(bound.changes()?)))?;
     let mut follow = connected.subscribe(subscription).await?;
-    let observed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        while let Some(update) = follow.next().await {
-            if let Some(session_wire::session_frame::Body::Data(data)) = update?.into_wire().body
-                && let Some(session_wire::session_data::Item::Record(record)) = data.item
+    // The already committed publication is replayed by this original follow;
+    // loss of its producer ends the same channel with a typed failure.
+    loop {
+        let update = follow.next().await.ok_or(StreamError::Unavailable)??;
+        if let Some(session_wire::session_frame::Body::Data(data)) = update.into_wire().body
+            && let Some(session_wire::session_data::Item::Record(record)) = data.item
+        {
+            let changes = acyclic_stream::decode_changes(&record.value)?;
+            if changes
+                .entries
+                .iter()
+                .any(|entry| entry.key.as_ref() == path.as_bytes())
             {
-                let changes = acyclic_stream::decode_changes(&record.value)?;
-                if changes
-                    .entries
-                    .iter()
-                    .any(|entry| entry.key.as_ref() == path.as_bytes())
-                {
-                    return Ok::<_, acyclic_stream::StreamError>(());
-                }
+                break;
             }
         }
-        Err(acyclic_stream::StreamError::Unavailable)
-    })
-    .await?;
-    observed?;
+    }
     for offset in [0, MAX_READ_BYTES, body.len() as u64] {
         // Reconnect between pages. Both exact FileRef and tool-path reads use
         // this same admitted reader, with no local filesystem provider.
@@ -400,6 +409,33 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         }
     }
     let client = connect(Some(Arc::new(bound.changes()?)))?;
+    for target in [
+        ReadTarget::File { file: file.clone() },
+        ReadTarget::ToolOutput {
+            path: path.into(),
+            at: None,
+        },
+    ] {
+        // Admission allowed this real immutable read, then the owner revoked
+        // it. The shared post-I/O fence must refuse even a successful source.
+        owner.revoke_read.store(true, Ordering::SeqCst);
+        let refused = call(
+            &client,
+            "agents",
+            &AgentCommand::Read {
+                agent: root.clone(),
+                target,
+                offset: 0,
+            },
+        )
+        .await
+        .expect_err("content disclosed after owner revocation");
+        assert!(matches!(
+            refused.downcast_ref::<StreamError>(),
+            Some(StreamError::AccessDenied)
+        ));
+        owner.denied.store(false, Ordering::SeqCst);
+    }
     publisher
         .stage_once(
             OperationId::from_bytes([5; 16]),
@@ -410,8 +446,19 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             ContentAccess::default(),
         )?
         .await?;
+    // Traversal is refused by the original command admission before transport.
+    assert!(matches!(
+        PreparedCommand::new(&AgentCommand::Read {
+            agent: root.clone(),
+            target: ReadTarget::ToolOutput {
+                path: "../outside".into(),
+                at: None,
+            },
+            offset: 0,
+        }),
+        Err(CommandError::Invalid)
+    ));
     for (agent, path) in [
-        (root.clone(), "../outside"),
         (root.clone(), "tools/missing"),
         (root.clone(), "notes/private"),
         (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
@@ -540,22 +587,102 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         futures::poll!(&mut live_usage).is_pending(),
         "adoption is committed but its original actor has not consumed the input"
     );
+    let events = AgentCommand::Events {
+        agent: root.clone(),
+        input: 0,
+        after: 0,
+        wait: true,
+    };
+    let mut live_events = std::pin::pin!(call(&client, "agents", &events));
+    assert!(futures::poll!(&mut live_events).is_pending());
     assert!(server.bound().agents().runtime().drain().await.is_empty());
     assert!(
         matches!(live_usage.await?, Ok(AgentReply::Usage { input: 0, page: Some(page), settled: true })
         if page.end == 0 && page.items.is_empty()),
         "a consumed input with no model call must finish its original quiet query"
     );
-    let usage = AgentCommand::Usage {
+    assert!(matches!(
+        live_events.await?,
+        Ok(AgentReply::Events { input: 0, page: Some(page), settled: true, .. })
+            if page.operation.is_none() && page.end == 0 && page.items.is_empty()
+    ));
+    // Keep this query pending on the next original input. Driving other calls
+    // must not complete it before revocation and its source publication.
+    let events = AgentCommand::Events {
         agent: root.clone(),
         input: 1,
+        after: 0,
+        wait: true,
+    };
+    let (entered, admission) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    *owner
+        .admission
+        .lock()
+        .map_err(|_| "admission control poisoned")? = Some(QueryPause {
+        entered,
+        release: released,
+    });
+    let mut revoked_events = std::pin::pin!(call(&client, "agents", &events));
+    tokio::select! {
+        reply = &mut revoked_events => return Err(format!("query ended before admission: {reply:?}").into()),
+        admitted = admission => admitted?,
+    }
+    owner.denied.store(true, Ordering::SeqCst);
+    release
+        .send(())
+        .map_err(|()| "query admission closed before release")?;
+    let by = Sender::Host {
+        host: "query-source".into(),
+    };
+    assert!(matches!(
+        server
+            .bound()
+            .agents()
+            .send(
+                &root,
+                &by,
+                &InboxRecord::Cancel(Control {
+                    by: by.clone(),
+                    id: IntentId::try_from("release-revoked-query")?,
+                }),
+            )
+            .await?,
+        Delivered::Committed { .. }
+    ));
+    assert!(server.bound().agents().runtime().drain().await.is_empty());
+    let refused = revoked_events
+        .await
+        .expect_err("events disclosed after revocation");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
+    owner.denied.store(false, Ordering::SeqCst);
+    // A journal position is scoped to an original turn. Neither a consumed
+    // control-only input nor the not-yet-created next input can own it.
+    for input in [0, 1, 2] {
+        assert!(matches!(
+            call(&client, "agents", &AgentCommand::Events {
+                agent: root.clone(),
+                input,
+                after: 1,
+                wait: false,
+            }).await?,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == "invalid_agent_record" && reason.contains("journal cursor")
+        ));
+    }
+    let usage = AgentCommand::Usage {
+        agent: root.clone(),
+        input: 2,
         after: 0,
         wait: false,
     };
     assert!(matches!(
         call(&client, "agents", &usage).await?,
         Ok(AgentReply::Usage {
-            input: 1,
+            input: 2,
             page: None,
             settled: false
         })
@@ -603,11 +730,15 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         release: resume,
     });
     drop(release);
-    assert!(matches!(
-        call(&client, "agents", &diff).await?,
-        Err(AgentControlFailure::Refused { code, reason })
-            if code == "agent_conflict" && reason.contains("diff source owner closed")
-    ));
+    let refused = call(&client, "agents", &diff).await?;
+    assert!(
+        matches!(
+            &refused,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == "agent_conflict" && reason.contains("diff source owner closed")
+        ),
+        "a lost diff source must preserve its definitive conflict: {refused:?}"
+    );
     waiting.await?;
     // A source error can disclose state too. Revocation takes precedence over
     // the original typed source failure after the same admitted wait.
@@ -641,6 +772,41 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
+    for query in [
+        children.clone(),
+        AgentCommand::History {
+            agent: root.clone(),
+            page: Default::default(),
+        },
+        AgentCommand::Approvals {
+            agent: root.clone(),
+            page: Default::default(),
+        },
+    ] {
+        call(&client, "agents", &query).await??;
+        // Admission succeeds, then policy changes before the query's source
+        // can return. Even an empty page cannot leave on the stale grant.
+        owner.revoke_query.store(true, Ordering::SeqCst);
+        let refused = call(&client, "agents", &query)
+            .await
+            .expect_err("session page disclosed after owner revocation");
+        assert!(matches!(
+            refused.downcast_ref::<StreamError>(),
+            Some(StreamError::AccessDenied)
+        ));
+        owner.denied.store(false, Ordering::SeqCst);
+    }
+    assert!(
+        matches!(
+            call(&client, "agents", &AgentCommand::History {
+                agent: root.clone(),
+                page: AgentPageRequest::new(1, 1, None)?,
+            }).await?,
+            Err(AgentControlFailure::Refused { code, .. })
+                if code == Error::Stream(StreamError::Capacity).code()
+        ),
+        "an empty page must reserve its complete canonical envelope"
+    );
     let spawn = AgentCommand::Spawn {
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
@@ -841,6 +1007,13 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         ),
         "a closed input producer cannot leave the live query pending"
     );
+    assert!(matches!(
+        call(&client, "agents", &AgentCommand::Events {
+            agent: root.clone(), input: end, after: 0, wait: true,
+        }).await?,
+        Err(AgentControlFailure::Refused { code, reason })
+            if code == "invalid_agent_record" && reason.contains("usage input source is closed")
+    ));
     owner.denied.store(true, Ordering::SeqCst);
     assert!(
         call(&client, "agents", &AgentCommand::Root {})

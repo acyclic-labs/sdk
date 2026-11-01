@@ -82,11 +82,19 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             intent,
             brief,
             volumes,
+            history,
         } = out
         {
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
-            let spawn = commit::spawn(path, intent, cursor, adopted)?;
+            if let Some(history) = history {
+                if history.conversation > prior_conversation {
+                    return Err(Error::Record("history fork exceeds committed conversation"));
+                }
+                adopted.conversation_tail = history.conversation;
+                adopted.checkpoint = history.checkpoint;
+            }
+            let spawn = commit::spawn_at(path, intent, cursor, adopted, history.as_ref())?;
             builder.created.insert(spawn.child.inbox()?);
             for condition in spawn.request.conditions {
                 builder.condition(condition);

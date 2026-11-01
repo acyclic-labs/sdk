@@ -646,13 +646,117 @@ where
             .await
     }
 
-    /// Opens the usage query through this agent's original private journal grant.
-    pub(super) async fn usage_journal(
+    /// Opens journal queries through this agent's original private-volume grant.
+    pub(super) async fn query_journal(
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let (journal, _, _) = self.journal(self.admit(agent)?, &[], None).await?;
         Ok(journal)
+    }
+
+    /// Read current project roots through the agent's signed grant and persisted
+    /// filesystem policy. A write selection additionally requires whole-volume
+    /// publication authority; the returned generation is the policy's own cut.
+    pub async fn project_heads(
+        &self,
+        agent: &AgentState,
+        operation: VolumeOperation,
+    ) -> Result<Vec<crate::agent::HistoryVolume>> {
+        self.project_selection(agent, operation, None).await
+    }
+
+    async fn project_selection(
+        &self,
+        agent: &AgentState,
+        operation: VolumeOperation,
+        saved: Option<&[crate::agent::SavedVolume]>,
+    ) -> Result<Vec<crate::agent::HistoryVolume>> {
+        use acyclic_fs::access::{Action, ActionSet};
+        let authority = self.admit(agent)?.authority(&[]).await?;
+        let cancel = acyclic_fs::CancellationToken::new();
+        let io = super::PreparationIo::for_unmeasured(&cancel)?;
+        let label = crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?;
+        let payload = super::access::capability_payload(label, operation, &io)?;
+        let actions = match operation {
+            VolumeOperation::Read => &[Action::List, Action::Read][..],
+            VolumeOperation::Write => ActionSet::DestinationWrite.actions(),
+        };
+        let mut heads = Vec::new();
+        for binding in &agent.volumes {
+            if binding.volume.class() != VolumeClass::Project {
+                continue;
+            }
+            crate::conversation::ContentGrant::authorize_volume(
+                &authority.verifier,
+                &authority.scope,
+                &binding.volume,
+                operation,
+                u64::MAX,
+                &mut None,
+            )?;
+            let workspace = self
+                .host
+                .filesystem
+                .open_workspace(
+                    binding.volume.storage_name(&mut None)?,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancel,
+                )
+                .await
+                .map_err(|failure| Error::Storage(failure.error.to_string()))?
+                .value;
+            let view =
+                super::access::access_view(&workspace, &authority.scope, None, payload, None, &io)
+                    .await?;
+            if !view
+                .0
+                .allows_every_path(actions, super::access::access_now()?)
+            {
+                return Err(Error::Unauthorized(
+                    "project selection requires authority over the whole volume".into(),
+                ));
+            }
+            if let Some(saved) = saved {
+                let source = saved
+                    .iter()
+                    .find(|source| source.binding.name == binding.name)
+                    .ok_or_else(|| Error::Unauthorized("saved project binding differs".into()))?;
+                let retained = io.sdk(
+                    self.host
+                        .filesystem
+                        .open_workspace(&source.retained_workspace, &io, &cancel)
+                        .await,
+                )?;
+                let mut checkout = io.sdk(
+                    retained
+                        .checkout(
+                            acyclic_fs::model::GenerationSelector::Exact(
+                                source.retained_generation,
+                            ),
+                            acyclic_fs::model::CheckoutMode::read_only_pinned(),
+                            &io,
+                            &cancel,
+                        )
+                        .await,
+                )?;
+                let revision = io.sdk(checkout.access_policy_revision(&io, &cancel).await)?;
+                // Root metadata is part of a complete generation restore.
+                // Content publication authority cannot roll back policy. The
+                // current decision already carries its authenticated revision;
+                // compare the immutable source without another head read.
+                if !view.0.matches_policy_revision(view.2, revision) {
+                    return Err(Error::Unauthorized(
+                        "file history selection cannot replace the current access policy".into(),
+                    ));
+                }
+            }
+            heads.push(crate::agent::HistoryVolume {
+                binding: binding.clone(),
+                generation: view.2,
+            });
+        }
+        Ok(heads)
     }
 
     /// `agent`'s verified admission; it performs no IO.
@@ -748,18 +852,7 @@ where
             },
         )?
         .with_input_verifier(reader.clone());
-        let internal = AgentInternalFiles::new(
-            Arc::clone(&self.host),
-            private.volume.clone(),
-            crate::conversation::ContentGrant::verify(
-                &verifier,
-                &scope,
-                &private.volume,
-                VolumeOperation::Write,
-                u64::MAX,
-                &mut None,
-            )?,
-        );
+        let internal = self.internal_files(&private.volume, &verifier, &scope)?;
         Ok((
             journal,
             Bindings {
@@ -772,8 +865,28 @@ where
                     writer: Some(writer),
                 },
             },
-            Arc::new(internal),
+            internal,
         ))
+    }
+
+    fn internal_files(
+        &self,
+        volume: &VolumeRef,
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+    ) -> Result<Arc<AgentInternalFiles<A, O>>> {
+        Ok(Arc::new(AgentInternalFiles::new(
+            Arc::clone(&self.host),
+            volume.clone(),
+            crate::conversation::ContentGrant::verify(
+                verifier,
+                scope,
+                volume,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None,
+            )?,
+        )))
     }
 
     /// The agent's last settled turns, oldest first.
@@ -782,36 +895,45 @@ where
         _: &AdmittedAgent<'_>,
         agent: &AgentState,
     ) -> Result<Vec<ConversationEntry>> {
-        let tail = agent.conversation_tail;
-        // Nothing before the latest checkpoint is context: read from it, or
-        // the bounded window when it is further back, plus that one entry
-        // read by its indexed sequence.
-        let window = tail.saturating_sub(u64::from(self.limits.history_turns));
-        let from = agent.checkpoint.map_or(window, |at| at.max(window));
-        let mut entries = match agent.checkpoint.filter(|at| *at < from) {
-            Some(at) => self.entries(agent, at, 1).await?,
-            None => Vec::new(),
-        };
-        entries.extend(self.entries(agent, from, tail - from).await?);
+        if agent.conversation_tail == 0 {
+            return Ok(Vec::new());
+        }
+        let cut = super::history::read(
+            self.stream.as_ref(),
+            &agent.path,
+            agent.conversation_tail - 1,
+        )
+        .await?
+        .context;
+        let from = cut
+            .tail
+            .saturating_sub(u64::from(self.limits.history_turns));
+        let mut entries = Vec::new();
+        if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
+            entries.extend(self.context_entries(&cut.path, checkpoint, 1).await?);
+        }
+        entries.extend(
+            self.context_entries(&cut.path, from, cut.tail - from)
+                .await?,
+        );
         Ok(entries)
     }
 
     /// `count` conversation entries of `agent` from sequence `from`.
-    async fn entries(
+    async fn context_entries(
         &self,
-        agent: &AgentState,
+        path: &acyclic_stream::StreamPath,
         from: u64,
         count: u64,
     ) -> Result<Vec<ConversationEntry>> {
         if count == 0 {
             return Ok(Vec::new());
         }
-        let path = agent.path.conversation().map_err(agent_error)?;
         let records = match self
             .stream
             .read(ReadRequest {
                 key: None,
-                path,
+                path: path.clone(),
                 from,
                 limit: u32::try_from(count).unwrap_or(u32::MAX),
                 at_least: Default::default(),
@@ -1300,6 +1422,117 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn open_control<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a crate::agent::ContextAction,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, Result<crate::agent::OpenControl>> {
+        Box::pin(async move {
+            let admitted = self.admit(agent)?;
+            let checkpoint = if matches!(action, crate::agent::ContextAction::Rewind)
+                && agent.conversation_tail != 0
+            {
+                let cut = super::history::read(
+                    self.stream.as_ref(),
+                    &agent.path,
+                    agent.conversation_tail - 1,
+                )
+                .await?
+                .context;
+                match cut.checkpoint {
+                    Some(at) => {
+                        let mut records = self
+                            .stream
+                            .read(ReadRequest {
+                                key: None,
+                                path: cut.path,
+                                from: at,
+                                limit: 1,
+                                at_least: Default::default(),
+                            })
+                            .await?;
+                        let record = records.try_next().await?.ok_or_else(|| {
+                            Error::Invalid("selected checkpoint is absent".into())
+                        })?;
+                        let entry =
+                            ConversationEntry::decode(&record.value).map_err(agent_error)?;
+                        if record.sequence != at || entry.checkpoint().is_none() {
+                            return Err(Error::Invalid(
+                                "selected checkpoint differs from its indexed cut".into(),
+                            ));
+                        }
+                        Some(entry.output)
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+            let authority =
+                crate::core::until_turn_stopped(Some(stop), admitted.authority(&[])).await?;
+            let outputs = self.internal_files(
+                &authority.private.volume,
+                &authority.verifier,
+                &authority.scope,
+            )?;
+            Ok(crate::agent::OpenControl {
+                outputs,
+                checkpoint,
+                custody: Some(authority.issuer),
+            })
+        })
+    }
+
+    fn selection<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a crate::agent::ContextAction,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            self.admit(agent)?;
+            let crate::agent::ContextAction::Restore { at, mode, expected } = action else {
+                return Ok(None);
+            };
+            if *at >= agent.conversation_tail {
+                return Ok(Some("restore cut is not a prior settled turn".into()));
+            }
+            let saved = match super::history::read(self.stream.as_ref(), &agent.path, *at).await {
+                Ok(saved) => saved,
+                Err(Error::Invalid(reason)) => return Ok(Some(reason)),
+                Err(error) => return Err(error),
+            };
+            if !mode.files() {
+                return Ok((!expected.is_empty())
+                    .then(|| "context-only restore carries project heads".into()));
+            }
+            let projects = match self
+                .project_selection(agent, VolumeOperation::Write, Some(&saved.volumes))
+                .await
+            {
+                Ok(projects) => projects,
+                Err(Error::Unauthorized(reason)) => return Ok(Some(reason)),
+                Err(error) => return Err(error),
+            };
+            if projects.len() != expected.len() || projects.len() != saved.volumes.len() {
+                return Ok(Some("restore must cover every project binding".into()));
+            }
+            for head in projects {
+                if expected.iter().filter(|value| **value == head).count() != 1
+                    || saved
+                        .volumes
+                        .iter()
+                        .filter(|value| value.binding.name == head.binding.name)
+                        .count()
+                        != 1
+                {
+                    return Ok(Some("restore expected project heads changed".into()));
+                }
+            }
+            Ok(None)
+        })
+    }
+
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -1317,10 +1550,6 @@ where
             // The turn's grant is derived from its context, before the turn
             // can observe anything: every file the context can reach.
             let mut context = TurnContext::new(agent, history, turn, input)?;
-            let checkpoint = context
-                .checkpoint
-                .as_ref()
-                .map(|(_, output)| output.clone());
             let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = crate::core::until_turn_stopped(
                 Some(stop.clone()),
@@ -1435,7 +1664,6 @@ where
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected: Some(selected),
-                checkpoint,
                 approvals: Some(approvals),
                 effects: Some(effects),
                 goal,

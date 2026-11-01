@@ -3,7 +3,9 @@
 #![doc = include_str!("../../docs/client/README.md")]
 
 #[cfg(any(feature = "hosting", feature = "wasm"))]
-pub use acyclic_harness_client::AgentPageRequest;
+pub use acyclic_harness_client::{
+    AgentCommand, AgentPageRequest, AgentReply, EventCursor, ExecutionPosition, MAX_READ_BYTES,
+};
 pub use acyclic_harness_core::preset::Preset;
 
 mod command_result;

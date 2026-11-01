@@ -262,6 +262,22 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
 
+    /// Reads only the selected bytes of an immutable private payload, retaining
+    /// the original journal grant and post-read policy fence. Unsupported
+    /// adapters refuse instead of loading an unbounded payload and slicing it.
+    fn load_range<'a>(
+        &'a self,
+        _reference: &'a FileRef,
+        _range: acyclic_fs::ByteRange,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "bounded journal payload reading is unavailable",
+        ))
+    }
+
     /// Verifies a user file under the original owner and optional work.
     fn verify_input_file<'a>(
         &'a self,
