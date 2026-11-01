@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (GenerationRef, acyclic_fs::access::PolicyFence),
+            (Option<Generation<A, O>>, acyclic_fs::access::PolicyFence),
         >,
     > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -47,7 +47,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if !view.0.decide(Action::Create, path, access_now()?).allowed {
                     require(&view.0, Action::Write, path, io)?;
                 }
-                return Ok((self.generation_ref_id(view.2, Some(io))?, fence));
+                return Ok((None, fence));
             }
             // Refuse before probing existence when neither mutation can succeed.
             if !view.0.decide(Action::Create, path, access_now()?).allowed {
@@ -85,7 +85,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 };
                 candidate = parent;
             }
-            Ok((self.generation_ref_id(view.2, Some(io))?, fence))
+            // Move the already authenticated cut into publication. Reopening
+            // its reference or sampling a newer head cannot retain this fact.
+            Ok((Some(generation), fence))
         })
     }
 }

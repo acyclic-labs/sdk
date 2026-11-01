@@ -290,10 +290,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => (self.select_current_workspace(&root, active_io).await?, None),
             };
             if needs_binding {
-                let (generation, fence) = self
+                let (_generation, fence) = self
                     .authorize_content_write(&root, grant, provisional.path(), true, ceiling, io)?
                     .await?;
-                let _hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 self.bind_content_operation(
                     &root,
                     opened.id(),
@@ -319,7 +318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None
             };
             let root_authorization = if opened.id() != root.id() {
-                let (generation, fence) = self
+                let (_generation, fence) = self
                     .authorize_content_write(
                         &root,
                         grant,
@@ -329,13 +328,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         io,
                     )?
                     .await?;
-                let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
-                Some((generation, hold, fence))
+                Some(fence)
             } else {
                 None
             };
-            let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
-            let (authorized_generation, policy_fence) = self
+            let root_fence = root_authorization;
+            let (authorized_selection, policy_fence) = self
                 .authorize_content_write(
                     &opened,
                     grant,
@@ -345,10 +343,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                 )?
                 .await?;
-            let generation_hold = io
-                .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
-                .transpose()?;
-            let authorized_generation = (authorized_generation, generation_hold);
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, io).await?;
             }
@@ -418,6 +412,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
+            let authorized_selection = authorized_selection.ok_or_else(|| {
+                stock_boundary(io, crate::wire::ErrorCode::Storage,
+                    "fresh publication has no authorized generation")
+            })?;
+            let authorized_generation = self.generation_ref_id(authorized_selection.id(), io)?;
+            let generation_hold = io.map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?)).transpose()?;
+            let authorized_generation = (authorized_generation, generation_hold);
             let absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
             })?;
@@ -472,7 +473,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let generation = self
                 .apply_authorized_generation(
                     &opened,
-                    (policy_fence, grant, root_fence),
+                    (policy_fence, grant, root_fence, &authorized_selection),
                     root_cut,
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),

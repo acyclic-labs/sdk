@@ -15,7 +15,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             io,
             FilePublication::Replace(expected),
-            None,
         )
     }
 
@@ -26,6 +25,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::access::PolicyFence,
             &'a ContentGrant,
             Option<acyclic_fs::access::PolicyFence>,
+            &'a Generation<A, O>,
         ),
         root_cut: Option<acyclic_fs::PolicyCut>,
         mutations: &'a [WorkspaceMutation],
@@ -40,6 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 operation,
                 io,
                 FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
+                Some(authorization.3),
             );
             match root_cut {
                 Some(cut) => cut.scope(publication).await,
@@ -55,11 +56,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: IdempotencyKey,
         io: Option<&'a PreparationIo>,
         publication: FilePublication<'a>,
-        authorized_generation: Option<&'a GenerationRef>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
-            FilePublication::Authorized(..) => authorized_generation,
+            FilePublication::Authorized(..) => None,
         };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -77,7 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let workspace = self.open(reference, Some(io)).await?;
             let operation = bounded_io::operation_key(&key, Some(io))?;
-            self.publish_selected_operation(&workspace, mutations, operation, io, publication)
+            self.publish_selected_operation(&workspace, mutations, operation, io, publication, None)
                 .await
         })
     }
@@ -89,19 +89,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         operation: FilesystemKey,
         io: &PreparationIo,
         publication: FilePublication<'_>,
+        authorized: Option<&Generation<A, O>>,
     ) -> Result<Generation<A, O>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
             FilePublication::Authorized(..) => None,
         };
-        let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
-            let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+        let mut transaction = if authorized.is_some() || matches!(publication, FilePublication::Replace(_)) {
+            let selected;
+            let pinned = match authorized {
+                Some(generation) => generation,
+                None => {
+                    selected = match expected {
+                        Some(reference) => self.generation(workspace, reference, Some(io)).await?,
+                        None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                    };
+                    &selected
+                }
             };
             io.sdk(
                 workspace
-                    .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                    .begin_transaction_at(pinned, operation, io, io.cancellation())
                     .await,
             )?
         } else {

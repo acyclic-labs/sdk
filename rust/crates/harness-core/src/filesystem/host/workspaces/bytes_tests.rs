@@ -242,6 +242,7 @@ fn publication_boundaries_retain_only_owned_polling_handles() {
                 key,
                 false,
                 FilePublication::Replace(None),
+                None,
             )
         },
     );
