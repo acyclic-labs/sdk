@@ -1,6 +1,6 @@
 //! Exact keys with immutable, globally capped sequence ranges.
 use super::persistent::QualifiedIndex;
-use super::{IndexReadWork, IndexWork, PersistentIndex};
+use super::{IndexInsertionBound, IndexReadWork, IndexWork, PersistentIndex};
 
 /// An original admission failure or an exact binary-key encoding refusal.
 #[derive(Debug, PartialEq, Eq)]
@@ -73,6 +73,30 @@ impl<V, A, const N: usize> Clone for KeyedIndex<V, A, N> {
 }
 
 impl<V, A, const N: usize> KeyedIndex<V, A, N> {
+    /// Bounds original node bytes and examinations for `insertions` before
+    /// their exact keys are known. Includes original outer lookups and both
+    /// radix insertions; binary-key encoding is a separate allocation-free read.
+    /// Returns `None` on arithmetic overflow, without allocating or traversing.
+    pub fn insertion_bound(&self, insertions: u64) -> Option<IndexInsertionBound> {
+        let outer = self.keys.insertion_bound(insertions)?;
+        let inner = PersistentIndex::<V, A>::insertion_bound_at_depth(64, insertions)?;
+        let width = u64::try_from(N).ok()?;
+        let lookup = width
+            .checked_mul(8)?
+            .min((self.keys.depth() as u64).checked_add(insertions)?)
+            .checked_add(1)?
+            .checked_mul(width.checked_mul(6)?.checked_add(3)?)?
+            .checked_mul(insertions)?;
+        Some(IndexInsertionBound {
+            allocation_bytes: outer.allocation_bytes.checked_add(inner.allocation_bytes)?,
+            examined_items: outer
+                .examined_items
+                .checked_add(inner.examined_items)?
+                .checked_add(lookup)?
+                .checked_add(width.checked_mul(insertions)?)?,
+        })
+    }
+
     /// Retains all original positions strictly before this global sequence cut.
     /// Cloning and repeated capping allocate nothing and retain the earlier cut.
     pub fn cap(&self, before: u64) -> Self {

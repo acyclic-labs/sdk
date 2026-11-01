@@ -11,6 +11,16 @@ pub type PersistentIndex<V, A, const N: usize = 8> = Tree<V, A, N, std::convert:
 
 pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64>;
 
+/// Worst-case original funding for one immutable insertion, independent of
+/// population. Actual claims and examinations still occur on `IndexWork`.
+#[derive(Clone, Copy, Debug)]
+pub struct IndexInsertionBound {
+    /// Sum of physical node backing claims, including copied path nodes.
+    pub allocation_bytes: u64,
+    /// Sum of examined items, including fixed-width key comparisons.
+    pub examined_items: u64,
+}
+
 /// Shared immutable tree representation; public compositions select the cut type.
 pub struct Tree<V, A, const N: usize, C> {
     root: Option<Node<V, A, N, C>>,
@@ -74,6 +84,7 @@ struct Node<V, A, const N: usize, C>(Option<Arc<Body<V, A, N, C>>>);
 
 struct Body<V, A, const N: usize, C> {
     minimum: [u8; N],
+    depth: usize,
     kind: Kind<V, A, N, C>,
     // Values and child references retire before their original node funding.
     _allocation: A,
@@ -168,6 +179,38 @@ impl<V, A, const N: usize, C> Default for Tree<V, A, N, C> {
 }
 
 impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
+    /// Computes the original funding required to admit an insertion before its
+    /// key arrives. Returns `None` if the selected type's bound overflows.
+    /// No allocation, admission or tree traversal is performed.
+    pub fn insertion_bound(&self, insertions: u64) -> Option<IndexInsertionBound> {
+        Self::insertion_bound_at_depth(self.depth() as u64, insertions)
+    }
+
+    pub(crate) fn insertion_bound_at_depth(
+        depth: u64,
+        insertions: u64,
+    ) -> Option<IndexInsertionBound> {
+        let width = u64::try_from(N).ok()?;
+        let depth = width.checked_mul(8)?.min(depth.checked_add(insertions)?);
+        Some(IndexInsertionBound {
+            // One new leaf, at most one branch per bit, and the differing branch.
+            allocation_bytes: depth
+                .checked_add(2)?
+                .checked_mul(insertions)?
+                .checked_mul(u64::try_from(arc_allocation_bytes::<Body<V, A, N, C>>()).ok()?)?,
+            // The locating pass and rebuilding pass, including child visibility
+            // and complete minimum-key comparisons, each have bounded depth.
+            examined_items: depth
+                .checked_add(3)?
+                .checked_mul(width.checked_mul(4)?.checked_add(8)?)?
+                .checked_mul(insertions)?,
+        })
+    }
+
+    pub(crate) fn depth(&self) -> usize {
+        self.body().map_or(0, |body| body.depth)
+    }
+
     /// Pins the original keys strictly before this exclusive cut. Repeated
     /// prefixing keeps the earlier cut, without a chain of historical views.
     pub fn prefix(&self, before: [u8; N]) -> Self {
@@ -222,9 +265,14 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         work: &mut W,
     ) -> Result<Self, W::Error> {
         let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C>>() as u64)?;
+        let depth = match &kind {
+            Kind::Leaf(_) => 0,
+            Kind::Branch { low, high, .. } => 1 + low.depth().max(high.depth()),
+        };
         Ok(Self {
             root: Some(Node(Some(Arc::new(Body {
                 minimum,
+                depth,
                 kind,
                 _allocation: allocation,
             })))),
@@ -396,10 +444,13 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         let mut view = self.clone();
         let mut result = Self::default();
         let mut destination = &mut result;
+        // One original sibling depth per possible branch, with no allocation.
+        let mut depths = [[0_usize; 8]; N];
+        let mut depth = 0;
         loop {
             let Some(body) = view.visible_body(work)? else {
                 *destination = leaf;
-                return Ok(result);
+                break;
             };
             match &body.kind {
                 Kind::Branch {
@@ -422,6 +473,8 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                         view = selected;
                         continue;
                     }
+                    depths[depth / 8][depth % 8] = sibling.depth();
+                    depth += 1;
                     let (low, high) = if selected_high {
                         (sibling, Self::default())
                     } else {
@@ -442,9 +495,32 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
                         Some(bit) if high(&key, bit) => Self::branch(bit, view, leaf, work)?,
                         Some(bit) => Self::branch(bit, leaf, view, work)?,
                     };
-                    return Ok(result);
+                    break;
                 }
             }
         }
+        let mut height = destination.depth();
+        for position in (0..depth).rev() {
+            work.charge_items(1)?;
+            height = 1 + height.max(depths[position / 8][position % 8]);
+            depths[position / 8][position % 8] = height;
+        }
+        let mut cursor = &mut result;
+        for position in 0..depth {
+            work.charge_items(1)?;
+            let body = Arc::get_mut(cursor.root.as_mut().unwrap().0.as_mut().unwrap())
+                .unwrap_or_else(|| unreachable!("the unpublished path has one owner"));
+            body.depth = depths[position / 8][position % 8];
+            let Kind::Branch {
+                bit,
+                low,
+                high: upper,
+            } = &mut body.kind
+            else {
+                unreachable!("the copied path contains a branch")
+            };
+            cursor = if high(&key, *bit) { upper } else { low };
+        }
+        Ok(result)
     }
 }

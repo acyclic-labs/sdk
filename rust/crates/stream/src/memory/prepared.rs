@@ -36,6 +36,40 @@ pub(crate) struct PreparedCommit {
     codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     headers: crate::record_headers::PreparedHeaders,
     key_nodes: Allocation,
+    key_probes: ReplayProbes,
+}
+
+struct PreparedKeyWork<'a> {
+    work: &'a Work,
+    allocation: &'a mut Allocation,
+    probes: &'a mut ReplayProbes,
+}
+
+impl acyclic_collections::IndexWork for PreparedKeyWork<'_> {
+    type Error = StreamError;
+    type Allocation = Allocation;
+
+    // These operations were admitted before issuance and must survive caller
+    // cancellation. Actual work consumes the original retained reservations.
+    fn check(&mut self) -> Result<(), StreamError> {
+        Ok(())
+    }
+
+    fn charge_items(&mut self, items: u64) -> Result<(), StreamError> {
+        self.work.record(self.probes.record(items))
+    }
+
+    fn claim(&mut self, bytes: u64) -> Result<Allocation, StreamError> {
+        let bytes = usize::try_from(bytes).map_err(|_| StreamError::Capacity)?;
+        self.work
+            .record(
+                self.allocation
+                    .as_mut()
+                    .ok_or(StreamError::Unavailable)?
+                    .split(bytes),
+            )
+            .map(Some)
+    }
 }
 
 impl MemoryStream {
@@ -79,23 +113,29 @@ impl MemoryStream {
             .sequence = expected;
         history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
             expected;
-        // Header keys arrive with the body. Reserve the worst-case AVL insertion
-        // paths now, while original ingress admission is still available. The
-        // pinned parent cannot grow while this completion is pending.
-        let parent_height = match plan
+        // Header keys arrive with the body. The shared radix owns its physical
+        // node layout and fixed-width work bound; prepay both before issuance.
+        let count = crate::MAX_RECORD_KEYS as u64;
+        let bound = plan
             .histories
             .first()
-            .map(|prepared| prepared.history.as_ref())
-        {
-            Some(History::Batch { parent, .. }) => parent
-                .as_ref()
-                .map_or(0, |parent| parent.keys().height() as usize),
-            _ => return Err(StreamError::Unavailable),
-        };
-        let nodes = crate::MAX_RECORD_KEYS * (parent_height + crate::MAX_RECORD_KEYS + 3);
+            .ok_or(StreamError::Unavailable)?
+            .history
+            .keys()
+            .0
+            .insertion_bound(count)
+            .ok_or(StreamError::Capacity)?;
         let key_nodes = self.allocate(
-            nodes
-                .checked_mul(key_node_bytes())
+            usize::try_from(bound.allocation_bytes).map_err(|_| StreamError::Capacity)?,
+        )?;
+        let key_probes = self.reserve_replay_probes(
+            bound
+                .examined_items
+                .checked_add(
+                    (RECORD_KEY_WIDTH as u64)
+                        .checked_mul(count)
+                        .ok_or(StreamError::Capacity)?,
+                )
                 .ok_or(StreamError::Capacity)?,
         )?;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
@@ -142,6 +182,7 @@ impl MemoryStream {
                 codec,
                 headers,
                 key_nodes,
+                key_probes,
             },
             recovery,
         ))
@@ -388,15 +429,14 @@ impl PreparedCommit {
                     *keys = parent
                         .as_ref()
                         .map_or_else(KeyTree::default, |parent| parent.keys().clone())
-                        .append_reserved(records, &mut || {
-                            work.record(
-                                self.key_nodes
-                                    .as_mut()
-                                    .ok_or(StreamError::Unavailable)?
-                                    .split(key_node_bytes()),
-                            )
-                            .map(Some)
-                        })?;
+                        .append_reserved(
+                            records,
+                            &mut PreparedKeyWork {
+                                work: &work,
+                                allocation: &mut self.key_nodes,
+                                probes: &mut self.key_probes,
+                            },
+                        )?;
                 }
             }
             self.plan
