@@ -516,6 +516,90 @@ async fn spill_relief_retains_original_work_cancellation_and_refusal()
 }
 
 #[tokio::test]
+async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
+-> Result<(), Box<dyn std::error::Error>> {
+    for existing_spill in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let mut objects = Vec::new();
+        if existing_spill {
+            objects.push(spill_fixture(&store, &token).await?);
+        }
+        let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
+        let (first, first_bytes) = blob(vec![41; 3 * 1_048_576].into());
+        let (second, second_bytes) = blob(vec![42; 3 * 1_048_576].into());
+        store.put(first, first_bytes.clone(), &mut work).await?;
+        objects.push((first, first_bytes));
+        objects.push((second, second_bytes.clone()));
+
+        // Hold this real file's original ordered driver before its next write.
+        // Dropping the release sender also ends the gate on a failed assertion.
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let control = {
+            let mut spill = store.spill_io.write().await;
+            store.spill_file(&mut spill, None).await?.control_async(
+                move |_, _| {
+                    entered
+                        .send(())
+                        .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+                    released.recv().map_err(std::io::Error::other)
+                },
+                None,
+            )?
+        };
+        tokio::pin!(control);
+        tokio::select! {
+            entered = entry => entered?,
+            result = &mut control => panic!("file control ended before entry: {result:?}"),
+        }
+        {
+            let admission = store.put(second, second_bytes, &mut work);
+            tokio::pin!(admission);
+            assert!(matches!(
+                std::future::Future::poll(
+                    admission.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                ),
+                std::task::Poll::Pending
+            ));
+            let index = store.index();
+            assert!(index.order.is_empty(), "the spill selected both residents");
+            assert_eq!(index.resident_bytes, 6 * 1_048_576);
+        }
+        {
+            let index = store.index();
+            assert_eq!(index.order.len(), 2, "withdrawal restores the selection");
+            assert_eq!(index.resident_bytes, 6 * 1_048_576);
+            for (_, id) in &index.order {
+                assert!(matches!(
+                    index.objects.get(id),
+                    Some(Staged::Resident { .. })
+                ));
+            }
+        }
+        assert_eq!(store.spill_io.read().await.is_some(), existing_spill);
+        release.send(())?;
+        control.await?;
+
+        store.relieve_window(&mut work).await?;
+        assert_eq!(store.index().resident_bytes, 0);
+        assert_eq!(store.index().spilled_objects, objects.len());
+        assert!(store.index().order.is_empty());
+        for (id, bytes) in objects {
+            assert_eq!(
+                store.read(id, bytes.len() as u64, &mut work).await?.bytes,
+                bytes
+            );
+        }
+        drop(store);
+        drop(provider);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn publication_drains_exactly_its_closure_and_keeps_the_rest_private()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
