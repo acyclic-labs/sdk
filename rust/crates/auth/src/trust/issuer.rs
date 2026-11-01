@@ -54,6 +54,8 @@ pub struct Certification<'a> {
     /// Blocks (or keys) this certificate is revoked with: a key certified
     /// for one delegated credential dies with the capability it derives from.
     pub parent_revocation_ids: Vec<Vec<u8>>,
+    /// Signed public dependencies, retaining each parent's original trust domain.
+    pub trust_requirements: Vec<TrustRequirement>,
 }
 
 fn record(kind: TrustRecordKind) -> Vec<u8> {
@@ -506,6 +508,7 @@ impl AccountRoot {
             principal: certification.principal,
             parent_key_id: None,
             parent_revocation_ids: certification.parent_revocation_ids,
+            trust_requirements: certification.trust_requirements,
         };
         Ok(CertificateChain {
             birth: birth.clone(),

@@ -232,6 +232,7 @@ message CertifiedKey {
   Principal principal = 7;
   optional string parent_key_id = 8;
   repeated bytes parent_revocation_ids = 9;
+  repeated TrustRequirement trust_requirements = 10;
 }
 
 message EnvironmentKeyring {
@@ -493,6 +494,18 @@ message TrustRecord {
     SignedKeyringSnapshot keyring = 2;
     SignedRevocation revocation = 3;
   }
+}
+
+message TrustRequirement {
+  uint32 version = 1;
+  string environment = 2;
+  string account = 3;
+  repeated bytes environment_issuers = 4;
+  repeated bytes issuers = 5;
+  repeated bytes blocks = 6;
+  repeated CallerKeyRevocation keys = 7;
+  repeated bytes next_keys = 8;
+  Validity validity = 9;
 }
 
 message Validity {

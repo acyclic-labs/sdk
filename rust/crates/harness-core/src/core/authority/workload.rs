@@ -186,6 +186,15 @@ impl RuntimeKeys {
                         })
                         .map(<[u8]>::to_vec)
                         .collect(),
+                    trust_requirements: parent
+                        .map(|parent| {
+                            parent
+                                .trust_evidence()
+                                .map(|evidence| evidence.requirements())
+                        })
+                        .transpose()
+                        .map_err(unauthorized)?
+                        .unwrap_or_default(),
                 },
             )
             .map_err(unauthorized)?;

@@ -4,7 +4,7 @@ use super::*;
 /// Heap storage needed to copy compact public evidence from an authenticated owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrustEvidenceStorage<'a> {
-    allocation_bytes: [u64; 7],
+    allocation_bytes: [u64; 8],
     keys: &'a [KeyCertificate],
     /// Fixed-size identities copied into the compact representation.
     pub copied_bytes: u64,
@@ -21,6 +21,12 @@ impl TrustEvidenceStorage<'_> {
                 self.keys
                     .iter()
                     .map(|certificate| certificate.key.key_id.len() as u64),
+            )
+            .chain(
+                self.keys
+                    .iter()
+                    .flat_map(|certificate| &certificate.key.trust_requirements)
+                    .flat_map(|requirement| requirement_allocations(requirement, false)),
             )
             .filter(|bytes| *bytes != 0)
     }
@@ -47,6 +53,26 @@ pub struct TrustEvidence {
     next_keys: Vec<BlockId>,
     not_before: u64,
     expires_at: u64,
+    requirements: Vec<TrustRequirement>,
+}
+
+#[derive(Clone, Copy)]
+enum Ids<'a> {
+    Fixed(&'a [BlockId]),
+    Wire(&'a [Vec<u8>]),
+}
+
+impl<'a> Ids<'a> {
+    fn iter(self) -> impl Iterator<Item = &'a [u8]> {
+        let (fixed, wire): (&[BlockId], &[Vec<u8>]) = match self {
+            Self::Fixed(ids) => (ids, &[]),
+            Self::Wire(ids) => (&[], ids),
+        };
+        fixed
+            .iter()
+            .map(<[u8; 32]>::as_slice)
+            .chain(wire.iter().map(Vec::as_slice))
+    }
 }
 
 struct Certificate<'a> {
@@ -58,9 +84,9 @@ struct Certificate<'a> {
 struct View<'a, C, N> {
     environment: &'a str,
     account: &'a str,
-    environment_issuers: &'a [BlockId],
-    issuers: &'a [BlockId],
-    ids: &'a [BlockId],
+    environment_issuers: Ids<'a>,
+    issuers: Ids<'a>,
+    ids: Ids<'a>,
     certificates: C,
     next_keys: N,
     not_before: u64,
@@ -76,18 +102,22 @@ where
         let certificates = descendant.certificates()?;
         if self.environment != certificates.birth.birth.environment
             || self.account != certificates.birth.birth.account_id
-            || !descendant
-                .environment_issuers
+            || !descendant.environment_issuers.iter().all(|key| {
+                self.environment_issuers
+                    .iter()
+                    .any(|original| original == key)
+            })
+            || !self
+                .issuers
                 .iter()
-                .all(|key| self.environment_issuers.contains(key))
-            || self.issuers != descendant.issuers
+                .eq(descendant.issuers.iter().map(<[u8; 32]>::as_slice))
             || self.not_before > descendant.not_before
             || self.expires_at < descendant.expires_at
         {
             return Ok(false);
         }
         let mut inherited = descendant.revocation_ids();
-        for id in self.ids {
+        for id in self.ids.iter() {
             if !inherited.by_ref().any(|actual| actual == id) {
                 return Ok(false);
             }
@@ -117,7 +147,7 @@ where
         if !self
             .environment_issuers
             .iter()
-            .all(|key| environments.contains(key))
+            .all(|key| environments.iter().any(|actual| actual.as_slice() == key))
         {
             return Err(VerifyError::Trust);
         }
@@ -133,11 +163,12 @@ where
         }) {
             return Err(VerifyError::RepeatedKey);
         }
-        if !self
-            .issuers
-            .iter()
-            .all(|issuer| account.issuer_keys.contains(issuer))
-        {
+        if !self.issuers.iter().all(|issuer| {
+            account
+                .issuer_keys
+                .iter()
+                .any(|actual| actual.as_slice() == issuer)
+        }) {
             return Err(VerifyError::Trust);
         }
         for certificate in self.certificates {
@@ -162,7 +193,8 @@ where
                 }
             }
         }
-        for block in self.ids {
+        for block in self.ids.iter() {
+            let block = block.try_into().map_err(|_| VerifyError::Malformed)?;
             if trust.revoked(self.account, RevocationCheck::Block(block))? {
                 return Err(VerifyError::Revoked);
             }
@@ -179,6 +211,59 @@ fn bytes(value: Option<usize>) -> Result<u64, VerifyError> {
     value
         .and_then(|value| u64::try_from(value).ok())
         .ok_or(VerifyError::Malformed)
+}
+
+fn requirement_allocations(
+    requirement: &TrustRequirement,
+    capacity: bool,
+) -> impl Iterator<Item = u64> + '_ {
+    let strings = [&requirement.environment, &requirement.account].into_iter()
+        .chain(requirement.keys.iter().map(|key| &key.key_id))
+        .map(move |value| if capacity { value.capacity() } else { value.len() } as u64);
+    let vectors = [
+        &requirement.environment_issuers,
+        &requirement.issuers,
+        &requirement.blocks,
+        &requirement.next_keys,
+    ];
+    let slots = vectors.into_iter().map(move |values| {
+        (if capacity {
+            values.capacity()
+        } else {
+            values.len()
+        } * std::mem::size_of::<Vec<u8>>()) as u64
+    });
+    let ids = vectors.into_iter().flat_map(|values| values.iter())
+        .map(move |value| if capacity { value.capacity() } else { value.len() } as u64);
+    let keys = (if capacity {
+        requirement.keys.capacity()
+    } else {
+        requirement.keys.len()
+    } * std::mem::size_of::<CallerKeyRevocation>()) as u64;
+    strings.chain(slots).chain(ids).chain(std::iter::once(keys))
+}
+
+fn check_requirement(
+    requirement: &TrustRequirement,
+    trust: &(impl Trust + ?Sized),
+    now: u64,
+) -> Result<(), VerifyError> {
+    View {
+        environment: &requirement.environment,
+        account: &requirement.account,
+        environment_issuers: Ids::Wire(&requirement.environment_issuers),
+        issuers: Ids::Wire(&requirement.issuers),
+        ids: Ids::Wire(&requirement.blocks),
+        certificates: requirement.keys.iter().map(|key| Certificate {
+            id: &key.key_id,
+            epoch: key.key_epoch,
+            parents: &[],
+        }),
+        next_keys: requirement.next_keys.iter().map(Vec::as_slice),
+        not_before: requirement.validity.not_before_unix_seconds,
+        expires_at: requirement.validity.expires_at_unix_seconds,
+    }
+    .check(trust, now)
 }
 
 impl VerifiedCapability {
@@ -224,7 +309,20 @@ impl VerifiedCapability {
     /// dependencies may narrow the descendant. One pass, with no allocation.
     /// This does not authorize new resource grants or an acting identity.
     pub fn preserved_by(&self, descendant: &Self) -> Result<bool, VerifyError> {
-        self.trust_view()?.preserved_by(descendant)
+        let mut inherited = descendant.trust_requirements();
+        Ok(self.trust_view()?.preserved_by(descendant)?
+            && self
+                .trust_requirements()
+                .all(|requirement| inherited.by_ref().any(|actual| actual == requirement)))
+    }
+
+    fn trust_requirements(&self) -> impl Iterator<Item = &TrustRequirement> {
+        self.blocks
+            .first()
+            .into_iter()
+            .flat_map(|block| &block.certificates)
+            .flat_map(|certificates| &certificates.keys)
+            .flat_map(|certificate| &certificate.key.trust_requirements)
     }
 
     fn certificates(&self) -> Result<&CertificateChain, VerifyError> {
@@ -244,9 +342,9 @@ impl VerifiedCapability {
         Ok(View {
             environment: &certificates.birth.birth.environment,
             account: &certificates.birth.birth.account_id,
-            environment_issuers: &self.environment_issuers,
-            issuers: &self.issuers,
-            ids: &self.ids,
+            environment_issuers: Ids::Fixed(&self.environment_issuers),
+            issuers: Ids::Fixed(&self.issuers),
+            ids: Ids::Fixed(&self.ids),
             certificates: certificates.keys.iter().map(|certificate| Certificate {
                 id: &certificate.key.key_id,
                 epoch: certificate.key.key_epoch,
@@ -285,6 +383,15 @@ impl VerifiedCapability {
             bytes(slots::<BlockId>(self.environment_issuers.len()))?,
             bytes(Some(certificates.birth.birth.environment.len()))?,
             bytes(Some(certificates.birth.birth.account_id.len()))?,
+            bytes(
+                certificates
+                    .keys
+                    .iter()
+                    .try_fold(0usize, |count, certificate| {
+                        count.checked_add(certificate.key.trust_requirements.len())
+                    })
+                    .and_then(slots::<TrustRequirement>),
+            )?,
         ];
         let mut storage = TrustEvidenceStorage {
             allocation_bytes,
@@ -337,6 +444,15 @@ impl VerifiedCapability {
                     .map_err(|_| VerifyError::Malformed)?,
             );
         }
+        let requirement_count = certificates
+            .keys
+            .iter()
+            .try_fold(0usize, |count, key| {
+                count.checked_add(key.key.trust_requirements.len())
+            })
+            .ok_or(VerifyError::Malformed)?;
+        let mut requirements = Vec::with_capacity(requirement_count);
+        requirements.extend(self.trust_requirements().cloned());
         Ok(TrustEvidence {
             environment: certificates.birth.birth.environment.clone(),
             account: certificates.birth.birth.account_id.clone(),
@@ -347,11 +463,45 @@ impl VerifiedCapability {
             next_keys,
             not_before: self.not_before,
             expires_at: self.expires_at,
+            requirements,
         })
     }
 }
 
 impl TrustEvidence {
+    /// Complete public requirements for a newly signed contribution. The root
+    /// and already inherited dependencies are flattened, never recursively nested.
+    pub fn requirements(&self) -> Vec<TrustRequirement> {
+        let mut requirements = Vec::with_capacity(self.requirements.len() + 1);
+        requirements.push(TrustRequirement {
+            version: 1,
+            environment: self.environment.clone(),
+            account: self.account.clone(),
+            environment_issuers: self
+                .environment_issuers
+                .iter()
+                .map(|id| id.to_vec())
+                .collect(),
+            issuers: self.issuers.iter().map(|id| id.to_vec()).collect(),
+            blocks: self.ids.iter().map(|id| id.to_vec()).collect(),
+            keys: self
+                .keys
+                .iter()
+                .map(|key| CallerKeyRevocation {
+                    key_id: key.id.clone(),
+                    key_epoch: key.epoch,
+                })
+                .collect(),
+            next_keys: self.next_keys.iter().map(|id| id.to_vec()).collect(),
+            validity: Validity {
+                not_before_unix_seconds: self.not_before,
+                expires_at_unix_seconds: self.expires_at,
+            },
+        });
+        requirements.extend(self.requirements.iter().cloned());
+        requirements
+    }
+
     /// Register the original trust owner's publications for this authenticated
     /// account and its environment before rechecking this evidence. The owner
     /// must be the same source used by `check`; this transfers no authority.
@@ -359,22 +509,37 @@ impl TrustEvidence {
         &self,
         source: &(impl crate::trust::ChangeSource + ?Sized),
     ) -> crate::trust::Changed {
-        source.changed_for(&self.account)
+        if self.requirements.is_empty() {
+            return source.changed_for(&self.account);
+        }
+        let registrations = std::iter::once(source.changed_for(&self.account))
+            .chain(
+                self.requirements
+                    .iter()
+                    .map(|requirement| source.changed_for(&requirement.account)),
+            )
+            .collect::<Vec<_>>();
+        Box::pin(async move { futures::future::select_all(registrations).await.0 })
     }
 
     /// The same-key admission preservation check without retaining the parent's
     /// bearer, append key or policy graph. See `VerifiedCapability::preserved_by`.
     pub fn preserved_by(&self, descendant: &VerifiedCapability) -> Result<bool, VerifyError> {
-        self.view().preserved_by(descendant)
+        let mut inherited = descendant.trust_requirements();
+        Ok(self.view().preserved_by(descendant)?
+            && self
+                .requirements
+                .iter()
+                .all(|requirement| inherited.by_ref().any(|actual| actual == requirement)))
     }
 
     fn view(&self) -> View<'_, impl Iterator<Item = Certificate<'_>>, impl Iterator<Item = &[u8]>> {
         View {
             environment: &self.environment,
             account: &self.account,
-            environment_issuers: &self.environment_issuers,
-            issuers: &self.issuers,
-            ids: &self.ids,
+            environment_issuers: Ids::Fixed(&self.environment_issuers),
+            issuers: Ids::Fixed(&self.issuers),
+            ids: Ids::Fixed(&self.ids),
             certificates: self.keys.iter().map(|key| Certificate {
                 id: &key.id,
                 epoch: key.epoch,
@@ -395,7 +560,11 @@ impl TrustEvidence {
         trust: &(impl Trust + ?Sized),
         now_unix_seconds: u64,
     ) -> Result<(), VerifyError> {
-        self.view().check(trust, now_unix_seconds)
+        self.view().check(trust, now_unix_seconds)?;
+        for requirement in &self.requirements {
+            check_requirement(requirement, trust, now_unix_seconds)?;
+        }
+        Ok(())
     }
 
     /// Counts actual heap capacities retained by this owner.
@@ -412,11 +581,19 @@ impl TrustEvidence {
                 size.checked_add(slots::<BlockId>(self.environment_issuers.capacity())?)
             })
             .and_then(|size| size.checked_add(slots::<BlockId>(self.ids.capacity())?));
-        bytes(base.and_then(|base| {
+        let base = base.and_then(|base| {
+            base.checked_add(slots::<TrustRequirement>(self.requirements.capacity())?)
+        });
+        let base = bytes(base.and_then(|base| {
             self.keys
                 .iter()
                 .try_fold(base, |size, key| size.checked_add(key.id.capacity()))
-        }))
+        }))?;
+        self.requirements
+            .iter()
+            .flat_map(|requirement| requirement_allocations(requirement, true))
+            .try_fold(base, u64::checked_add)
+            .ok_or(VerifyError::Malformed)
     }
 }
 
@@ -425,5 +602,9 @@ pub(super) fn check(
     trust: &(impl Trust + ?Sized),
     now: u64,
 ) -> Result<(), VerifyError> {
-    capability.trust_view()?.check(trust, now)
+    capability.trust_view()?.check(trust, now)?;
+    for requirement in capability.trust_requirements() {
+        check_requirement(requirement, trust, now)?;
+    }
+    Ok(())
 }

@@ -458,6 +458,7 @@ pub enum TipProof {
         BirthProto,
         BirthCertificateProto,
         CertifiedKeyProto,
+        TrustRequirementProto,
         KeyCertificateProto,
         CertificateChainProto,
         RevocationProto,

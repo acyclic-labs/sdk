@@ -5,9 +5,37 @@ use futures::TryStreamExt as _;
 /// Verified admission for one canonical Actors invocation. Only session
 /// admission constructs this value. It contains no caller-supplied identity.
 #[derive(Clone)]
-pub struct CallAuthorization(pub(super) ResourceAuthorization);
+pub struct CallAuthorization(
+    pub(super) ResourceAuthorization,
+    pub(super) tokio::sync::watch::Receiver<super::authority::Credential>,
+    pub(super) Arc<acyclic_auth::verify::VerifiedCapability>,
+);
 
 impl CallAuthorization {
+    /// Retain this admitted caller and its original live replacement/loss owner.
+    /// The host must still apply its current command policy before issuance and
+    /// dispatch. This contributes dependencies; it grants no new resource.
+    pub fn contribution(&self) -> Result<CallContribution, StreamError> {
+        self.1.has_changed().map_err(|_| StreamError::Unavailable)?;
+        let capability = Arc::clone(&self.2);
+        let contribution = CallContribution(Arc::new(Contribution {
+            authorization: self.0.clone(),
+            evidence: capability
+                .trust_evidence()
+                .map_err(|_| StreamError::AccessDenied)?,
+            principal: capability.effective().principal().clone(),
+            expires: capability.effective().expires_at_unix_seconds(),
+            changed: self.1.clone(),
+            filter_digest: crate::FollowFilter::authorized(
+                wire::SessionFilter::default(),
+                &capability,
+            )?
+            .digest(),
+            capability,
+        }));
+        contribution.check()?;
+        Ok(contribution)
+    }
     /// Issuer-attested identity used by the owning host's input staging/control.
     pub fn principal(&self) -> Result<acyclic_auth::contract::Principal, StreamError> {
         self.0.principal()
@@ -26,6 +54,115 @@ impl CallAuthorization {
             return Err(StreamError::AccessDenied);
         }
         self.0.authorize(resource, keys, attributes, policy)
+    }
+}
+
+struct Contribution {
+    capability: Arc<acyclic_auth::verify::VerifiedCapability>,
+    authorization: ResourceAuthorization,
+    evidence: acyclic_auth::verify::TrustEvidence,
+    principal: acyclic_auth::contract::Principal,
+    expires: u64,
+    changed: tokio::sync::watch::Receiver<super::authority::Credential>,
+    filter_digest: [u8; 32],
+}
+
+/// Original session admission retained while a selected source is issued and
+/// dispatched. Portable credentials cannot replace this live custody.
+#[derive(Clone)]
+pub struct CallContribution(Arc<Contribution>);
+
+impl CallContribution {
+    /// Original authenticated acting identity, including its complete lineage.
+    pub fn principal(&self) -> &acyclic_auth::contract::Principal {
+        &self.0.principal
+    }
+    /// Complete canonical public trust evidence for a signed contribution.
+    pub fn evidence(&self) -> &acyclic_auth::verify::TrustEvidence {
+        &self.0.evidence
+    }
+    /// Recheck original admission, captured dependencies and current replacement.
+    /// The owning command's current policy remains an independent required fence.
+    pub fn check(&self) -> Result<(), StreamError> {
+        let authorization = &self.0.authorization;
+        self.0
+            .changed
+            .has_changed()
+            .map_err(|_| StreamError::Unavailable)?;
+        let capability = self
+            .0
+            .changed
+            .borrow()
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|_| StreamError::AccessDenied)?;
+        if capability.effective().principal() != &self.0.principal
+            || !capability
+                .effective()
+                .grants()
+                .eq(self.0.capability.effective().grants())
+            || crate::FollowFilter::authorized(wire::SessionFilter::default(), &capability)?
+                .digest()
+                != self.0.filter_digest
+        {
+            return Err(StreamError::AccessDenied);
+        }
+        let snapshot = authorization.authorize_capability(
+            &capability,
+            &authorization.resource.name,
+            &[],
+            &acyclic_auth::contract::RecordAttributes::default(),
+            acyclic_auth::authority::PolicyDecision::Allow,
+        )?;
+        self.0
+            .evidence
+            .check(snapshot.trust.as_ref(), snapshot.now_unix_seconds)
+            .map_err(|_| StreamError::AccessDenied)
+    }
+    /// Completes on original credential slot or session loss, invalid replacement,
+    /// revocation or expiry. Register before dispatch; the slot/trust/clock are
+    /// the producers. Dropping any producer returns a typed unavailable error.
+    /// No task, readiness probe or independent trust source is started.
+    pub fn terminated(&self) -> crate::BoxProviderFuture<'static, StreamError> {
+        let contribution = self.clone();
+        let mut changed = self.0.changed.clone();
+        Box::pin(async move {
+            loop {
+                let authorization = &contribution.0.authorization;
+                let trust = contribution
+                    .0
+                    .evidence
+                    .changed(authorization.change_source());
+                if let Err(error) = contribution.check() {
+                    return error;
+                }
+                let owner = async {
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| acyclic_auth::trust::SourceClosed)
+                };
+                let publication = future::select(trust, Box::pin(owner));
+                let expiry = authorization.expiry(contribution.0.expires);
+                match future::select(Box::pin(publication), expiry).await {
+                    future::Either::Left((publication, _)) => {
+                        let result = match publication {
+                            future::Either::Left((result, _))
+                            | future::Either::Right((result, _)) => result,
+                        };
+                        if result.is_err() {
+                            return StreamError::Unavailable;
+                        }
+                    }
+                    future::Either::Right((result, _)) => {
+                        return match result {
+                            Ok(()) => StreamError::AccessDenied,
+                            Err(_) => StreamError::Unavailable,
+                        };
+                    }
+                }
+            }
+        })
     }
 }
 

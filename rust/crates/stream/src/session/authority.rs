@@ -82,7 +82,7 @@ impl From<VerifyError> for Rejection {
         }
     }
 }
-type Credential = Result<Arc<VerifiedCapability>, Rejection>;
+pub(super) type Credential = Result<Arc<VerifiedCapability>, Rejection>;
 
 impl Slots {
     /// The credential bytes held once `slot` holds `length` of them.
@@ -98,7 +98,15 @@ impl Slots {
 
 #[derive(Default)]
 pub(super) struct Slots {
-    entries: BTreeMap<u32, (u64, usize, Credential)>,
+    entries: BTreeMap<
+        u32,
+        (
+            u64,
+            usize,
+            Credential,
+            tokio::sync::watch::Sender<Credential>,
+        ),
+    >,
     next_revision: u64,
     credential_bytes: usize,
     expiries: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64, u32)>>,
@@ -200,16 +208,26 @@ impl Authority {
                 slot,
             )));
         }
-        slots
-            .entries
-            .insert(slot, (revision, bytes.len(), credential));
+        match slots.entries.entry(slot) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let current = entry.get_mut();
+                current.3.send_replace(credential.clone());
+                current.0 = revision;
+                current.1 = bytes.len();
+                current.2 = credential;
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let changes = tokio::sync::watch::channel(credential.clone()).0;
+                entry.insert((revision, bytes.len(), credential, changes));
+            }
+        }
         slots.credential_bytes = credential_bytes;
         let expiry_capacity = maximum.saturating_mul(2);
         if slots.expiries.len() > expiry_capacity {
             slots.expiries = slots
                 .entries
                 .iter()
-                .filter_map(|(slot, (revision, _, credential))| {
+                .filter_map(|(slot, (revision, _, credential, _))| {
                     credential.as_ref().ok().map(|capability| {
                         std::cmp::Reverse((
                             capability.effective().expires_at_unix_seconds(),
@@ -383,7 +401,7 @@ impl Authority {
         if !resource.starts_with("fs:/") || !acyclic_auth::valid_resource(&resource) {
             return Err(Rejection::Forbidden);
         }
-        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
@@ -444,7 +462,7 @@ impl Authority {
         if !acyclic_auth::valid_resource(&resource) || !resource.starts_with("actors:/") {
             return Err(Rejection::Forbidden);
         }
-        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
@@ -459,7 +477,16 @@ impl Authority {
             additional: Vec::new(),
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
-        Ok((binding, CallAuthorization(authorization)))
+        let changes = slots
+            .entries
+            .get(&slot)
+            .ok_or(Rejection::Forbidden)?
+            .3
+            .subscribe();
+        Ok((
+            binding,
+            CallAuthorization(authorization, changes, Arc::clone(capability)),
+        ))
     }
     /// Admits one children page: `streams/list` on the parent, as
     /// StreamService.ChildrenPage requires. Each returned child and tail
@@ -472,7 +499,7 @@ impl Authority {
         parent: Option<&StreamPath>,
         channels: usize,
     ) -> Result<(Binding, super::pages::Visibility), Rejection> {
-        let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let resource = stream_resource(parent);
         let mut authorization =
@@ -517,7 +544,8 @@ impl Authority {
             let authorization = visibility.authorization.clone();
             (binding, authorization, Some(visibility))
         } else {
-            let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+            let (revision, _, credential, _) =
+                slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
             let capability = credential.as_ref().map_err(|error| *error)?;
             let primary = request
                 .paths

@@ -29,7 +29,7 @@ pub use sources::model::{
 mod calls;
 mod pages;
 mod resources;
-pub use calls::{CallAuthorization, CallProvider};
+pub use calls::{CallAuthorization, CallContribution, CallProvider};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,

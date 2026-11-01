@@ -32,6 +32,7 @@ pub fn root() -> Block {
                     },
                     parent_key_id: None,
                     parent_revocation_ids: vec![],
+                    trust_requirements: vec![],
                 },
                 signature: vec![4; 64],
             }],

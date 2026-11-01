@@ -149,6 +149,113 @@ impl AuthorityState for State {
 fn authority(state: Arc<State>) -> Authority {
     Authority::new(state, "workers:/test".into(), Some("account".into())).unwrap()
 }
+
+#[tokio::test]
+async fn call_contributions_pin_admission_and_end_on_original_producer_loss() {
+    fn credential(change: impl Fn(&mut Block)) -> Vec<u8> {
+        signed::root(|block| {
+            block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: "actors:/selected".into(),
+                            prefix: false,
+                        },
+                        actions: vec!["actors/invoke".into()],
+                    }),
+                }],
+            };
+            change(block);
+        })
+    }
+    for case in [
+        "slot",
+        "session",
+        "replacement",
+        "principal",
+        "revocation",
+        "trust",
+        "clock",
+        "expiry",
+    ] {
+        let state = State::new();
+        let auth = Arc::new(authority(state.clone()));
+        let mut slots = Slots::default();
+        auth.register(&mut slots, 0, &credential(|_| {}), 1)
+            .unwrap();
+        let (binding, call) = auth
+            .bind_call(&slots, 0, "actors:/selected".into(), 1)
+            .unwrap();
+        let expires = call.2.effective().expires_at_unix_seconds();
+        let contribution = call.contribution().unwrap();
+        drop(binding);
+        drop(call);
+        contribution.check().unwrap();
+        let ended = contribution.terminated();
+        futures::pin_mut!(ended);
+        assert!(futures::poll!(ended.as_mut()).is_pending());
+        match case {
+            "slot" => auth.register(&mut slots, 0, &[], 1).unwrap(),
+            "session" => drop(slots),
+            "replacement" => auth
+                .register(
+                    &mut slots,
+                    0,
+                    &credential(|block| {
+                        block.certificates.as_mut().unwrap().keys[0]
+                            .key
+                            .grants
+                            .grants
+                            .push(Grant {
+                                kind: GrantKind::Resource(ResourceGrant {
+                                    resource: ResourcePattern {
+                                        name: "streams:/extra".into(),
+                                        prefix: false,
+                                    },
+                                    actions: vec!["streams/follow".into()],
+                                }),
+                            });
+                    }),
+                    1,
+                )
+                .unwrap(),
+            "principal" => auth
+                .register(
+                    &mut slots,
+                    0,
+                    &credential(|block| {
+                        block.certificates.as_mut().unwrap().keys[0]
+                            .key
+                            .principal
+                            .id = "other".into();
+                    }),
+                    1,
+                )
+                .unwrap(),
+            "revocation" => state.publish(
+                signed::Snapshot {
+                    revoked_keys: vec!["key".into()],
+                    ..Default::default()
+                },
+                signed::NOW,
+            ),
+            "trust" => state.lose(),
+            "clock" => state.lose_clock(),
+            "expiry" => state.publish(signed::Snapshot::default(), expires),
+            _ => unreachable!(),
+        }
+        let expected = if matches!(case, "slot" | "session" | "trust" | "clock") {
+            StreamError::Unavailable
+        } else {
+            StreamError::AccessDenied
+        };
+        assert_eq!(
+            futures::poll!(ended.as_mut()),
+            std::task::Poll::Ready(expected),
+            "{case}"
+        );
+    }
+}
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {
         for certificate in block

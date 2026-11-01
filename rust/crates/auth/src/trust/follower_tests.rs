@@ -68,6 +68,7 @@ fn certification(leaf: &SigningKey) -> Certification<'_> {
             attributes: vec![],
         },
         parent_revocation_ids: vec![],
+        trust_requirements: vec![],
     }
 }
 

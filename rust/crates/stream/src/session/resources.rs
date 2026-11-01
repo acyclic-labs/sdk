@@ -57,6 +57,27 @@ impl ResourceAuthorization {
         attributes: &RecordAttributes,
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
+        let capability = self.current()?;
+        self.authorize_capability(&capability, resource, keys, attributes, policy)
+            .map(|_| ())
+    }
+    pub(super) fn change_source(&self) -> &dyn acyclic_auth::trust::ChangeSource {
+        self.authority.state.changes()
+    }
+    pub(super) fn expiry(
+        &self,
+        deadline: u64,
+    ) -> crate::BoxProviderFuture<'_, Result<(), acyclic_auth::trust::SourceClosed>> {
+        self.authority.state.expires_at(deadline)
+    }
+    pub(super) fn authorize_capability(
+        &self,
+        capability: &VerifiedCapability,
+        resource: &str,
+        keys: &[Vec<u8>],
+        attributes: &RecordAttributes,
+        policy: PolicyDecision,
+    ) -> Result<super::authority::TrustSnapshot, StreamError> {
         if !acyclic_auth::valid_resource(resource)
             || !acyclic_auth::authority::resource_matches(&self.resource, resource)
         {
@@ -66,7 +87,6 @@ impl ResourceAuthorization {
             .authority
             .snapshot()
             .map_err(|_| StreamError::AccessDenied)?;
-        let capability = self.current()?;
         capability
             .authorize(
                 snapshot.trust.as_ref(),
@@ -96,7 +116,8 @@ impl ResourceAuthorization {
                 policy,
                 acyclic_auth::authority::Scope::Exact,
             )
-            .map_err(|_| StreamError::AccessDenied)
+            .map_err(|_| StreamError::AccessDenied)?;
+        Ok(snapshot)
     }
     /// Pushes semantic filesystem grant prefixes into the provider index. The
     /// full lossless path is still authorized per entry after indexed selection.
