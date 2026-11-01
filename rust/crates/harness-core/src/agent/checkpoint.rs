@@ -699,10 +699,13 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "1", "2", "3", "4", "5", "6", "7", "8", "unknown"] {
+        for version in (0..crate::agent::records::RECORD_VERSION)
+            .map(|version| version.to_string())
+            .chain(std::iter::once("unknown".to_owned()))
+        {
             for bytes in [valid.bytes.clone(), Vec::new().into()] {
                 let mut checkpoint = valid.clone();
-                checkpoint.codec.version = version.into();
+                checkpoint.codec.version.clone_from(&version);
                 checkpoint.bytes = bytes;
                 assert!(matches!(
                     checkpoint_state(&checkpoint),
