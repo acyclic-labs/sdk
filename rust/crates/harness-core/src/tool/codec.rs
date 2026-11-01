@@ -125,6 +125,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "Notebook",
         "Cell",
         "a notebook cell array",
+        "a JSON object",
         "nbformat",
         "execution_count",
         "attachments",

@@ -212,23 +212,23 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     // Typed field diagnostics retain the same recoverable classification and
     // original ownership on malformed cells, missing fields and duplicates.
     for malformed in [
+        r#"[4,[{"id":"a","cell_type":"code","source":[]}]]"#,
         r#"{"cells":[]}"#,
         r#"{"nbformat":4,"cells":null}"#,
         r#"{"nbformat":4,"cells":[],"cells":[]}"#,
         r#"{"nbformat":4,"cells":[{"source":[]}] }"#,
+        r#"{"nbformat":4,"cells":[["a","code",[],null,null]]}"#,
         r#"{"nbformat":4,"cells":[{"cell_type":"code","source":null,"source":[]}] }"#,
     ] {
-        let error = edit(
-            malformed,
-            &NotebookEdit::Replace {
-                cell: NotebookCell::Index { index: 0, id: None },
-                source: "new".into(),
-                cell_type: None,
-            },
-            Some(&native),
-        )
-        .err()
-        .expect("malformed notebook refused");
+        let operation = NotebookEdit::Replace {
+            cell: NotebookCell::Index { index: 0, id: None },
+            source: "new".into(),
+            cell_type: None,
+        };
+        assert!(edit(malformed, &operation, None).is_err());
+        let error = edit(malformed, &operation, Some(&native))
+            .err()
+            .expect("malformed notebook refused");
         assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
         assert!(error.is_tool_failure(), "{error:?}");
         drop(error);

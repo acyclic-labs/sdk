@@ -1,6 +1,7 @@
 //! Borrowed cell spans keep unselected outputs out of the allocation graph.
 //! Edits splice those spans back into the same authoritative nbformat file.
 use super::*;
+use crate::executor::json::JsonObject;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 use std::{borrow::Cow, fmt};
@@ -121,7 +122,11 @@ impl<'de, F: FnMut(u64, &'de RawValue)> Visitor<'de> for EachCell<F> {
 }
 
 fn notebook<'a>(source: &'a str, work: crate::NativeWork<'_>) -> Result<Decoded<Notebook<'a>>> {
-    let notebook = decode(std::marker::PhantomData::<Notebook<'a>>, source, work)?;
+    let notebook = decode(
+        JsonObject(std::marker::PhantomData::<Notebook<'a>>),
+        source,
+        work,
+    )?;
     if notebook.nbformat != 4 {
         return Err(executor::rejection(
             work,
@@ -345,7 +350,11 @@ pub(super) fn edit(
                 || matches!(operation, NotebookEdit::Insert { .. })
                 || matches!(target, NotebookCell::Index { index, id: Some(_) } if *index == position)
             {
-                match decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work) {
+                match decode(
+                    JsonObject(std::marker::PhantomData::<Cell<'_>>),
+                    raw.get(),
+                    work,
+                ) {
                     Ok(cell) => Some(cell),
                     Err(error) => {
                         cell_error = Some(error);
@@ -424,7 +433,11 @@ pub(super) fn edit(
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
             let cell = match selected_cell {
                 Some(cell) => cell,
-                None => decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?,
+                None => decode(
+                    JsonObject(std::marker::PhantomData::<Cell<'_>>),
+                    raw.get(),
+                    work,
+                )?,
             };
             (replacement, _replacement_hold) = encoded(new_source, work)?;
             let (start, end) = span(source, cell.source);
@@ -495,7 +508,11 @@ pub(super) fn edit(
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
             let _cell = match selected_cell {
                 Some(cell) => cell,
-                None => decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?,
+                None => decode(
+                    JsonObject(std::marker::PhantomData::<Cell<'_>>),
+                    raw.get(),
+                    work,
+                )?,
             };
             let (start, end) = span(source, raw);
             substitutions[0] = Some(if let Some(previous) = previous {

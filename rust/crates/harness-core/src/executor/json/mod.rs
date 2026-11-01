@@ -6,9 +6,11 @@ use serde_json::Value;
 mod admission;
 mod arrays;
 mod identity;
+mod object;
 mod sequence;
 mod spans;
 pub(crate) use identity::borrowed_json_digest;
+pub(crate) use object::JsonObject;
 pub(crate) use sequence::canonical_sequence_digests;
 pub(crate) use spans::{JsonSpans, SpanEvent, SpanKind};
 
