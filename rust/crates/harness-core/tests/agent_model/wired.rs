@@ -349,10 +349,9 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
 #[tokio::test]
 async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admission() -> Result {
     use acyclic_harness_core::{
-        conversation::{
-            ContentAccess, ContentPublisher, ContentResidencyVerifier, FileProjectionPolicy,
-        },
+        conversation::{ContentAccess, ContentPublisher, ContentResidencyVerifier},
         filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+        model::FileProjectionPolicy,
     };
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(&stream, id(221)).await?;

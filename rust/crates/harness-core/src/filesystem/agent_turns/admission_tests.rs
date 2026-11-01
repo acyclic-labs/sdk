@@ -6,7 +6,9 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
     use crate::agent::{AgentId, InboxRecord, IntentId, NoticeSelection};
     use crate::conversation::wire::Notice;
     use crate::model::ModelContentPart;
-    use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
+    use acyclic_stream::{
+        AppendRequest, IdempotencyKey, MemoryStream, StreamError, StreamProviderExt as _,
+    };
 
     let stream = MemoryStream::default();
     let agent = AgentPath::root(&AgentId::from_bytes([194; 16]));
@@ -49,9 +51,9 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
     };
     let input = ModelContent::Text("prompt".into());
     let (notices, retained) =
-        selected_notices(&stream, &agent, Some(&selected), input.clone()).await?;
+        selected_notices(&stream, &agent, Some(&selected), input.clone(), None).await?;
     assert_eq!(retained, Some(input));
-    let Some(ModelContent::Part(ModelContentPart::Notices { notices })) = notices else {
+    let [ModelContent::Part(ModelContentPart::Notices { notices })] = notices.as_slice() else {
         panic!("missing event boundary");
     };
     assert_eq!(notices.len(), 1);
@@ -65,7 +67,8 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
             &stream,
             &agent,
             Some(&unavailable),
-            ModelContent::Text("prompt".into())
+            ModelContent::Text("prompt".into()),
+            None,
         )
         .await
         .expect_err("a missing frozen suffix must refuse")
