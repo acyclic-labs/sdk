@@ -1,5 +1,22 @@
 # Polling and timed-wait inventory
 
+Compiler-overlap successor, locations on `c3010262af`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `scripts/check-crate-tests.test.mjs:36` | Synthetic scheduling turn | First worker awaits the second worker's original admission promise. | Source complete; unqualified |
+| `scripts/check-crate-tests.test.mjs:72` | Generated build-script filesystem recheck | Both real build scripts connect to one pre-armed channel and receive admission only after both arrive. Original Cargo failure, socket EOF/error and server withdrawal close the same channel. | Source complete; unqualified |
+| `scripts/check-crate-tests.test.mjs:73` | Two-second overlap refusal window | The actual second Cargo process's build-directory lock-wait event refuses the held build script; retain the shared-target negative without inferring absence from elapsed time. | Source complete; unqualified |
+| `scripts/check-crate-tests.test.mjs:74` | Five-millisecond polling sleep | Deleted with the filesystem loop; one original socket read waits for admission or producer EOF. | Source complete; unqualified |
+
+No production operation changes. Per measured compilation, repeated filesystem
+existence checks and sleeps become one TCP connection, one fixed-name write and
+one byte read. Two constant-size connections and one listener replace two marker
+files and repeated filesystem metadata reads. No added compilation, thread,
+durability barrier or polling timer. Actual syscall/allocation totals and the
+Cargo lock-wait adapter are not yet qualified. The original two-crate parallel
+positive and restored shared-target negative remain the deciding control.
+
 This milestone ships the completed producer-event conversions, typed publication
 conflicts and source-analyzer coverage below. Remaining backend, compiler-fixture
 and terminal readiness conversions are follow-up work; this inventory does not
