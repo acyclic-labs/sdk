@@ -1074,7 +1074,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
 /// Partition before coalescing: individually admitted notices cannot grow one
 /// unbounded coalesced paths array. Each block retains the original event order;
 /// coalescing is restricted to that unsent block and can only reduce its size.
-struct NoticeBlocks {
+pub(super) struct NoticeBlocks {
     pending: acyclic_model_render::PendingNotices,
     blocks: Vec<ModelContent>,
     maximum: Option<u64>,
@@ -1084,7 +1084,7 @@ struct NoticeBlocks {
 }
 
 impl NoticeBlocks {
-    fn new(maximum: Option<u64>) -> Self {
+    pub(super) fn new(maximum: Option<u64>) -> Self {
         Self {
             pending: Default::default(),
             blocks: Vec::new(),
@@ -1095,7 +1095,7 @@ impl NoticeBlocks {
         }
     }
 
-    fn push(&mut self, notice: crate::conversation::wire::Notice) -> Result<()> {
+    pub(super) fn push(&mut self, notice: crate::conversation::wire::Notice) -> Result<()> {
         if let Some(maximum) = self.maximum {
             if self.envelope == 0 {
                 self.envelope = crate::executor::json::json_byte_length(
@@ -1138,7 +1138,7 @@ impl NoticeBlocks {
         }
     }
 
-    fn finish(mut self) -> Vec<ModelContent> {
+    pub(super) fn finish(mut self) -> Vec<ModelContent> {
         self.flush();
         self.blocks
     }
@@ -1794,6 +1794,7 @@ where
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
+                    self.executors.render_bytes(),
                 );
             // Each call dispatches only once the effects of the turn's earlier
             // calls committed, so it reaches what they created, and a `wait`

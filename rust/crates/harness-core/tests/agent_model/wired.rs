@@ -299,25 +299,38 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let boundary = open.journal.model_boundary().ok_or("no boundary")?;
     assert!(boundary.messages(operation, 0, None).await?.is_empty());
     boundary.admitted(operation, 0).await?;
-    for (name, wake) in [("quiet", false), ("waking", true)] {
+    for (name, wake, paths) in [
+        ("quiet-old", false, vec!["a"]),
+        ("quiet-latest", false, vec!["b", "a"]),
+        ("waking", true, vec!["w"]),
+    ] {
         let record = InboxRecord::Notice {
             id: intent(name),
             notice: acyclic_harness_core::conversation::wire::Notice {
                 source: "events".into(),
                 kind: "source.changed".into(),
-                body: serde_json::json!({"name": name}),
+                body: serde_json::json!({"name": name, "paths": paths}),
                 wake,
-                coalesce_key: None,
+                coalesce_key: Some("changes".into()),
             },
         };
         submit(&*stream, send(&path, &super::user(), &record)?).await?;
     }
     let messages = boundary.messages(operation, 1, None).await?;
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 1);
     for message in &messages {
         assert!(matches!(
             &message.content,
-            ModelContent::Part(ModelContentPart::Notices { notices }) if notices.len() == 1
+            ModelContent::Part(ModelContentPart::Notices { notices })
+                if notices.len() == 2
+                    && notices[0].body == serde_json::json!({
+                        "name": "quiet-latest", "paths": ["a", "b"]
+                    })
+                    && !notices[0].wake
+                    && notices[1].body == serde_json::json!({
+                        "name": "waking", "paths": ["w"]
+                    })
+                    && notices[1].wake
         ));
         message
             .content
@@ -328,9 +341,29 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         cut,
         BoundaryCut {
             from: 1,
-            through: 3
+            through: 4
         }
     );
+    submit(
+        &*stream,
+        send(
+            &path,
+            &super::user(),
+            &InboxRecord::Notice {
+                id: intent("quiet-after-cut"),
+                notice: acyclic_harness_core::conversation::wire::Notice {
+                    source: "events".into(),
+                    kind: "source.changed".into(),
+                    body: serde_json::json!({"name": "later", "paths": ["c"]}),
+                    wake: false,
+                    coalesce_key: Some("changes".into()),
+                },
+            },
+        )?,
+    )
+    .await?;
+    // A retry renders the original frozen batch, even with a newer same-key event.
+    assert_eq!(boundary.messages(operation, 1, Some(cut)).await?, messages);
     assert!(boundary.transcript(operation).await?.is_none());
     boundary.admitted(operation, 1).await?;
     let transcript = boundary
@@ -338,7 +371,16 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         .await?
         .ok_or("no transcript")?;
     assert_eq!(transcript.through, cut.through);
-    assert!(boundary.messages(operation, 2, None).await?.is_empty());
+    let later = boundary.messages(operation, 2, None).await?;
+    assert_eq!(later.len(), 1);
+    assert!(matches!(
+        &later[0].content,
+        ModelContent::Part(ModelContentPart::Notices { notices })
+            if notices.len() == 1
+                && notices[0].body == serde_json::json!({"name": "later", "paths": ["c"]})
+    ));
+    boundary.admitted(operation, 2).await?;
+    assert!(boundary.messages(operation, 3, None).await?.is_empty());
     assert!(
         model.requests().is_empty(),
         "boundary observation never dispatches"
