@@ -406,6 +406,8 @@ async fn browser_wave1_conformance() {
 
 #[wasm_bindgen_test]
 async fn every_opener_of_one_database_proves_the_others_revisions() {
+    use futures::FutureExt as _;
+
     let database = name();
     let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
@@ -416,6 +418,38 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
     let Ok(AppendOutcome::Committed(receipt)) = append(&writer, "events").await else {
         panic!("append");
     };
+    let mut future = receipt.revision.clone();
+    future.index += 1;
+    let request = ReadRequest {
+        path: StreamPath::new("events").expect("path"),
+        key: None,
+        from: 1,
+        limit: 1,
+        at_least: crate::RevisionCut::of(future),
+    };
+    for invalid in [
+        ReadRequest {
+            limit: 0,
+            ..request.clone()
+        },
+        ReadRequest {
+            limit: u32::MAX,
+            ..request.clone()
+        },
+        ReadRequest {
+            key: Some(crate::ReadKeySeek {
+                key: vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into(),
+                before: 2,
+            }),
+            ..request
+        },
+    ] {
+        // Invalid controls must not refresh IndexedDB or wait on the future cut.
+        assert!(matches!(
+            reader.read(invalid).now_or_never(),
+            Some(Err(StreamError::LimitExceeded))
+        ));
+    }
     let applied = reader
         .wait_applied(&crate::RevisionCut::of(receipt.revision.clone()))
         .await
