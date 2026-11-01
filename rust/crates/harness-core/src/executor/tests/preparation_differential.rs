@@ -46,14 +46,14 @@ async fn initialize(text: &[String; 3], invalid: bool) -> State {
         operation_id: OperationId::from_bytes([3; 16]),
         input: ModelContent::Text(format!("current:{}", text[2])),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     StockExecution::ordinary(&executor)
         .ensure_started(&journal, &input)
         .await
         .unwrap();
     if invalid {
-        executor.limits.context_messages = 1;
+        executor.limits.context_messages = std::num::NonZeroUsize::new(1);
     }
     (journal, executor, input, calls)
 }

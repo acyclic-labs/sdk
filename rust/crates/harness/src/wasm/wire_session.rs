@@ -27,9 +27,6 @@ pub(super) fn resource(value: JsString) -> Result<String, JsValue> {
 
 impl ReadKey {
     fn parse(value: JsString) -> Result<Self, JsValue> {
-        if value.length() as usize > acyclic_stream::MAX_PATH_BYTES + 4 {
-            return Err(error("CLIENT_PATH_CAPACITY"));
-        }
         let text = value
             .as_string()
             .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
@@ -84,19 +81,15 @@ fn command_bytes(view: &Uint8Array, capacity_code: &str) -> Result<Vec<u8>, JsVa
 }
 
 fn path(value: JsString) -> Result<StreamPath, JsValue> {
-    // Stream paths are ASCII, so UTF-16 length is a valid pre-copy cap.
-    if value.length() as usize > acyclic_stream::MAX_PATH_BYTES {
-        return Err(error("CLIENT_PATH_CAPACITY"));
-    }
     let value = value
         .as_string()
         .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
     StreamPath::new(value).map_err(stream_error)
 }
 
-fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
+fn paths(input: &Array, maximum: Option<usize>) -> Result<Vec<StreamPath>, JsValue> {
     let length = input.length();
-    if length as usize > maximum {
+    if maximum.is_some_and(|maximum| length as usize > maximum) {
         return Err(error("CLIENT_DEMAND_CAPACITY"));
     }
     (0..length)
@@ -121,7 +114,7 @@ impl Drop for ReadGuard {
     }
 }
 
-/// Bounded logical interests over the caller's existing canonical Streams pool.
+/// Logical interests over the caller's existing canonical Streams pool.
 /// No JavaScript queue, reconnect loop, cursor or per-agent transport is added.
 #[wasm_bindgen]
 pub struct WasmWireSession {
@@ -134,7 +127,11 @@ pub struct WasmWireSession {
 impl WasmWireSession {
     /// Share the platform's existing pool; refuse providers with no session I/O.
     #[wasm_bindgen(constructor)]
-    pub fn new(stream: &WasmStream, selected: usize, expanded: usize) -> Result<Self, JsValue> {
+    pub fn new(
+        stream: &WasmStream,
+        selected: Option<usize>,
+        expanded: Option<usize>,
+    ) -> Result<Self, JsValue> {
         let policy = DemandPolicy::new(selected, expanded)
             .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         let client = stream
@@ -177,9 +174,6 @@ impl WasmWireSession {
     /// Register the credential on the shared pool after checking its byte bound.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(&self, slot: u32, credential: Uint8Array) -> Result<(), JsValue> {
-        if slot as usize >= acyclic_stream::session::Limits::default().channels {
-            return Err(error("CLIENT_CREDENTIAL_CAPACITY"));
-        }
         let credential = command_bytes(&credential, "CLIENT_CREDENTIAL_CAPACITY")?;
         self.session
             .borrow()
@@ -248,7 +242,11 @@ impl WasmWireSession {
             if readers.contains_key(&key) {
                 return Err(error("CLIENT_READ_BUSY"));
             }
-            if readers.len() >= self.policy.selected_capacity() {
+            if self
+                .policy
+                .selected_capacity()
+                .is_some_and(|limit| readers.len() >= limit)
+            {
                 return Err(error("CLIENT_READ_CAPACITY"));
             }
             readers.insert(

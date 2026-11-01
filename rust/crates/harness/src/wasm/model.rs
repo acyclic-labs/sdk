@@ -151,7 +151,11 @@ pub fn validate_model_messages(
     let messages: Vec<ModelMessage> = from_js(messages)?;
     let limits: Limits = from_js(limits)?;
     limits.validate(&mut None).map_err(js_error)?;
-    if messages.is_empty() || messages.len() > limits.context_messages {
+    if messages.is_empty()
+        || limits
+            .context_messages
+            .is_some_and(|maximum| messages.len() > maximum.get())
+    {
         return Err(JsValue::from_str("model context count is invalid"));
     }
     for message in messages {

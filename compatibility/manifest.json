@@ -13,19 +13,19 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:7c34419f478f01c5cbb9e63ffdde636d3c2dde7d3cb763073d24b2a5296e7c4d",
-      "descriptorDigest": "sha256:5de0bb6bff54a8f3cc6fe869c30ccc14314538319e91ea3b4ea7cb48557a4bb2"
+      "schemaDigest": "sha256:310d979b91328d73f5c19a1cf5bc4888fde4d4390c873ebca94f8cd5c514fafd",
+      "descriptorDigest": "sha256:7bc7f102434a3b2ed20a94835f04871d0a1f398ef67f7d0cfaecf2a2ee8636f4"
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:0e73abc719075124d79c64a09c47a765fae976aaaea1d66d763edca1144192be",
+      "schemaDigest": "sha256:df69e686e2c2247a2119c1aa09a1293560617a1173f6b59b57fd0999b9ea74ce",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340"
     },
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
-      "descriptorDigest": "sha256:97cfa1b1547c631bc0fe1ee7075b5e5c842452f315195bf30fecc68948473c0b",
+      "schemaDigest": "sha256:90c84c613ff416465d22473a276cdb22a2b59c6af57748524fce879acd1ef0b7",
+      "descriptorDigest": "sha256:993b2a328da160c99885c93c98a8e25f548306e70d0f41adc02d9663c1747628",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
@@ -38,8 +38,8 @@
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:dd658ef525b96bcdb05f7e33c99202fe2d9592c30e61c93c2b528f73389c2246",
-      "descriptorDigest": "sha256:a5c2813fc064dd6606a2ac324617c8f93d062c5ac7d7812fd2ed87f297bed602",
+      "schemaDigest": "sha256:11775871642258d9c42e7f8e64fc72f96cc0aca3a624894fdfb6e3e3f89eb671",
+      "descriptorDigest": "sha256:6633a64fc4a2349ddb2976303bb346240af6d9544bb6dbdd0f32c5e8d10e8450",
       "conformanceDigest": "sha256:fc5c392f15d39b9f7b5120607776dd9f1bcd31bc1e8ecf8b17e708323c7df0ca"
     },
     "machines": {
@@ -51,7 +51,7 @@
     "inference": {
       "version": "0.2.0",
       "schemaDigest": "sha256:e3cfe892678ae33b6df0c93b6aab4acb575f6dc6b28dc960d5462e33e7a59a32",
-      "descriptorDigest": "sha256:6d94b1a635a98a96d22b665a42431f23a4379f2d3e7a39eb5eac51c0c360014d",
+      "descriptorDigest": "sha256:d6ac4a7e8a418150207a6ebf5beee0d9ea87f9329120ec40f25031819920c85c",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }

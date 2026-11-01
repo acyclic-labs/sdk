@@ -59,7 +59,7 @@ pub(crate) fn clone_value(
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     if let Some(maximum_bytes) = maximum_bytes {
-        io.check_json_byte_bound(value, maximum_bytes)?;
+        io.check_json_byte_bound(value, Some(maximum_bytes))?;
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
@@ -72,19 +72,19 @@ pub(crate) fn clone_value(
 #[doc(hidden)]
 pub fn value<T: Serialize>(
     value: &T,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let value = io.value_json(value, maximum_bytes.min(work.remaining()?.bytes_encoded))?;
+        let value = io.value_json(value, maximum_bytes)?;
         let retained = retained_value_bytes(&value)?;
         let custody = io.into_native_custody(retained)?;
         return Ok((value, Some(custody)));
     }
     let _ = work;
-    if maximum_bytes != u64::MAX {
+    if maximum_bytes.is_some() {
         crate::executor::json::json_byte_length(value, maximum_bytes, &mut None)?;
     }
     serde_json::to_value(value)

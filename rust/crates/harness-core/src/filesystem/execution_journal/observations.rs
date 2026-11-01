@@ -316,8 +316,11 @@ where
         };
         let body_hold;
         let bytes = if let Some(io) = io {
-            let encoded =
-                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let encoded = io.encode(
+                &observation,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+                false,
+            )?;
             body_hold = io.guard_bytes(&encoded)?;
             encoded
         } else {
@@ -343,11 +346,11 @@ where
         let event_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
-                if io.is_some() {
+                Some(if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
-                },
+                }),
                 work,
             )
         })?;

@@ -43,7 +43,7 @@ struct ExchangeBody {
     read: Function,
     cancel: Function,
     operation: OperationId,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     received: u64,
 }
 
@@ -114,7 +114,9 @@ impl McpHttpProvider for BrowserProvider {
                     .dyn_into()
                     .map_err(|_| Error::Invalid("MCP browser body needs Uint8Array".into()))?;
                 let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
-                    if length > u64::from(body.maximum_bytes).saturating_sub(body.received) {
+                    if body.maximum_bytes.is_some_and(|maximum| {
+                        length > u64::from(maximum).saturating_sub(body.received)
+                    }) {
                         return Err(js_error(Error::Indeterminate(body.operation)));
                     }
                     Ok(())
@@ -173,21 +175,29 @@ impl WasmMcpHttpInitialization {
 
 #[wasm_bindgen]
 impl WasmMcpHttpTransport {
-    /// Binds finite platform I/O and an optional host-provided session without effects.
+    /// Binds caller-selected platform I/O policies and an optional host-provided session.
     #[wasm_bindgen(constructor)]
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "McpBrowserHttpProvider")] provider: Function,
         endpoint: String,
         session: Option<String>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] timeout_ms: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | undefined")] timeout_ms: JsValue,
     ) -> std::result::Result<Self, JsValue> {
         HttpMcpTransport::new(
             Arc::new(BrowserProvider(provider)),
             endpoint,
             session,
-            from_js(maximum_bytes)?,
-            from_js(timeout_ms)?,
+            if maximum_bytes.is_undefined() {
+                None
+            } else {
+                from_js(maximum_bytes)?
+            },
+            if timeout_ms.is_undefined() {
+                None
+            } else {
+                from_js::<Option<u64>>(timeout_ms)?
+            },
             None,
         )
         .map(Self)
@@ -229,7 +239,7 @@ impl WasmMcpHttpTransport {
             .map_err(js_error)?
             .maximum_response_bytes;
         let (body, ()) = acyclic_stream::javascript_bytes::snapshot(&body, |length| {
-            if length > u64::from(allowance) {
+            if allowance.is_some_and(|maximum| length > u64::from(maximum)) {
                 return Err(js_error(Error::Indeterminate(operation)));
             }
             Ok(())

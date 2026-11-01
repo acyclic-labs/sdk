@@ -268,47 +268,53 @@ impl Binding {
     }
 }
 
-/// Positive limits admitted by the canonical create/update validators.
+/// Optional positive resource policies admitted by the canonical create/update validators.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
     #[wire(tag = 1, uint64)]
-    handler_timeout_millis: PositiveU64,
+    #[ts(optional)]
+    handler_timeout_millis: Option<PositiveU64>,
     #[wire(tag = 2, uint64)]
-    memory_bytes: PositiveU64,
+    #[ts(optional)]
+    memory_bytes: Option<PositiveU64>,
     #[wire(tag = 3, uint64)]
-    checkpoint_bytes: PositiveU64,
+    #[ts(optional)]
+    checkpoint_bytes: Option<PositiveU64>,
 }
 
 impl ActorLimits {
-    /// Constructs positive limits using the canonical admission predicate.
+    /// Selects optional positive limits using the canonical admission predicate.
     pub fn new(
-        handler_timeout_millis: u64,
-        memory_bytes: u64,
-        checkpoint_bytes: u64,
+        handler_timeout_millis: impl Into<Option<u64>>,
+        memory_bytes: impl Into<Option<u64>>,
+        checkpoint_bytes: impl Into<Option<u64>>,
     ) -> Result<Self, DomainError> {
         Ok(Self {
-            handler_timeout_millis: handler_timeout_millis.try_into()?,
-            memory_bytes: memory_bytes.try_into()?,
-            checkpoint_bytes: checkpoint_bytes.try_into()?,
+            handler_timeout_millis: handler_timeout_millis
+                .into()
+                .map(TryInto::try_into)
+                .transpose()?,
+            memory_bytes: memory_bytes.into().map(TryInto::try_into).transpose()?,
+            checkpoint_bytes: checkpoint_bytes.into().map(TryInto::try_into).transpose()?,
         })
     }
 
     /// Returns the handler timeout in milliseconds.
-    pub fn handler_timeout_millis(&self) -> u64 {
-        self.handler_timeout_millis.get()
+    pub fn handler_timeout_millis(&self) -> Option<u64> {
+        self.handler_timeout_millis.map(PositiveU64::get)
     }
 
     /// Returns the memory limit in bytes.
-    pub fn memory_bytes(&self) -> u64 {
-        self.memory_bytes.get()
+    pub fn memory_bytes(&self) -> Option<u64> {
+        self.memory_bytes.map(PositiveU64::get)
     }
 
     /// Returns the checkpoint limit in bytes.
-    pub fn checkpoint_bytes(&self) -> u64 {
-        self.checkpoint_bytes.get()
+    pub fn checkpoint_bytes(&self) -> Option<u64> {
+        self.checkpoint_bytes.map(PositiveU64::get)
     }
 }
 /// The published subscription-start message owns its oneof declaration.

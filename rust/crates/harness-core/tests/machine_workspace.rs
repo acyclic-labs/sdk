@@ -133,13 +133,13 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 acyclic_harness_core::tools::ShellInput {
                     command: command.into(),
                     cwd: None,
-                    timeout_ms: None,
+                    timeout: None,
                     target: None,
                 },
-                1024,
+                None,
             )
             .await?,
-        1024,
+        None,
     )
     .await
     .map_err(Error::Machines)?;
@@ -153,10 +153,10 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 acyclic_harness_core::tools::ShellInput {
                     command: command.into(),
                     cwd: None,
-                    timeout_ms: None,
+                    timeout: None,
                     target: None
                 },
-                1024
+                None
             )
             .await,
         Err(Error::Unauthorized(_))

@@ -70,7 +70,7 @@ pub async fn canonical_checkpoint_for_operation(
             step: 0,
             include_started: false,
             maximum_step_records: ExecutionRecordQuery::step_bound(limits),
-            maximum: 1,
+            maximum: Some(1),
             select: &|event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
         },
         io,
@@ -127,7 +127,10 @@ pub(super) fn validate_checkpoint_json_reference(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     with_history_io(io, |work| limits.validate_file(reference, work))?;
-    if reference.descriptor().byte_length() > limits.render_bytes {
+    if limits
+        .render_bytes
+        .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
+    {
         return Err(stock_boundary(
             io,
             Invalid,

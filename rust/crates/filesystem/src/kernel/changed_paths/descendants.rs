@@ -51,8 +51,7 @@ impl Descendants {
                 return Err(FsError::InvalidDiff);
             }
         }
-        self.frames
-            .ensure_for_push(usize::from(config.limits.maximum_path_depth), accounting)?;
+        self.frames.ensure_for_push(usize::MAX, accounting)?;
         let entries = Values::new(entries, DecodeLimits::for_volume(config), accounting)?;
         self.frames.value.push(Directory {
             file_id: record.file_id,

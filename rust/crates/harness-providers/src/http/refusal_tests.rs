@@ -18,15 +18,15 @@ fn response(status: u16, padding: usize) -> HttpResponse {
 #[tokio::test]
 async fn context_classification_uses_protocol_budget_and_preserves_status_classes() {
     assert!(matches!(
-        crate::http_failure(response(400, 1024), 2048, None).await,
+        crate::http_failure(response(400, 1024), Some(2048), None).await,
         Error::ModelContextOverflow
     ));
     assert!(matches!(
-        crate::http_failure(response(400, 1024), 512, None).await,
+        crate::http_failure(response(400, 1024), Some(512), None).await,
         Error::Invalid(_)
     ));
     assert!(matches!(
-        crate::http_failure(response(429, 0), 2048, None).await,
+        crate::http_failure(response(429, 0), Some(2048), None).await,
         Error::ModelUnavailable {
             failure: ModelTransportFailure::Status(429),
             ..
@@ -40,7 +40,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
         })),
     };
     assert!(matches!(
-        crate::http_failure(response, 2048, None).await,
+        crate::http_failure(response, Some(2048), None).await,
         Error::Unauthorized(_)
     ));
 }

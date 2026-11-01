@@ -14,7 +14,7 @@ pub(super) struct Size {
 
 pub(super) struct Budget<'work> {
     used: Size,
-    limit: Size,
+    maximum_bytes: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     work: Option<&'work acyclic_fs::NativeMaterializationWork>,
     #[cfg(target_arch = "wasm32")]
@@ -37,13 +37,10 @@ impl<'work> Budget<'work> {
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
     }
-    pub fn new(maximum: usize) -> Self {
+    pub fn new(maximum: impl Into<Option<usize>>) -> Self {
         Self {
             used: Size::default(),
-            limit: Size {
-                bytes: maximum,
-                items: maximum.min(1024),
-            },
+            maximum_bytes: maximum.into(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
             #[cfg(target_arch = "wasm32")]
@@ -51,7 +48,10 @@ impl<'work> Budget<'work> {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn native(maximum: usize, work: &'work acyclic_fs::NativeMaterializationWork) -> Self {
+    pub fn native(
+        maximum: impl Into<Option<usize>>,
+        work: &'work acyclic_fs::NativeMaterializationWork,
+    ) -> Self {
         Self {
             work: Some(work),
             ..Self::new(maximum)
@@ -70,13 +70,13 @@ impl<'work> Budget<'work> {
             .and_then(|n| n.checked_add(new.items));
         match (bytes, items) {
             (Some(bytes), Some(items))
-                if bytes <= self.limit.bytes && items <= self.limit.items =>
+                if self.maximum_bytes.is_none_or(|maximum| bytes <= maximum) =>
             {
                 self.used = Size { bytes, items };
                 Ok(())
             }
             _ => Err(invalid(
-                "retained model state exceeds aggregate byte or item limit",
+                "retained model state exceeds configured byte policy",
             )),
         }
     }
@@ -116,15 +116,22 @@ impl<'work> Budget<'work> {
             .ok_or_else(|| invalid("tool size overflow"))?;
         if required > target.capacity() {
             let old = target.capacity();
-            let available = (self.limit.bytes - self.used.bytes)
-                .checked_add(old)
-                .ok_or_else(|| invalid("tool capacity overflow"))?;
-            if required > available {
+            let available = self
+                .maximum_bytes
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(self.used.bytes)
+                        .and_then(|remaining| remaining.checked_add(old))
+                        .ok_or_else(|| invalid("tool capacity overflow"))
+                })
+                .transpose()?;
+            if available.is_some_and(|available| required > available) {
                 return Err(invalid(
-                    "retained model state exceeds aggregate byte or item limit",
+                    "retained model state exceeds configured byte policy",
                 ));
             }
-            let capacity = required.max(old.saturating_mul(2)).max(8).min(available);
+            let capacity = required.max(old.saturating_mul(2)).max(8);
+            let capacity = available.map_or(capacity, |available| capacity.min(available));
             // Only a growth can relocate old text. Native frame admission covers
             // decoding/copying the incoming fragment; it never recharges the prefix.
             #[cfg(not(target_arch = "wasm32"))]

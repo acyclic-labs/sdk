@@ -82,3 +82,23 @@ pub(crate) fn wait_measured_completion<T>(
         }
     }
 }
+
+/// Parks the caller on a future's actual notifications using the same funded
+/// wake engine as native completions. No worker or timer is created. The wake
+/// allocation is admitted before polling and remains charged through every
+/// retained waker. Cancellation wakes the future to observe its original work;
+/// it does not detach or abandon an already accepted operation.
+pub fn wait_native_future<T>(
+    future: impl Future<Output = T>,
+    meter: &Arc<dyn NativeReadMeter>,
+    cancellation: impl Future<Output = ()>,
+) -> io::Result<T> {
+    wait_measured_completion(
+        async { Ok(future.await) },
+        meter,
+        None,
+        None,
+        cancellation,
+        || {},
+    )
+}

@@ -39,6 +39,49 @@ pub(super) fn changes() -> AppendRecord {
 }
 
 #[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn compact_ingress_rejects_expansion_before_allocating_keys() {
+    // A compact first key can consume the complete wire request by itself.
+    // Its repeated prefixes must never be materialized before record admission.
+    for width in [1024 * 1024, 4096] {
+        let mut value = Vec::new();
+        prost::encoding::encode_varint(0, &mut value); // context
+        prost::encoding::encode_varint(64, &mut value);
+        let key = vec![b'a'; width];
+        for index in 0..64 {
+            let next = [b'a' + index];
+            let suffix = if index == 0 { key.as_slice() } else { &next };
+            prost::encoding::encode_varint(
+                if index == 0 {
+                    0
+                } else {
+                    (key.len() - 1) as u64
+                },
+                &mut value,
+            );
+            prost::encoding::encode_varint(suffix.len() as u64, &mut value);
+            value.extend_from_slice(suffix);
+            value.extend_from_slice(&[1, b'w', 0]);
+        }
+        let attributes = vec![Attribute {
+            name: ATTRIBUTE.into(),
+            value: FORMAT.into(),
+        }];
+        let actual = acyclic_test_support::measure(|| {
+            assert_eq!(
+                record_headers(&value, vec![], attributes),
+                Err(StreamError::LimitExceeded)
+            );
+        });
+        if width > crate::MAX_RECORD_BYTES {
+            assert_eq!(actual.count_total, 0);
+        }
+        // Includes reconstruction scratch, growing owned storage and ranges.
+        assert!(actual.bytes_max <= 2 * crate::MAX_RECORD_BYTES as u64);
+    }
+}
+
+#[test]
 fn typed_projection_removes_outside_entries_while_opaque_mixed_keys_are_denied() {
     let body = changes();
     let opaque = RecordHeaders::new(body.headers.keys().to_vec(), vec![]).unwrap();
@@ -262,7 +305,15 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
         idempotency_key: IdempotencyKey::new("changes-invalid").unwrap(),
     };
     let (prepared, _guard) = provider
-        .native_prepare_commit(request.clone(), crate::MAX_RECORD_BYTES, meter.original())
+        .native_prepare_commit(
+            request.clone(),
+            crate::PreparedRecordCapacity {
+                payload_bytes: crate::MAX_RECORD_BYTES,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await
         .unwrap()
         .unwrap()
@@ -280,7 +331,15 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
             .is_none()
     );
     let (prepared, _guard) = provider
-        .native_prepare_commit(request, crate::MAX_RECORD_BYTES, meter.original())
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: crate::MAX_RECORD_BYTES,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await
         .unwrap()
         .unwrap()
