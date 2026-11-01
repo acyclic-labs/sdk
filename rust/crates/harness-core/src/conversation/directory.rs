@@ -39,10 +39,64 @@ pub struct PrivateDirectoryPage {
     pub has_more: bool,
 }
 
+/// The original publication fence paired with a directory's first page.
+/// This identifies a source; it grants no authority to follow that resource.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct DirectoryChanges {
+    /// Exact filesystem resource for this selected directory.
+    pub resource: String,
+    /// Original exclusive publication position.
+    pub next: u64,
+    /// Original preceding commit, retained without substituting a later head.
+    pub preceding: [u8; 32],
+}
+
 /// Maximum number of entries admitted in one private-directory page.
 pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
+    /// The one conversion from filesystem names into the public Unicode page.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn from_filesystem(
+        generation: GenerationRef,
+        page: acyclic_fs::DirectoryPage,
+    ) -> Result<Self> {
+        let mut cancellation = None;
+        let entries = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let name = entry
+                    .name
+                    .unicode_text(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        cancellation.get_or_insert_with(acyclic_fs::CancellationToken::new),
+                    )
+                    .map_err(|_| {
+                        Error::Unsupported("private directory name is not Unicode".into())
+                    })?
+                    .value;
+                let kind = match entry.kind {
+                    acyclic_fs::kernel::FileKind::Regular => PrivateDirectoryEntryKind::File,
+                    acyclic_fs::kernel::FileKind::Directory => PrivateDirectoryEntryKind::Directory,
+                    _ => {
+                        return Err(Error::Unsupported(
+                            "private directory contains an unsupported entry kind".into(),
+                        ));
+                    }
+                };
+                Ok(PrivateDirectoryEntry { name, kind })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            generation,
+            entries,
+            has_more: page.has_more,
+        })
+    }
+
     /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
         self.generation.validate(&mut None)?;

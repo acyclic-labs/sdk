@@ -6,6 +6,7 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
+    conversation::{DirectoryChanges, PrivateDirectoryPage},
     interaction::Interaction,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -110,6 +111,12 @@ pub enum AgentReply {
     Diff {
         /// Visible fragments in cursor order; empty only for an empty projection.
         items: Vec<DiffFilePage>,
+    },
+    /// Authorized names at one generation, without eager file reads.
+    Directory {
+        page: PrivateDirectoryPage,
+        /// Present only on the initial snapshot, never a follow grant.
+        changes: Option<DirectoryChanges>,
     },
     /// One range of a read file, and the file's whole length.
     Content {
@@ -371,6 +378,7 @@ fn validate_reply(
             return if data.len() % 4 == 0
                 && bytes <= MAX_READ_BYTES
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
+                && (bytes != 0 || *offset == *length)
             {
                 Ok(())
             } else {
@@ -433,6 +441,37 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (
+            AgentReply::Directory { page, changes },
+            AgentCommand::Directory {
+                path,
+                generation,
+                page: request,
+                ..
+            },
+        ) => {
+            page.validate().map_err(|_| CommandError::Invalid)?;
+            if bytes > request.bytes() as usize || page.entries.len() > request.items() as usize {
+                return Err(CommandError::Capacity);
+            }
+            if (page.has_more && page.entries.is_empty())
+                || generation
+                    .as_ref()
+                    .is_some_and(|selected| selected != &page.generation)
+                || request.cursor().is_some_and(|after| {
+                    page.entries
+                        .first()
+                        .is_some_and(|entry| entry.name.as_str() <= after)
+                })
+                || changes.is_some() != generation.is_none()
+                || changes.as_ref().is_some_and(|changes| {
+                    changes.next == 0 || !directory_resource_matches(&changes.resource, path)
+                })
+            {
+                return Err(CommandError::Invalid);
+            }
+            return Ok(());
+        }
         (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
             return validate_diff_page(items, page, bytes);
         }
@@ -468,6 +507,24 @@ fn validate_reply(
         return Err(CommandError::Capacity);
     }
     Ok(())
+}
+
+fn directory_resource_matches(resource: &str, path: &str) -> bool {
+    if !acyclic_auth::valid_resource(resource) {
+        return false;
+    }
+    let Some(selected) = resource.strip_prefix("fs:/") else {
+        return false;
+    };
+    let (volume, selected) = selected.split_once('/').unwrap_or((selected, ""));
+    !volume.is_empty()
+        && if path.is_empty() {
+            selected.is_empty() && !resource.ends_with('/')
+        } else {
+            selected.split('/').eq(path
+                .split('/')
+                .map(|part| acyclic_auth::encode_component(part.as_bytes())))
+        }
 }
 
 fn validate_diff_page(

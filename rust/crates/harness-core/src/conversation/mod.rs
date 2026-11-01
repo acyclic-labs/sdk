@@ -225,7 +225,7 @@ pub use content::{
     ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
-    MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+    DirectoryChanges, MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
     PrivateDirectoryPage,
 };
 pub use file_source::FilePathSelection;

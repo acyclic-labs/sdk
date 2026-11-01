@@ -11,6 +11,7 @@
 //! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
+mod directory;
 mod history;
 pub use history::{HistoryPage, PreparedHistoryAction};
 mod usage;

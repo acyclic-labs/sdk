@@ -43,6 +43,7 @@ enum StagedInput<'a> {
 }
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+mod directory;
 /// The turn host of a binding's agents.
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 

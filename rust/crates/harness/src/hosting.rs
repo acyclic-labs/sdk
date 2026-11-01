@@ -431,6 +431,25 @@ where
                     settled,
                 })
             }
+            AgentCommand::Directory {
+                agent,
+                path,
+                generation,
+                page,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let (page, changes) = self
+                    .bound
+                    .directory_page(
+                        agent,
+                        path,
+                        generation.as_ref(),
+                        page.cursor(),
+                        page.items(),
+                    )
+                    .await?;
+                Ok(AgentReply::Directory { page, changes })
+            }
             AgentCommand::Read {
                 agent,
                 target,
@@ -438,6 +457,13 @@ where
             } => {
                 let agent = self.within_tree(agent)?;
                 let (bytes, length) = match target {
+                    ReadTarget::Private { path, generation } => {
+                        let (bytes, length) = self
+                            .bound
+                            .read_private_file(agent, path, generation, *offset, MAX_READ_BYTES)
+                            .await?;
+                        return Ok(AgentReply::read(&bytes, length));
+                    }
                     ReadTarget::File { file } => {
                         self.bound
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
@@ -873,10 +899,21 @@ where
                 .dispatch(call.command(), &by, &approver, &authorization)
                 .await;
             if matches!(
-                &result,
-                Ok(AgentReply::Diff { .. } | AgentReply::Usage { .. })
+                (&result, call.command()),
+                (
+                    Ok(AgentReply::Diff { .. }
+                        | AgentReply::Usage { .. }
+                        | AgentReply::Directory { .. }),
+                    _
+                ) | (
+                    Ok(AgentReply::Content { .. }),
+                    AgentCommand::Read {
+                        target: ReadTarget::Private { .. },
+                        ..
+                    }
+                )
             ) {
-                // The source may have awaited IO. No path or patch leaves after
+                // The source may have awaited IO. No source data leaves after
                 // its original call credential or current host policy is revoked.
                 let principal = authorization.principal()?;
                 let policy = server.platform.policy(&principal, call.command()).await?;
