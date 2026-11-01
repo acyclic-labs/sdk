@@ -288,7 +288,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                     TransactionCommit::Conflict { .. }
                         if match publication {
-                            FilePublication::Authorized(fence, _) => !fence.generation_sensitive(),
+                            FilePublication::Authorized(fence, _, _) => {
+                                !fence.generation_sensitive()
+                            }
                             FilePublication::Replace(_) => expected_generation.is_none(),
                         } =>
                     {

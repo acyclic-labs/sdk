@@ -649,7 +649,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Self::commit_publication(
                     transaction,
                     io,
-                    workspaces::FilePublication::Authorized(fence, grant),
+                    workspaces::FilePublication::Authorized(fence, grant, None),
                 )
                 .await?
             };
