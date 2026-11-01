@@ -41,14 +41,22 @@ impl Visibility {
             if !self.permits(&*capability, "streams/list", &child.path)? {
                 continue;
             }
-            if let (Some(record), Some(relative)) = (child.tail_record.take(), tail_stream) {
+            if let (Some(_), Some(relative)) = (child.tail, tail_stream) {
                 let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
                 if self.permits(&*capability, "streams/follow", &target)? {
-                    child.tail_record = crate::FollowFilter::authorized(
-                        wire::SessionFilter::default(),
-                        &capability,
-                    )?
-                    .project(record)?;
+                    if let Some(record) = child.tail_record.take() {
+                        child.tail_record = crate::FollowFilter::authorized(
+                            wire::SessionFilter::default(),
+                            &capability,
+                        )?
+                        .project(record)?;
+                        if child.tail_record.is_none() {
+                            child.tail = None;
+                        }
+                    }
+                } else {
+                    child.tail = None;
+                    child.tail_record = None;
                 }
             }
             children.push(child);
