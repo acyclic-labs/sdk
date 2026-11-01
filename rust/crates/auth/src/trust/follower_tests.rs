@@ -8,6 +8,18 @@ use futures::FutureExt;
 
 const NOW: u64 = 1_000;
 
+thread_local! {
+    static VERIFYING_KEYRING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn keyring_verifying() {
+    let interleave = VERIFYING_KEYRING.with(|slot| slot.borrow_mut().take());
+    if let Some(interleave) = interleave {
+        interleave();
+    }
+}
+
 fn key(byte: u8) -> SigningKey {
     SigningKey::from_bytes(&[byte; 32])
 }
@@ -501,6 +513,104 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
     assert!(EnvironmentFrontier::resume("test", successor.anchor(), &[&first]).is_err());
     let (_, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
     assert!(EnvironmentFrontier::resume("test", issuer.anchor(), &[&genesis[0]]).is_err());
+}
+
+#[test]
+fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer() {
+    let world = world();
+    let trust = Arc::new(follower(&world));
+    let (mut other, records) = world.issuer.genesis("other", key(9), NOW).unwrap();
+    for record in records {
+        trust.apply(&record, NOW).unwrap();
+    }
+    trust.serve("other");
+    let leaf = key(10);
+    let signer = CertifiedSigner::new(
+        world.issuer.certify(&other, certification(&leaf)).unwrap(),
+        leaf,
+    )
+    .unwrap();
+    let token = signer.mint(vec![], key(11), trust.as_ref(), NOW).unwrap();
+    assert!(token.check(trust.as_ref(), NOW).is_ok());
+
+    let frontier =
+        KeyringFrontier::resume("account", &world.issuer.anchor(), &slices(&world.genesis))
+            .unwrap();
+    let old = world
+        .issuer
+        .keyring_for(&frontier, &key(2).verifying_key(), 1, NOW)
+        .unwrap();
+    let account = trust.find_account("account").unwrap().unwrap();
+    let revoked = other
+        .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
+        .unwrap();
+    let successor = Issuer::new("test", key(5));
+    let mut environment = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let rotation = world
+        .issuer
+        .environment_keyring(&mut environment, &successor.anchor(), NOW)
+        .unwrap();
+    let sequence = account.read().unwrap().keyring.as_ref().unwrap().sequence;
+    let verifying = trust.clone();
+    VERIFYING_KEYRING.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            // Interleave at the real signature boundary inside account_record.
+            // The local lock is held. Try-lock assertions fail immediately if
+            // either global lock regresses, before an independent writer waits.
+            assert!(account.try_write().is_err());
+            assert!(verifying.accounts.try_write().is_ok());
+            assert!(verifying.environment.try_write().is_ok());
+            let mut changed = verifying.changed();
+            assert!((&mut changed).now_or_never().is_none());
+            assert_eq!(verifying.apply(&revoked, NOW), Ok(Applied::Changed));
+            assert_eq!(changed.now_or_never(), Some(Ok(())));
+            assert_eq!(
+                token.check(verifying.as_ref(), NOW).err(),
+                Some(VerifyError::Revoked)
+            );
+            assert_eq!(verifying.apply(&rotation, NOW), Ok(Applied::Changed));
+        }));
+    });
+    // Real admission authenticates against its retained old keys, then refuses
+    // publication because the interleaved rotation changed that revision.
+    assert_eq!(trust.apply(&old, NOW), Err(VerifyError::Unavailable));
+    VERIFYING_KEYRING.with(|slot| assert!(slot.borrow().is_none()));
+    assert_eq!(
+        trust
+            .find_account("account")
+            .unwrap()
+            .unwrap()
+            .read()
+            .unwrap()
+            .keyring
+            .as_ref()
+            .unwrap()
+            .sequence,
+        sequence
+    );
+    assert_eq!(trust.apply(&old, NOW), Err(VerifyError::Signature));
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+
+    // The same original frontier advances through the current signer's real
+    // writer; no state rollback, history copy, or replacement account is needed.
+    let current = successor
+        .keyring_for(&frontier, &key(2).verifying_key(), 1, NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&current, NOW), Ok(Applied::Changed));
+    assert!(trust.account("account").is_ok());
+    assert_eq!(trust.apply(&current, NOW), Ok(Applied::Duplicate));
+    // The account-local lock still composes the global generation cut: a read
+    // spanning a full disconnect/resume cannot return its pre-disconnect data.
+    assert_eq!(
+        trust.with_account("account", |_, _| {
+            trust.fence(FenceCause::LostFollow);
+            trust.resume();
+        }),
+        Err(VerifyError::Unavailable)
+    );
+    assert_eq!(trust.account("account").err(), Some(VerifyError::Trust));
+    trust.serve("account");
+    assert!(trust.account("account").is_ok());
 }
 
 #[test]
