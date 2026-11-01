@@ -14,6 +14,7 @@ pub(super) struct PacketRequest<'a> {
     pub(super) inode: u64,
     pub(super) owner: (u32, u32),
     pub(super) body: &'a [u8],
+    pub(super) minimum_payload: Result<usize, i32>,
 }
 
 impl<'a> PacketRequest<'a> {
@@ -32,14 +33,41 @@ impl<'a> PacketRequest<'a> {
         if len != packet.len() || padding != 0 || (unique == 0 && !matches!(opcode, 2 | 42)) {
             return Err(libc::EPROTO);
         }
+        let body = input.remaining();
         Ok(Self {
             opcode,
             unique,
             inode,
             owner,
-            body: input.remaining(),
+            body,
+            minimum_payload: minimum_payload(opcode, body),
         })
     }
+}
+
+fn minimum_payload(opcode: u32, body: &[u8]) -> Result<usize, i32> {
+    Ok(match opcode {
+        1 | 6 | 8 | 9 | 13 => 128,
+        3 | 4 => 104,
+        14 | 27 => 16,
+        35 => 144,
+        16 | 46 | 47 => 8,
+        17 => 80,
+        26 => 64,
+        15 | 28 | 44 => {
+            let mut input = PacketInput::new(body);
+            input.take(16)?;
+            usize::try_from(input.u32()?).map_err(|_| libc::EOVERFLOW)?
+        }
+        22 | 23 => {
+            let mut input = PacketInput::new(body);
+            match input.u32()? {
+                0 => 8,
+                size => usize::try_from(size).map_err(|_| libc::EOVERFLOW)?,
+            }
+        }
+        _ => 0,
+    })
 }
 
 pub(super) struct PacketInput<'a> {

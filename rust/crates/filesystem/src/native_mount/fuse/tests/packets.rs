@@ -446,15 +446,46 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     // A short captured READ reply can come from a much larger requested read.
     // Retain the same negotiated capacity, rather than sizing from reply bytes.
     let capacity = MAXIMUM_WRITE as usize + 4096;
-    let mut response = super::super::fuse_vec(capacity, &work)?;
-    response.resize(capacity, 0);
+    let mut buffers = super::super::packet_buffers::PacketBuffers::new(capacity, &work)?;
+    assert_eq!(
+        buffers.output.len(),
+        OUTPUT_HEADER,
+        "startup must not initialize every possible reply byte"
+    );
+    let allocation = (buffers.output.as_ptr(), buffers.output.capacity());
     let mut seen = std::collections::BTreeSet::new();
     for packet in packets {
         let request =
             PacketRequest::parse(&packet.request).map_err(std::io::Error::from_raw_os_error)?;
         seen.insert(request.opcode);
+        if request.opcode == 16 {
+            let before = work.receipt();
+            let failure = protocol
+                .dispatch(&request, &mut [0; OUTPUT_HEADER])
+                .err()
+                .ok_or("a write must refuse insufficient reply space before its effect")?;
+            assert_eq!(failure.errno(), libc::ENOBUFS);
+            assert_eq!(
+                work.receipt(),
+                before,
+                "refused write admits no source work"
+            );
+        }
+        let before = work.receipt();
+        let response = super::super::packet_buffers::PacketBuffers::output_for(
+            &mut buffers.output,
+            &request,
+            capacity,
+        )?;
+        assert_eq!(work.receipt(), before, "initialization needs no new credit");
+        if request.opcode == 26 {
+            assert!(
+                response.len() < capacity,
+                "INIT must not touch the maximum reply"
+            );
+        }
         protocol
-            .publish(&request, &mut response, |actual| {
+            .publish(&request, response, |actual| {
                 if request.opcode == 15
                     && let Some(expected) = packet.response.as_deref()
                     && expected.len() > OUTPUT_HEADER
@@ -496,5 +527,25 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         );
     }
     protocol.close();
+    // A quiet worker can need a larger refusal buffer after cancellation.
+    // Reuse an actual captured request, without constructing another ledger.
+    work.cancellation().cancel();
+    buffers.output.truncate(OUTPUT_HEADER);
+    let before = work.receipt();
+    for packet in packets {
+        let request =
+            PacketRequest::parse(&packet.request).map_err(std::io::Error::from_raw_os_error)?;
+        super::super::packet_buffers::PacketBuffers::output_for(
+            &mut buffers.output,
+            &request,
+            capacity,
+        )?;
+    }
+    assert_eq!(work.receipt(), before);
+    assert_eq!(
+        (buffers.output.as_ptr(), buffers.output.capacity()),
+        allocation,
+        "reply growth must retain the original allocation through cancellation"
+    );
     Ok(())
 }

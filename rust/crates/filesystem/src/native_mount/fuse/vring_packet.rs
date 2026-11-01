@@ -298,6 +298,7 @@ pub(super) fn serve_vring_packet(
         else {
             return Ok(QueueProgress::Empty);
         };
+        let capacity = buffers.input.len().min(packet.writable);
         let input = buffers
             .input
             .get_mut(..packet.readable)
@@ -308,8 +309,7 @@ pub(super) fn serve_vring_packet(
             return Err(libc::EPROTO.into());
         }
         // Bound the packet entry before dispatching any filesystem effect.
-        let capacity = buffers.output.len().min(packet.writable);
-        let response = buffers.output.get_mut(..capacity).ok_or(libc::ENOBUFS)?;
+        let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
         let running = session
             .publish(&request, response, |reply| {
                 let slices = reply.slices();
