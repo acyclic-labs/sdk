@@ -6,6 +6,7 @@ use crate::{
     Retained, RootId, Usage, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
+use acyclic_stream::query_sync::Arc as RevisionArc;
 use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
 use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamError};
 use prost::Message;
@@ -46,7 +47,7 @@ pub struct GrpcObjects {
     credential: CredentialProvider,
     context: Option<acyclic_auth::operation::Context>,
     transfer_timeout: Option<std::time::Duration>,
-    revisions: Arc<RevisionTracker>,
+    revisions: RevisionArc<RevisionTracker>,
 }
 
 impl GrpcObjects {
@@ -185,7 +186,7 @@ impl GrpcObjects {
             credential,
             context: None,
             transfer_timeout: None,
-            revisions: Arc::default(),
+            revisions: RevisionArc::default(),
         }
     }
 
