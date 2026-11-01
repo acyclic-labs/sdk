@@ -112,7 +112,7 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             },
             usize::MAX,
             None,
-            handler,
+            crate::ProcessControl::unbounded()?.bind(handler),
         );
         // The original callback runs on the native worker. Its panic must not
         // emit successful cleanup telemetry, even after physical cleanup.
@@ -123,7 +123,8 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             }
         } else {
             let outcome = capture.await?;
-            assert_eq!(outcome.handler.retired, Some(mode != "before-capture"));
+            let handler = outcome.handler.into_inner();
+            assert_eq!(handler.retired, Some(true));
             match outcome.result {
                 Ok(output) => {
                     assert_eq!(mode, "success");
@@ -132,9 +133,11 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
                 }
                 Err(failure) => {
                     assert_ne!(mode, "success");
-                    assert_eq!(failure.cleanup_completed, mode != "before-capture");
+                    assert!(failure.cleanup_completed);
                     if mode == "capture-error" {
                         assert_eq!(failure.error.raw_os_error(), native_error);
+                    } else {
+                        assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
                     }
                 }
             }
@@ -152,7 +155,6 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             cleanup.cleanup_completed,
             match mode {
                 "callback-loss" => None,
-                "before-capture" => Some(false),
                 _ => Some(true),
             }
         );

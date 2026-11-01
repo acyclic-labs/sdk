@@ -134,6 +134,9 @@ impl<H: CaptureHandler> CaptureHandler for ControlledCapture<H> {
     fn retired(&mut self, cleanup_completed: bool) {
         self.inner.retired(cleanup_completed);
     }
+    fn observation(&mut self) -> Option<&mut crate::obs::CaptureObservation> {
+        self.inner.observation()
+    }
 }
 
 #[cfg(test)]
