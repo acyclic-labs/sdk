@@ -37,6 +37,8 @@ pub struct HttpResponse {
 impl HttpResponse {
     /// Admits the concrete body stream before boxing it on the issued ledger.
     /// Charges received bytes once; downstream codecs charge their own copies/decoding.
+    /// Its first error or EOF is terminal; later polls return EOF without polling
+    /// the original source or checking its work again.
     pub fn with_native_body<S>(
         status: u16,
         stream: S,
