@@ -50,7 +50,7 @@ impl FsWork for &Prefunded {
 }
 
 #[tokio::test]
-async fn generation_diff_keeps_original_live_backing_and_read_refusal()
+async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawal()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
@@ -92,7 +92,11 @@ async fn generation_diff_keeps_original_live_backing_and_read_refusal()
     let TransactionCommit::Committed(after) = committed else {
         return Err("original diff fixture did not commit".into());
     };
-    for reads in [0, budget.backend_read_operations] {
+    for (reads, maximum) in [
+        (0, 64),
+        (budget.backend_read_operations, 1),
+        (budget.backend_read_operations, 64),
+    ] {
         let source = Prefunded {
             budget: WorkBudget {
                 backend_read_operations: reads,
@@ -100,8 +104,9 @@ async fn generation_diff_keeps_original_live_backing_and_read_refusal()
             },
             held: Mutex::new(None),
         };
-        let (result, spent, live, baseline) =
-            before.diff_to(&after, 64, &source, &cancellation).await;
+        let (result, spent, live, baseline) = before
+            .diff_to(&after, maximum, &source, &cancellation)
+            .await;
         spent.verify(source.budget)?;
         if reads == 0 {
             assert!(matches!(
@@ -116,6 +121,12 @@ async fn generation_diff_keeps_original_live_backing_and_read_refusal()
             assert_eq!(spent.items_examined, 1);
             assert_eq!(spent.backend_read_operations, 0);
             assert_eq!(live, baseline);
+        } else if maximum == 1 {
+            assert!(matches!(result, Err(WorkspaceError::JoinLimit)));
+            assert!(spent.items_examined > 1);
+            assert!(spent.backend_read_operations > 0);
+            assert!(spent.peak_allocation_bytes > baseline);
+            assert_eq!(live, baseline, "discarded diff backing remained charged");
         } else {
             let (changes, _allocation) = result?;
             assert_eq!(changes.work(), spent);
@@ -132,5 +143,65 @@ async fn generation_diff_keeps_original_live_backing_and_read_refusal()
             assert_eq!(namespace_path_text(&paths[0].path)?, "/changed");
         }
     }
+
+    // Reuse one original ledger after repeated partial diffs. Its earlier
+    // ordinary scratch and independently retained Vec must both survive.
+    let source = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let funded = &source;
+    let mut accounting = funded.accounting(&cancellation);
+    let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(128, &mut accounting)?;
+    earlier.value.push(7);
+    let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
+    let mut completed = accounting.spent();
+    for _ in 0..2 {
+        let result = fs
+            .workspace_join_changes_with_accounting(
+                before.id,
+                &after,
+                1,
+                &mut accounting,
+                &cancellation,
+            )
+            .await;
+        assert!(matches!(result, Err(WorkspaceError::JoinLimit)));
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.live_bytes(),
+            baseline
+        );
+        assert!(accounting.spent().backend_read_operations > completed.backend_read_operations);
+        completed = accounting.spent();
+    }
+
+    // Withdraw a suspended operation with real temporary backing. Its owner
+    // drops before scope cleanup; completed work and earlier storage remain.
+    let mut operation = Box::pin(async {
+        let mut scope = accounting.allocation_scope();
+        let mut temporary = crate::kernel::Owned::<Vec<u8>>::allocate(512, &mut scope)?;
+        temporary.value.push(9);
+        scope.charge_items(3)?;
+        std::future::pending::<()>().await;
+        temporary.retire(&mut scope)
+    });
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(operation.as_mut(), &mut context).is_pending());
+    cancellation.cancel();
+    drop(operation);
+    assert_eq!(
+        accounting.standalone_parts().unwrap().0.live_bytes(),
+        baseline
+    );
+    assert_eq!(
+        accounting.spent().items_examined,
+        completed.items_examined + 3
+    );
+    assert_eq!(
+        accounting.spent().backend_read_operations,
+        completed.backend_read_operations
+    );
+    assert_eq!(earlier.value, [7]);
+    earlier.retire(&mut accounting)?;
     Ok(())
 }
