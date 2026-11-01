@@ -1,16 +1,18 @@
 use super::*;
 use crate::NativeMaterializationWork;
-use crate::native_host::NativeHostWork;
+use crate::native_host::{DemandWorkContext, NativeHostWork};
 
 pub(crate) trait SourceDemandReadWork:
-    NativeHostWork<Error = DemandError, Allocation = u64, CleanupWrite = u64>
+    DemandWorkContext + NativeHostWork<Error = DemandError, Allocation = u64, CleanupWrite = u64>
 {
     #[cfg(windows)]
     fn with_native_read_meter<T>(
         &mut self,
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T;
-    fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T;
+    fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
+        self.with_demand_work(operation)
+    }
     #[cfg(any(test, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<NativeMaterializationWork> {
         None
@@ -48,7 +50,6 @@ pub(crate) trait SourceDemandReadWork:
         operations: u64,
         delta: WorkCounters,
     ) -> Result<(), DemandError> {
-        self.check()?;
         self.with_original_leaf(|work| work.claim_allocation(bytes, operations, delta))
     }
     #[cfg(any(test, feature = "native-watch"))]
@@ -62,9 +63,6 @@ pub(crate) trait SourceDemandReadWork:
 }
 
 impl SourceDemandReadWork for DemandWork {
-    fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-        operation(self)
-    }
     #[cfg(any(test, feature = "native-watch"))]
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         Some(operation(self))
@@ -97,72 +95,13 @@ impl SourceDemandReadWork for NativeMaterializationWork {
     ) -> T {
         operation(self.runtime_meter().as_ref())
     }
-    fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-        NativeMaterializationWork::with_original_leaf(self, operation)
-    }
 }
 
-impl NativeHostWork for NativeMaterializationWork {
-    type Error = DemandError;
-    type Allocation = u64;
-    type CleanupWrite = u64;
-    fn io_error_kind(error: &DemandError) -> Option<std::io::ErrorKind> {
-        <DemandWork as NativeHostWork>::io_error_kind(error)
-    }
-    fn invalid_request() -> DemandError {
-        DemandError::InvalidRequest
-    }
-    fn allocation_failed(error: std::collections::TryReserveError) -> DemandError {
-        DemandError::Allocation(error)
-    }
-    fn check(&self) -> Result<(), DemandError> {
+impl DemandWorkContext for NativeMaterializationWork {
+    fn check_work(&self) -> Result<(), DemandError> {
         NativeMaterializationWork::with_original_leaf(self, |work| work.check())
     }
-    fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.admit(delta))
-    }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.record(delta))
-    }
-    fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.charge(delta))
-    }
-    fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        self.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
-        Ok(bytes)
-    }
-    #[cfg(windows)]
-    fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
-        self.claim_allocation(maximum, 0, WorkCounters::UNCHARGED)?;
-        Ok(maximum)
-    }
-    fn reconcile_allocation(
-        &mut self,
-        allocation: &mut u64,
-        actual: u64,
-    ) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.reconcile_native_allocation(allocation, actual))
-    }
-    fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.release(bytes))
-    }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
-    fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
-        self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
-    }
-    #[cfg(any(target_os = "linux", all(test, unix)))]
-    #[cfg(any(test, feature = "native-watch"))]
-    fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
-    }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
-    fn attempt_cleanup_write<T>(
-        &mut self,
-        reservation: u64,
-        operation: impl FnOnce() -> T,
-    ) -> (T, Result<(), DemandError>) {
-        let recorded =
-            self.with_original_leaf(|work| work.attempt_cleanup_write(reservation, || ()).1);
-        (operation(), recorded)
+    fn with_demand_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
+        NativeMaterializationWork::with_original_leaf(self, operation)
     }
 }

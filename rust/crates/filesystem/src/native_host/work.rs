@@ -87,7 +87,22 @@ pub(crate) trait NativeHostWork {
     ) -> (T, Result<(), Self::Error>);
 }
 
-impl NativeHostWork for DemandWork {
+/// Access to the demand ledger; accounting is implemented once for all owners.
+pub(crate) trait DemandWorkContext {
+    fn with_demand_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T;
+    fn check_work(&self) -> Result<(), DemandError>;
+}
+
+impl DemandWorkContext for DemandWork {
+    fn with_demand_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
+        operation(self)
+    }
+    fn check_work(&self) -> Result<(), DemandError> {
+        self.check()
+    }
+}
+
+impl<W: DemandWorkContext> NativeHostWork for W {
     type Error = DemandError;
     type Allocation = u64;
     type CleanupWrite = u64;
@@ -104,25 +119,28 @@ impl NativeHostWork for DemandWork {
         DemandError::Allocation(error)
     }
     fn check(&self) -> Result<(), Self::Error> {
-        DemandWork::check(self)
+        self.check_work()
     }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.check()?;
-        Ok(self.work.admit(&delta, &self.budget)?)
+        self.with_demand_work(|work| work.admit(delta))
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        DemandWork::record(self, delta)
+        self.with_demand_work(|work| work.record(delta))
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        self.charge(delta)
+        self.with_demand_work(|work| work.charge(delta))
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+        self.with_demand_work(|work| {
+            work.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
+        })?;
         Ok(bytes)
     }
     #[cfg(windows)]
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.claim_allocation(logical_max, 0, crate::WorkCounters::UNCHARGED)?;
+        self.with_demand_work(|work| {
+            work.claim_allocation(logical_max, 0, WorkCounters::UNCHARGED)
+        })?;
         Ok(logical_max)
     }
     fn reconcile_allocation(
@@ -130,25 +148,29 @@ impl NativeHostWork for DemandWork {
         allocation: &mut Self::Allocation,
         actual: u64,
     ) -> Result<(), Self::Error> {
-        self.reconcile_native_allocation(allocation, actual)
+        self.with_demand_work(|work| work.reconcile_native_allocation(allocation, actual))
     }
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
-        DemandWork::release(self, bytes)
+        self.with_demand_work(|work| work.release(bytes))
     }
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
-            .map(|()| 1)
+        self.with_demand_work(|work| {
+            work.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+                .map(|()| 1)
+        })
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
     #[cfg(any(test, feature = "native-watch"))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        if let Err(error) = self
-            .refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
-        {
-            self.record_native_io_failure(error);
-            self.poison_native_original_work();
-        }
+        self.with_demand_work(|work| {
+            if let Err(error) = work.refund(
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation),
+            ) {
+                work.record_native_io_failure(error);
+                work.poison_native_original_work();
+            }
+        });
     }
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
@@ -156,13 +178,19 @@ impl NativeHostWork for DemandWork {
         reservation: u64,
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
-        let recorded = self.complete(
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation),
-            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
-        );
+        let recorded = self.with_demand_work(|work| {
+            work.complete(
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation),
+                crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            )
+        });
+        // Cleanup may re-enter demand accounting and must run after unlocking.
         (operation(), recorded)
     }
 }
+
+#[cfg(all(test, not(loom), feature = "native-watch"))]
+mod tests;
 
 impl NativeHostWork for &NativeMaterializationWork {
     type Error = NativeTreeMaterializationError;

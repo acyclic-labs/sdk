@@ -18,68 +18,18 @@ impl Drop for CallbackFrame {
     }
 }
 
-impl NativeHostWork for CallbackWork {
-    type Error = DemandError;
-    type Allocation = u64;
-    type CleanupWrite = u64;
-    fn io_error_kind(error: &DemandError) -> Option<std::io::ErrorKind> {
-        <DemandWork as NativeHostWork>::io_error_kind(error)
-    }
-    fn allocation_failed(error: std::collections::TryReserveError) -> DemandError {
-        DemandError::Allocation(error)
-    }
-    fn invalid_request() -> DemandError {
-        DemandError::InvalidRequest
-    }
-    fn check(&self) -> Result<(), DemandError> {
+impl crate::native_host::DemandWorkContext for CallbackWork {
+    fn check_work(&self) -> Result<(), DemandError> {
         match self {
             Self::Ordinary(work) => work.check(),
             Self::Original(work) => NativeHostWork::check(work),
         }
     }
-    fn admit(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.admit(delta))
-    }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.record(delta))
-    }
-    fn started_io(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.charge(delta))
-    }
-    fn claim(&mut self, bytes: u64) -> Result<u64, DemandError> {
-        self.with_original_leaf(|work| NativeHostWork::claim(work, bytes))
-    }
-    #[cfg(windows)]
-    fn reserve_opaque_decode(&mut self, maximum: u64) -> Result<u64, DemandError> {
-        self.with_original_leaf(|work| work.reserve_opaque_decode(maximum))
-    }
-    fn reconcile_allocation(
-        &mut self,
-        allocation: &mut u64,
-        actual: u64,
-    ) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.reconcile_native_allocation(allocation, actual))
-    }
-    fn release(&mut self, bytes: u64) -> Result<(), DemandError> {
-        self.with_original_leaf(|work| work.release(bytes))
-    }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
-    fn reserve_cleanup_write(&mut self) -> Result<u64, DemandError> {
-        self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
-    }
-    #[cfg(any(target_os = "linux", all(test, unix)))]
-    fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
-    }
-    #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
-    fn attempt_cleanup_write<T>(
-        &mut self,
-        reservation: u64,
-        operation: impl FnOnce() -> T,
-    ) -> (T, Result<(), DemandError>) {
-        let recorded =
-            self.with_original_leaf(|work| work.attempt_cleanup_write(reservation, || ()).1);
-        (operation(), recorded)
+    fn with_demand_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
+        match self {
+            Self::Ordinary(work) => operation(work),
+            Self::Original(work) => work.with_original_leaf(operation),
+        }
     }
 }
 
@@ -92,12 +42,6 @@ impl SourceDemandReadWork for CallbackWork {
         match self {
             Self::Ordinary(work) => work.with_native_read_meter(operation),
             Self::Original(work) => work.with_native_read_meter(operation),
-        }
-    }
-    fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-        match self {
-            Self::Ordinary(work) => operation(work),
-            Self::Original(work) => work.with_original_leaf(operation),
         }
     }
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
