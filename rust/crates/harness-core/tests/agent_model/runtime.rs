@@ -139,20 +139,20 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         );
         let records = values(&provider, root.conversation()?).await?;
         if admitted && conversation {
-            let Out::Conversation(bytes) = expected else {
+            let Out::Conversation(bytes) = &expected else {
                 unreachable!()
             };
-            assert_eq!(records, vec![bytes]);
+            assert_eq!(records.as_slice(), std::slice::from_ref(bytes));
         } else {
             assert!(records.is_empty());
         }
         let sent = values(&provider, peer.inbox()?).await?;
         assert_eq!(sent.len(), 1 + usize::from(admitted && !conversation));
         if admitted && !conversation {
-            let Out::Send { record, .. } = expected else {
+            let Out::Send { record, .. } = &expected else {
                 unreachable!()
             };
-            assert_eq!(InboxRecord::decode(&sent[1])?, record);
+            assert_eq!(&InboxRecord::decode(&sent[1])?, record);
         }
     }
     Ok(())
