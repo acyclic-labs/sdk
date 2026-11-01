@@ -4,6 +4,20 @@ use crate::memory::MemoryObjectStore;
 use crate::test_support::{put_file_metadata, put_tree_page};
 use crate::{Lifecycle, WorkBudget};
 
+fn original_frame(
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<(KernelAccounting<'_>, u64), FsError> {
+    let mut work = KernelAccounting::standalone(budget, cancellation);
+    drop(super::super::super::allocation::retained::RetainedAllocation::claim(0, 0, &mut work)?);
+    let baseline = work
+        .standalone_parts()
+        .ok_or(FsError::InvalidDiff)?
+        .0
+        .live_bytes();
+    Ok((work, baseline))
+}
+
 fn identity(ordinal: u128) -> FileId {
     // Include every possible branch coordinate, then unrelated exact keys.
     let key = match ordinal {
@@ -38,7 +52,7 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
     let membership_bound = 4 * (u64::from(u128::BITS) + 16 + 1);
     for depth in [1_u128, 1_000, 10_000] {
         let cancel = CancellationToken::new();
-        let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+        let (mut work, baseline) = original_frame(WorkBudget::UNBOUNDED, &cancel)?;
         let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut work)?;
         for ordinal in 1..depth {
             let before = work.spent();
@@ -98,7 +112,8 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
                 .ok_or(FsError::InvalidDiff)?
                 .0
                 .live_bytes(),
-            0
+            baseline,
+            "the original ledger header stays funded through caller retirement"
         );
     }
 
@@ -123,7 +138,7 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
 
     // Refuse every original allocation during an enter that also grows frames.
     let cancel = CancellationToken::new();
-    let mut probe = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let (mut probe, _) = original_frame(WorkBudget::UNBOUNDED, &cancel)?;
     let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut probe)?;
     for ordinal in 1..4 {
         walk.push(directory(ordinal, metadata, entries), config, &mut probe)?;
@@ -134,13 +149,13 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
     walk.retire(&mut probe)?;
     assert!(admitted > 0);
     for allowance in 0..admitted {
-        let mut work = KernelAccounting::standalone(
+        let (mut work, retained_baseline) = original_frame(
             WorkBudget {
                 allocation_operations: baseline + allowance,
                 ..WorkBudget::UNBOUNDED
             },
             &cancel,
-        );
+        )?;
         let mut walk = Descendants::new(directory(0, metadata, entries), config, &mut work)?;
         for ordinal in 1..4 {
             walk.push(directory(ordinal, metadata, entries), config, &mut work)?;
@@ -166,7 +181,7 @@ async fn active_ancestry_bounds_membership_and_retires_refused_or_cancelled_fram
                 .ok_or(FsError::InvalidDiff)?
                 .0
                 .live_bytes(),
-            0
+            retained_baseline
         );
     }
     Ok(())
