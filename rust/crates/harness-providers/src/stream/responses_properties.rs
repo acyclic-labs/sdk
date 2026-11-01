@@ -181,7 +181,11 @@ proptest! {
         prop_assert!(crate::validate_input(crate::Adapter::Responses, &wrong_kind).contains(&"OAR-TOOL-04"));
         for adapter in [crate::Adapter::Chat, crate::Adapter::Anthropic, crate::Adapter::Gemini] {
             prop_assert!(!crate::call_ids::CallIds::new(restored.request(), adapter).unwrap().freeform(&original_call.call_id));
-            prop_assert!(crate::projection::body(&crate::tests::provider(adapter, 200).0, restored.request()).is_ok());
+            // A foreign family cannot silently reinterpret the pinned
+            // Responses freeform declaration as a client function. Its own
+            // profile must supply that family's admitted declarations.
+            prop_assert!(crate::projection::body(&crate::tests::provider(adapter, 200).0, restored.request()).is_err(),
+                "Responses-only declarations must refuse on a foreign protocol");
         }
         // Dropping the terminal producer ends with the transport's typed
         // interruption, and no tool in the incomplete batch becomes executable.
