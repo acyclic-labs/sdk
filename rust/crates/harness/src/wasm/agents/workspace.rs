@@ -158,7 +158,10 @@ mod deadline {
 
     impl Deadline for Budget {
         fn remaining(&self) -> Option<Duration> {
-            self.context.remaining()
+            // This context always retains its original authority deadline.
+            // A failed clock/stop check exhausts that budget; None would
+            // incorrectly advertise an unbounded transport lifetime.
+            Some(self.context.remaining().unwrap_or(Duration::ZERO))
         }
 
         async fn run<F>(&self, future: F) -> Option<F::Output>
