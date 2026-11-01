@@ -37,7 +37,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         let mut publication = caller(b"joined")?;
         let original_key = publication.request().idempotency_key.clone();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let FilesystemAppendPreparation::Ready(prepared) = store
+        let FilesystemAppendPreparation::Ready(mut prepared) = store
             .contribute_append_group(&mut publication, &members, &[], &mut work)
             .await?
         else {
@@ -91,6 +91,12 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
         }
         drop(receipts);
         drop(allocation);
+        assert!(matches!(
+            prepared.confirm(&store, &outcome, &mut work).await,
+            Err(AuthorityStoreError::RejectedStatic(
+                "append confirmation already delivered"
+            ))
+        ));
 
         // A compact receipt must certify EVERY original caller, authority,
         // locator and policy member before any holds or projections settle.
@@ -216,7 +222,7 @@ async fn original_append_group_and_caller_share_one_commit_and_retained_confirma
     // A caller fence is part of the original atomic request: a competing
     // caller publication cannot leave any of the prepared authority prefix.
     let mut loser = caller(b"conditional-loser")?;
-    let FilesystemAppendPreparation::Ready(prepared) = store
+    let FilesystemAppendPreparation::Ready(mut prepared) = store
         .contribute_append_group(&mut loser, &members, &[], &mut work)
         .await?
     else {

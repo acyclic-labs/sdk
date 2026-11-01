@@ -23,6 +23,7 @@ pub enum FilesystemAppendPreparation<'a> {
 pub struct PreparedFilesystemAppend<'a> {
     anchor: AuthoritySnapshot,
     receipts: crate::kernel::Owned<Vec<crate::distributed::append::AppendReceipt<'a>>>,
+    outcomes: Option<crate::kernel::Owned<Vec<FsAppendOutcome>>>,
     owner: [u8; 16],
     scope: [u8; 16],
 }
@@ -32,9 +33,11 @@ impl PreparedFilesystemAppend<'_> {
     /// the ordinary authority receipt/recovery path, with no new submission.
     /// This confirms the authority members only; the original caller validates
     /// its own receipt members before exposing its result. An error leaves
-    /// this owner available for the original continuation.
+    /// this owner and its prefunded reply storage available for the original
+    /// continuation. Success transfers that storage with the member receipts;
+    /// a second confirmation is refused without allocating another reply.
     pub async fn confirm<P: crate::distributed::AuthorityProvider + ?Sized>(
-        &self,
+        &mut self,
         store: &StreamAuthorityStore<P>,
         outcome: &CommitOutcome,
         work: &mut AuthorityWork<'_>,
@@ -46,16 +49,41 @@ impl PreparedFilesystemAppend<'_> {
                 "append confirmation belongs to another Streams owner",
             ));
         }
-        store
+        let outcomes = self
+            .outcomes
+            .as_mut()
+            .ok_or(AuthorityStoreError::RejectedStatic(
+                "append confirmation already delivered",
+            ))?;
+        // An interrupted conflict recovery may have projected only a prefix.
+        // Reuse its original capacity, never expose that incomplete prefix.
+        outcomes.value.clear();
+        let result = store
             .settle_group(
                 &self.receipts.value,
                 self.anchor,
                 outcome,
+                &mut outcomes.value,
                 work,
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
+            .map_err(|error| error.into_error(std::convert::identity));
+        if let Err(error) = result {
+            outcomes.value.clear();
+            return Err(error);
+        }
+        let outcomes = self
+            .outcomes
+            .take()
+            .ok_or(AuthorityStoreError::RejectedStatic(
+                "append confirmation already delivered",
+            ))?;
+        let (receipts, allocation) = crate::async_storage::authority_parts(outcomes);
+        Ok(AppendGroupOutcome::Published {
+            receipts,
+            allocation,
+        })
     }
 }
 
@@ -135,6 +163,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             PreparedFilesystemAppend {
                 anchor: prepared.anchor,
                 receipts: prepared.receipts,
+                outcomes: Some(prepared.outcomes),
                 owner,
                 scope: self.actor_scope(),
             },
