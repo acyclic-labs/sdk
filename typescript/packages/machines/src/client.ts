@@ -24,10 +24,8 @@ export function machineEvents(provider: MachinesProvider, id: MachineId, afterSe
 }
 
 export async function* listMachines(provider: MachinesProvider, options: MachineListOptions = {}): AsyncIterable<MachineId> {
-  const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
+  const pageSize = normalizePageSize(options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize, MANAGED_OCI_CONTRACT.maxPageSize);
   const maximum = options.maximum;
-  try { validatePageSize(pageSize); }
-  catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); }
   if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 0)) throw new RangeError("maximum must be a nonnegative safe integer");
   let cursor = options.after ?? null;
   let yielded = 0;
