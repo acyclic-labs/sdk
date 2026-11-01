@@ -1,6 +1,6 @@
 use super::*;
-use crate::AuthorityWork;
 use crate::materializer::NativeTreeMaterializationError;
+use crate::{AuthorityWork, NativeMaterializationWork};
 use futures::FutureExt as _;
 
 fn budget() -> WorkBudget {
