@@ -142,9 +142,7 @@ impl Preset {
     /// The limits shared by this preset's executor, task scope and turn host.
     #[must_use]
     pub fn execution_limits(&self, mut limits: Limits) -> Limits {
-        if let Some(steps) = self.max_steps {
-            limits.model_steps = Some(steps);
-        }
+        limits.model_steps = limits.model_steps.into_iter().chain(self.max_steps).min();
         limits
     }
 
