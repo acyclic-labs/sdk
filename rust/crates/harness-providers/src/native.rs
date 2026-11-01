@@ -49,47 +49,6 @@ async fn encode(
     crate::http::owned_bytes::owned(body, allocation)
 }
 
-async fn send(
-    provider: &ResolvedModel,
-    body: bytes::Bytes,
-    dispatch_id: ModelDispatch,
-    auth: (Option<&str>, Option<&str>),
-    work: &NativeMaterializationWork,
-) -> Result<crate::HttpResponse> {
-    let (key, account) = auth;
-    let bytes = provider.config.base_url.len()
-        + provider
-            .config
-            .headers
-            .iter()
-            .map(|(key, value)| key.len() + value.len())
-            .sum::<usize>()
-        + key.map_or(0, str::len)
-        + account.map_or(0, str::len);
-    let mut allocation = reserve(
-        work,
-        bytes as u64,
-        provider.config.headers.len() as u64 + 16,
-        0,
-    )?;
-    let url = diagnostic(crate::projection::endpoint(provider), &mut allocation)?;
-    let headers = dispatch::request_headers(provider, dispatch_id, key, account);
-    let retained = (std::mem::size_of::<crate::HttpRequest>()
-        + url.capacity()
-        + headers.len() * std::mem::size_of::<(String, String)>()
-        + headers
-            .iter()
-            .map(|(name, value)| name.capacity() + value.capacity())
-            .sum::<usize>()) as u64;
-    retain(&mut allocation, retained)?;
-    let response = provider
-        .transport
-        .send_with_native_work(crate::HttpRequest { url, headers, body }, work)?
-        .await?;
-    drop(allocation);
-    Ok(response)
-}
-
 fn invalid(reason: &'static str) -> Error {
     Error::NativeBoundary {
         code: ErrorCode::Invalid,
@@ -225,12 +184,13 @@ pub(crate) fn generate<'a>(
             .await?;
             let input_bytes = body.len();
             work.remaining()?;
-            let response = send(
+            let response = dispatch::send(
                 provider,
                 body.clone(),
                 dispatch_id,
-                (auth.0.as_deref(), auth.1.as_deref()),
-                work,
+                auth.0.as_deref(),
+                auth.1.as_deref(),
+                Some(work),
             )
             .await;
             NativeModelStream::new(work, || {
@@ -262,8 +222,8 @@ pub(crate) fn generate<'a>(
                         attempt.recover(provider, &mut auth, error, retry_after,
                             Some(&mut auth_custody), Some(work)).await?;
                         work.remaining()?;
-                        response = send(provider, body.clone(), dispatch_id,
-                            (auth.0.as_deref(), auth.1.as_deref()), work).await;
+                        response = dispatch::send(provider, body.clone(), dispatch_id,
+                            auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
                     }
                 }
             })
