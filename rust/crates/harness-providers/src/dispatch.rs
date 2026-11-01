@@ -41,7 +41,7 @@ pub(crate) fn generate_encoded<'a>(
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
         loop {
-            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await;
+            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
             let (failure, retry_after) = match attempt.response(response, provider.config.max_event_bytes, None).await {
                 Err((error, retry_after)) => (Some(error), retry_after),
                 Ok(response) => {
@@ -92,16 +92,60 @@ pub(crate) async fn send(
     dispatch: ModelDispatch,
     key: Option<&str>,
     account: Option<&str>,
+    work: acyclic_harness_core::NativeWork<'_>,
 ) -> Result<HttpResponse> {
-    let response = provider
-        .transport
-        .send(HttpRequest {
-            url: projection::endpoint(provider)?,
-            headers: request_headers(provider, dispatch, key, account),
-            body,
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut allocation = work
+        .map(|work| {
+            let bytes = provider.config.base_url.len()
+                + provider
+                    .config
+                    .headers
+                    .iter()
+                    .map(|(key, value)| key.len() + value.len())
+                    .sum::<usize>()
+                + key.map_or(0, str::len)
+                + account.map_or(0, str::len);
+            crate::native::reserve(
+                work,
+                bytes as u64,
+                provider.config.headers.len() as u64 + 16,
+                0,
+            )
         })
-        .await?;
-    Ok(response)
+        .transpose()?;
+    let url = projection::endpoint(provider);
+    #[cfg(not(target_arch = "wasm32"))]
+    let url = match allocation.as_mut() {
+        Some(allocation) => crate::native::diagnostic(url, allocation),
+        None => url,
+    };
+    let request = HttpRequest {
+        url: url?,
+        headers: request_headers(provider, dispatch, key, account),
+        body,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(allocation) = allocation.as_mut() {
+        let retained = std::mem::size_of::<HttpRequest>()
+            + request.url.capacity()
+            + request.headers.len() * std::mem::size_of::<(String, String)>()
+            + request
+                .headers
+                .iter()
+                .map(|(name, value)| name.capacity() + value.capacity())
+                .sum::<usize>();
+        crate::native::retain(allocation, retained as u64)?;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = work {
+        return provider
+            .transport
+            .send_with_native_work(request, work)?
+            .await;
+    }
+    let _ = work;
+    provider.transport.send(request).await
 }
 
 pub(crate) async fn encode(
