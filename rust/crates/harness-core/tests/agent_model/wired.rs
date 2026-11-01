@@ -261,6 +261,272 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
+async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_prefix() -> Result {
+    let stream = Arc::new(MemoryStream::default());
+    let path = super::create(&stream, id(216)).await?;
+    let (filesystem, binding) = private(&path).await?;
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    let host = FilesystemTurnHost::new(
+        stream.clone(),
+        filesystem,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    );
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+    let operation = OperationId::from_bytes([216; 16]);
+    let open = host
+        .open(
+            &state,
+            operation,
+            0,
+            1,
+            &ModelContent::Text("initial".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    boundary.admitted(operation, 0).await?;
+    for (name, wake) in [("quiet", false), ("waking", true)] {
+        let record = InboxRecord::Notice {
+            id: intent(name),
+            notice: acyclic_harness_core::conversation::wire::Notice {
+                source: "events".into(),
+                kind: "source.changed".into(),
+                body: serde_json::json!({"name": name}),
+                wake,
+                coalesce_key: None,
+            },
+        };
+        submit(&*stream, send(&path, &super::user(), &record)?).await?;
+    }
+    let messages = boundary.messages(operation, 1, None).await?;
+    assert_eq!(messages.len(), 2);
+    for message in &messages {
+        assert!(matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::Notices { notices }) if notices.len() == 1
+        ));
+        message
+            .content
+            .validate_limits(Default::default(), &mut None)?;
+    }
+    let cut = boundary.selection(operation, 1)?;
+    assert_eq!(
+        cut,
+        BoundaryCut {
+            from: 1,
+            through: 3
+        }
+    );
+    assert!(boundary.transcript(operation).await?.is_none());
+    boundary.admitted(operation, 1).await?;
+    let transcript = boundary
+        .transcript(operation)
+        .await?
+        .ok_or("no transcript")?;
+    assert_eq!(transcript.through, cut.through);
+    assert!(boundary.messages(operation, 2, None).await?.is_empty());
+    assert!(
+        model.requests().is_empty(),
+        "boundary observation never dispatches"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admission() -> Result {
+    use acyclic_harness_core::{
+        conversation::{
+            ContentAccess, ContentPublisher, ContentResidencyVerifier, FileProjectionPolicy,
+        },
+        filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
+    };
+    let stream = Arc::new(MemoryStream::default());
+    let path = super::create(&stream, id(221)).await?;
+    let (filesystem, binding) = private(&path).await?;
+    let peer = VolumeRef::new(
+        binding.volume.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([222; 16])),
+        &mut None,
+    )?;
+    filesystem.create_volume(&peer).await?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "agents".into(),
+    };
+    let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    let peer_scope = issuer.bootstrap_scope(
+        "peer",
+        &Capabilities::new([peer.capability(VolumeOperation::Write, &mut None)?]),
+        Some(acyclic_harness_core::AgentId::from_bytes([222; 16])),
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let writer = FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &peer,
+        &verifier,
+        &peer_scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
+    let file = writer
+        .stage_once(
+            OperationId::from_bytes([223; 16]),
+            "attachment.txt",
+            b"peer attachment",
+            "text/plain",
+            "attachment",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let bytes = encode_user_input(&ModelContent::Parts(vec![
+        ModelContentPart::Text {
+            text: "use this file".into(),
+        },
+        ModelContentPart::File {
+            file: file.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        },
+    ]))?;
+    let envelope = writer
+        .stage_once(
+            OperationId::from_bytes([224; 16]),
+            "input.json",
+            &bytes,
+            USER_INPUT_MEDIA_TYPE,
+            "input",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    submit(
+        &*stream,
+        send(
+            &path,
+            &super::user(),
+            &InboxRecord::Message(Message {
+                from: super::user(),
+                id: intent("peer-input"),
+                body: Box::new(envelope.clone()),
+                attachments: None,
+            }),
+        )?,
+    )
+    .await?;
+    let own = binding.volume.clone();
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path, &adoption).expect("adopts");
+    let model = Arc::new(ScriptedModelProvider::new([]));
+    for allowed in [None, Some(false), Some(true)] {
+        let mut grants = vec![
+            INTERACTION_ROUTE.to_owned(),
+            own.capability(VolumeOperation::Read, &mut None)?,
+            own.capability(VolumeOperation::Write, &mut None)?,
+            envelope.read_capability(&mut None)?,
+        ];
+        if allowed == Some(true) {
+            grants.push(file.read_capability(&mut None)?);
+        }
+        let scope =
+            issuer.bootstrap_scope("recipient", &Capabilities::new(grants), None, &mut None)?;
+        // The former envelope-only reader cannot open the revealed file.
+        if allowed != Some(true) {
+            let reader = FilesystemContentVerifier::new(
+                filesystem.clone(),
+                &verifier,
+                &scope,
+                LIMITS.maximum_bytes,
+                None,
+            )?;
+            assert!(
+                reader
+                    .read(&file, file.descriptor().byte_length(), None, None)?
+                    .await
+                    .is_err()
+            );
+        }
+        let admission = if allowed.is_some() {
+            TurnAdmission::Admitted {
+                audience: audience.clone(),
+                scope: scope.clone(),
+            }
+        } else {
+            TurnAdmission::LocalRoot
+        };
+        let host = FilesystemTurnHost::new(
+            stream.clone(),
+            filesystem.clone(),
+            issuer.clone(),
+            admission,
+            executors(model.clone())?,
+            LIMITS,
+            Default::default(),
+        );
+        let operation = OperationId::from_bytes([225; 16]);
+        let input = ModelContent::Text("initial".into());
+        let open = host
+            .open(
+                &state,
+                operation,
+                0,
+                1,
+                &input,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+        assert!(boundary.messages(operation, 0, None).await?.is_empty());
+        boundary.admitted(operation, 0).await?;
+        let messages = boundary.messages(operation, 1, None).await;
+        if allowed == Some(false) {
+            assert!(matches!(
+                messages,
+                Err(acyclic_harness_core::Error::Unauthorized(_))
+            ));
+            assert!(boundary.transcript(operation).await?.is_none());
+            continue;
+        }
+        let messages = messages?;
+        assert_eq!(messages.len(), 1);
+        let files: Vec<_> = messages[0].content.file_refs().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].volume(), &own);
+        assert_ne!(files[0], &file);
+        let reader = FilesystemContentVerifier::new(
+            filesystem.clone(),
+            &verifier,
+            &scope,
+            LIMITS.maximum_bytes,
+            None,
+        )?;
+        let bytes = reader
+            .read(files[0], files[0].descriptor().byte_length(), None, None)?
+            .await?;
+        assert_eq!(bytes.as_ref(), b"peer attachment");
+    }
+    assert!(model.requests().is_empty(), "selection does not dispatch");
+    Ok(())
+}
+
+#[tokio::test]
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
 
@@ -287,6 +553,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("first".into()),
         ScriptedTurn::Text("second".into()),
+        ScriptedTurn::Text("after cancellation".into()),
     ]));
     let (filesystem, binding) = private(&path).await?;
     let notice_issuer = AuthorityRoot::new(
@@ -557,6 +824,36 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         }
         .validate(&path)
         .is_err()
+    );
+    host.send(&path, &super::user(), &event("cancelled", false))
+        .await?;
+    host.drain(&path).await?;
+    assert!(host.state(&path).await?.pending_notices.is_some());
+    host.send(&path, &super::user(), &super::cancel("drop-events"))
+        .await?;
+    host.drain(&path).await?;
+    assert_eq!(host.state(&path).await?.pending_notices, None);
+    host.send(&path, &super::user(), &event("after-cancel", true))
+        .await?;
+    host.drain(&path).await?;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let after_cancel = batches(&requests[2]);
+    assert_eq!(
+        after_cancel.len(),
+        3,
+        "two immutable prior blocks and new input"
+    );
+    assert_eq!(after_cancel[2].len(), 1);
+    assert_eq!(
+        after_cancel[2][0].body["paths"],
+        serde_json::json!(["after-cancel"])
+    );
+    assert!(
+        !after_cancel
+            .iter()
+            .flatten()
+            .any(|notice| notice.body["revision"] == "cancelled")
     );
     Ok(())
 }
