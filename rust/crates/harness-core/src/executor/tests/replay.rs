@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
     for bytes in [
@@ -11,6 +11,25 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
     ] {
         let expected: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
+        let (actual, [buffered, compared]) = acyclic_test_support::differential(
+            || {
+                let parsed: Value = crate::contract::json_from_slice(bytes).unwrap();
+                assert_eq!(
+                    crate::contract::canonical_json_bytes(&parsed).unwrap(),
+                    bytes
+                );
+                crate::contract::json_from_slice::<Value>(bytes).unwrap()
+            },
+            || {
+                let (value, hold) = decode_json::<Value>(bytes, None).unwrap();
+                assert!(hold.is_none());
+                value
+            },
+        );
+        assert_eq!(actual, expected);
+        assert!(compared.count_total < buffered.count_total);
+        assert!(compared.bytes_total < buffered.bytes_total);
+        #[cfg(feature = "filesystem")]
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let mut budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -38,7 +57,7 @@ fn canonical_replay_encodes_each_admitted_document_once() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Result<()> {
     for bytes in [
@@ -50,6 +69,7 @@ fn finite_replay_keeps_canonical_rejection_after_sorting_admitted_values() -> Re
         b"[1,]",
     ] {
         assert!(decode_json::<Value>(bytes, None).is_err());
+        #[cfg(feature = "filesystem")]
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);

@@ -57,52 +57,10 @@ pub(crate) fn canonical_json_matches<T: Serialize + ?Sized>(
     value: &T,
     bytes: &[u8],
 ) -> Result<bool> {
-    struct Compare<'a> {
-        remaining: &'a [u8],
-        matches: bool,
-    }
-    impl std::io::Write for Compare<'_> {
-        #[inline]
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.write_all(bytes)?;
-            Ok(bytes.len())
-        }
-
-        #[inline]
-        fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-            if self.matches {
-                if let Some((prefix, remaining)) = self.remaining.split_at_checked(bytes.len()) {
-                    self.matches = match (prefix, bytes) {
-                        ([], []) => true,
-                        ([a], [b]) => a == b,
-                        ([a, b], [c, d]) => (a == c) & (b == d),
-                        ([a, b, c, d, e, f], [g, h, i, j, k, l]) => {
-                            (a == g) & (b == h) & (c == i) & (d == j) & (e == k) & (f == l)
-                        }
-                        _ => prefix == bytes,
-                    };
-                    self.remaining = remaining;
-                } else {
-                    self.matches = false;
-                }
-            }
-            Ok(())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
     let mut value =
         serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     value.sort_all_objects();
-    let mut writer = Compare {
-        remaining: bytes,
-        matches: true,
-    };
-    serde_json::to_writer(&mut writer, &value)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    Ok(writer.matches && writer.remaining.is_empty())
+    crate::executor::json::json_bytes_match(&value, bytes)
 }
 
 #[cfg(test)]

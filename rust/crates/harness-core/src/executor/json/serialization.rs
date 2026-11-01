@@ -72,9 +72,12 @@ impl Drop for Scope<'_> {
 }
 mod buffers;
 use buffers::{output, reserve_output};
+mod compare;
+use compare::Compare;
+pub(crate) use compare::json_bytes_match;
 
 type State<'a, 'b> = RefCell<&'a mut Scope<'b>>;
-struct Writer<'a, 'b, 'c, 'd> {
+struct Writer<'a, 'b, 'c, 'd, 'e> {
     state: &'a State<'b, 'c>,
     admitted_items: u64,
     index: super::arrays::Index,
@@ -83,9 +86,9 @@ struct Writer<'a, 'b, 'c, 'd> {
     maximum: u64,
     output: Option<&'a mut Vec<u8>>,
     digest: Option<&'a mut (dyn FnMut(&[u8]) -> Result<()> + 'd)>,
-    compare: Option<(&'a [u8], &'a mut bool)>,
+    compare: Option<&'a mut Compare<'e>>,
 }
-impl Write for Writer<'_, '_, '_, '_> {
+impl Write for Writer<'_, '_, '_, '_, '_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let mut scope = self.state.borrow_mut();
         if scope.failed.is_some() {
@@ -155,8 +158,8 @@ impl Write for Writer<'_, '_, '_, '_> {
             if let Some(digest) = &mut self.digest {
                 digest(bytes)?;
             }
-            if let Some((expected, matched)) = &mut self.compare {
-                **matched &= expected.get(self.written as usize..written as usize) == Some(bytes);
+            if let Some(comparison) = &mut self.compare {
+                comparison.append(bytes);
             }
             self.written = written;
             Ok(())
@@ -347,7 +350,7 @@ fn write<T: Serialize + ?Sized>(
     scope: &mut Scope<'_>,
     output: Option<&mut Vec<u8>>,
     digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
-    compare: Option<(&[u8], &mut bool)>,
+    compare: Option<&mut Compare<'_>>,
     maximum: u64,
     canonical: bool,
 ) -> Result<u64> {
@@ -718,18 +721,18 @@ pub(crate) fn json_bytes_match_bounded<
 ) -> Result<bool> {
     let mut scope = scope(bounds, code, charge);
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    let mut matched = true;
-    let size = write(
+    let mut comparison = Compare::new(expected);
+    write(
         value,
         &mut scope,
         None,
         None,
-        Some((expected, &mut matched)),
+        Some(&mut comparison),
         bounds.maximum_bytes,
         false,
     )?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
-    Ok(matched && size == expected.len() as u64)
+    Ok(comparison.complete())
 }
 
 #[cfg(test)]
