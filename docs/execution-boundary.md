@@ -56,6 +56,10 @@ checks cancellation before preparing enforcement. Admission errors preserve
 any acquired tree or custody record in that slot. Recovery remains a separately
 admitted operation; the controlled entry performs no hidden cleanup. Original
 control interruption remains interruption, rather than a definitive refusal.
+Only preparation failures carry the definitive refusal classification. Errors
+from the subsequent process launch and recovery retain their original process
+classification, including failed termination. A checkout cannot release its
+volume claims as a completed command on that failure; its outcome stays unknown.
 Linux preparation charges each root open and identity query, device metadata, ABI
 query, ruleset creation and rule insertion to that same invocation ledger.
 Every operation reserves before the native call. Successful handles acquire

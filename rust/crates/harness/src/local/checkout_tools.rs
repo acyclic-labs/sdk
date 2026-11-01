@@ -254,8 +254,8 @@ impl CheckoutTools {
                             claims,
                         )
                         .await?;
-                    // A native capability refusal is definitive; no guest can
-                    // have started. Preserve it through the original scope.
+                    // Native preparation refusals precede process acquisition.
+                    // Later launch/cleanup errors keep the unknown outcome.
                     let refused =
                         matches!(&result, Err(Error::Unauthorized(_) | Error::Unsupported(_)));
                     if !refused
