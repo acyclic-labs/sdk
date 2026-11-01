@@ -161,19 +161,37 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
 
         // Blocking terminals keep the original endpoint rather than reopening
         // a PTY master (which would create another endpoint).
-        // SAFETY: posix_openpt returns an unaliased descriptor or -1.
-        #[expect(unsafe_code, reason = "opens a real terminal admission control")]
-        let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
-        if master < 0 {
+        let mut master = -1;
+        let mut slave = -1;
+        // SAFETY: openpty initializes two independent owned descriptors on
+        // success; null optional pointers request the native terminal defaults.
+        #[expect(unsafe_code, reason = "opens the original real terminal pair")]
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if opened < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: the successful descriptor is transferred exactly once.
-        #[expect(unsafe_code, reason = "owns the original terminal control descriptor")]
-        let terminal = unsafe { File::from_raw_fd(master) };
+        // SAFETY: each successful descriptor is transferred exactly once.
+        #[expect(unsafe_code, reason = "owns both original terminal endpoints")]
+        let (terminal, mut peer) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
         let original_flags = flags(&terminal)?;
         let output = InheritedOutput::from_file(terminal.try_clone()?)?;
-        assert!(matches!(output.backend, Backend::Synchronous(_)));
+        let bytes = b"same original terminal endpoint\n".to_vec();
+        let pointer = bytes.as_ptr();
+        let (output, bytes) = output.write_owned(bytes).await?;
+        assert_eq!(bytes.as_ptr(), pointer);
+        let mut actual = vec![0; bytes.len()];
+        peer.read_exact(&mut actual)?;
+        assert_eq!(actual, bytes);
         assert_eq!(flags(&terminal)?, original_flags);
+        drop(output);
         synchronous_output_retains_owned_credit_through_observer_loss().await?;
         Ok(())
     })
