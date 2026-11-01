@@ -3,6 +3,14 @@ use super::wire::Item;
 use crate::Adapter;
 use serde_json::Value;
 
+pub(super) fn join(mut parts: Vec<String>, separator: &str) -> String {
+    if parts.len() == 1 {
+        parts.pop().unwrap()
+    } else {
+        parts.join(separator)
+    }
+}
+
 pub(super) fn normalize(adapter: Adapter, parts: &mut Vec<Item<'_>>) {
     if !matches!(adapter, Adapter::Anthropic | Adapter::Gemini) {
         return;
