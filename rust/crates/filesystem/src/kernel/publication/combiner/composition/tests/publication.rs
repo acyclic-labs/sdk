@@ -31,6 +31,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
     let mut accounting = KernelAccounting::native(&original, &cancel);
     let (core, _) = core(&fs, &mut accounting, &cancel).await?;
     let request = core.request;
+    let limits = crate::facade::closure_limits(core.preconditions.config);
     let owner = CachedOwner {
         fs: fs.clone(),
         cache: Arc::default(),
@@ -42,7 +43,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
         owner: &owner,
         request,
         intent,
-        limits: ClosureLimits::default(),
+        limits,
         cache: Some(&owner.cache.inner),
         cancellation: &cancel,
         resolved: None,
@@ -71,9 +72,11 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
             authentication,
             &mut accounting,
         )?,
-        published: None,
-        _projection_fence: projection_fence,
-        _publication_hold: publication_hold,
+        custody: PublicationCustody {
+            published: None,
+            projection_fence,
+            publication_hold,
+        },
     };
     let gate = Arc::new(Gate {
         armed: AtomicBool::new(false),
@@ -124,7 +127,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
                 } else {
                     let (outcome, publication) = result?;
                     assert!(matches!(outcome, AppendOutcome::Committed(_)));
-                    assert!(publication.published.is_some());
+                    assert!(publication.custody.published.is_some());
                 }
             }
             Delivery::Collected => unreachable!(),
@@ -171,13 +174,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .published(
-                    request.volume_id,
-                    generation,
-                    ClosureLimits::default(),
-                    None,
-                    &mut observe
-                )?
+                .published(request.volume_id, generation, limits, None, &mut observe)?
                 .is_some(),
             committed,
             "only the actual committed member may publish its original pending proof"

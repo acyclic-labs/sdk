@@ -37,7 +37,8 @@ impl Ticket {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             prepared.append = Some(append);
             prepared.seal = seal;
-            prepared.publication = Some(publication);
+            prepared.authentication = Some(publication.authentication);
+            prepared.publication = Some(publication.custody);
         }
         let leader = self.index.is_some_and(|index| {
             self.group
@@ -87,12 +88,22 @@ impl Ticket {
                     .outcome
                     .take()
                     .ok_or(crate::FsError::InvalidAuthorityHistory)?;
-                let publication = prepared
+                let custody = prepared
                     .publication
                     .take()
                     .ok_or(crate::FsError::InvalidAuthorityHistory)?;
+                let authentication = prepared
+                    .authentication
+                    .take()
+                    .ok_or(crate::FsError::InvalidAuthorityHistory)?;
                 self.settled = true;
-                return Ok((outcome, publication));
+                return Ok((
+                    outcome,
+                    SubmittedPublication {
+                        authentication,
+                        custody,
+                    },
+                ));
             }
             wait_for_notification(notified.as_mut(), cancelled.as_mut()).await?;
         }
@@ -371,15 +382,19 @@ fn distribute(group: &Group, outcome: crate::AppendGroupOutcome) -> Result<(), c
                 // Only this newly committed member authenticates the prepared
                 // generation. An idempotent receipt can name a different root;
                 // the existing engine reauthenticates that outcome on delivery.
-                if matches!(outcome, AppendOutcome::Committed(_))
-                    && let Some(publication) = prepared.publication.as_mut()
+                if matches!(outcome, AppendOutcome::Committed(_)) && prepared.publication.is_some()
                 {
-                    publication.published = publication
+                    let published = prepared
                         .authentication
+                        .as_mut()
+                        .ok_or(crate::FsError::InvalidAuthorityHistory)?
                         .value
                         .pending
                         .take()
                         .and_then(|pending| pending.publish(&outcome));
+                    if let Some(publication) = prepared.publication.as_mut() {
+                        publication.published = published;
+                    }
                 }
                 prepared.outcome = Some(outcome);
             }

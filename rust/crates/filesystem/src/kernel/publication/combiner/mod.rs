@@ -48,16 +48,20 @@ struct Prepared {
     prefix_result: Option<preparation::PrefixResult>,
     error: Option<crate::FsError>,
     seal: Option<SharedSeal>,
-    publication: Option<SubmittedPublication>,
+    publication: Option<PublicationCustody>,
 }
 
 // The existing proposal, retained by the authority producer, owns these guards
 // across reply withdrawal. No client borrow owns accepted publication custody.
 pub(super) struct SubmittedPublication {
     pub(super) authentication: Retained<super::authenticate::Authenticated>,
+    pub(super) custody: PublicationCustody,
+}
+
+pub(super) struct PublicationCustody {
     pub(super) published: Option<crate::kernel::closure::PublishedProof>,
-    pub(super) _projection_fence: crate::access::projection::Lease,
-    pub(super) _publication_hold: crate::PublicationHold,
+    pub(super) projection_fence: crate::access::projection::Lease,
+    pub(super) publication_hold: crate::PublicationHold,
 }
 
 struct ProposalCore {

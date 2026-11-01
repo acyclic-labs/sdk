@@ -70,9 +70,11 @@ where
             let publication = combiner::SubmittedPublication {
                 authentication: authenticate::retain_authentication(authentication, accounting)
                     .map_err(E::from)?,
-                published: None,
-                _projection_fence: projection_fence,
-                _publication_hold: publication_hold,
+                custody: combiner::PublicationCustody {
+                    published: None,
+                    projection_fence,
+                    publication_hold,
+                },
             };
             let result = ticket
                 .submit(
@@ -96,9 +98,9 @@ where
             (
                 appended,
                 value,
-                publication.published,
-                publication._projection_fence,
-                publication._publication_hold,
+                publication.custody.published,
+                publication.custody.projection_fence,
+                publication.custody.publication_hold,
             )
         } else {
             // Non-combined dispatch retains the same guards on this original path.
