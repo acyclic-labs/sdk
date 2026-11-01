@@ -19,7 +19,10 @@ impl Executor for Scheduler {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         self.tasks.lock().unwrap().push(future);
     }
-    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(
+        &self,
+        _: u64,
+    ) -> BoxProviderFuture<'static, Result<(), acyclic_stream::runtime::SleepError>> {
         self.sleeps.fetch_add(1, Ordering::Relaxed);
         Box::pin(futures::future::pending())
     }
