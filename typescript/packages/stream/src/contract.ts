@@ -235,11 +235,12 @@ export function wireAppendRequest(path: string, records: readonly Uint8Array[], 
   }));
 }
 
-export async function validateWireAppend(path: string, records: readonly Uint8Array[], options?: AppendOptions): Promise<void> {
+export async function validateWireAppend(path: string, records: readonly Uint8Array[], options?: AppendOptions): Promise<Uint8Array> {
   const input = wireAppendRequest(path, records, options);
   await ensureStreamWasm();
   const error = validateAppendRequest(input);
   if (error) validationError(error, "append");
+  return input;
 }
 
 export function wireInspectIdempotencyRequest(key: IdempotencyKey): Uint8Array {

@@ -13,7 +13,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
 import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
@@ -172,8 +172,8 @@ export class GrpcStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = options === undefined ? undefined : structuredClone(options);
-    await validateAppend(path, records, authored);
-    const request = fromBinary(wire.AppendRequestSchema, wireAppendRequest(path, records, authored));
+    const input = await validateAppend(path, records, authored);
+    const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
     const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);

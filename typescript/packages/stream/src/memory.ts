@@ -8,7 +8,7 @@ import {
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -78,8 +78,7 @@ class RustStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = structuredClone(options);
-    await validateAppend(path, records, authored);
-    const request = wireAppendRequest(path, records, authored);
+    const request = await validateAppend(path, records, authored);
     return this.#project<AppendResult>("append", request);
   }
 
