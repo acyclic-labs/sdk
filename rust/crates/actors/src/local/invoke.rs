@@ -1,5 +1,5 @@
 //! Invocation uses the existing input, checkpoint publication and stream replay.
-use super::{AppliedCut, Error, Snapshot, State, Store, covers};
+use super::{Error, Snapshot, State, Store, covers};
 use crate::{
     guest::{Effect, GuestError, Trigger},
     invocation::Invocation,
@@ -224,9 +224,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Observe the original reply after its explicit committed input cut.
     /// A committed guest failure returns [`Error::InvocationFailed`] with its
-    /// original typed cause and receipt. The state follow registers and rechecks
-    /// through wait_applied; no polling,
-    /// scheduler, input replay or second journal is introduced here.
+    /// original typed cause and receipt. The original reply follow waits for
+    /// creation; its co-committed state proves consumption of the accepted
+    /// input. No current-state probe, polling or input replay is needed.
     pub async fn wait_invocation(
         &self,
         ticket: InvocationTicket,
@@ -239,26 +239,22 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if self.path(ticket.invocation.actor())? != ticket.state {
                     return Err(Error::Conflict);
                 }
-                let cut = AppliedCut::through(
-                    ticket.invocation.subscription().into(),
-                    ticket.input.clone(),
-                    &ticket.record,
-                )?
-                .at_least(RevisionCut::of(ticket.revision.clone()));
-                let applied = self.wait_applied(ticket.invocation.actor(), cut).await?;
-                // Consumption and reply creation share a transaction, so this path
-                // exists once the cut is applied; a missing path is a protocol failure.
+                // The private ticket retains the provider's original accepted
+                // input. Wait on that operation's reply, whose original state
+                // publication below proves its exact consumed cursor. A later
+                // actor state is neither needed nor evidence of this result.
                 let reply = acyclic_stream::records_only(
                     self.provider
                         .follow(FollowRequest {
                             at_least: RevisionCut::of(ticket.revision.clone()),
+                            when_absent: acyclic_stream::WhenAbsent::Wait,
                             ..FollowRequest::new(reply_path(&ticket.state, &ticket.invocation)?, 0)
                         })
                         .await?,
                 )
                 .try_next()
                 .await?
-                .ok_or(Error::Invalid("consumed invocation has no reply"))?;
+                .ok_or(StreamError::Unavailable)?;
                 let wire = ReplyWire::decode(reply.value.as_ref())
                     .map_err(|_| Error::Invalid("invalid invocation reply"))?;
                 if wire.encode_to_vec().as_slice() != reply.value.as_ref()
@@ -268,7 +264,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     || wire.input_commit.as_ref() != ticket.record.commit_id.as_bytes()
                     || wire.input_sequence != ticket.record.sequence
                     || wire.revision == 0
-                    || wire.revision > applied.revision()
                 {
                     return Err(Error::Invalid(
                         "invocation reply changes its input or revision",

@@ -159,6 +159,21 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         )?,
         ticket
     );
+    // The original creation follow is the only pending observation. Dropping
+    // its caller cannot withdraw accepted input or require an external wake.
+    let before_wait = provider.requests();
+    let mut abandoned = Box::pin(store.wait_invocation(ticket.clone()));
+    assert!(futures::poll!(abandoned.as_mut()).is_pending());
+    let waiting = provider.requests().since(before_wait);
+    assert_eq!(waiting.data(), 1);
+    assert_eq!(waiting.control(), 0);
+    drop(abandoned);
+    let mut waiting = Box::pin(store.wait_invocation(ticket.clone()));
+    let before_wait = provider.requests();
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let registered = provider.requests().since(before_wait);
+    assert_eq!(registered.data(), 1);
+    assert_eq!(registered.control(), 0);
     let before = store.load(&address).await?;
     assert!(matches!(
         store.prepare_publish(
@@ -278,7 +293,19 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
             key("invoked/publish")?,
         )
         .await?;
-    let committed = store.wait_invocation(ticket.clone()).await?;
+    // The same publication releases the original waiter; only its exact state
+    // record remains to be read. No input follow or current state view occurs.
+    let committed =
+        acyclic_stream::assert_requests!(provider, waiting.await, data = 1, control = 0)?;
+    assert_eq!(
+        acyclic_stream::assert_requests!(
+            provider,
+            store.wait_invocation(ticket.clone()).await,
+            data = 2,
+            control = 0
+        )?,
+        committed
+    );
     assert!(committed.response().is_empty());
     assert_eq!(committed.receipt().revision(), before.tail + 1);
     assert_eq!(
@@ -305,6 +332,86 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
             .and_then(|state| state.cursor("inbox")),
         Some(1)
     );
+    invocation_completion_rejects_changed_original_publication().await?;
+    Ok(())
+}
+
+// Mutate actual prepared publications, never fabricated provider responses.
+// A reply alone cannot attest a consumed cursor or borrow another state commit.
+async fn invocation_completion_rejects_changed_original_publication() -> TestResult {
+    for fault in 0..3 {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(provider.clone(), state_root()?);
+        let address = actor("changed-publication")?;
+        place(&store, &address).await?;
+        let invocation = crate::invocation::Invocation::new(
+            address.clone(),
+            "inbox".into(),
+            Bytes::from_static(b"changed-publication"),
+            Bytes::from_static(b"original-request"),
+        )?;
+        let ticket = store.enqueue_invoke(&invocation).await?;
+        let before = store.load(&address).await?;
+        let mut transition = transition(1, AlarmChange::Keep);
+        transition.response = Some(Bytes::from_static(b"original-response"));
+        let mut request = store
+            .prepare_publish(
+                &before,
+                1,
+                &record(0),
+                Some(ticket.record()),
+                transition,
+                key("changed-publication/publish")?,
+            )?
+            .into_request()?;
+        match fault {
+            0 => {
+                for mutation in &mut request.mutations {
+                    if let CommitMutation::Append { path, records } = mutation {
+                        if path == before.path() {
+                            records[0] = before.state().ok_or("missing state")?.encode().into();
+                        }
+                    }
+                }
+            }
+            1 => request.mutations.retain(|mutation| {
+                !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
+            }),
+            2 => {
+                let mut state_only = request.clone();
+                state_only.mutations.retain(|mutation| {
+                    matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
+                });
+                assert!(matches!(provider.commit(state_only).await?, CommitOutcome::Committed(_)));
+                request.idempotency_key = key("changed-publication/separate-reply")?;
+                request.mutations.retain(|mutation| {
+                    !matches!(mutation, CommitMutation::Append { path, .. } if path == before.path())
+                });
+                request.conditions.retain(|condition| {
+                    matches!(condition, CommitCondition::Absent { .. })
+                });
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            provider.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let result = store.wait_invocation(ticket).await;
+        if fault == 1 {
+            assert!(matches!(
+                result,
+                Err(Error::Invalid("invocation state receipt is missing"))
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(Error::Invalid(
+                    "invocation reply is not co-committed with consumed input"
+                ))
+            ));
+        }
+    }
     Ok(())
 }
 

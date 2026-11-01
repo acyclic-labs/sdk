@@ -17,9 +17,14 @@ the previous version active, and paused subscriptions remain paused.
 Local `Store::enqueue_invoke` requires the provider's accepted Commit
 projection. It retains the original inbox record and activation from that one
 publication, including on exact replay. Enqueue performs one state view and one
-write, with no following commit read. Completion still validates the original
-co-committed state and reply through the existing receipt path. An unsupported
-provider refuses before enqueue effects.
+write, with no following commit read. Completion follows the original reply
+with creation admission, then reads only its exact co-committed state record:
+two data observations and zero control observations, whether the result is
+already present or still pending. Both records retain the accepted input
+identity and consumed cursor checks; later actor state is not read. Dropping
+the observer cancels its follow, without cancelling committed input. Follow
+errors retain their original cause; an ended follow returns Unavailable. An
+unsupported provider refuses before enqueue effects.
 
 Deployment and update requests can carry `EntrySource`: an exact selected
 immutable Objects digest, descriptor length, environment and entry. Its entry
