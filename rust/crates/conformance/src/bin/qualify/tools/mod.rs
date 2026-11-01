@@ -112,6 +112,9 @@ use fixtures::*;
 mod capture;
 use capture::*;
 
+mod checkout;
+use checkout::*;
+
 mod mounting;
 use mounting::*;
 

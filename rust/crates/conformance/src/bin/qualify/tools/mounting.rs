@@ -37,33 +37,13 @@ pub(super) fn mount_smoke(args: &[String]) -> Result<(), Failure> {
 
     // Fresh writable Head checkout for the mount (the fork shape).
     let config = volume_config();
-    let (checkout, fs_engine) = runtime.block_on(async {
-        let cancel = CancellationToken::new();
-        let fs_engine = LocalFs::local(local_options(&store_dir)?)
-            .await
-            .map_err(engine_err("reopen store"))?;
-        let volume = fs_engine
-            .open_volume(volume_id, WorkCounters::UNBOUNDED, &cancel)
-            .await
-            .map_err(engine_err("open volume"))?
-            .value;
-        let checkout = volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode {
-                    access: AccessMode::ReadWrite,
-                    consistency: ConsistencyMode::TrackingSafe,
-                    mutations: MutationMode::PrivateOverlay,
-                },
-                WorkCounters::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(engine_err("checkout head"))?
-            .value;
-        Ok::<_, Failure>((checkout, fs_engine))
-    })?;
-    let _keep_engine_alive = fs_engine;
+    let checkout = runtime.block_on(reopen_checkout(
+        &store_dir,
+        volume_id,
+        GenerationSelector::Head,
+        CheckoutMode::tracking_transaction(),
+        &CancellationToken::new(),
+    ))?;
 
     let shared = Arc::new(SharedCheckout::new(checkout));
     let mount_source = Arc::new(
@@ -232,33 +212,13 @@ pub(super) fn mount_hold(args: &[String]) -> Result<(), Failure> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (volume_id, _generation) = runtime.block_on(capture_and_commit(&source, &store_dir))?;
     let config = volume_config();
-    let checkout = runtime.block_on(async {
-        let cancel = CancellationToken::new();
-        let fs_engine = LocalFs::local(local_options(&store_dir)?)
-            .await
-            .map_err(engine_err("open store"))?;
-        let volume = fs_engine
-            .open_volume(volume_id, WorkCounters::UNBOUNDED, &cancel)
-            .await
-            .map_err(engine_err("open volume"))?
-            .value;
-        let checkout = volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode {
-                    access: AccessMode::ReadWrite,
-                    consistency: ConsistencyMode::TrackingSafe,
-                    mutations: MutationMode::PrivateOverlay,
-                },
-                WorkCounters::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(engine_err("checkout"))?
-            .value;
-        std::mem::forget(fs_engine);
-        Ok::<_, Failure>(checkout)
-    })?;
+    let checkout = runtime.block_on(reopen_checkout(
+        &store_dir,
+        volume_id,
+        GenerationSelector::Head,
+        CheckoutMode::tracking_transaction(),
+        &CancellationToken::new(),
+    ))?;
     let shared = Arc::new(SharedCheckout::new(checkout));
     let mount_source =
         Arc::new(CheckoutMountSource::new(shared, config).map_err(engine_err("mount source"))?);
@@ -298,33 +258,13 @@ pub(super) fn source_probe(args: &[String]) -> Result<(), Failure> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (volume_id, _generation) = runtime.block_on(capture_and_commit(&source, &store_dir))?;
     let config = volume_config();
-    let checkout = runtime.block_on(async {
-        let cancel = CancellationToken::new();
-        let fs_engine = LocalFs::local(local_options(&store_dir)?)
-            .await
-            .map_err(engine_err("open store"))?;
-        let volume = fs_engine
-            .open_volume(volume_id, WorkCounters::UNBOUNDED, &cancel)
-            .await
-            .map_err(engine_err("open volume"))?
-            .value;
-        let checkout = volume
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode {
-                    access: AccessMode::ReadWrite,
-                    consistency: ConsistencyMode::TrackingSafe,
-                    mutations: MutationMode::PrivateOverlay,
-                },
-                WorkCounters::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(engine_err("checkout"))?
-            .value;
-        std::mem::forget(fs_engine);
-        Ok::<_, Failure>(checkout)
-    })?;
+    let checkout = runtime.block_on(reopen_checkout(
+        &store_dir,
+        volume_id,
+        GenerationSelector::Head,
+        CheckoutMode::tracking_transaction(),
+        &CancellationToken::new(),
+    ))?;
     let shared = Arc::new(SharedCheckout::new(checkout));
     let mount_source =
         CheckoutMountSource::new(shared, config).map_err(engine_err("mount source"))?;
@@ -385,37 +325,21 @@ pub(super) fn mount_smoke2(args: &[String]) -> Result<(), Failure> {
     let (volume_id, _generation) = runtime.block_on(capture_and_commit(&source, &store_dir))?;
     let config = volume_config();
 
+    let cancel = CancellationToken::new();
+    let volume = runtime.block_on(reopen_volume(&store_dir, volume_id, &cancel))?;
     let mut sessions = Vec::new();
     for index in 0..2u32 {
         let mount_dir = work.join(format!("mnt{index}"));
         fs::create_dir_all(&mount_dir)?;
-        let checkout = runtime.block_on(async {
-            let cancel = CancellationToken::new();
-            let fs_engine = LocalFs::local(local_options(&store_dir)?)
-                .await
-                .map_err(engine_err("open store"))?;
-            let volume = fs_engine
-                .open_volume(volume_id, WorkCounters::UNBOUNDED, &cancel)
-                .await
-                .map_err(engine_err("open volume"))?
-                .value;
-            let checkout = volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode {
-                        access: AccessMode::ReadWrite,
-                        consistency: ConsistencyMode::TrackingSafe,
-                        mutations: MutationMode::PrivateOverlay,
-                    },
-                    WorkCounters::UNBOUNDED,
-                    &cancel,
-                )
-                .await
-                .map_err(engine_err("checkout"))?
-                .value;
-            std::mem::forget(fs_engine); // keep engine alive for the mount
-            Ok::<_, Failure>(checkout)
-        })?;
+        let checkout = runtime
+            .block_on(volume.checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                WorkCounters::UNBOUNDED,
+                &cancel,
+            ))
+            .map_err(engine_err("checkout"))?
+            .value;
         let shared = Arc::new(SharedCheckout::new(checkout));
         let mount_source =
             Arc::new(CheckoutMountSource::new(shared, config).map_err(engine_err("mount source"))?);

@@ -91,11 +91,7 @@ pub(super) async fn bench_inner(
     let mut checkout = volume
         .checkout(
             GenerationSelector::Head,
-            CheckoutMode {
-                access: AccessMode::ReadWrite,
-                consistency: ConsistencyMode::TrackingSafe,
-                mutations: MutationMode::PrivateOverlay,
-            },
+            CheckoutMode::tracking_transaction(),
             WorkCounters::UNBOUNDED,
             &cancel,
         )
@@ -359,11 +355,7 @@ pub(super) async fn capture_and_commit(
     let mut checkout = volume
         .checkout(
             GenerationSelector::Head,
-            CheckoutMode {
-                access: AccessMode::ReadWrite,
-                consistency: ConsistencyMode::TrackingSafe,
-                mutations: MutationMode::PrivateOverlay,
-            },
+            CheckoutMode::tracking_transaction(),
             WorkCounters::UNBOUNDED,
             &cancel,
         )
@@ -448,28 +440,14 @@ pub(super) async fn materialize(
     destination: &Path,
 ) -> Result<acyclic_fs::OperationReceipt<acyclic_fs::MaterializationReceipt>, Failure> {
     let cancel = CancellationToken::new();
-    let fs_engine = LocalFs::local(local_options(store_dir)?)
-        .await
-        .map_err(engine_err("reopen store"))?;
-    let volume = fs_engine
-        .open_volume(volume_id, WorkCounters::UNBOUNDED, &cancel)
-        .await
-        .map_err(engine_err("reopen volume"))?
-        .value;
-    let mut checkout = volume
-        .checkout(
-            GenerationSelector::Exact(generation),
-            CheckoutMode {
-                access: AccessMode::ReadOnly,
-                consistency: ConsistencyMode::Pinned,
-                mutations: MutationMode::None,
-            },
-            WorkCounters::UNBOUNDED,
-            &cancel,
-        )
-        .await
-        .map_err(engine_err("checkout exact"))?
-        .value;
+    let mut checkout = reopen_checkout(
+        store_dir,
+        volume_id,
+        GenerationSelector::Exact(generation),
+        CheckoutMode::read_only_pinned(),
+        &cancel,
+    )
+    .await?;
 
     materialize_checkout(
         &mut checkout,
