@@ -373,7 +373,7 @@ proptest! {
         // Foreign exchanges retain their canonical opaque IDs. Appending a
         // lexically earlier ID must not rename any prior native/foreign call.
         let mut exchange_prefix = Vec::new();
-        for (index, (id, path)) in [("foreign/call", "c"), ("earlier/call", "d")].into_iter().enumerate() {
+        for (index, (id, path)) in [("foreign_call", "c"), ("earlier_call", "d")].into_iter().enumerate() {
             request.messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall(
