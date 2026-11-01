@@ -130,6 +130,168 @@ fn paused_source() -> Result<(PausedSource, Arc<PausedObjects>), Box<dyn std::er
     Ok((bind_test_access(source, vec![], None)?, objects))
 }
 
+#[test]
+fn refresh_io_preserves_original_roots_and_concurrent_observations()
+-> Result<(), Box<dyn std::error::Error>> {
+    for rebase in [false, true] {
+        for exit in ["return", "mutation", "read", "abandoned", "cancelled"] {
+            let (writer, objects) = paused_source()?;
+            let work = capture_meter(BOUNDARY_BUDGET, writer.cancellation())?;
+            let path = native_test_path("observed");
+            let file = writer
+                .create_file(&path, metadata(), None, &work)?
+                .node
+                .file_id;
+            writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
+            writer
+                .runtime
+                .wait(|| writer.sync_async(crate::PublicationPermit::Unrestricted))?;
+            let volume = writer.checkout.volume.clone();
+            let checkout = writer.runtime.wait(|| async {
+                volume
+                    .checkout(
+                        GenerationSelector::Head,
+                        CheckoutMode {
+                            access: AccessMode::ReadWrite,
+                            consistency: ConsistencyMode::TrackingSafe,
+                            mutations: MutationMode::PrivateOverlay,
+                        },
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+            })?;
+            let reader = bind_test_access(
+                CheckoutMountSource::new(
+                    Arc::new(SharedCheckout::with_publication(
+                        checkout,
+                        MountPublication::Manual,
+                    )),
+                    writer.config,
+                )?,
+                vec![],
+                None,
+            )?;
+            // Prepare the competing mutation before delaying this refresh's I/O.
+            let reader_work = capture_meter(BOUNDARY_BUDGET, reader.cancellation())?;
+            let winner = if exit == "mutation" {
+                Some(
+                    reader
+                        .runtime
+                        .wait(|| staged_write(&reader.checkout, file, b"local", &reader_work))?,
+                )
+            } else {
+                None
+            };
+            writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
+            writer
+                .runtime
+                .wait(|| writer.sync_async(crate::PublicationPermit::Unrestricted))?;
+            let (before, epoch) = reader.runtime.wait(|| async {
+                let state = reader.checkout.lock().await;
+                Ok::<_, MountSourceError>((
+                    state.root().file_table,
+                    reader.checkout.view_gate.generation(),
+                ))
+            })?;
+            reader.runtime.wait(|| async {
+                objects.paused_reads.store(true, Ordering::Release);
+                let entered = objects.entered.load(Ordering::Acquire);
+                let mut pending = Box::pin(reader.advance_checkout(rebase));
+                assert!(
+                    futures::poll!(pending.as_mut()).is_pending(),
+                    "{rebase}/{exit}: refresh reached the real store"
+                );
+                assert_eq!(objects.entered.load(Ordering::Acquire), entered + 1);
+                let state = reader
+                    .checkout
+                    .state
+                    .try_write()
+                    .expect("refresh releases checkout during provider I/O");
+                assert_eq!(state.root().file_table, before, "no early publication");
+                drop(state);
+                // Only the original waiting read remains gated; independent I/O
+                // now runs against the original store and pinned live checkout.
+                objects.paused_reads.store(false, Ordering::Release);
+                if let Some(winner) = winner {
+                    reader
+                        .checkout
+                        .install_change(
+                            winner,
+                            ViewChange::Node(file),
+                            None,
+                            &reader_work,
+                            reader.cancellation(),
+                            None,
+                        )
+                        .await?;
+                }
+                if exit == "read" {
+                    assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
+                }
+                if exit == "abandoned" {
+                    drop(pending);
+                    assert!(reader.checkout.publication_fence.try_write().is_ok());
+                    assert!(reader.checkout.state.try_write().is_ok());
+                    assert_eq!(reader.checkout.lock().await.root().file_table, before);
+                    objects.release();
+                    return Ok::<_, MountSourceError>(());
+                }
+                if exit == "cancelled" {
+                    reader.cancellation.cancel();
+                }
+                objects.release();
+                let result = pending.await;
+                match exit {
+                    "return" => {
+                        result?;
+                        assert_ne!(reader.checkout.lock().await.root().file_table, before);
+                        assert_ne!(reader.checkout.view_gate.generation(), epoch);
+                    }
+                    "mutation" | "read" => {
+                        assert!(
+                            matches!(result, Err(MountSourceError::Stale)),
+                            "{rebase}/{exit}: {result:?}"
+                        );
+                        let state = reader.checkout.lock().await;
+                        if exit == "read" {
+                            assert_eq!(state.root().file_table, before);
+                        }
+                        assert_eq!(reader.checkout.view_gate.generation(), epoch);
+                    }
+                    "cancelled" => {
+                        assert!(
+                            matches!(
+                                result,
+                                Err(MountSourceError::Cancelled)
+                                    | Err(MountSourceError::NativeWork(
+                                        crate::NativeTreeMaterializationError::Cancelled
+                                    ))
+                            ),
+                            "{rebase}/{exit}: {result:?}"
+                        );
+                        assert_eq!(reader.checkout.lock().await.root().file_table, before);
+                        assert_eq!(reader.checkout.view_gate.generation(), epoch);
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(reader.checkout.publication_fence.try_write().is_ok());
+                Ok(())
+            })?;
+            if exit != "cancelled" {
+                let expected = match exit {
+                    "return" => b"other",
+                    "mutation" => b"local",
+                    _ => b"first",
+                };
+                assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), expected);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn write(
     source: &PausedSource,
     file: FileId,
