@@ -2,6 +2,8 @@ use super::*;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
+mod prefix;
+
 #[test]
 fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
 -> Result<(), &'static str> {
