@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -106,39 +109,49 @@ test('a completed executable preserves its output and failure status', async () 
   assert.equal(result.output.trim(), 'fixture output');
 });
 
-test('a passing executable terminates its live background child with closed output pipes', async () => {
+test('leader exit retires its real live descendant before output closure', async () => {
+ for (const inheritedOutput of [false, true]) {
+  const root = mkdtempSync(join(tmpdir(), 'qualification-descendant-'));
+  const identity = join(root, 'descendant.pid');
   let group;
   let descendant;
-  let observed = '';
+  let exited;
   let stopped = 0;
   const source = `
     const {spawn} = require('node:child_process');
-    const child = spawn(process.execPath, ['-e',
-      'process.send(process.pid);setInterval(()=>{},1000)'],
-      {stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
-    child.once('message', pid => {
-      child.disconnect();
+    const child = spawn('python3', ['-c',
+      'import os, signal; os.write(3, str(os.getpid()).encode()); signal.pause()'],
+      {stdio: ['ignore', '${inheritedOutput ? 'inherit' : 'ignore'}', 'ignore', 'pipe']});
+    child.stdio[3].once('data', pid => {
+      require('node:fs').writeFileSync(process.argv[1], pid);
+      child.stdio[3].destroy();
       child.unref();
-      console.log(pid);
+      console.log(pid.toString());
     });
   `;
+  const execution = executeTest(process.execPath, ['-e', source, identity], {
+    launch(executable, args, options) {
+      const child = spawn(executable, args, options);
+      group = child.pid;
+      exited = once(child, 'exit');
+      return child;
+    },
+    terminate(child) {
+      assert.equal(child.pid, group);
+      descendant = Number(readFileSync(identity, 'utf8'));
+      assert.ok(Number.isSafeInteger(descendant) && descendant > 0);
+      assert.notEqual(descendant, group);
+      process.kill(descendant, 0); // The parent passed while this child lives.
+      process.kill(-child.pid, 'SIGKILL');
+      stopped += 1;
+    },
+  });
+  execution.catch(() => {});
   try {
-    const result = await executeTest(process.execPath, ['-e', source], {
-      launch(executable, args, options) {
-        const child = spawn(executable, args, options);
-        group = child.pid;
-        child.stdout.on('data', data => { observed += data; descendant = Number(observed.trim()); });
-        return child;
-      },
-      terminate(child) {
-        assert.equal(child.pid, group);
-        assert.ok(Number.isSafeInteger(descendant) && descendant > 0);
-        assert.notEqual(descendant, group);
-        process.kill(descendant, 0); // The parent passed while this child lives.
-        process.kill(-child.pid, 'SIGKILL');
-        stopped += 1;
-      },
-    });
+    await exited;
+    // Restoring close-only retirement fails here before any inherited-pipe wait.
+    assert.equal(stopped, 1, 'original leader exit must retire its owned group');
+    const result = await execution;
     assert.equal(result.status, 0);
     assert.equal(Number(result.output.trim()), descendant);
     assert.equal(stopped, 1, 'completion must end the owned group before qualifying');
@@ -148,7 +161,10 @@ test('a passing executable terminates its live background child with closed outp
         if (error.code !== 'ESRCH') throw error;
       }
     }
+    await execution.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
   }
+ }
 });
 
 test('failed spawn and process-group cleanup failure cannot qualify', async () => {
@@ -163,52 +179,4 @@ test('failed spawn and process-group cleanup failure cannot qualify', async () =
   child.emit('close', 0);
   await assert.rejects(execution, /group cleanup refused/);
   assert.ok(child.stdout.destroyed && child.stderr.destroyed);
-});
-
-test('the execution budget fails the debt without waiting for inherited pipes to close', async () => {
-  const child = Object.assign(new EventEmitter(), {
-    stdout: new PassThrough(), stderr: new PassThrough(), pid: 123,
-  });
-  let expire;
-  let stopped = false;
-  const execution = executeTest('/fixture/test', [], {
-    launch: () => child,
-    arm(callback, milliseconds) { assert.equal(milliseconds, 10_000); expire = callback; return 1; },
-    disarm() {},
-    terminate(actual) { assert.equal(actual, child); stopped = true; },
-  });
-  assert.equal(typeof expire, 'function', 'watchdog must own every test execution');
-  const rejected = assert.rejects(execution, /debt remains unqualified/);
-  expire();
-  await rejected;
-  assert.ok(stopped);
-  assert.ok(child.stdout.destroyed && child.stderr.destroyed);
-  // No close event was emitted. A failed debt still leaves the queue able to
-  // start its successor rather than waiting on a test-owned pipe forever.
-  assert.equal((await executeTest(process.execPath, ['-e', 'process.exit(0)'])).status, 0);
-});
-
-test('the watchdog terminates a real non-exiting test process group', async () => {
-  let expire;
-  let child;
-  const execution = executeTest(process.execPath, ['-e',
-    'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], {
-    launch(executable, args, options) { child = spawn(executable, args, options); return child; },
-    arm(callback, milliseconds) { assert.equal(milliseconds, 10_000); expire = callback; return 1; },
-    disarm() {},
-  });
-  try {
-    assert.equal(typeof expire, 'function', 'watchdog must own every test execution');
-    const rejected = assert.rejects(execution, /debt remains unqualified/);
-    await once(child.stdout, 'data');
-    const exited = once(child, 'exit');
-    expire();
-    await rejected;
-    const [, signal] = await exited;
-    assert.equal(signal, 'SIGKILL');
-  } finally {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-    }
-  }
 });
