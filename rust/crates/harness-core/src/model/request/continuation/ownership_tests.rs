@@ -61,38 +61,94 @@ fn message_slots_grow_geometrically_instead_of_relocating_every_step() -> Result
 #[test]
 fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
     for native in [false, true] {
-        let measured =
+        for count in [1, 10, 100, 1_000] {
+            let measured =
             crate::test_support::accounted::accounted(native, 4 * 1024 * 1024, false, |io| {
-                let prepared = PreparedModelRequest::prepare(
-                    crate::model::clone_request(&request(1)?, Some(io))?,
+                let mut original = request(count)?;
+                original.tools = tools();
+                original.tools[0].description = "retained description ".repeat(count);
+                let expected = crate::contract::canonical_json_bytes(&original)?;
+                let mut prepared = PreparedModelRequest::prepare(
+                    crate::model::clone_request(&original, Some(io))?,
                     Limits::default(),
                     Some(io),
                 )?;
-                // The first continuation installs its one hash-state allocation.
-                let mut prepared = prepared
-                    .into_continuation()
-                    .finish(Limits::default(), Some(io))?;
+                let pointer = prepared.bytes().as_ptr();
+                let digest = prepared.request_digest();
+                let inventory = prepared.preparation_owned_bytes(io)?;
                 let owned = io.owned_bytes()?;
+                let receipt = io.receipt();
                 for step in 1..=1_000 {
                     prepared = prepared
                         .into_continuation()
                         .finish(Limits::default(), Some(io))?;
+                    assert_eq!(prepared.bytes().as_ptr(), pointer);
+                    assert_eq!(prepared.request_digest(), digest);
+                    assert_eq!(prepared.preparation_owned_bytes(io)?, inventory);
+                    assert_eq!(io.receipt(), receipt, "unchanged request repeated preparation work");
                     assert_eq!(
                         io.owned_bytes()?,
                         owned,
                         "continuation admitted its request header again at {step}, native={native}"
                     );
                 }
+                assert_eq!(prepared.bytes(), expected);
+                // The former empty append still encodes the whole tool envelope.
+                let _previous = encoding::EncodingPrefix::append(
+                    prepared.bytes, Vec::new(), count, &prepared.request, Some(io),
+                )?;
+                assert!(io.receipt().bytes_encoded > receipt.bytes_encoded,
+                    "former empty append did not expose repeated encoding");
                 Ok::<_, Error>(())
             })
             .map_err(|(cause, _)| Error::Storage(cause))?;
-        measured.0?;
-        if native {
-            assert_eq!(
-                measured.5,
-                acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-            );
+            measured.0?;
+            if native {
+                assert_eq!(
+                    measured.5,
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                );
+            }
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_unchanged_request_still_observes_original_cancellation() -> Result<()> {
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+        let work = native
+            .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
+            .transpose()
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work
+            .as_ref()
+            .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
+        let io = match &work {
+            Some(work) => PreparationIo::from_native_work(work)?,
+            None => PreparationIo::from_budget(budget, &cancellation)?,
+        };
+        let prepared = PreparedModelRequest::prepare(
+            crate::model::clone_request(&request(1)?, Some(&io))?,
+            Limits::default(),
+            Some(&io),
+        )?;
+        cancellation.cancel();
+        let failure = prepared
+            .into_continuation()
+            .finish(Limits::default(), Some(&io))
+            .err()
+            .ok_or_else(|| Error::Invalid("unchanged request ignored cancellation".into()))?;
+        assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
+        drop(failure);
+        drop(io);
+        assert_eq!(
+            work.as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes),
+            baseline
+        );
     }
     Ok(())
 }

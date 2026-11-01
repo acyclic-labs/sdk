@@ -3,31 +3,15 @@
 use super::*;
 
 pub(crate) struct RequestContinuation {
-    request: ModelRequest,
-    limits: Limits,
-    instruction_remaining: u64,
+    prepared: PreparedModelRequest,
     suffix: Vec<ModelMessage>,
-    bytes: acyclic_stream::OwnedBytes,
-    encoding: Vec<encoding::EncodingPrefix>,
-    content_admission: Option<admission::ContentAdmission>,
-    #[cfg(feature = "filesystem")]
-    resident_payload: Option<u64>,
 }
 
 impl PreparedModelRequest {
     pub(crate) fn into_continuation(self) -> RequestContinuation {
-        let limits = self.admitted_limits;
-        let instruction_remaining = self.instruction_remaining;
         RequestContinuation {
-            request: self.request,
-            limits,
-            instruction_remaining,
+            prepared: self,
             suffix: Vec::new(),
-            bytes: self.bytes,
-            encoding: self.encoding,
-            content_admission: self.content_admission,
-            #[cfg(feature = "filesystem")]
-            resident_payload: self.resident_payload,
         }
     }
 }
@@ -38,7 +22,7 @@ impl RequestContinuation {
     }
 
     pub(crate) fn tools(&self) -> &[crate::tool::ToolDefinition] {
-        &self.request.tools
+        &self.prepared.request.tools
     }
 
     fn validate_suffix(
@@ -47,6 +31,7 @@ impl RequestContinuation {
         io: Option<&PreparationIo>,
     ) -> Result<Option<u64>> {
         let count = self
+            .prepared
             .request
             .messages
             .len()
@@ -55,11 +40,16 @@ impl RequestContinuation {
         if count == 0 || count > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
-        if limits == self.limits {
+        if limits == self.prepared.admitted_limits {
             with_history_io(io, |work| limits.validate(work))?;
-            let mut remaining = self.instruction_remaining;
+            let mut remaining = self.prepared.instruction_remaining;
             reserve_instruction_bodies(&self.suffix, &mut remaining, io)?;
-            ModelRequest::validate_messages(&mut self.suffix, &self.request.tools, limits, io)?;
+            ModelRequest::validate_messages(
+                &mut self.suffix,
+                &self.prepared.request.tools,
+                limits,
+                io,
+            )?;
             Ok(Some(remaining))
         } else {
             Ok(None)
@@ -72,25 +62,29 @@ impl RequestContinuation {
         io: Option<&PreparationIo>,
     ) -> Result<(ModelRequest, u64)> {
         let remaining = self.validate_suffix(limits, io)?;
-        let count = self.request.messages.len() + self.suffix.len();
-        if count > self.request.messages.capacity() {
+        let count = self.prepared.request.messages.len() + self.suffix.len();
+        if count > self.prepared.request.messages.capacity() {
             let capacity = self
+                .prepared
                 .request
                 .messages
                 .capacity()
                 .saturating_mul(2)
                 .max(count)
                 .min(limits.context_messages);
-            crate::executor::stock_vec_reserve(&mut self.request.messages, capacity, io)?;
+            crate::executor::stock_vec_reserve(&mut self.prepared.request.messages, capacity, io)?;
         }
         for message in crate::executor::stock_into_iter(self.suffix, io)? {
-            crate::executor::stock_vec_push(&mut self.request.messages, message, io)?;
+            crate::executor::stock_vec_push(&mut self.prepared.request.messages, message, io)?;
         }
         let remaining = match remaining {
             Some(remaining) => remaining,
-            None => self.request.validate_with_instruction_budget(limits, io)?,
+            None => self
+                .prepared
+                .request
+                .validate_with_instruction_budget(limits, io)?,
         };
-        Ok((self.request, remaining))
+        Ok((self.prepared.request, remaining))
     }
 
     pub(crate) fn finish(
@@ -99,13 +93,20 @@ impl RequestContinuation {
         io: Option<&PreparationIo>,
     ) -> Result<PreparedModelRequest> {
         PreparedModelRequest::record_preparation();
-        let old_count = self.request.messages.len();
+        if self.suffix.is_empty() && self.prepared.admitted_limits == limits {
+            with_history_io(io, |work| limits.validate(work))?;
+            return Ok(self.prepared);
+        }
+        let old_count = self.prepared.request.messages.len();
         #[cfg(feature = "filesystem")]
-        let old_inventory = (self.resident_payload, self.request.messages.capacity());
-        let same_limits = self.limits == limits;
-        let bytes = std::mem::take(&mut self.bytes);
-        let encoding = std::mem::take(&mut self.encoding);
-        let content_admission = self.content_admission.take();
+        let old_inventory = (
+            self.prepared.resident_payload,
+            self.prepared.request.messages.capacity(),
+        );
+        let same_limits = self.prepared.admitted_limits == limits;
+        let bytes = std::mem::take(&mut self.prepared.bytes);
+        let encoding = std::mem::take(&mut self.prepared.encoding);
+        let content_admission = self.prepared.content_admission.take();
         let (request, remaining) = self.validate(limits, io)?;
         if !same_limits {
             return PreparedModelRequest::encode_validated(request, limits, remaining, io);
