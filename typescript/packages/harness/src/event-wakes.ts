@@ -26,7 +26,7 @@ export class WakeIndex {
       const header = storage.get(HEADER);
       if (header !== undefined) { this.index(header); return; }
       // Unversioned metadata is refused, never silently reopened as an empty index.
-      if (storage.entries().length !== 0) this.unsupported();
+      if (storage.entries("", "", 1).length !== 0) this.unsupported();
       this.saveIndex({ format: FORMAT, actors: 0, pending: 0, first: null, last: null });
       this.saveNode("", { actor: null, first: null, next: null });
     });
