@@ -144,7 +144,6 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
             store,
             (root, Some(&0), Some(&old_logical_bytes)),
             &edits.value,
-            u32::MAX,
             limits,
             accounting,
             cancellation,
@@ -382,7 +381,6 @@ impl Format for ExtentFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &u64,
-        _maximum_bytes: u32,
         _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<u64, E> {
         Ok(*key)
@@ -390,7 +388,6 @@ impl Format for ExtentFormat {
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Extent,
-        _maximum_bytes: u32,
         _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Extent, E> {
         Ok(value.clone())
@@ -449,7 +446,6 @@ impl persistent_btree::Mutation<ExtentFormat> for ExtentEdit {
         use persistent_btree::Error;
         extent_error(match error {
             Error::Empty => ExtentMutationError::Empty,
-            Error::TooManyMutations => ExtentMutationError::TooManyMutations,
             Error::WrongRootKind => ExtentMutationError::WrongRootKind,
             Error::InvalidLimits => ExtentMutationError::InvalidLimits,
             Error::PageItemTooLarge => ExtentMutationError::PageItemTooLarge,

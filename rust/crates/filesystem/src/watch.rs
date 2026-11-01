@@ -284,12 +284,14 @@ impl WatchState {
             .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        if state.closed {
+        if state.closed || state.source_lost {
             return Err(NativeWatchError::SourceUnavailable);
         }
         let ready = state.invalidation.is_some() || queued.load(Ordering::Acquire) != 0;
         #[cfg(any(target_os = "linux", windows))]
         let ready = ready || state.pending_rename.is_some();
+        #[cfg(target_os = "linux")]
+        let ready = ready && !state.delivering;
         Ok(state.rescan.is_none() && ready)
     }
 }
@@ -400,7 +402,7 @@ impl SharedState {
         }
     }
 
-    fn has_changes(&self, queued: u32) -> bool {
+    fn has_changes(&self, queued: usize) -> bool {
         #[cfg(any(target_os = "linux", windows))]
         let pending_rename = self.pending_rename.is_some();
         #[cfg(not(any(target_os = "linux", windows)))]
@@ -642,8 +644,9 @@ impl crate::source_watch::HostChangeSink for RootHints {
 
 /// Holds a lost delivery batch as the watch's state: it stays invalidated,
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
-fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
-    if let Ok(mut state) = shared.lock() {
+fn lose_delivery(shared: &Arc<WatchState>, fenced: &Condvar) {
+    let _delivery = shared.delivery();
+    if let Ok(mut state) = shared.state.lock() {
         state.source_lost = true;
         state
             .invalidation
@@ -656,14 +659,15 @@ fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
 /// failure and background-thread termination.
 #[cfg(not(windows))]
 struct AdapterDelivery {
-    shared: Arc<Mutex<SharedState>>,
+    shared: Arc<WatchState>,
     fenced: Arc<Condvar>,
 }
 
 #[cfg(not(windows))]
 impl AdapterDelivery {
-    fn completed(&self, event: &notify::Result<Event>, queued: u32) {
-        if let Ok(mut state) = self.shared.lock() {
+    fn completed(&self, event: &notify::Result<Event>, queued: usize) {
+        let _delivery = self.shared.delivery();
+        if let Ok(mut state) = self.shared.state.lock() {
             let armed = state.fence.is_some();
             if let Ok(event) = event
                 && state
@@ -699,13 +703,15 @@ struct NativeEventDelivery {
 #[cfg(target_os = "linux")]
 impl crate::source_watch::NativeEventSink for NativeEventDelivery {
     fn batch_started(&self) {
-        if let Ok(mut state) = self.shared.lock() {
+        let _delivery = self.shared.delivery();
+        if let Ok(mut state) = self.shared.state.lock() {
             state.delivering = true;
         }
     }
 
     fn batch_finished(&self) {
-        if let Ok(mut state) = self.shared.lock() {
+        let _delivery = self.shared.delivery();
+        if let Ok(mut state) = self.shared.state.lock() {
             state.delivering = false;
             if state.has_changes(self.queued.load(Ordering::Acquire)) {
                 self.fenced.notify_all();
@@ -3626,7 +3632,9 @@ impl NativeWatch {
     /// Marks the current hints incomplete when the caller loses continuity.
     /// The next batch requires a rescan; no host I/O is performed.
     pub fn invalidate(&mut self) -> Result<(), NativeWatchError> {
+        let _delivery = self.shared.delivery();
         self.shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation
@@ -3853,12 +3861,14 @@ impl NativeWatch {
         let fenced = Arc::clone(&self.fenced);
         let _cancel = original.cancellation().on_cancel(Some(original), move || {
             let _state = shared
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             fenced.notify_all();
         })?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         loop {
@@ -3880,6 +3890,13 @@ impl NativeWatch {
                 .fenced
                 .wait(state)
                 .map_err(|_| NativeWatchError::StatePoisoned)?;
+        }
+    }
+
+    pub(crate) fn subscription(&self) -> NativeWatchSubscription {
+        NativeWatchSubscription {
+            shared: Arc::clone(&self.shared),
+            queued: Arc::clone(&self.queued),
         }
     }
 
