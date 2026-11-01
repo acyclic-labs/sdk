@@ -87,7 +87,7 @@ pub(super) fn check(bytes: &[u8]) {
         |header, version| {
             matches!(
                 decode_generation_publication_evidence(header, &hash(header), u64::MAX, u64::MAX),
-                Err(PublicationEvidenceError::Decode(CanonicalDecodeError::UnsupportedVersion(found)))
+                Err(PublicationEvidenceError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 }))
                     if found == version
             )
         },

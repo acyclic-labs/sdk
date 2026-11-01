@@ -55,7 +55,7 @@ fn refuses_other_versions(mut decode: impl FnMut(&[u8]) -> Result<(), FsError>, 
     // by a little-endian u16 version. No payload is needed to refuse a version.
     refuses_versions(bytes, 8, |header, version| {
         matches!(decode(header),
-            Err(FsError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+            Err(FsError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
     });
 }
 
@@ -158,7 +158,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-volume-created-v1\0".len(),
             |header, version| {
                 matches!(decode_volume_created::<VolumeCreatedError>(header, u64::MAX, &mut |_| Ok(())),
-                Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+                Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
             },
         );
     }
@@ -178,7 +178,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-retention-created-v1\0".len(),
             |header, version| {
                 matches!(decode_retention_created(header, u64::MAX),
-                Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+                Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
             },
         );
     }
@@ -192,7 +192,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-workspace-deleted-v1\0".len(),
             |header, version| {
                 matches!(decode_workspace_deleted(header, u64::MAX),
-                Err(CanonicalDecodeError::UnsupportedVersion(found)) if found == version)
+                Err(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 }) if found == version)
             },
         );
     }
@@ -203,7 +203,7 @@ pub fn check(bytes: &[u8]) {
             b"acyclic-fs-generation-export-v1\0".len(),
             |header, version| {
                 matches!(decode_generation_export_manifest(header, u64::MAX, u64::MAX),
-                Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+                Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 })) if found == version)
             },
         );
     }

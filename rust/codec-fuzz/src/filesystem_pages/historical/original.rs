@@ -34,7 +34,7 @@ pub(super) async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std:
     let limits = DecodeLimits::for_volume(config);
     let cancellation = CancellationToken::new();
     let store = LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
-        .with_object_limit(limits.maximum_object_bytes)?;
+        .with_object_limit(Some(limits.maximum_object_bytes))?;
     let allocation = super::super::allocation_error;
     let metadata = put(
         &store,

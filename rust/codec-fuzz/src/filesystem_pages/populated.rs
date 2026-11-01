@@ -209,13 +209,11 @@ pub(super) fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
             decode_extent_page,
             ExtentPage::Internal(vec![
                 ExtentChild {
-                    first_offset: 0,
-                    end_offset: 7,
+                    first: 0,
                     page: object(ObjectKind::ExtentPage, 9)
                 },
                 ExtentChild {
-                    first_offset: 7,
-                    end_offset: 15,
+                    first: 7,
                     page: object(ObjectKind::ExtentPage, 10)
                 },
             ])

@@ -63,7 +63,7 @@ pub(super) fn check(bytes: &[u8]) {
                 decode_historical_generation_evidence(
                     &evidence(header), authority, &record, u64::MAX, u64::MAX,
                 ),
-                Err(PublicationEvidenceError::Decode(CanonicalDecodeError::UnsupportedVersion(found)))
+                Err(PublicationEvidenceError::Decode(CanonicalDecodeError::UnsupportedVersion { found, expected: 1 }))
                     if found == version
             )
         });
