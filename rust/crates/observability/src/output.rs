@@ -101,7 +101,7 @@ pub struct TextStats {
     pub published: Option<u64>,
     /// Published records not yet retired, including records held after writing.
     pub pending: usize,
-    /// The original AsyncWrite accepted each entire record. For an unbuffered
+    /// The original writer accepted each entire record. For an unbuffered
     /// native sink this is kernel acceptance, never downstream consumption.
     /// A buffered writer's success cannot certify its own physical flush.
     pub writer_accepted: Option<u64>,
@@ -359,6 +359,36 @@ impl TextRecord {
     /// accepted prefix. It cannot be retried under a fresh write identity.
     /// External writes using `bytes` cannot produce a completed disposition.
     pub async fn write_to<W: AsyncWrite + Unpin>(&mut self, writer: &mut W) -> io::Result<()> {
+        self.begin()?;
+        writer.write_all(self.bytes()).await?;
+        self.0.value.disposition = Disposition::WriterAccepted;
+        Ok(())
+    }
+
+    /// Moves this original record, including its buffer and credit, into one
+    /// owned write. `write` must return the SAME writer and record only after
+    /// accepting all original bytes, and retain them through accepted physical
+    /// work even if its observing future drops. It must not retry an unknown
+    /// prefix. Native owned-write primitives provide that contract directly.
+    ///
+    /// Only an observed successful return marks writer acceptance. Observer
+    /// loss leaves the record incomplete until its actual owner drops it; this
+    /// future's drop cannot release storage still held by accepted work.
+    pub async fn write_owned<W, F>(
+        mut self,
+        writer: W,
+        write: impl FnOnce(W, Self) -> F,
+    ) -> io::Result<(W, Self)>
+    where
+        F: Future<Output = io::Result<(W, Self)>>,
+    {
+        self.begin()?;
+        let (writer, mut record) = write(writer, self).await?;
+        record.0.value.disposition = Disposition::WriterAccepted;
+        Ok((writer, record))
+    }
+
+    fn begin(&mut self) -> io::Result<()> {
         if self.0.value.disposition != Disposition::Held {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -366,9 +396,13 @@ impl TextRecord {
             ));
         }
         self.0.value.disposition = Disposition::Writing;
-        writer.write_all(self.bytes()).await?;
-        self.0.value.disposition = Disposition::WriterAccepted;
         Ok(())
+    }
+}
+
+impl AsRef<[u8]> for TextRecord {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes()
     }
 }
 
@@ -391,13 +425,31 @@ impl TextReceiver {
     /// future is dropped. Synchronous inherited sinks require their original
     /// owned-write completion instead; this method cannot establish that custody.
     pub async fn observe<F, W>(
-        mut self,
+        self,
         original: F,
         writer: &mut W,
     ) -> (F::Output, Option<OutputFailure>)
     where
         F: Future,
         W: AsyncWrite + Unpin,
+    {
+        self.observe_with(original, async |mut record| record.write_to(writer).await)
+            .await
+    }
+
+    /// Drives the same delivery loop using an original owned-write adapter.
+    /// The adapter receives the entire record, never a detached byte copy.
+    /// Use [`TextRecord::write_owned`] to retain its credit through accepted
+    /// native work and record only the original successful completion. Adapter
+    /// loss is not a physical terminal; outstanding native custody survives it.
+    pub async fn observe_with<F, D>(
+        mut self,
+        original: F,
+        mut deliver: D,
+    ) -> (F::Output, Option<OutputFailure>)
+    where
+        F: Future,
+        D: AsyncFnMut(TextRecord) -> io::Result<()>,
     {
         enum First<R> {
             Original(R),
@@ -408,8 +460,8 @@ impl TextReceiver {
         tokio::pin!(original);
         let first = {
             let delivery = async {
-                while let Some(mut record) = self.recv().await {
-                    if let Err(error) = record.write_to(writer).await {
+                while let Some(record) = self.recv().await {
+                    if let Err(error) = deliver(record).await {
                         self.fail(error);
                         break;
                     }

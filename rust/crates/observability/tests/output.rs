@@ -23,7 +23,9 @@ fn disabled_event() {
 fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -> io::Result<()> {
     let runtime = acyclic_native_runtime::coordination_runtime()?;
     runtime.block_on(async {
-        for terminal in ["drain", "cancel", "reader-loss"] {
+        for (owned, terminal) in [false, true].into_iter().flat_map(|owned| {
+            ["drain", "cancel", "reader-loss"].map(|terminal| (owned, terminal))
+        }) {
             let (mut reader, original) = io::pipe()?;
             let mut writer = acyclic_native_runtime::InheritedOutput::from_file(original.as_fd().try_clone_to_owned()?.into())?;
             let prefix = [b'x'; 8192];
@@ -39,12 +41,24 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
             let pointer = storage.as_ptr();
             let (output, mut receiver) = TextOutput::channel(vec![storage])?;
             output.record(|buffer| write!(buffer, "original record\n")).unwrap();
-            let mut record = receiver.recv().await.unwrap();
+            let record = receiver.recv().await.unwrap();
             assert_eq!(record.bytes().as_ptr(), pointer);
+            let mut record = Some(record);
+            let mut writer = Some(writer);
             assert_eq!(output.stats().retained, 1);
             assert!(matches!(output.record(|_| panic!("full admission must not format")), Err(OutputRefusal::Full)));
             let mut delivery = Box::pin(async {
-                record.write_to(&mut writer).await
+                if owned {
+                    let (returned_writer, returned_record) = record.take().unwrap()
+                        .write_owned(writer.take().unwrap(), acyclic_native_runtime::InheritedOutput::write_owned)
+                        .await?;
+                    assert_eq!(returned_record.bytes().as_ptr(), pointer);
+                    writer = Some(returned_writer);
+                    record = Some(returned_record);
+                    Ok(())
+                } else {
+                    record.as_mut().unwrap().write_to(writer.as_mut().unwrap()).await
+                }
             });
             poll_fn(|cx| { assert!(delivery.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
             // This channel event is independent of the original full pipe;
@@ -84,11 +98,12 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
                 _ => unreachable!(),
             }
             drop(delivery);
-            assert_eq!(output.stats().retained, 1, "dequeue/write completion cannot release the retained record");
-            assert_eq!(output.terminal_stats().pending, 1);
+            let retained = usize::from(!owned || terminal != "cancel");
+            assert_eq!(output.stats().retained, retained, "only the original record's retirement returns its credit");
+            assert_eq!(output.terminal_stats().pending, retained);
             assert_eq!(output.terminal_stats().writer_accepted, Some(0));
-            if terminal == "cancel" {
-                let error = record.write_to(&mut writer).await.unwrap_err();
+            if terminal == "cancel" && !owned {
+                let error = record.as_mut().unwrap().write_to(writer.as_mut().unwrap()).await.unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "a partial attempt cannot be resubmitted");
             }
             drop(record);
@@ -99,7 +114,9 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
             assert_eq!(disposed.writer_accepted, Some(u64::from(terminal == "drain")));
             assert_eq!(disposed.incomplete, Some(u64::from(terminal == "cancel")));
             assert_eq!(disposed.discarded, Some(0));
-            writer.shutdown().await?;
+            if let Some(mut writer) = writer {
+                writer.shutdown().await?;
+            }
             drop(original);
             let mut received = Vec::new();
             reader.read_to_end(&mut received)?;
