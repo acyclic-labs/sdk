@@ -223,8 +223,10 @@ impl StockExecution<'_> {
         );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some() {
-            return crate::obs::traced_future(span, call).await;
+            return crate::obs::traced_future(span, call)
+                .await
+                .map(|progress| progress.map(drop));
         }
-        traced(span, call).await
+        traced(span, call).await.map(|progress| progress.map(drop))
     }
 }

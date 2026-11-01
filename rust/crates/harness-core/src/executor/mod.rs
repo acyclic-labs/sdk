@@ -497,6 +497,17 @@ pub enum ExecutionProgress<T> {
     Failed(ToolFailureKind),
 }
 
+impl<T> ExecutionProgress<T> {
+    fn map<U>(self, ready: impl FnOnce(T) -> U) -> ExecutionProgress<U> {
+        match self {
+            Self::Ready(value) => ExecutionProgress::Ready(ready(value)),
+            Self::PreDispatchFailed(failure) => ExecutionProgress::PreDispatchFailed(failure),
+            Self::Pending(operation) => ExecutionProgress::Pending(operation),
+            Self::Failed(reason) => ExecutionProgress::Failed(reason),
+        }
+    }
+}
+
 impl ExecutionProgress<TurnOutput> {
     pub(crate) fn into_output(self) -> Result<TurnOutput> {
         match self {

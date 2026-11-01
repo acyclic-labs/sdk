@@ -43,15 +43,18 @@ pub(in crate::executor) enum PolicyStop {
 /// A recorded tool failure's model-visible content, received instead of a result.
 type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>;
 
+// The original result precedes its replay decode credit, retained until consumption.
+type ToolReceipt<'a> = (ToolResult, Option<crate::conversation::ContentHold<'a>>);
+
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
-enum ToolInvocationOutcome {
-    Settled(crate::model::ToolResultContent),
+enum ToolInvocationOutcome<'a> {
+    Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
     #[cfg(not(target_arch = "wasm32"))]
     Pending(OperationId),
     Interrupted,
 }
 
-impl StockExecution<'_> {
+impl<'io> StockExecution<'io> {
     pub(super) async fn settle_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
@@ -61,7 +64,7 @@ impl StockExecution<'_> {
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
         _hook_context: &mut Vec<ModelMessage>,
-    ) -> Result<ExecutionProgress<()>> {
+    ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_task_context_binding(operation_id)?;
         let metadata = metadata_for_call(
             prior_messages,
@@ -120,7 +123,7 @@ impl StockExecution<'_> {
                 let content = self
                     .settle_tool_refusal(journal, operation_id, step, &invocation, rejection)
                     .await?;
-                return self.push_tool_result(&invocation, content, prior_messages);
+                return self.push_tool_result(&invocation, content, None, prior_messages);
             }
         };
         if let Some(context) = &mut context {
@@ -153,7 +156,7 @@ impl StockExecution<'_> {
                             ToolCallRejection::Failed(refusal),
                         )
                         .await?;
-                    return self.push_tool_result(&invocation, content, prior_messages);
+                    return self.push_tool_result(&invocation, content, None, prior_messages);
                 }
                 // A started call whose hook target went away may have run.
                 Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
@@ -180,7 +183,7 @@ impl StockExecution<'_> {
                             .settle_tool_refusal(journal, operation_id, step, &effective, rejection)
                             .await?;
                         self.append_hook_context(_hook_context, output)?;
-                        return self.push_tool_result(&effective, content, prior_messages);
+                        return self.push_tool_result(&effective, content, None, prior_messages);
                     }
                 }
                 if let Some(context) = &mut context {
@@ -210,7 +213,7 @@ impl StockExecution<'_> {
                 )
                 .await?;
             self.append_hook_context(_hook_context, pre_hook)?;
-            return self.push_tool_result(&invocation, content, prior_messages);
+            return self.push_tool_result(&invocation, content, None, prior_messages);
         }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let hook_approval = pre_hook.approval.take();
@@ -218,7 +221,7 @@ impl StockExecution<'_> {
         self.append_hook_context(_hook_context, pre_hook)?;
         // One match over every record state: a settlement replays whether or not it has a
         // start, so the turn's scan never stops at a settled call.
-        let content = match recorded {
+        let (content, receipt) = match recorded {
             RecordedCall::Failed {
                 reason: ToolFailureKind::Interrupted,
                 ..
@@ -226,7 +229,7 @@ impl StockExecution<'_> {
                 return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
             }
             RecordedCall::Failed { reason, cause, .. } => {
-                tool_failure_content(reason, cause, self.io)?
+                (tool_failure_content(reason, cause, self.io)?, None)
             }
             RecordedCall::Completed {
                 result, projection, ..
@@ -269,7 +272,7 @@ impl StockExecution<'_> {
                                 ToolCallRejection::Failed(refusal),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, prior_messages);
+                        return self.push_tool_result(&invocation, content, None, prior_messages);
                     }
                     // A dispatched command whose target went away may have run.
                     Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
@@ -290,7 +293,7 @@ impl StockExecution<'_> {
                         .await?
                 {
                     match stop {
-                        PolicyStop::Progress(progress) => return Ok(progress),
+                        PolicyStop::Progress(progress) => return Ok(progress.map(|()| None)),
                         PolicyStop::Failed(error) => {
                             let content = self
                                 .settle_tool_refusal(
@@ -301,7 +304,12 @@ impl StockExecution<'_> {
                                     ToolCallRejection::Failed(error),
                                 )
                                 .await?;
-                            return self.push_tool_result(&invocation, content, prior_messages);
+                            return self.push_tool_result(
+                                &invocation,
+                                content,
+                                None,
+                                prior_messages,
+                            );
                         }
                     }
                 }
@@ -315,7 +323,7 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    Some(PolicyStop::Progress(progress)) => return Ok(progress),
+                    Some(PolicyStop::Progress(progress)) => return Ok(progress.map(|()| None)),
                     Some(PolicyStop::Failed(denial)) => {
                         let content = self
                             .settle_tool_refusal(
@@ -326,7 +334,7 @@ impl StockExecution<'_> {
                                 ToolCallRejection::Failed(denial),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, prior_messages);
+                        return self.push_tool_result(&invocation, content, None, prior_messages);
                     }
                     None => {}
                 }
@@ -357,7 +365,7 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    ToolInvocationOutcome::Settled(content) => content,
+                    ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
                     }
@@ -368,15 +376,16 @@ impl StockExecution<'_> {
                 }
             }
         };
-        self.push_tool_result(&invocation, content, prior_messages)
+        self.push_tool_result(&invocation, content, receipt, prior_messages)
     }
 
     fn push_tool_result(
         &self,
         invocation: &ToolInvocation,
         content: crate::model::ToolResultContent,
+        receipt: Option<ToolReceipt<'io>>,
         prior_messages: &mut Vec<ModelMessage>,
-    ) -> Result<ExecutionProgress<()>> {
+    ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         let message = ModelMessage {
             role: ModelRole::Tool,
             content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -389,7 +398,7 @@ impl StockExecution<'_> {
             message.content.validate_limits(self.stock.limits, work)
         })?;
         stock_vec_push(prior_messages, message, self.io)?;
-        Ok(ExecutionProgress::Ready(()))
+        Ok(ExecutionProgress::Ready(receipt))
     }
     /// Records a refusal as the call's settlement, or replays the one recorded; the model
     /// receives the same text either way, and canonical publication reads it from the record.

@@ -297,7 +297,7 @@ impl StockExecution<'_> {
                 crate::model::ToolCall::new(call_id.clone(), call.name.value.clone(), Value::Null),
             )),
         }];
-        match Box::pin(self.settle_tool_call(
+        let result = match Box::pin(self.settle_tool_call(
             journal,
             operation,
             step,
@@ -308,7 +308,7 @@ impl StockExecution<'_> {
         ))
         .await?
         {
-            ExecutionProgress::Ready(()) => {}
+            ExecutionProgress::Ready(receipt) => receipt,
             ExecutionProgress::Pending(operation) => {
                 return Ok(ExecutionProgress::Pending(operation));
             }
@@ -316,7 +316,7 @@ impl StockExecution<'_> {
             ExecutionProgress::PreDispatchFailed(failure) => {
                 return Ok(ExecutionProgress::PreDispatchFailed(failure));
             }
-        }
+        };
         if let Some(ModelMessage {
             content:
                 ModelContent::Part(ModelContentPart::ToolResult {
@@ -328,23 +328,13 @@ impl StockExecution<'_> {
         {
             return Ok(ExecutionProgress::Ready(Err(message)));
         }
-        let (_, records) = self
-            .tool_records(journal, operation, step, &call_id)
-            .await?;
-        let result = records
-            .iter()
-            .find_map(|record| match &record.event {
-                ExecutionEvent::ToolCompleted { result, .. } => Some(result),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "JavaScript call has no receipt",
-                )
-            })?;
-        let result = load_json::<ToolResult>(journal, result, self.io).await?;
+        let result = result.ok_or_else(|| {
+            stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Invalid,
+                "JavaScript call has no receipt",
+            )
+        })?;
         let value = if self
             .stock
             .tools

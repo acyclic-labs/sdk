@@ -1,6 +1,6 @@
 use super::*;
 
-impl StockExecution<'_> {
+impl<'io> StockExecution<'io> {
     pub(super) async fn execute_tool_invocation(
         &self,
         journal: &dyn ExecutionJournal,
@@ -10,7 +10,7 @@ impl StockExecution<'_> {
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
         _hook_context: &mut Vec<ModelMessage>,
-    ) -> Result<ToolInvocationOutcome> {
+    ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
@@ -31,7 +31,7 @@ impl StockExecution<'_> {
                             ToolCallRejection::Failed(refusal),
                         )
                         .await
-                        .map(ToolInvocationOutcome::Settled);
+                        .map(|content| ToolInvocationOutcome::Settled(content, None));
                 }
                 Err(error) => return Err(error),
             }
@@ -155,7 +155,7 @@ impl StockExecution<'_> {
                         error,
                     )
                     .await
-                    .map(ToolInvocationOutcome::Settled);
+                    .map(|content| ToolInvocationOutcome::Settled(content, None));
             }
         };
         self.finish_tool_result(
@@ -163,7 +163,7 @@ impl StockExecution<'_> {
             identity,
             invocation,
             tool,
-            &result,
+            result,
             (_hook_context, completion),
         )
         .await
@@ -175,19 +175,19 @@ impl StockExecution<'_> {
         identity: (OperationId, u32),
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
-        result: &ToolResult,
+        result: ToolResult,
         completion: (
             &mut Vec<ModelMessage>,
             crate::executor::phase::PreparedPhase<'_>,
         ),
-    ) -> Result<ToolInvocationOutcome> {
+    ) -> Result<ToolInvocationOutcome<'io>> {
         let (_hook_context, completion) = completion;
         let (projection, content) = match self
-            .project_tool_output(journal, identity, invocation, tool, result)
+            .project_tool_output(journal, identity, invocation, tool, &result)
             .await?
         {
             Ok(projected) => projected,
-            Err(content) => return Ok(ToolInvocationOutcome::Settled(content)),
+            Err(content) => return Ok(ToolInvocationOutcome::Settled(content, None)),
         };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
@@ -196,16 +196,19 @@ impl StockExecution<'_> {
                     journal,
                     identity,
                     invocation,
-                    result,
+                    &result,
                     &projection,
                     completion,
                 )
                 .await?
             {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,
-                Err(content) => return Ok(ToolInvocationOutcome::Settled(content)),
+                Err(content) => return Ok(ToolInvocationOutcome::Settled(content, None)),
             }
-            Ok(ToolInvocationOutcome::Settled(content))
+            Ok(ToolInvocationOutcome::Settled(
+                content,
+                Some((result, None)),
+            ))
         }
         #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
         {
@@ -214,15 +217,15 @@ impl StockExecution<'_> {
                     journal,
                     identity,
                     &invocation.call_id,
-                    result,
+                    &result,
                     &projection,
                     completion,
                 )
                 .await?;
-            Ok(ToolInvocationOutcome::Settled(match publication {
-                Ok(()) => content,
-                Err(content) => content,
-            }))
+            Ok(match publication {
+                Ok(()) => ToolInvocationOutcome::Settled(content, Some((result, None))),
+                Err(content) => ToolInvocationOutcome::Settled(content, None),
+            })
         }
     }
 
@@ -556,7 +559,7 @@ impl StockExecution<'_> {
         projection: &FileRef,
         tool: &crate::tool::Tool,
         _hook_context: &mut Vec<ModelMessage>,
-    ) -> Result<crate::model::ToolResultContent> {
+    ) -> Result<(crate::model::ToolResultContent, Option<ToolReceipt<'io>>)> {
         let result = load_json::<ToolResult>(journal, result, self.io).await?;
         with_history_io(self.io, |work| {
             validate_json_schema_value(
@@ -587,6 +590,6 @@ impl StockExecution<'_> {
                 .await?;
             self.append_hook_context(_hook_context, feedback)?;
         }
-        Ok(content)
+        Ok((content, Some(result)))
     }
 }
