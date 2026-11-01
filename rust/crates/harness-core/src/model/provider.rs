@@ -55,15 +55,18 @@ pub struct ModelDispatch {
 
 /// Concrete stream box admitted before invoking its builder.
 /// The first error or EOF terminates the stream; later polls return EOF.
+/// Cancellation wakes a pending stream independently of its source.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
     stream: BoxStream<'a, Result<(ModelEvent, NativeAllocation)>>,
+    cancelled: Option<acyclic_fs::Cancelled<'static>>,
     custody: NativeAllocation,
     terminated: bool,
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<'a> NativeModelStream<'a> {
-    /// Funds the concrete stream frame before construction.
+    /// Funds the concrete frame and original cancellation subscription before
+    /// invoking the stream builder.
     pub fn new<S, B>(work: &NativeMaterializationWork, build: B) -> Result<Self>
     where
         S: futures::Stream<Item = Result<(ModelEvent, NativeAllocation)>> + Send + 'a,
@@ -76,8 +79,10 @@ impl<'a> NativeModelStream<'a> {
             u64::from(bytes != 0),
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
+        let cancelled = work.cancellation_wait()?;
         Ok(Self {
             stream: Box::pin(build()),
+            cancelled: Some(cancelled),
             custody,
             terminated: false,
         })
@@ -101,10 +106,23 @@ impl futures::Stream for NativeModelStream<'_> {
         }
         if let Err(cause) = this.custody.work().remaining() {
             this.terminated = true;
+            drop(this.cancelled.take());
             return std::task::Poll::Ready(Some(Err(cause.into())));
+        }
+        if let Some(cancelled) = &mut this.cancelled {
+            if std::future::Future::poll(std::pin::Pin::new(cancelled), cx).is_ready() {
+                this.terminated = true;
+                drop(this.cancelled.take());
+                return std::task::Poll::Ready(Some(Err(
+                    acyclic_fs::NativeTreeMaterializationError::Cancelled.into(),
+                )));
+            }
         }
         let next = this.stream.as_mut().poll_next(cx);
         this.terminated = matches!(&next, std::task::Poll::Ready(None | Some(Err(_))));
+        if this.terminated {
+            drop(this.cancelled.take());
+        }
         next
     }
 }
@@ -114,6 +132,9 @@ impl futures::stream::FusedStream for NativeModelStream<'_> {
         self.terminated
     }
 }
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+#[path = "provider_tests.rs"]
+mod tests;
 #[cfg(feature = "filesystem")]
 impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
