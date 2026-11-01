@@ -75,18 +75,16 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             decoded.headers.keys().as_ptr(),
             original.headers.keys().as_ptr()
         ));
-        let moved = Frame {
-            wire: frame.wire().clone(),
-            record: Some(original.clone()),
-        }
-        .into_record(&path)?;
-        assert!(std::ptr::eq(
-            moved.headers.keys().as_ptr(),
-            original.headers.keys().as_ptr()
-        ));
-        if records != 2 {
-            assert_eq!(allocations.count_total, 0, "owned projection allocated");
-        }
+        let keys = original.headers.keys().as_ptr();
+        assert_eq!(allocations.count_total, 0, "owned projection allocated");
+        // Repeated views share the original immutable body validation, even
+        // for changes whose canonical wire decoder must parse their keys.
+        let repeated = acyclic_test_support::measure(|| {
+            for _ in 0..8 {
+                assert_eq!(frame.decode_record(Some(&path)).unwrap(), first);
+            }
+        });
+        assert_eq!(repeated.count_total, 0, "repeated projection reparsed keys");
         assert!(frame.decode_record(None).is_err());
         assert!(
             frame
@@ -123,13 +121,31 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             // could: immutable headers alone do not prove the public body.
             let mut original = decoded;
             original.value = OwnedBytes::from_static(b"\x80");
-            let invalid = Frame {
-                wire: frame.wire().clone(),
-                record: Some(original),
+            assert!(
+                Frame::from_record(
+                    &wire::SessionChannel {
+                        channel_id: 1,
+                        generation: 1,
+                    },
+                    original,
+                    Some(&path),
+                    false,
+                )
+                .is_err(),
+                "session admitted a mutated provider body"
+            );
+            let mut invalid = frame.wire().clone();
+            let Some(Body::Data(data)) = &mut invalid.body else {
+                return Err("missing captured data".into());
             };
-            assert!(invalid.decode_record(Some(&path)).is_err());
-            assert!(invalid.into_record(&path).is_err());
+            let Some(Item::Record(record)) = &mut data.item else {
+                return Err("missing captured record".into());
+            };
+            record.value = Bytes::from_static(b"\x80");
+            assert!(Frame::from(invalid).decode_record(Some(&path)).is_err());
         }
+        let moved = frame.into_record(&path)?;
+        assert!(std::ptr::eq(moved.headers.keys().as_ptr(), keys));
         drop(frames);
         let mut finite = client
             .read(crate::ReadRequest {
