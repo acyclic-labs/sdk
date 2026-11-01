@@ -87,6 +87,7 @@ fn invocation(root: &Path) -> Invocation {
         cwd: root.into(),
         environment: BTreeMap::new(),
         inherit_environment: false,
+        execution_grant: None,
         schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
         control_timeout_ms: 1000,
         maximum_output_bytes: 32_768,

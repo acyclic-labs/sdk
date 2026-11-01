@@ -48,6 +48,10 @@ pub struct Invocation {
     pub cwd: std::path::PathBuf,
     pub environment: std::collections::BTreeMap<String, String>,
     pub inherit_environment: bool,
+    /// Immutable authority selected by the authenticated host after approval.
+    /// `None` preserves the caller's existing native execution policy; it does
+    /// not acquire confinement. Tool arguments cannot populate this grant.
+    pub execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
     /// Original lifetime, fixed before submission. An unbounded schedule
     /// registers no deadline; authority and cancellation remain independent.
     pub schedule: acyclic_native_runtime::CaptureSchedule,
