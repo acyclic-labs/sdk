@@ -383,10 +383,39 @@ mod tests {
                 .collect();
             let saved = effect("paged")?;
             let bytes = acyclic_stream::OwnedBytes::from(crate::agent::records::seal(&saved)?);
-            let batch: Vec<_> = paths
+            let reply = format!("/{}/{own}/0001/reply", super::super::TOOL_OUTPUT);
+            let reply_paths: Vec<_> = (0..257)
+                .map(|chunk| format!("{reply}/{chunk:010}"))
+                .collect();
+            let reply_bytes: Vec<_> = (0..257)
+                .map(|chunk| {
+                    acyclic_stream::OwnedBytes::from(match chunk {
+                        255 => vec![0xe2],
+                        256 => vec![0x82, 0xac],
+                        _ => vec![b'a'],
+                    })
+                })
+                .collect();
+            let older = format!("/{}/{own}/0000/reply", super::super::TOOL_OUTPUT);
+            let older_path = format!("{older}/0000000000");
+            let empty = format!("/{}/{own}/0002", super::super::TOOL_OUTPUT);
+            let malformed = format!("/{}/{foreign}/0001/reply", super::super::TOOL_OUTPUT);
+            let malformed_path = format!("{malformed}/0000000000");
+            let mut batch: Vec<_> = paths
                 .iter()
                 .map(|path| (path.as_str(), bytes.clone()))
                 .collect();
+            batch.extend(
+                reply_paths
+                    .iter()
+                    .zip(&reply_bytes)
+                    .map(|(path, bytes)| (path.as_str(), bytes.clone())),
+            );
+            batch.push((&older_path, acyclic_stream::OwnedBytes::from(&b"older"[..])));
+            batch.push((
+                &malformed_path,
+                acyclic_stream::OwnedBytes::from(vec![0xff]),
+            ));
             let cancellation = CancellationToken::new();
             let mut transaction = workspace
                 .begin_transaction(
@@ -399,7 +428,7 @@ mod tests {
                 .value;
             transaction
                 .write_batch(
-                    &[&prefix],
+                    &[&prefix, &reply, &older, &empty, &malformed],
                     &batch,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
@@ -425,6 +454,21 @@ mod tests {
                 committed.value,
                 acyclic_fs::TransactionCommit::Committed(_)
             ));
+            // Chunk names cross the page boundary; UTF-8 crosses it too. An
+            // empty newer dispatch cannot hide the selected complete reply.
+            assert_eq!(
+                crate::agent::TurnOutputs::partial(&*files, own).await?,
+                format!("{}€", "a".repeat(255)),
+            );
+            assert!(matches!(
+                crate::agent::TurnOutputs::partial(&*files, foreign).await,
+                Err(Error::Storage(_))
+            ));
+            assert!(
+                crate::agent::TurnOutputs::partial(&*files, OperationId::from_bytes([9; 16]))
+                    .await?
+                    .is_empty()
+            );
             assert_eq!(paged.recorded().await?, vec![saved; paths.len()]);
             assert!(paged.holds(own).await?);
             assert!(paged.holds(foreign).await?);
