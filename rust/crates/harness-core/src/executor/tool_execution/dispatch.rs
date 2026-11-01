@@ -26,15 +26,62 @@ impl StockExecution<'_> {
             ))
             .await?
         };
-        let execution = self
-            .observe_tool_cancellation(
+        #[cfg(not(target_arch = "wasm32"))]
+        let composed = if tool.executor.is_code_mode() {
+            match self
+                .run_js(journal, identity, invocation, _hook_context)
+                .await
+            {
+                Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),
+                Ok(ExecutionProgress::Pending(operation)) => {
+                    return Ok(ToolInvocationOutcome::Pending(operation));
+                }
+                Ok(ExecutionProgress::Failed(reason)) => {
+                    self.reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        reason,
+                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                    )
+                    .await?;
+                    return Ok(ToolInvocationOutcome::Interrupted);
+                }
+                Ok(ExecutionProgress::PreDispatchFailed(failure)) => {
+                    return Err(failure.into_error());
+                }
+                Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                    self.reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        error,
+                    )
+                    .await?;
+                    return Ok(ToolInvocationOutcome::Interrupted);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        let composed: Option<Result<Option<ToolResult>>> = None;
+        let execution = if let Some(result) = composed {
+            result
+        } else {
+            self.observe_tool_cancellation(
                 journal,
                 identity,
                 &invocation.call_id,
                 tool.executor.cancellable_on_drop(),
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
-            .await?;
+            .await?
+        };
         #[cfg(feature = "test-support")]
         tracing::trace!(
             target: "acyclic_harness::tool_return",
@@ -484,6 +531,10 @@ impl StockExecution<'_> {
         let content =
             tool.definition
                 .validate_projection(&projection.0, self.stock.limits, self.io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if tool.executor.is_code_mode() {
+            self.restore_js_context(&result.0.value, _hook_context)?;
+        }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let feedback = self

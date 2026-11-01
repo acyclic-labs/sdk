@@ -46,6 +46,8 @@ type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
 enum ToolInvocationOutcome {
     Settled(crate::model::ToolResultContent),
+    #[cfg(not(target_arch = "wasm32"))]
+    Pending(OperationId),
     Interrupted,
 }
 
@@ -343,6 +345,10 @@ impl StockExecution<'_> {
                     ToolInvocationOutcome::Settled(content) => content,
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    ToolInvocationOutcome::Pending(operation) => {
+                        return Ok(ExecutionProgress::Pending(operation));
                     }
                 }
             }

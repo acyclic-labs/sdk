@@ -165,13 +165,16 @@ async fn check_index_storage(
         io: Some(io),
         ..StockExecution::ordinary(executor)
     };
-    let result = execution.prefix_records(journal, operation, 999).await;
+    let result = execution
+        .tool_records(journal, operation, 999, "call")
+        .await
+        .map(|(_, records)| records);
     assert!(
         result.is_ok(),
         "index retained decoder scratch after a page: {result:?}"
     );
     let records = result?;
-    assert_eq!(records.len(), 2);
+    assert_eq!(records.len(), 1);
     let physical = if work.is_some() {
         std::mem::size_of_val(&records) as u64
     } else {
@@ -201,7 +204,10 @@ async fn check_index_storage(
     drop(output);
     let retained = live()?;
     for _ in 0..10 {
-        let records = execution.prefix_records(journal, operation, 999).await?;
+        let records = execution
+            .tool_records(journal, operation, 999, "call")
+            .await
+            .map(|(_, records)| records)?;
         let output = io.guard_owned(physical)?;
         drop(records);
         drop(output);

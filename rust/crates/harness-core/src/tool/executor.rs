@@ -2,6 +2,11 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Runs a JavaScript composition through the stock caller. The interpreter
+    /// receives no executor or host authority; each inner call is admitted again.
+    fn is_code_mode(&self) -> bool {
+        false
+    }
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.

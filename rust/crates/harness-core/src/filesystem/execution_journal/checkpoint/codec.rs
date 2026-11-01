@@ -26,7 +26,7 @@ pub(super) fn state_bytes(
         cursor += value.len();
         Ok(())
     };
-    put(b"EXC5")?;
+    put(b"EXC6")?;
     put(&state.operation.into_bytes())?;
     put(&state.turn.into_bytes())?;
     put(&state.volume)?;
@@ -91,7 +91,7 @@ pub(super) fn decode(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Checkpo
     acyclic_auth::format::header(
         bytes,
         b"EXC",
-        b"5",
+        b"6",
         || missing(io),
         || {
             canonical_boundary(

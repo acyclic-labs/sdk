@@ -1,4 +1,4 @@
-//! The public default catalog is the same on every host.
+//! The public default shell contract is the same on every host.
 use acyclic_harness_core::Result;
 
 #[test]
@@ -11,7 +11,17 @@ fn default_tool_names_and_shell_contract_are_host_independent() -> Result<()> {
         .collect::<std::collections::BTreeSet<_>>();
     let shell = "shell";
     let expected = [
-        shell, "fs", "read", "write", "edit", "spawn", "send", "wait", "archive",
+        shell,
+        "fs",
+        "read",
+        "write",
+        "edit",
+        #[cfg(not(target_arch = "wasm32"))]
+        "run_js",
+        "spawn",
+        "send",
+        "wait",
+        "archive",
     ]
     .map(String::from)
     .into_iter()
