@@ -310,54 +310,9 @@ async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit(
 }
 
 #[tokio::test]
-async fn terminal_loss_discards_ended_reply_without_credit_and_ignores_stale_generation()
--> TestResult {
-    let (mut session, _owner, _) = fixture(false);
-    enroll(&mut session).await?;
-    session.credit = Default::default();
-    session.channels.get_mut(&1).unwrap().credit = Default::default();
-    let identity = wire::SessionChannel {
-        channel_id: 1,
-        generation: 1,
-    };
-    session.record(
-        identity,
-        Ok(Event::CallChunk {
-            index: 1,
-            total: 8,
-            bytes: Bytes::from_static(b"withheld"),
-            item: Item::ActorCall,
-        }),
-    )?;
-    session.record(identity, Ok(Event::End))?;
-    assert_eq!(session.pending_frames, 1);
-    assert!(session.channels[&1].ending.is_some());
-    session.record(
-        wire::SessionChannel {
-            generation: 0,
-            ..identity
-        },
-        Ok(Event::Terminated(StreamError::Unavailable)),
-    )?;
-    assert_eq!(session.pending_frames, 1);
-    // The finite data source is already gone; its original terminal still owns closure.
-    session.record(identity, Ok(Event::Terminated(StreamError::Unavailable)))?;
-    let closed = session
-        .next_frame()
-        .await?
-        .ok_or("terminal ended the physical session")?;
-    assert!(
-        matches!(&closed.wire().body, Some(Body::Closed(value)) if value.code == "unavailable")
-    );
-    assert_eq!(session.pending_frames, 0);
-    assert_eq!(session.pending_bytes, 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_credit() -> TestResult
 {
-    for caller_lost in [false, true] {
+    for (caller_lost, ended) in [(false, false), (true, false), (false, true), (true, true)] {
         let (mut session, owner, calls) = fixture(false);
         append(
             &session.provider,
@@ -390,6 +345,22 @@ async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_c
             1,
             "negative control: withheld data is actually queued"
         );
+        if ended {
+            // The actual queued provider record remains withheld when the
+            // finite data source ends. Its custody terminal still owns loss.
+            session.end(3, wire_codec::session::END_CODE)?;
+            session.record(
+                wire::SessionChannel {
+                    channel_id: 3,
+                    generation: 0,
+                },
+                Ok(Event::Terminated(StreamError::Unavailable)),
+            )?;
+            assert_eq!(
+                session.pending_frames, 1,
+                "stale terminal cannot discard current data"
+            );
+        }
         if caller_lost {
             // Bypass the normal incoming-frame revalidation to prove that the
             // original slot producer, rather than that incidental wake, ends it.

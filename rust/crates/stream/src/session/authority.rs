@@ -343,7 +343,7 @@ impl Authority {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let current = entry.get_mut();
                 if let Some(changes) = current.changes.get() {
-                    changes.send_replace(credential.clone());
+                    drop(changes.send_replace(credential.clone()));
                 }
                 current.revision = revision;
                 current.bytes = bytes.len();
