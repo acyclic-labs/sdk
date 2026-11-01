@@ -30,7 +30,8 @@ pub(crate) fn commit_request<'a, 'b>(
 }
 
 pub(crate) fn add_condition(
-    (request, custody): &mut (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
+    request: &mut acyclic_stream::CommitRequest,
+    custody: &mut CodecQuota<'_, '_>,
     condition: acyclic_stream::CommitCondition,
 ) -> Result<()> {
     custody.reserve(request.conditions.len() + 1, &mut request.conditions)?;

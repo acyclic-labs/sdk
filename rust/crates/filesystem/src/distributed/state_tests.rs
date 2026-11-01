@@ -36,7 +36,7 @@ async fn publish(
     key: &'static [u8],
     value: &StateRecord,
     work: &mut AuthorityWork<'_>,
-) -> Result<acyclic_stream::CommitReceipt, Box<dyn std::error::Error>> {
+) -> Result<FilesystemCommitResult<acyclic_stream::CommitReceipt>, Box<dyn std::error::Error>> {
     let observed = store.observe_record(path.clone(), work).await?;
     let mut publication = commit(key)?;
     store.contribute_record(

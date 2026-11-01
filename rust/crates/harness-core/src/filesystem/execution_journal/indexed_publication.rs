@@ -33,20 +33,16 @@ async fn condition<P: crate::store::JournalProvider + ?Sized>(
 }
 
 fn add_records(
-    request: &mut (
-        acyclic_stream::CommitRequest,
-        crate::wire_codec::CodecQuota<'_, '_>,
-    ),
+    request: &mut acyclic_stream::CommitRequest,
+    custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
     path: &StreamPath,
     input: &[OwnedBytes],
 ) -> Result<()> {
-    request
-        .1
-        .reserve(request.0.mutations.len() + 1, &mut request.0.mutations)?;
+    custody.reserve(request.mutations.len() + 1, &mut request.mutations)?;
     let mut records = Vec::new();
-    request.1.reserve(input.len(), &mut records)?;
+    custody.reserve(input.len(), &mut records)?;
     records.extend(input.iter().cloned().map(Into::into));
-    request.0.mutations.push(CommitMutation::Append {
+    request.mutations.push(CommitMutation::Append {
         path: path.clone(),
         records,
     });

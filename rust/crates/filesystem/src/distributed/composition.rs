@@ -10,6 +10,8 @@ use super::*;
 
 mod append;
 pub use append::{FilesystemAppendPreparation, PreparedFilesystemAppend};
+mod result;
+pub use result::{FilesystemCommitResult, PreparedFilesystemCommit};
 
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
@@ -44,9 +46,9 @@ pub(crate) struct RecordedCommit(FilesystemCommit);
 #[must_use]
 pub enum FilesystemCommitOutcome {
     /// Every caller and filesystem mutation committed under one receipt.
-    Committed(acyclic_stream::CommitReceipt),
+    Committed(FilesystemCommitResult<acyclic_stream::CommitReceipt>),
     /// Nothing changed; a caller or filesystem condition did not hold.
-    Rejected(Vec<acyclic_stream::CommitConflict>),
+    Rejected(FilesystemCommitResult<Vec<acyclic_stream::CommitConflict>>),
     /// The result is unknown. Retry exactly this commit: its idempotency key
     /// and bytes are unchanged, so a lost acknowledgement replays the original
     /// receipt. Custody of every contribution stays with the commit.
@@ -100,6 +102,25 @@ impl FilesystemCommit {
     /// are fixed so an exact retry replays the original receipt.
     pub fn request_mut(&mut self) -> Option<&mut CommitRequest> {
         (!self.sealed).then_some(&mut self.request)
+    }
+
+    /// Transfers already admitted construction capacity into this unsent batch.
+    ///
+    /// The original invocation and allocation context must match every retained
+    /// guard. Refusal changes neither guard nor the request. This performs no
+    /// allocation, submission or replacement of the original work context.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn retain_native_custody(
+        &mut self,
+        incoming: &mut crate::NativeAllocation,
+        original: &crate::NativeMaterializationWork,
+    ) -> Result<(), AuthorityStoreError> {
+        if self.sealed {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "a sealed filesystem commit cannot accept construction custody",
+            ));
+        }
+        super::native::retain_native_custody(&mut self.allocation, Some(incoming), Some(original))
     }
 
     /// Volume authorities this commit creates.
@@ -174,7 +195,6 @@ impl FilesystemCommit {
             mut holds,
             sealed,
             owner,
-            allocation,
             ..
         } = prepared;
         combined.append(&mut self.holds);
@@ -183,7 +203,7 @@ impl FilesystemCommit {
         self.holds = combined;
         self.sealed = sealed;
         self.owner = owner;
-        self.allocation = allocation;
+        // Preparation has already merged its funding into this original owner.
     }
 
     fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
@@ -477,7 +497,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             return Ok(FilesystemCommitOutcome::Unknown { commit, error });
         }
         match result {
-            Ok((outcome, _allocation)) => self.settle(commit, outcome, work).await,
+            Ok((outcome, allocation)) => {
+                match self.prepare_retained_settlement(commit, outcome, allocation) {
+                    Ok(prepared) => self.finish_settlement(prepared),
+                    Err(outcome) => Ok(outcome),
+                }
+            }
             Err(error) => Ok(FilesystemCommitOutcome::Unknown {
                 commit,
                 error: error.into_error(std::convert::identity),
@@ -491,53 +516,35 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         commit: FilesystemCommit,
         outcome: CommitOutcome,
-        work: &mut AuthorityWork<'_>,
+        _work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        self.settle_recorded(commit, outcome, async |commit, commit_id| {
-            self.refresh_committed(commit, commit_id, work).await;
+        self.settle_recorded(commit, outcome, |commit, commit_id| {
+            self.refresh_committed(commit, commit_id);
         })
-        .await
     }
 
-    // A recorded decision needs no new admission. Only its best-effort cache
-    // refresh needs work. Admit that work only after owner and seal checks,
-    // and only for an accepted result.
-    pub(crate) async fn settle_recorded(
+    // A recorded decision and its nonwaiting cache refresh need no new admission.
+    pub(crate) fn settle_recorded(
         &self,
         commit: FilesystemCommit,
         outcome: CommitOutcome,
-        refresh: impl AsyncFnOnce(RecordedCommit, acyclic_stream::CommitId),
+        refresh: impl FnOnce(RecordedCommit, acyclic_stream::CommitId),
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        if let Err(error) = commit
-            .check_owner(self.operation_claims().owner_identity())
-            .and_then(|()| commit.ensure_sealed())
-        {
-            return Ok(FilesystemCommitOutcome::Unknown { commit, error });
+        match self.prepare_settlement(commit, outcome) {
+            Ok(prepared) => self.finish_recorded(prepared, refresh),
+            Err(outcome) => Ok(outcome),
         }
-        Ok(match outcome {
-            CommitOutcome::Committed(envelope) => {
-                if let Err(error) = envelope.validate_request(commit.request()) {
-                    return Ok(FilesystemCommitOutcome::Unknown {
-                        commit,
-                        error: map_stream_error(error),
-                    });
-                }
-                refresh(commit.recorded(), envelope.commit_id).await;
-                FilesystemCommitOutcome::Committed(envelope)
-            }
-            CommitOutcome::Conflict(conflicts) => FilesystemCommitOutcome::Rejected(conflicts),
-        })
     }
 
     /// Refreshes cached heads after `commit` committed as `commit_id`. Every
     /// mutation is already durable, so this never decides the result: a
-    /// failure leaves the journal Vacant from `begin`, and the next lease
-    /// re-reads the durable head instead of trusting a stale one.
-    pub(crate) async fn refresh_committed(
+    /// contended cache remains invalidated by `begin`, and the next lease
+    /// re-reads the durable head instead of trusting a stale one. Completion
+    /// never waits for a cache holder that may itself await this result.
+    pub(crate) fn refresh_committed(
         &self,
         commit: RecordedCommit,
         commit_id: acyclic_stream::CommitId,
-        work: &mut AuthorityWork<'_>,
     ) {
         let FilesystemCommit {
             contributions,
@@ -551,14 +558,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             projection,
         } in contributions
         {
-            let completed = actor
-                .complete(revision, projection.seal(commit_id), work)
-                .await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Err(error) = &completed {
-                tracing::warn!(?error, "composed commit cache refresh failed");
-            }
-            drop(completed);
+            actor.complete_if_available(revision, projection.seal(commit_id));
         }
         drop(holds);
         drop(allocation);

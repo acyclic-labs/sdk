@@ -116,18 +116,74 @@ impl Cut<'_> {
         };
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
         let mut request = crate::distributed::commit_request(key, held, work);
-        crate::distributed::add_condition(&mut request, self.head_condition.clone())?;
-        crate::distributed::add_condition(&mut request, self.execution_condition.clone())?;
-        crate::distributed::add_condition(&mut request, page_condition)?;
+        self.append_to(
+            &mut request.0,
+            &mut request.1,
+            page_condition,
+            records,
+            publication,
+        )?;
+        Ok(request)
+    }
+
+    /// Consumes the entire unsent batch on refusal. Its original request,
+    /// filesystem holds and construction quota are dropped together on error.
+    pub(super) fn contribute<'a, 'b>(
+        &self,
+        mut prepared: (
+            acyclic_fs::FilesystemCommit,
+            crate::wire_codec::CodecQuota<'a, 'b>,
+        ),
+        page_condition: CommitCondition,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+    ) -> Result<(
+        acyclic_fs::FilesystemCommit,
+        crate::wire_codec::CodecQuota<'a, 'b>,
+    )> {
+        let request = prepared.0.request_mut().ok_or_else(|| invalid(None))?;
+        self.append_to(
+            request,
+            &mut prepared.1,
+            page_condition,
+            records,
+            Some((observation, checkpoint)),
+        )?;
+        Ok(prepared)
+    }
+
+    fn append_to(
+        &self,
+        request: &mut acyclic_stream::CommitRequest,
+        custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        page_condition: CommitCondition,
+        records: &[OwnedBytes],
+        publication: Option<(&OwnedBytes, &OwnedBytes)>,
+    ) -> Result<()> {
+        // Both standalone and composed publication use this one funded builder.
+        for condition in [
+            self.head_condition.clone(),
+            self.execution_condition.clone(),
+            page_condition,
+        ] {
+            crate::distributed::add_condition(request, custody, condition)?;
+        }
         if let Some((observation, checkpoint)) = publication {
             add_records(
-                &mut request,
+                request,
+                custody,
                 self.execution,
                 std::slice::from_ref(observation),
             )?;
-            add_records(&mut request, self.head, std::slice::from_ref(checkpoint))?;
+            add_records(
+                request,
+                custody,
+                self.head,
+                std::slice::from_ref(checkpoint),
+            )?;
         }
-        add_records(&mut request, self.pages, records)?;
+        add_records(request, custody, self.pages, records)?;
         if publication.is_some() {
             let mut previous = None;
             for contribution in self.contributions {
@@ -140,15 +196,20 @@ impl Cut<'_> {
                     return Err(invalid(None));
                 }
                 previous = Some(path);
-                crate::distributed::add_condition(&mut request, contribution.condition.clone())?;
+                crate::distributed::add_condition(
+                    request,
+                    custody,
+                    contribution.condition.clone(),
+                )?;
                 add_records(
-                    &mut request,
+                    request,
+                    custody,
                     path,
                     std::slice::from_ref(contribution.record),
                 )?;
             }
         }
-        Ok(request)
+        Ok(())
     }
 
     async fn stage<P: crate::store::JournalProvider + ?Sized>(
@@ -290,73 +351,129 @@ impl Cut<'_> {
         observation: &OwnedBytes,
         checkpoint: &OwnedBytes,
     ) -> Result<Option<acyclic_stream::CommitId>> {
+        self.confirm_members(outcome, pages_tail, records, observation, checkpoint, false)
+    }
+
+    /// The original filesystem owner has already authenticated every canonical
+    /// caller member. Confirm this Cut without repeating whole-request validation.
+    pub(super) fn confirm_composed(
+        &self,
+        prepared: &acyclic_fs::PreparedFilesystemCommit,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+    ) -> Result<Option<acyclic_stream::CommitId>> {
+        self.confirm_members(
+            prepared.outcome(),
+            pages_tail,
+            records,
+            observation,
+            checkpoint,
+            true,
+        )
+    }
+
+    fn confirm_members(
+        &self,
+        outcome: &CommitOutcome,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+        composed: bool,
+    ) -> Result<Option<acyclic_stream::CommitId>> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(None),
-            CommitOutcome::Committed(receipt) => {
-                if receipt.appends.len() != 3 + self.contributions.len() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                if !receipt.forks.is_empty() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                // Stream canonicalizes mutations by path before publication.
-                // Visit every member once; contributed paths are admitted in
-                // that same order, independently of the three journal paths.
-                let mut previous = None;
-                let mut seen = 0_u8;
-                let mut contributions = self.contributions.iter();
-                for append in &receipt.appends {
-                    if previous.is_some_and(|path| path >= &append.path) {
-                        return Err(Error::Indeterminate(self.operation));
-                    }
-                    previous = Some(&append.path);
-                    let (bit, valid) = if append.path == *self.execution {
-                        (
-                            1,
-                            confirms(
-                                append,
-                                self.execution,
-                                self.execution_tail,
-                                std::slice::from_ref(observation),
-                            ),
-                        )
-                    } else if append.path == *self.head {
-                        (
-                            2,
-                            confirms(
-                                append,
-                                self.head,
-                                self.head_tail,
-                                std::slice::from_ref(checkpoint),
-                            ),
-                        )
-                    } else if append.path == *self.pages {
-                        (4, confirms(append, self.pages, pages_tail, records))
-                    } else {
-                        let Some(contribution) = contributions.next() else {
-                            return Err(Error::Indeterminate(self.operation));
-                        };
-                        let (path, start) = contribution.target()?;
-                        (
-                            0,
-                            confirms(
-                                append,
-                                path,
-                                start,
-                                std::slice::from_ref(contribution.record),
-                            ),
-                        )
-                    };
-                    if !valid || seen & bit != 0 {
-                        return Err(Error::Indeterminate(self.operation));
-                    }
-                    seen |= bit;
-                }
-                if seen != 7 || contributions.next().is_some() {
-                    return Err(Error::Indeterminate(self.operation));
-                }
-                Ok(Some(receipt.commit_id))
-            }
+            CommitOutcome::Committed(receipt) => self
+                .confirm_receipt(
+                    receipt,
+                    pages_tail,
+                    records,
+                    observation,
+                    checkpoint,
+                    composed,
+                )
+                .map(Some),
         }
+    }
+
+    fn confirm_receipt(
+        &self,
+        receipt: &acyclic_stream::CommitReceipt,
+        pages_tail: u64,
+        records: &[OwnedBytes],
+        observation: &OwnedBytes,
+        checkpoint: &OwnedBytes,
+        composed: bool,
+    ) -> Result<acyclic_stream::CommitId> {
+        if !composed && receipt.appends.len() != 3 + self.contributions.len() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        if !composed && !receipt.forks.is_empty() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        // Stream canonicalizes mutations by path before publication.
+        // Visit every member once; contributed paths are admitted in
+        // that same order, independently of the three journal paths.
+        let mut previous = None;
+        let mut seen = 0_u8;
+        let mut contributions = self.contributions.iter().peekable();
+        for append in &receipt.appends {
+            if previous.is_some_and(|path| path >= &append.path) {
+                return Err(Error::Indeterminate(self.operation));
+            }
+            previous = Some(&append.path);
+            let (bit, valid) = if append.path == *self.execution {
+                (
+                    1,
+                    confirms(
+                        append,
+                        self.execution,
+                        self.execution_tail,
+                        std::slice::from_ref(observation),
+                    ),
+                )
+            } else if append.path == *self.head {
+                (
+                    2,
+                    confirms(
+                        append,
+                        self.head,
+                        self.head_tail,
+                        std::slice::from_ref(checkpoint),
+                    ),
+                )
+            } else if append.path == *self.pages {
+                (4, confirms(append, self.pages, pages_tail, records))
+            } else {
+                let contribution = contributions.peek();
+                let target = contribution.map(|item| item.target()).transpose()?;
+                if composed && target.is_none_or(|(path, _)| path != &append.path) {
+                    continue;
+                }
+                let Some(contribution) = contributions.next() else {
+                    return Err(Error::Indeterminate(self.operation));
+                };
+                let (path, start) = contribution.target()?;
+                (
+                    0,
+                    confirms(
+                        append,
+                        path,
+                        start,
+                        std::slice::from_ref(contribution.record),
+                    ),
+                )
+            };
+            if !valid || seen & bit != 0 {
+                return Err(Error::Indeterminate(self.operation));
+            }
+            seen |= bit;
+        }
+        if seen != 7 || contributions.next().is_some() {
+            return Err(Error::Indeterminate(self.operation));
+        }
+        Ok(receipt.commit_id)
     }
 }

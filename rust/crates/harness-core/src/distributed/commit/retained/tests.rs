@@ -25,7 +25,11 @@ async fn check(mode: u8) -> Result<()> {
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         let (key, held) = crate::distributed::digest_key(&[mode; 32], &mut work)?;
         let mut request = commit_request(key, held, &mut work);
-        add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
+        add_condition(
+            &mut request.0,
+            &mut request.1,
+            CommitCondition::Absent { path: path.clone() },
+        )?;
         let mut records = Vec::new();
         request.1.reserve(1, &mut records)?;
         records.push(OwnedBytes::from_static(b"original immutable record").into());

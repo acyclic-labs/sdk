@@ -54,7 +54,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             deadline,
             work,
         )?;
-        prepared.retain_request_custody(work)?;
+        commit.retain_request_custody(work)?;
         prepared.seal_current_request();
         prepared.bind_owner(self.operation_claims().owner_identity());
         // No fallible step follows the final seal/funding transfer.
@@ -78,8 +78,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         let result = self.recorded_states(&commit, work).await;
         match result {
             Ok(commit_id) => {
-                self.refresh_committed(commit.recorded(), commit_id, work)
-                    .await;
+                self.refresh_committed(commit.recorded(), commit_id);
                 StatePublicationOutcome::Recorded(commit_id)
             }
             Err(error) => StatePublicationOutcome::Unknown { commit, error },

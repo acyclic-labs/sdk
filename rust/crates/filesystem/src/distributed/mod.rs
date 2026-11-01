@@ -151,8 +151,8 @@ mod replay;
 use append::seal;
 mod composition;
 pub use composition::{
-    FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome,
-    PreparedFilesystemAppend,
+    FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome, FilesystemCommitResult,
+    PreparedFilesystemAppend, PreparedFilesystemCommit,
 };
 mod state;
 pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
