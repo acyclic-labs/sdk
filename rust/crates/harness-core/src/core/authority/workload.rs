@@ -140,6 +140,7 @@ impl RuntimeKeys {
         timestamp: u64,
         mut grants: GrantSet,
         parent: Option<&VerifiedCapability>,
+        caller: Option<(&Principal, &verify::TrustEvidence)>,
     ) -> Result<CertifiedSigner> {
         grants.grants.push(Grant {
             kind: GrantKind::Resource(ResourceGrant {
@@ -150,12 +151,20 @@ impl RuntimeKeys {
                 actions: vec![acyclic_auth::admission::RECEIPT_ACTION.into()],
             }),
         });
+        let trust_requirements = match (parent, caller) {
+            (Some(parent), Some((_, caller))) => parent.requirements_with(caller),
+            (Some(parent), None) => parent.requirements(),
+            (None, Some((_, caller))) => caller.requirements(),
+            (None, None) => Ok(Vec::new()),
+        }
+        .map_err(unauthorized)?;
         let expires = timestamp
             .checked_add(CERTIFICATE_SECONDS)
             .ok_or_else(|| unauthorized("clock overflow"))?
             .min(parent.map_or(u64::MAX, |parent| {
                 parent.effective().expires_at_unix_seconds()
-            }));
+            }))
+            .min(caller.map_or(u64::MAX, |(_, evidence)| evidence.expires_at_unix_seconds()));
         let certificates = self
             .issuer
             .certify(
@@ -168,14 +177,17 @@ impl RuntimeKeys {
                         expires_at_unix_seconds: expires,
                     },
                     grants,
-                    principal: Principal {
-                        kind: PrincipalKind::Service,
-                        id: self.account.id().into(),
-                        lineage: vec![],
-                        groups: vec![],
-                        roles: vec![],
-                        attributes: vec![],
-                    },
+                    principal: caller.map_or_else(
+                        || Principal {
+                            kind: PrincipalKind::Service,
+                            id: self.account.id().into(),
+                            lineage: vec![],
+                            groups: vec![],
+                            roles: vec![],
+                            attributes: vec![],
+                        },
+                        |(principal, _)| principal.clone(),
+                    ),
                     // The parent's tip first: a root block's authenticated parent.
                     parent_revocation_ids: parent
                         .into_iter()
@@ -186,11 +198,7 @@ impl RuntimeKeys {
                         })
                         .map(<[u8]>::to_vec)
                         .collect(),
-                    trust_requirements: parent
-                        .map(VerifiedCapability::requirements)
-                        .transpose()
-                        .map_err(unauthorized)?
-                        .unwrap_or_default(),
+                    trust_requirements,
                 },
             )
             .map_err(unauthorized)?;
@@ -209,7 +217,7 @@ impl RuntimeKeys {
         }
         let mut grants = grant("harness:/", true);
         grants.grants.push(resource_grant(CAPABILITIES, true, HOLD));
-        let signer = std::sync::Arc::new(self.certify(timestamp, grants, None)?);
+        let signer = std::sync::Arc::new(self.certify(timestamp, grants, None, None)?);
         let renew_at = timestamp
             .checked_add(RENEW_SECONDS)
             .ok_or_else(|| unauthorized("clock overflow"))?;
@@ -367,6 +375,7 @@ pub(super) fn issue(
                 timestamp,
                 scope_grants(&name, &scope.capabilities),
                 Some(parent),
+                None,
             )?),
             None => keys.root_signer(timestamp)?,
         }
@@ -390,13 +399,16 @@ pub(super) fn issue(
 }
 /// A sealed credential for exactly `grants`, each `(resource, prefix,
 /// actions)`, under `issuer`'s audience at `timestamp`. Its certificate is
-/// bound to `parent`: it expires no later and is revoked with it.
+/// bound to `parent`: it expires no later and is revoked with it. A contributed
+/// caller retains its full acting Principal and complete canonical dependencies;
+/// this portable result does not encode either owner's ephemeral custody.
 pub(super) fn resource_credential(
     issuer: &AuthorityRoot,
     parent: &VerifiedCapability,
     grants: &[(&str, bool, &[&str])],
+    caller: Option<(&Principal, &verify::TrustEvidence)>,
     timestamp: u64,
-) -> Result<(Vec<u8>, String)> {
+) -> Result<VerifiedCapability> {
     let grants = GrantSet {
         grants: grants
             .iter()
@@ -414,8 +426,8 @@ pub(super) fn resource_credential(
     let signer = issuer
         .runtime
         .keys()?
-        .certify(timestamp, grants.clone(), Some(parent))?;
-    let capability = signer
+        .certify(timestamp, grants.clone(), Some(parent), caller)?;
+    signer
         .mint(
             vec![
                 Caveat {
@@ -433,9 +445,7 @@ pub(super) fn resource_credential(
             timestamp,
         )
         .and_then(VerifiedCapability::seal)
-        .map_err(unauthorized)?;
-    let principal = capability.effective().principal().id.clone();
-    Ok((capability.encode().to_vec(), principal))
+        .map_err(unauthorized)
 }
 /// Appends `scope`'s block for `audience`, signed by the current holder;
 /// `holder` is the agent the chain names so far.

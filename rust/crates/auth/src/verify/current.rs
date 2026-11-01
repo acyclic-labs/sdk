@@ -525,13 +525,28 @@ impl VerifiedCapability {
     /// # Errors
     /// Fails on malformed ancestry or an overflowing allocation size.
     pub fn requirements(&self) -> Result<Vec<TrustRequirement>, VerifyError> {
-        project_requirements(self.trust_view()?, self.trust_requirements())
+        project_requirements(self.trust_view()?, self.trust_requirements(), None)
+    }
+
+    /// Project this authority and an original caller's complete dependencies
+    /// into the same signed certificate, without an intermediate evidence copy.
+    /// The issuer separately preserves the caller's authenticated Principal and
+    /// both original live owners; these requirements transfer no live custody.
+    ///
+    /// # Errors
+    /// Fails on malformed ancestry or an overflowing allocation size.
+    pub fn requirements_with(
+        &self,
+        caller: &TrustEvidence,
+    ) -> Result<Vec<TrustRequirement>, VerifyError> {
+        project_requirements(self.trust_view()?, self.trust_requirements(), Some(caller))
     }
 }
 
 fn project_requirements<'a, C, N>(
     view: View<'a, C, N>,
     inherited: impl Iterator<Item = &'a TrustRequirement> + Clone,
+    caller: Option<&TrustEvidence>,
 ) -> Result<Vec<TrustRequirement>, VerifyError>
 where
     C: ExactSizeIterator<Item = Certificate<'a>> + Clone,
@@ -541,21 +556,36 @@ where
         .clone()
         .count()
         .checked_add(1)
+        .and_then(|count| match caller {
+            Some(caller) => count.checked_add(caller.requirements.len())?.checked_add(1),
+            None => Some(count),
+        })
         .ok_or(VerifyError::Malformed)?;
     let mut requirements = Vec::with_capacity(count);
     requirements.push(view.requirement()?);
     requirements.extend(inherited.cloned());
+    if let Some(caller) = caller {
+        requirements.push(caller.view().requirement()?);
+        requirements.extend(caller.requirements.iter().cloned());
+    }
     Ok(requirements)
 }
 
 impl TrustEvidence {
+    /// The original authenticated half-open deadline, including inherited
+    /// signed requirements. Live owners use it on their original clock.
+    #[must_use]
+    pub const fn expires_at_unix_seconds(&self) -> u64 {
+        self.expires_at
+    }
+
     /// Complete public requirements for a newly signed contribution. The root
     /// and already inherited dependencies are flattened, never recursively nested.
     ///
     /// # Errors
     /// Fails if the checked storage size overflows.
     pub fn requirements(&self) -> Result<Vec<TrustRequirement>, VerifyError> {
-        project_requirements(self.view(), self.requirements.iter())
+        project_requirements(self.view(), self.requirements.iter(), None)
     }
 
     /// Register the original trust owner's publications for this authenticated

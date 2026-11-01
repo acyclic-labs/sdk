@@ -56,6 +56,10 @@ fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
         requirements,
         caller.trust_evidence().unwrap().requirements().unwrap()
     );
+    let selected = verify(&signed::root(|_| {}), &Domains::default(), signed::NOW).unwrap();
+    let requirements = selected
+        .requirements_with(&caller.trust_evidence().unwrap())
+        .unwrap();
     let encoded = signed::root(|block| {
         block.certificates.as_mut().unwrap().keys[0]
             .key

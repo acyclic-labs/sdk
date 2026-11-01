@@ -114,8 +114,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(calls) = calls {
             grants.push((calls, false, invoke));
         }
-        let (credential, principal) =
-            issuer.resource_credential(&authority.scope, &grants, seconds(clock.as_ref()))?;
+        let capability =
+            issuer.resource_credential(&authority.scope, &grants, None, seconds(clock.as_ref()))?;
+        let principal = capability.effective().principal().id.clone();
+        let credential = capability.encode().to_vec();
         Ok(AgentObservation {
             resource,
             credential,
