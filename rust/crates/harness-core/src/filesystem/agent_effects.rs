@@ -4,12 +4,12 @@
 //! call's approval. Each segment's effects commit together, so a segment's
 //! directory lists exactly the effects not yet committed.
 
-use super::agent_internal::AgentInternalFiles;
+use super::agent_internal::{AgentInternalFiles, filename};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, TurnEffect, TurnEffects},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken};
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use std::sync::Arc;
 
@@ -103,12 +103,17 @@ where
         Box::pin(async move {
             let reader = self.files.reader().await?;
             let mut recorded = Vec::new();
-            for name in reader.list(&self.directory).await? {
-                let bytes = reader
-                    .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
-                    .await?
-                    .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
-                recorded.push(decode(&bytes)?);
+            let mut pages = reader.directory(&self.directory);
+            let cancellation = CancellationToken::new();
+            while let Some(page) = pages.next(&cancellation).await? {
+                for entry in &page.entries {
+                    let name = filename(entry.name.as_bytes())?;
+                    let bytes = reader
+                        .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
+                        .await?
+                        .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
+                    recorded.push(decode(&bytes)?);
+                }
             }
             Ok(recorded)
         })
@@ -116,11 +121,20 @@ where
 
     fn holds(&self, operation: OperationId) -> BoxProviderFuture<'_, Result<bool>> {
         Box::pin(async move {
-            Ok(self.files.list(&self.directory).await?.iter().any(|name| {
-                !name
-                    .strip_suffix(".json")
-                    .is_some_and(|call| crate::agent::is_call_of(call, operation))
-            }))
+            let reader = self.files.reader().await?;
+            let mut pages = reader.directory(&self.directory);
+            let cancellation = CancellationToken::new();
+            while let Some(page) = pages.next(&cancellation).await? {
+                for entry in &page.entries {
+                    if !filename(entry.name.as_bytes())?
+                        .strip_suffix(".json")
+                        .is_some_and(|call| crate::agent::is_call_of(call, operation))
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
         })
     }
 }
@@ -302,6 +316,119 @@ mod tests {
         }
         assert_eq!(retained, [first, later.clone()]);
         assert_eq!(effects.recorded().await?, [later]);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // One real atomic batch crosses a directory page. The foreign call
+            // is beyond the first page, so a truncated hold check misses it.
+            let paged = FilesystemTurnEffects::new(
+                files.clone(),
+                Arc::new(acyclic_stream::MemoryStream::default()),
+                AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
+                (OperationId::from_bytes([5; 16]), 3),
+                4096,
+            );
+            let prefix = format!(
+                "/{}{}",
+                super::super::InternalContentClass::Interaction.prefix(),
+                paged.directory,
+            );
+            let foreign = OperationId::from_bytes([8; 16]);
+            let paths: Vec<_> = (0..257)
+                .map(|step| {
+                    format!(
+                        "{prefix}/{}.json",
+                        crate::agent::call_key(step, if step == 256 { foreign } else { own }),
+                    )
+                })
+                .collect();
+            let saved = effect("paged")?;
+            let bytes = acyclic_stream::OwnedBytes::from(crate::agent::records::seal(&saved)?);
+            let batch: Vec<_> = paths
+                .iter()
+                .map(|path| (path.as_str(), bytes.clone()))
+                .collect();
+            let cancellation = CancellationToken::new();
+            let mut transaction = workspace
+                .begin_transaction(
+                    acyclic_fs::IdempotencyKey::new(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?
+                .value;
+            transaction
+                .write_batch(
+                    &[&prefix],
+                    &batch,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?;
+            let committed = transaction
+                .commit::<acyclic_fs::WorkspaceError, _, _>(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    |_| async {
+                        Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        })
+                    },
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?;
+            assert!(matches!(
+                committed.value,
+                acyclic_fs::TransactionCommit::Committed(_)
+            ));
+            assert_eq!(paged.recorded().await?, vec![saved; paths.len()]);
+            assert!(paged.holds(own).await?);
+            assert!(paged.holds(foreign).await?);
+
+            let reader = files.reader().await?;
+            let mut pages = reader.directory(&paged.directory);
+            let page = pages.next(&cancellation).await?.expect("first page");
+            assert!(page.has_more);
+            assert!(page.entries.iter().all(|entry| {
+                filename(entry.name.as_bytes())
+                    .unwrap()
+                    .strip_suffix(".json")
+                    .is_some_and(|call| crate::agent::is_call_of(call, own))
+            }));
+            workspace
+                .remove(paths.last().unwrap())
+                .await
+                .map_err(super::super::map_error)?;
+            let page = pages
+                .next(&cancellation)
+                .await?
+                .expect("retained final page");
+            assert!(!page.has_more);
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(
+                filename(page.entries[0].name.as_bytes())?,
+                format!("{}.json", crate::agent::call_key(256, foreign)),
+            );
+            // A completed cursor performs no further source work, even if the
+            // next read would fail cancellation. An interrupted cursor is terminal.
+            cancellation.cancel();
+            assert!(pages.next(&cancellation).await?.is_none());
+            let cancellation = CancellationToken::new();
+            let mut interrupted = reader.directory(&paged.directory);
+            assert!(interrupted.next(&cancellation).await?.is_some());
+            cancellation.cancel();
+            assert!(matches!(
+                interrupted.next(&cancellation).await,
+                Err(Error::Cancelled)
+            ));
+            assert!(interrupted.next(&CancellationToken::new()).await?.is_none());
+            assert!(!paged.holds(own).await?);
+        }
         Ok(())
     }
 }
