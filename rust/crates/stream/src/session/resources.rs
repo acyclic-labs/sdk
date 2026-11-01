@@ -57,6 +57,17 @@ impl ResourceAuthorization {
         attributes: &RecordAttributes,
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
+        self.authorize_account(resource, keys, attributes, policy, None)
+    }
+
+    pub(super) fn authorize_account(
+        &self,
+        resource: &str,
+        keys: &[Vec<u8>],
+        attributes: &RecordAttributes,
+        policy: PolicyDecision,
+        account: Option<&[u8]>,
+    ) -> Result<(), StreamError> {
         if !acyclic_auth::valid_resource(resource)
             || !acyclic_auth::authority::resource_matches(&self.resource, resource)
         {
@@ -67,6 +78,14 @@ impl ResourceAuthorization {
             .snapshot()
             .map_err(|_| StreamError::AccessDenied)?;
         let capability = self.current()?;
+        if let Some(account) = account {
+            let certified = capability
+                .account_id()
+                .map_err(|_| StreamError::AccessDenied)?;
+            if certified.as_bytes() != account {
+                return Err(StreamError::AccessDenied);
+            }
+        }
         capability
             .authorize(
                 snapshot.trust.as_ref(),
@@ -191,10 +210,20 @@ impl ResourceAuthorization {
             .capability
             .lock()
             .map_err(|_| authority::Rejection::Forbidden)?;
-        // Queued entries were authorized under these exact grants and identity.
+        // Queued entries were authorized under this certified account, grants
+        // and identity. A matching principal does not bind the same account.
         // A changed ceiling closes the channel so replay uses the new scope.
         let (held, renewed) = (current.effective(), next.effective());
-        if held.principal() != renewed.principal() || !held.grants().eq(renewed.grants()) {
+        let account = current
+            .account_id()
+            .map_err(|_| authority::Rejection::Forbidden)?;
+        let next_account = next
+            .account_id()
+            .map_err(|_| authority::Rejection::Forbidden)?;
+        if account != next_account
+            || held.principal() != renewed.principal()
+            || !held.grants().eq(renewed.grants())
+        {
             return Err(authority::Rejection::Forbidden);
         }
         *current = next;

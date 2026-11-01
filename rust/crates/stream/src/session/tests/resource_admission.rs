@@ -63,8 +63,10 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
         let mut output = serve_on_with_products(
             provider,
             testing::authority(),
-            resources,
-            None,
+            Products {
+                resources,
+                ..Products::default()
+            },
             "node".into(),
             Limits::default(),
             receiver.boxed(),

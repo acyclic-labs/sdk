@@ -8,6 +8,24 @@ use futures::TryStreamExt as _;
 pub struct CallAuthorization(pub(super) ResourceAuthorization);
 
 impl CallAuthorization {
+    /// Authorize an account-owned target using the same current verified
+    /// credential for both the certified account and resource grant checks.
+    /// A namespace grant cannot confer access to another account's target.
+    pub fn authorize_in_account(
+        &self,
+        account: &[u8],
+        resource: &str,
+        keys: &[Vec<u8>],
+        attributes: &acyclic_auth::contract::RecordAttributes,
+        policy: acyclic_auth::authority::PolicyDecision,
+    ) -> Result<(), StreamError> {
+        if resource != self.0.resource.name {
+            return Err(StreamError::AccessDenied);
+        }
+        self.0
+            .authorize_account(resource, keys, attributes, policy, Some(account))
+    }
+
     /// Issuer-attested identity used by the owning host's input staging/control.
     pub fn principal(&self) -> Result<acyclic_auth::contract::Principal, StreamError> {
         self.0.principal()
