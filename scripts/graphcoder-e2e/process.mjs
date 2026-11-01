@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { close, closeSync, createWriteStream, mkdtempSync, open, openSync, readFileSync, readSync, write, writev } from "node:fs";
+import { close, closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync, write, writev } from "node:fs";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -87,9 +87,26 @@ export class Processes {
         this.#progressFailure ??= progressFailure;
       }
     } : undefined;
-    const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
-      env, ...(report && !endpoint ? { stdio: ["pipe", "pipe", "pipe", "pipe"] } : {}),
-    });
+    // Admit both original sinks before a child can act. The writers consume
+    // these same handles; an admission failure cannot strand an unowned child.
+    let stdoutPath, stderrPath, stdoutFd, stderrFd, child;
+    try {
+      stdoutPath = join(this.transcripts, `${index}.stdout`);
+      stderrPath = join(this.transcripts, `${index}.stderr`);
+      stdoutFd = openSync(stdoutPath, "wx", 0o600);
+      stderrFd = openSync(stderrPath, "wx", 0o600);
+    } catch (error) {
+      if (stdoutFd !== undefined) closeSync(stdoutFd);
+      throw new SpoolEnded("spool", `transcript admission: ${error.message}; recovery command: provide Processes({transcripts: writableFreshDirectory}) before launching`, error);
+    }
+    try {
+      child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
+        env, ...(report && !endpoint ? { stdio: ["pipe", "pipe", "pipe", "pipe"] } : {}),
+      });
+    } catch (error) {
+      closeSync(stdoutFd); closeSync(stderrFd);
+      throw error;
+    }
     report?.attach(child, endpoint?.connected ?? child.stdio[3]);
     const input = observe ? observedInput(child.stdin, observe) : child.stdin;
     if (observe) {
@@ -103,8 +120,7 @@ export class Processes {
       child.kill(scopeKillSignal);
     };
     this.started++;
-    const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
-    const written = Promise.all([transcript(child.stdout, stdoutPath, observe, "stdout"), transcript(child.stderr, stderrPath, observe, "stderr")]);
+    const written = Promise.all([transcript(child.stdout, stdoutFd, observe, "stdout"), transcript(child.stderr, stderrFd, observe, "stderr")]);
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
@@ -304,7 +320,7 @@ export function conptyArgs(binary, args) {
 // A stream's bytes go straight to its transcript file; nothing is decoded or
 // kept in memory. Resolves once the file holds every byte. On a file failure
 // the source keeps draining so the child is never blocked on a full pipe.
-function transcript(stream, path, observe, channel) {
+function transcript(stream, fd, observe, channel) {
   let first = true;
   const completed = observe ? callback => (error, count, buffers) => {
     if (!error && count > 0 && first) { first = false; observe(`${channel}-first-write`); }
@@ -313,15 +329,15 @@ function transcript(stream, path, observe, channel) {
   // Observe the SAME file writer's first successful byte transfer. This is
   // transcript write completion, not the OS pipe-read timestamp. Later writes
   // use the original callback directly; no reader, payload copy or history.
-  const file = createWriteStream(path, observe ? { fs: {
-    open, close,
+  const file = createWriteStream(null, { fd, ...(observe ? { fs: {
+    close,
     write(fd, buffer, offset, length, position, callback) {
       return write(fd, buffer, offset, length, position, first ? completed(callback) : callback);
     },
     writev(fd, buffers, position, callback) {
       return writev(fd, buffers, position, first ? completed(callback) : callback);
     },
-  } } : undefined);
+  } } : {}) });
   stream.pipe(file);
   if (observe) stream.once("end", () => observe(`${channel}-eof`));
   // A source destroyed without an end never ends its pipe: end the file so
