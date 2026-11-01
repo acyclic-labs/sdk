@@ -4,7 +4,7 @@
 //! call's approval. Each segment's effects commit together, so a segment's
 //! directory lists exactly the effects not yet committed.
 
-use super::agent_internal::{AgentInternalFiles, filename};
+use super::agent_internal::{AgentInternalFiles, InternalFileCreation, filename};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, TurnEffect, TurnEffects},
@@ -77,9 +77,10 @@ where
             // The call key already orders effects by model step. The file's
             // create-once identity supplies replay without a directory index.
             let path = format!("{}/{call}.json", self.directory);
-            if let Some(existing) = self.files.read(&path, self.maximum_bytes).await? {
-                return decode(&existing);
-            }
+            let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
+                InternalFileCreation::Existing(existing) => return decode(&existing),
+                InternalFileCreation::Vacant(file) => file,
+            };
             // A spawn names a new child: a name already taken would make the
             // step's fork conflict on every retry.
             if let TurnEffect::Spawn { intent, .. } = effect {
@@ -92,7 +93,7 @@ where
                 }
             }
             let bytes = crate::agent::records::seal(effect)?;
-            match self.files.create(&path, &bytes, self.maximum_bytes).await? {
+            match vacant.create(&bytes).await? {
                 Some(existing) => decode(&existing),
                 None => Ok(effect.clone()),
             }
@@ -281,6 +282,44 @@ mod tests {
             Err(Error::UnsupportedRecordVersion(version)) if version == refusal
         ));
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+
+        // Preparing a body does not reserve the name. Two original absent
+        // observations still arbitrate through the same create-once identity;
+        // a stale observation cannot replace the first creator's effect.
+        let raced_path = "create-observation/race.json";
+        let InternalFileCreation::Vacant(first_creation) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("new file already exists");
+        };
+        let InternalFileCreation::Vacant(later_creation) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("preparation created a file");
+        };
+        let first_bytes = crate::agent::records::seal(&first)?;
+        let later_bytes = crate::agent::records::seal(&later)?;
+        assert!(first_creation.create(&first_bytes).await?.is_none());
+        let replayed = later_creation
+            .create(&later_bytes)
+            .await?
+            .expect("original winner");
+        assert_eq!(decode(&replayed)?, first);
+        let InternalFileCreation::Existing(existing) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("published original is missing");
+        };
+        assert_eq!(decode(&existing)?, first);
+        let abandoned_path = "create-observation/abandoned.json";
+        {
+            let InternalFileCreation::Vacant(_abandoned) =
+                files.prepare_create(abandoned_path, 4096).await?
+            else {
+                panic!("new file already exists");
+            };
+        }
+        assert!(files.read(abandoned_path, 4096).await?.is_none());
 
         // Removing a file after selection changes a fresh read, but cannot
         // remove a listed effect from the retained original generation.
