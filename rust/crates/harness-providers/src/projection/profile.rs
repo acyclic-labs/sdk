@@ -208,7 +208,7 @@ mod tests {
                 );
                 let model = ModelProfile::parse(
                     &format!(
-                        "---\nversion: 1\ntools: []\nreasoning: {reasoning}\ncache: automatic\nbudget_tokens: 4096\nwatermark_tokens: 2000\n---\n"
+                        "---\nversion: 1\ntools: []\nreasoning: {reasoning}\ncache: automatic\nbudget_tokens: 4096\n---\n"
                     ),
                     &format!("---\nversion: 1\nkey: {key}\n---\n"),
                     advertised.capacity,
