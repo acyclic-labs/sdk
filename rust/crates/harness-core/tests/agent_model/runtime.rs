@@ -61,7 +61,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
             Box::pin(async move {
-                let wait = if let Some((approval, extra, escaped)) = self.1 {
+                let wait = if let Some((approval, status_bytes, escaped)) = self.1 {
                     let phase = if approval {
                         Phase::WaitingApproval { id: intent("x") }
                     } else {
@@ -80,8 +80,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                     .encode()?
                     .len()
                         - 1;
-                    let text = if escaped { "\"" } else { "x" }
-                        .repeat(acyclic_stream::MAX_RECORD_BYTES - envelope + extra);
+                    let text = if escaped { "\"" } else { "x" }.repeat(status_bytes - envelope);
                     if approval {
                         Wait::Approval(IntentId::try_from(text)?)
                     } else {
@@ -134,16 +133,38 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             false,
             None,
         ),
-        (Out::Conversation(vec![b'x']), true, Some((false, 0, false))),
+        // The wait is also retained inside the original checkpoint. Keep its
+        // admitted control within that separately configured physical record.
+        (
+            Out::Conversation(vec![b'x']),
+            true,
+            Some((false, maximum / 2, false)),
+        ),
         (
             Out::Conversation(vec![b'x']),
             false,
-            Some((false, 1, false)),
+            Some((false, maximum + 1, false)),
         ),
-        (Out::Conversation(vec![b'x']), false, Some((false, 0, true))),
-        (Out::Conversation(vec![b'x']), true, Some((true, 0, false))),
-        (Out::Conversation(vec![b'x']), false, Some((true, 1, false))),
-        (Out::Conversation(vec![b'x']), false, Some((true, 0, true))),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((false, maximum, true)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            true,
+            Some((true, maximum / 2, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((true, maximum + 1, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((true, maximum, true)),
+        ),
     ] {
         let provider = Arc::new(MemoryStream::default());
         super::create(&provider, id(2)).await?;
@@ -159,7 +180,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         let mut adoption = adopted(id(1));
         adoption.brief = Some(super::driver::file("frames")?);
         let root = host.create(&intent("create"), adoption).await?;
-        assert!(host.runtime().drain().await.is_empty());
+        host.drain(&root).await?;
         let state = host.state(&root).await?;
         if admitted && let Some((approval, ..)) = wait {
             assert!(if approval {
@@ -194,7 +215,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         if admitted && wait.is_some() {
             assert_eq!(
                 status.last().ok_or("missing waiting status")?.len(),
-                maximum
+                wait.ok_or("missing wait selection")?.1
             );
         }
         assert_eq!(
