@@ -250,3 +250,35 @@ async fn openai_stays_on_canonical_tools_until_its_engine_lands() -> Result<()> 
     );
     Ok(())
 }
+
+#[test]
+fn a_manifest_of_capabilities_keeps_their_native_declarations() -> Result<()> {
+    let canonical = Arc::new(Canonical(Mutex::new(Vec::new())));
+    let mut tools = capabilities(&canonical)?;
+    let manifest = tools.definitions(None)?;
+    crate::tools::native::bind(&mut tools, NativeToolProfile::Anthropic)?;
+    let grants = Capabilities::new(
+        ["read", "write", "edit", "shell"].map(crate::contract::capability::tool_call),
+    );
+    let offered = |tools: &ToolRegistry| -> Result<Vec<String>> {
+        Ok(tools
+            .definitions_for_grants(&grants, None)?
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect())
+    };
+    let mut pinned = tools.clone();
+    pinned.pin_model_definitions(&manifest, None)?;
+    assert_eq!(
+        offered(&pinned)?,
+        ["Edit", "NotebookEdit", "Read", "Bash", "Write"]
+    );
+    // A manifest naming one capability hides the others' declarations.
+    let read: Vec<_> = manifest
+        .into_iter()
+        .filter(|tool| tool.name == "read")
+        .collect();
+    tools.pin_model_definitions(&read, None)?;
+    assert_eq!(offered(&tools)?, ["Read"]);
+    Ok(())
+}

@@ -37,9 +37,43 @@ impl ToolRegistry {
                     "manifest repeats a tool name",
                 ));
             }
+            // A capability offered natively is pinned as a whole: a manifest
+            // naming the capability or any of its declarations keeps every
+            // declaration offered, and one naming neither hides them all.
+            let listed = |name: &str| {
+                selected
+                    .binary_search_by(|(candidate, _)| candidate.cmp(&name))
+                    .is_ok()
+            };
+            let pinned = |name: &str, natives: &[String]| {
+                listed(name) || natives.iter().any(|native| listed(native))
+            };
+            let kept: Vec<String> = self
+                .data
+                .selected
+                .iter()
+                .filter_map(|(name, selection)| match selection {
+                    ModelSelection::Native(natives) if pinned(name, natives) => Some(natives),
+                    _ => None,
+                })
+                .flatten()
+                .cloned()
+                .collect();
             for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
-                // The manifest pins the native declarations themselves.
-                if matches!(selection, ModelSelection::Native(_)) {
+                if kept.contains(name) {
+                    continue;
+                }
+                if let ModelSelection::Native(natives) = selection {
+                    if pinned(name, natives) {
+                        continue;
+                    }
+                    #[cfg(feature = "filesystem")]
+                    let old_bytes = selection.owned_bytes();
+                    *selection = ModelSelection::Hidden;
+                    #[cfg(feature = "filesystem")]
+                    if let Some(io) = io {
+                        io.release(old_bytes)?;
+                    }
                     continue;
                 }
                 let replacement = match selected
