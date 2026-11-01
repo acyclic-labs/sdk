@@ -15,6 +15,8 @@ variables) and an explicit workspace working directory. They refuse ambient
 environment inheritance before allocating native enforcement objects, so host
 secrets are not exposed by a command's default environment. Selection of any
 explicit variable remains the authenticated host's responsibility.
+Working-directory admission borrows the explicit absolute path, rejects parent
+traversal and checks workspace membership without filesystem I/O or path copying.
 Linux resolves that working directory beneath the verified workspace object
 with `openat2`, refusing substituted symlinks. Preparation holds the directory
 through the original launch; subsequent path replacement cannot select a

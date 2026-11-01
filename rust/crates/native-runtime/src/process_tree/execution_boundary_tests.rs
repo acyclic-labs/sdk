@@ -62,9 +62,9 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         .unwrap();
         let mut command = directory_command(&selected);
         let cwd = grant
-            .validate_launch(command.get_current_dir(), command.get_env_clear())
+            .validate_launch(Some(&selected), command.get_env_clear())
             .unwrap();
-        let boundary = match grant.prepare_launch(Some(&cwd), None) {
+        let boundary = match grant.prepare_launch(Some(cwd), None) {
             Ok(boundary) => boundary,
             Err(error) if error.kind() == io::ErrorKind::Unsupported => {
                 assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
@@ -76,6 +76,15 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         // original launch path consumes its held object. No racing thread,
         // readiness loop or test-only launch callback is needed.
         std::fs::rename(&selected, &held).unwrap();
+        // Path admission must not resolve this now-absent name outside the
+        // original operation ledger. The old canonicalization failed here,
+        // before native preparation could even reserve its first operation.
+        let absent = grant.validate_launch(Some(&selected), true).unwrap();
+        let denied = crate::tests::ReadBudgetMeter::new(0, u64::MAX);
+        let error = grant
+            .prepare_launch(Some(absent), Some(&denied))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         std::os::unix::fs::symlink(&external, &selected).unwrap();
         command.boundary = Some(boundary);
         assert_eq!(
@@ -90,7 +99,7 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         );
         // A replacement in the earlier validation/preparation interval must
         // instead refuse: openat2 cannot traverse this substituted symlink.
-        let error = grant.prepare_launch(Some(&cwd), None).unwrap_err();
+        let error = grant.prepare_launch(Some(cwd), None).unwrap_err();
         assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
         std::fs::remove_file(&selected).unwrap();
         std::fs::remove_dir(&held).unwrap();
@@ -223,7 +232,7 @@ fn closed_stream_probe() {
     let cwd = grant
         .validate_launch(command.get_current_dir(), command.get_env_clear())
         .unwrap();
-    let boundary = match grant.prepare_launch(Some(&cwd), None) {
+    let boundary = match grant.prepare_launch(Some(cwd), None) {
         Ok(boundary) => boundary,
         Err(error) if error.kind() == io::ErrorKind::Unsupported => {
             assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());

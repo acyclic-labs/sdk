@@ -271,11 +271,11 @@ impl ExecutionGrant {
         &self.0.workspace
     }
 
-    pub(crate) fn validate_launch(
+    pub(crate) fn validate_launch<'a>(
         &self,
-        cwd: Option<&Path>,
+        cwd: Option<&'a Path>,
         explicit_environment: bool,
-    ) -> io::Result<PathBuf> {
+    ) -> io::Result<&'a Path> {
         if !explicit_environment {
             return Err(refused(
                 "confined execution requires an explicit environment",
@@ -283,8 +283,14 @@ impl ExecutionGrant {
         }
         let cwd = cwd
             .ok_or_else(|| refused("confined execution requires an explicit working directory"))?;
-        let cwd = canonical(cwd)?;
-        if !cwd.starts_with(self.workspace()) {
+        // This is admission, not a second path resolution. The native adapter
+        // resolves the relative directory once beneath the verified workspace.
+        if !cwd.is_absolute()
+            || cwd
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+            || !cwd.starts_with(self.workspace())
+        {
             return Err(refused(
                 "execution working directory escapes the granted workspace",
             ));

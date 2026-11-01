@@ -279,7 +279,7 @@ impl ProcessTree {
             command.boundary = Some({
                 let cwd =
                     grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-                grant.prepare_launch(Some(&cwd), meter)?
+                grant.prepare_launch(Some(cwd), meter)?
             });
             match custody {
                 Some(custody) => {
