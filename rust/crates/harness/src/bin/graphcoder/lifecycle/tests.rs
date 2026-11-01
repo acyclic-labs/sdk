@@ -115,9 +115,16 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
     use std::{future::poll_fn, os::fd::AsFd as _, pin::Pin, task::Poll};
     use tokio::io::AsyncWrite as _;
 
+    struct FailedFormatter;
+    impl fmt::Debug for FailedFormatter {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            Err(fmt::Error)
+        }
+    }
+
     let runtime = acyclic_native_runtime::coordination_runtime()?;
     runtime.block_on(async {
-        for formatting_failure in [false, true] {
+        for field in ["record", "capacity", "formatter"] {
             for operation_error in [false, true] {
                 let (reader, original) = io::pipe()?;
                 let mut output = InheritedOutput::from_file(
@@ -157,10 +164,10 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                 let dispatch = tracing::Dispatch::new(subscriber);
                 let _subscriber = tracing::dispatcher::set_default(&dispatch);
                 let operation = async {
-                    if formatting_failure {
-                        tracing::info!(field = "a field exceeding the original admitted sixty-four-byte record storage without any native write");
-                    } else {
-                        tracing::info!("terminal");
+                    match field {
+                        "capacity" => tracing::info!(field = "a field exceeding the original admitted sixty-four-byte record storage without any native write"),
+                        "formatter" => tracing::info!(field = ?FailedFormatter),
+                        _ => tracing::info!("terminal"),
                     }
                     if operation_error {
                         Err(Box::new(io::Error::from(io::ErrorKind::PermissionDenied)) as Failure)
@@ -197,7 +204,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                 }
                 assert_eq!(
                     matches!(failure, Some(OutputFailure::Formatting)),
-                    formatting_failure
+                    field == "formatter"
                 );
                 drop(reader);
             }
