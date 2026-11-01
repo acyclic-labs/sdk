@@ -277,7 +277,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
-        self.compare_file(original, path, false, work, cancellation)
+        self.compare_file(original, path, false, false, work, cancellation)
             .await
     }
 
@@ -290,7 +290,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
-        self.compare_file(original, path, true, work, cancellation)
+        self.compare_file(original, path, true, false, work, cancellation)
+            .await
+    }
+
+    /// Compares an optional file's exact identity, kind and payload without
+    /// reading bodies. Matching absence is equal; creation or removal differs.
+    /// Use `matches_file_payload` when the source must exist.
+    pub async fn matches_optional_file_payload<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
+        self.compare_file(original, path, true, true, work, cancellation)
             .await
     }
 
@@ -299,6 +313,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         original: &Self,
         path: &str,
         exact_payload: bool,
+        allow_absent: bool,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
@@ -318,6 +333,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             original.id,
             path,
             exact_payload,
+            allow_absent,
             work,
             cancellation,
         )

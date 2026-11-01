@@ -21,12 +21,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let authorized = self.generation(workspace, authorized, Some(io)).await?;
             // The protected metadata distinguishes publications of equal bytes;
             // the file payload also catches writes that bypassed that metadata.
-            for path in paths {
-                if !io.sdk(
-                    authorized
-                        .matches_file_payload(&original, path, io, io.cancellation())
-                        .await,
-                )? {
+            // Metadata is optional for files authored outside this publisher.
+            // Its matching absence is stable, while the actual source must exist.
+            for (index, path) in paths.into_iter().enumerate() {
+                let matches = if index == 0 {
+                    io.sdk(
+                        authorized
+                            .matches_optional_file_payload(&original, path, io, io.cancellation())
+                            .await,
+                    )?
+                } else {
+                    io.sdk(
+                        authorized
+                            .matches_file_payload(&original, path, io, io.cancellation())
+                            .await,
+                    )?
+                };
+                if !matches {
                     return Err(stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Conflict,
@@ -68,10 +79,21 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
             &IdempotencyKey::new("source")?,
         )
         .await?;
-    let changed = host
+    let unrelated = host
         .apply(
             &reference,
             Some(&original),
+            &[WorkspaceMutation::PutFile {
+                path: "/unrelated".into(),
+                bytes: b"other".to_vec().into(),
+            }],
+            &IdempotencyKey::new("unrelated")?,
+        )
+        .await?;
+    let changed = host
+        .apply(
+            &reference,
+            Some(&unrelated),
             &[WorkspaceMutation::PutFile {
                 path: "/file.txt".into(),
                 bytes: b"changed".to_vec().into(),
@@ -97,6 +119,25 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
         Some(&io),
     )?
     .await?;
+    host.require_unchanged_content(
+        &workspace,
+        &original,
+        &unrelated,
+        ["/.system/absent-metadata", "/file.txt"],
+        Some(&io),
+    )?
+    .await?;
+    assert!(
+        host.require_unchanged_content(
+            &workspace,
+            &original,
+            &unrelated,
+            ["/.system/absent-metadata", "/absent-source"],
+            Some(&io),
+        )?
+        .await
+        .is_err()
+    );
     let error = host
         .require_unchanged_content(
             &workspace,
