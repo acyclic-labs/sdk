@@ -9,7 +9,7 @@ export type EventStreamProvider = (changed: (changes: readonly StreamChange[]) =
   => StreamProviderPort | Promise<StreamProviderPort>;
 /** Private provider RPC contract, independent of its transport. */
 export interface StreamLedger {
-  register(actor: string, paths: string[]): Promise<Placement>;
+  register(actor: string, paths: string[], expectedRevision?: string): Promise<Placement>;
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>>;
   /** Length-delimited SessionFrame bytes; transport chunks need not preserve messages. */
   open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>>;
@@ -37,7 +37,7 @@ export class EventStreamLedger implements StreamLedger {
     return next;
   }
 
-  register(actor: string, paths: string[]) { return this.wakes.register(actor, paths); }
+  register(actor: string, paths: string[], expectedRevision?: string) { return this.wakes.register(actor, paths, expectedRevision); }
   pending(): number { return this.wakes.pendingCount(); }
 
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
