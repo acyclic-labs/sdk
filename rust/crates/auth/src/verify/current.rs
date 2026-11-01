@@ -63,6 +63,12 @@ enum Ids<'a> {
 }
 
 impl<'a> Ids<'a> {
+    fn len(self) -> usize {
+        match self {
+            Self::Fixed(ids) => ids.len(),
+            Self::Wire(ids) => ids.len(),
+        }
+    }
     fn iter(self) -> impl Iterator<Item = &'a [u8]> {
         let (fixed, wire): (&[BlockId], &[Vec<u8>]) = match self {
             Self::Fixed(ids) => (ids, &[]),
@@ -98,6 +104,48 @@ where
     C: Iterator<Item = Certificate<'a>>,
     N: Iterator<Item = &'a [u8]>,
 {
+    fn requirement(self) -> Result<TrustRequirement, VerifyError>
+    where
+        C: Clone + ExactSizeIterator,
+    {
+        let count = self
+            .certificates
+            .clone()
+            .try_fold(self.ids.len(), |count, certificate| {
+                count.checked_add(certificate.parents.len())
+            })
+            .ok_or(VerifyError::Malformed)?;
+        let mut blocks = Vec::with_capacity(count);
+        blocks.extend(self.ids.iter().map(<[u8]>::to_vec));
+        let keys = self
+            .certificates
+            .map(|certificate| {
+                blocks.extend(certificate.parents.iter().cloned());
+                CallerKeyRevocation {
+                    key_id: certificate.id.into(),
+                    key_epoch: certificate.epoch,
+                }
+            })
+            .collect();
+        Ok(TrustRequirement {
+            version: 1,
+            environment: self.environment.into(),
+            account: self.account.into(),
+            environment_issuers: self
+                .environment_issuers
+                .iter()
+                .map(<[u8]>::to_vec)
+                .collect(),
+            issuers: self.issuers.iter().map(<[u8]>::to_vec).collect(),
+            blocks,
+            keys,
+            next_keys: self.next_keys.map(<[u8]>::to_vec).collect(),
+            validity: Validity {
+                not_before_unix_seconds: self.not_before,
+                expires_at_unix_seconds: self.expires_at,
+            },
+        })
+    }
     fn preserved_by(self, descendant: &VerifiedCapability) -> Result<bool, VerifyError> {
         let certificates = descendant.certificates()?;
         if self.environment != certificates.birth.birth.environment
@@ -316,7 +364,7 @@ impl VerifiedCapability {
                 .all(|requirement| inherited.by_ref().any(|actual| actual == requirement)))
     }
 
-    fn trust_requirements(&self) -> impl Iterator<Item = &TrustRequirement> {
+    fn trust_requirements(&self) -> impl Iterator<Item = &TrustRequirement> + Clone {
         self.blocks
             .first()
             .into_iter()
@@ -335,7 +383,11 @@ impl VerifiedCapability {
     fn trust_view(
         &self,
     ) -> Result<
-        View<'_, impl Iterator<Item = Certificate<'_>>, impl Iterator<Item = &[u8]>>,
+        View<
+            '_,
+            impl ExactSizeIterator<Item = Certificate<'_>> + Clone,
+            impl Iterator<Item = &[u8]>,
+        >,
         VerifyError,
     > {
         let certificates = self.certificates()?;
@@ -466,40 +518,44 @@ impl VerifiedCapability {
             requirements,
         })
     }
+
+    /// Project complete signed dependencies directly from the authenticated owner.
+    /// No intermediate public-evidence graph or bearer copy is constructed.
+    ///
+    /// # Errors
+    /// Fails on malformed ancestry or an overflowing allocation size.
+    pub fn requirements(&self) -> Result<Vec<TrustRequirement>, VerifyError> {
+        project_requirements(self.trust_view()?, self.trust_requirements())
+    }
+}
+
+fn project_requirements<'a, C, N>(
+    view: View<'a, C, N>,
+    inherited: impl Iterator<Item = &'a TrustRequirement> + Clone,
+) -> Result<Vec<TrustRequirement>, VerifyError>
+where
+    C: ExactSizeIterator<Item = Certificate<'a>> + Clone,
+    N: Iterator<Item = &'a [u8]>,
+{
+    let count = inherited
+        .clone()
+        .count()
+        .checked_add(1)
+        .ok_or(VerifyError::Malformed)?;
+    let mut requirements = Vec::with_capacity(count);
+    requirements.push(view.requirement()?);
+    requirements.extend(inherited.cloned());
+    Ok(requirements)
 }
 
 impl TrustEvidence {
     /// Complete public requirements for a newly signed contribution. The root
     /// and already inherited dependencies are flattened, never recursively nested.
-    pub fn requirements(&self) -> Vec<TrustRequirement> {
-        let mut requirements = Vec::with_capacity(self.requirements.len() + 1);
-        requirements.push(TrustRequirement {
-            version: 1,
-            environment: self.environment.clone(),
-            account: self.account.clone(),
-            environment_issuers: self
-                .environment_issuers
-                .iter()
-                .map(|id| id.to_vec())
-                .collect(),
-            issuers: self.issuers.iter().map(|id| id.to_vec()).collect(),
-            blocks: self.ids.iter().map(|id| id.to_vec()).collect(),
-            keys: self
-                .keys
-                .iter()
-                .map(|key| CallerKeyRevocation {
-                    key_id: key.id.clone(),
-                    key_epoch: key.epoch,
-                })
-                .collect(),
-            next_keys: self.next_keys.iter().map(|id| id.to_vec()).collect(),
-            validity: Validity {
-                not_before_unix_seconds: self.not_before,
-                expires_at_unix_seconds: self.expires_at,
-            },
-        });
-        requirements.extend(self.requirements.iter().cloned());
-        requirements
+    ///
+    /// # Errors
+    /// Fails if the checked storage size overflows.
+    pub fn requirements(&self) -> Result<Vec<TrustRequirement>, VerifyError> {
+        project_requirements(self.view(), self.requirements.iter())
     }
 
     /// Register the original trust owner's publications for this authenticated
@@ -533,7 +589,10 @@ impl TrustEvidence {
                 .all(|requirement| inherited.by_ref().any(|actual| actual == requirement)))
     }
 
-    fn view(&self) -> View<'_, impl Iterator<Item = Certificate<'_>>, impl Iterator<Item = &[u8]>> {
+    fn view(
+        &self,
+    ) -> View<'_, impl ExactSizeIterator<Item = Certificate<'_>> + Clone, impl Iterator<Item = &[u8]>>
+    {
         View {
             environment: &self.environment,
             account: &self.account,
