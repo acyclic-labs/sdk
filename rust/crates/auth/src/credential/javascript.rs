@@ -51,7 +51,7 @@ impl CredentialSource for Source {
                 if !valid_credential(&token) {
                     return Err(CredentialError::Invalid);
                 }
-                return Ok(ResolvedCredential(Resolved::Raw(token)));
+                return Ok(ResolvedCredential(Resolved::Raw(Shared::new(token))));
             }
             let binding = get(&object, "binding")?;
             let binding = if binding.is_undefined() {
