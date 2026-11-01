@@ -40,4 +40,28 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> crate::async_storage::Au
             self.refresh_committed(commit, commit_id);
         })
     }
+
+    fn prepare_settlement(
+        &self,
+        commit: FilesystemCommit,
+        outcome: CommitOutcome,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+        StreamAuthorityStore::prepare_settlement(self, commit, outcome)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_settlement(
+        &self,
+        commit: FilesystemCommit,
+        outcome: acyclic_stream::NativeStreamOutput<CommitOutcome>,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+        StreamAuthorityStore::prepare_native_settlement(self, commit, outcome)
+    }
+
+    fn finish_settlement(
+        &self,
+        prepared: PreparedFilesystemCommit,
+    ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
+        StreamAuthorityStore::finish_settlement(self, prepared)
+    }
 }

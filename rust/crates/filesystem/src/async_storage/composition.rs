@@ -1,7 +1,10 @@
 //! Optional atomic composition through the backend's original publication owner.
 
 use super::*;
-use crate::{FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome, PolicyCut};
+use crate::{
+    FilesystemAppendPreparation, FilesystemCommit, FilesystemCommitOutcome, PolicyCut,
+    PreparedFilesystemCommit,
+};
 
 /// The original backend's prepared commit path. Obtaining this capability is
 /// allocation-free; an unsupported backend returns `None` before staging work.
@@ -39,6 +42,30 @@ pub trait AuthorityComposition: ProviderPlatform {
         commit: FilesystemCommit,
         outcome: acyclic_stream::CommitOutcome,
     ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError>;
+
+    /// Validate the whole original decision, retaining its publication holds
+    /// until the caller confirms its semantic members. Does not submit or wait.
+    fn prepare_settlement(
+        &self,
+        commit: FilesystemCommit,
+        outcome: acyclic_stream::CommitOutcome,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome>;
+
+    /// Retain the same native provider result and its allocation through
+    /// semantic confirmation. No new admission or result copy is performed.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_settlement(
+        &self,
+        commit: FilesystemCommit,
+        outcome: acyclic_stream::NativeStreamOutput<acyclic_stream::CommitOutcome>,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome>;
+
+    /// Finish the original prepared decision after semantic confirmation,
+    /// without repeating complete receipt validation or waiting for a cache.
+    fn finish_settlement(
+        &self,
+        prepared: PreparedFilesystemCommit,
+    ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError>;
 }
 
 // The default capability is uninhabited: a backend must return None, never an
@@ -74,6 +101,30 @@ impl AuthorityComposition for std::convert::Infallible {
         &self,
         _commit: FilesystemCommit,
         _outcome: acyclic_stream::CommitOutcome,
+    ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError> {
+        match *self {}
+    }
+
+    fn prepare_settlement(
+        &self,
+        _commit: FilesystemCommit,
+        _outcome: acyclic_stream::CommitOutcome,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+        match *self {}
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_settlement(
+        &self,
+        _commit: FilesystemCommit,
+        _outcome: acyclic_stream::NativeStreamOutput<acyclic_stream::CommitOutcome>,
+    ) -> Result<PreparedFilesystemCommit, FilesystemCommitOutcome> {
+        match *self {}
+    }
+
+    fn finish_settlement(
+        &self,
+        _prepared: PreparedFilesystemCommit,
     ) -> Result<FilesystemCommitOutcome, crate::AuthorityStoreError> {
         match *self {}
     }

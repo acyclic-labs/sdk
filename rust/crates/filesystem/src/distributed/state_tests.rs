@@ -832,17 +832,14 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
         fs.objects().clone(),
         crate::EmbeddedCapabilities::MEMORY,
     );
-    let refused = foreign_fs
-        .settle_commit(
-            publication,
-            outcome.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )
-        .await
-        .map_err(|failure| failure.error)?;
+    use crate::async_storage::AuthorityComposition as _;
+    let foreign_composition = foreign_fs.composition().ok_or("missing original backend")?;
+    let refused = match foreign_composition.prepare_settlement(publication, outcome.clone()) {
+        Err(refused) => refused,
+        Ok(_) => return Err("foreign backend accepted the original decision".into()),
+    };
     assert!(matches!(
-        &refused.value,
+        &refused,
         FilesystemCommitOutcome::Unknown {
             error: AuthorityStoreError::RejectedStatic(
                 "filesystem commit belongs to another Streams owner"
@@ -850,7 +847,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
             ..
         }
     ));
-    publication = unknown(refused.value)?;
+    publication = unknown(refused)?;
     assert_eq!(publication.request(), &request);
     assert_eq!(publication.deadline(), Some(u64::MAX));
     assert_eq!(spy.commit_attempts(), 1, "local refusals must not resubmit");
@@ -860,14 +857,25 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
         "uncertain closure became collectible"
     );
 
+    let composition = fs.composition().ok_or("missing original backend")?;
+    let prepared = match composition.prepare_settlement(publication, outcome) {
+        Ok(prepared) => prepared,
+        Err(_) => return Err("original decision failed complete validation".into()),
+    };
+    assert_eq!(prepared.request(), &request);
+    assert!(matches!(prepared.outcome(), CommitOutcome::Committed(_)));
+    assert!(
+        futures::poll!(collecting.as_mut()).is_pending(),
+        "validation released publication holds before semantic confirmation"
+    );
+    assert_eq!(spy.commit_attempts(), 1);
     assert!(matches!(
-        fs.settle_commit(publication, outcome, WorkBudget::UNBOUNDED, &cancelled)
-            .await
-            .map_err(|failure| failure.error)?
-            .value,
+        composition.finish_settlement(prepared)?,
         FilesystemCommitOutcome::Committed(_)
     ));
     assert!(futures::poll!(collecting.as_mut()).is_ready());
+    drop(composition);
+    drop(foreign_composition);
     drop(request);
     drop(work);
     drop(fs);

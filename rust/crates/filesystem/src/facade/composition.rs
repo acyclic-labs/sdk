@@ -398,7 +398,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Fs<A, O> {
     /// Whether the backend can compose publications with caller-owned records.
     /// Query before staging files; unsupported backends never publish separately.
     pub fn supports_composition(&self) -> bool {
-        self.inner.authority.composition().is_some()
+        self.composition().is_some()
+    }
+
+    /// Borrows the backend's original atomic publication capability.
+    ///
+    /// Require this before staging work. The same capability retains a complete
+    /// decision through caller semantic confirmation and finishes it without new
+    /// admission. `None` leaves every caller-owned request or prepared decision
+    /// untouched; an unsupported backend never publishes separately. This is a
+    /// backend capability, not caller authorization.
+    pub fn composition(&self) -> Option<impl crate::async_storage::AuthorityComposition + '_> {
+        self.inner.authority.composition()
     }
 
     /// Fences the active policy cut and freezes a caller-submitted commit.
