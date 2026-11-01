@@ -15,8 +15,8 @@ fuzz_target!(|input: &[u8]| {
         return;
     };
     let bounds = JsonBounds {
-        maximum_bytes: 65_536,
-        maximum_items: 4096,
+        maximum_bytes: Some(65_536),
+        maximum_items: Some(4096),
         maximum_depth: 128,
     };
     let raw = prefix & 1 != 0;

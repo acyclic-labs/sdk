@@ -149,7 +149,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
     assert!(!manifest.authenticates(
         &verifier,
         Limits {
-            render_bytes: 1,
+            render_bytes: Some(1),
             ..Limits::default()
         },
         digest,

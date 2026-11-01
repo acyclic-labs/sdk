@@ -6,8 +6,8 @@ import { qualify } from "../src/qualify.mjs";
 import { fixture } from "./fixtures/qualification.mjs";
 import { canonicalRPCs } from "../../../shared/tests/proto-rpcs.mjs";
 
-test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", t => {
-  const f = fixture(t), result = qualify(f.args, f.options);
+test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", async t => {
+  const f = fixture(t), result = await qualify(f.args, f.options);
   assert.equal(result.native_rpc_method_calls, canonicalRPCs().length); assert.equal(result.independent_negative_compiles, 2);
   assert.equal(result.host_sdk_files, 9); assert.equal(result.runtime_files, 1); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(f.calls.length, 11);
@@ -15,16 +15,16 @@ test("fresh archive-installed qualifier verifies compiler, runtime, native contr
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });
 
-test("changed compiler SDK, runtime and external inventory reject before commands", t => {
+test("changed compiler SDK, runtime and external inventory reject before commands", async t => {
   for (const mutate of [
     f => writeFileSync(join(f.hostRoots[0].root, "header.hpp"), "changed"),
     f => writeFileSync(join(f.hostRoots[0].root, "extra.hpp"), "extra"),
     f => writeFileSync(join(f.runtimeRoot, "include/runtime.hpp"), "changed"),
     f => writeFileSync(f.args["host-inventory"], "changed"),
-  ]) { const f = fixture(t); mutate(f); assert.throws(() => qualify(f.args, f.options)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false); }
+  ]) { const f = fixture(t); mutate(f); await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false); }
 });
 
-test("failed native commands, markers and unrelated negative errors cannot qualify", t => {
+test("failed native commands, markers and unrelated negative errors cannot qualify", async t => {
   for (const [phase, mutate] of [
     ["cmake-version", r => { r.stdout = "wrong"; }], ["compiler-version", r => { r.stdout = "wrong"; }],
     ...["configure-sdk", "build-sdk", "install-sdk", "configure-consumer", "build-consumer", "consumer"].map(name => [name, r => { r.status = 1; }]),
@@ -32,10 +32,10 @@ test("failed native commands, markers and unrelated negative errors cannot quali
     ["negative-InvalidActorBytes", r => { r.status = 0; }],
     ["negative-InvalidActorBytes", r => { r.stdout = "unrelated compiler failure"; }],
     ["negative-InvalidOptionalInteger", r => { r.stdout = "fatal error C1083: missing file"; }],
-  ]) { const f = fixture(t); f.hooks[phase] = mutate; assert.throws(() => qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
+  ]) { const f = fixture(t); f.hooks[phase] = mutate; await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
 });
 
-test("post-execution source, compiler, graph, prefix and private runtime drift reject", t => {
+test("post-execution source, compiler, graph, prefix and private runtime drift reject", async t => {
   for (const mutate of [
     f => writeFileSync(join(f.args.output, "sdk-source/src/actors/v1/actors.pb.cc"), "changed"),
     f => writeFileSync(join(f.args.output, "sdk-source/extra.cc"), "extra"),
@@ -44,18 +44,18 @@ test("post-execution source, compiler, graph, prefix and private runtime drift r
     f => writeFileSync(join(f.hostRoots[0].root, "header.hpp"), "changed"),
     f => writeFileSync(join(f.args.output, "sdk-build/compile_commands.json"), "[]"),
     f => writeFileSync(join(f.args.output, "consumer-build/CMakeCache.txt"), "Protobuf_DIR:PATH=outside"),
-  ]) { const f = fixture(t); f.hooks["negative-InvalidOptionalInteger"] = () => mutate(f); assert.throws(() => qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
+  ]) { const f = fixture(t); f.hooks["negative-InvalidOptionalInteger"] = () => mutate(f); await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
 });
 
-test("existing and input-overlapping outputs preserve state", t => {
+test("existing and input-overlapping outputs preserve state", async t => {
   const existing = fixture(t); mkdirSync(existing.args.output); writeFileSync(join(existing.args.output, "keep"), "keep");
-  assert.throws(() => qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
+  await assert.rejects(async () => await qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
   const overlap = fixture(t); overlap.args.output = join(overlap.runtimeRoot, "new");
-  assert.throws(() => qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
+  await assert.rejects(async () => await qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
 });
 
 
-test("qualifier accepts the maintained consumer's source-derived completion marker", t => {
+test("qualifier accepts the maintained consumer's source-derived completion marker", async t => {
   const consumer = readFileSync(new URL("./fixtures/consumer/message_consumer.cc", import.meta.url), "utf8");
   const printed = consumer.match(/std::cout\s*<<\s*("(?:[^"\\]|\\.)*")\s*<<\s*methods\s*<<\s*("(?:[^"\\]|\\.)*")/);
   assert.ok(printed, "consumer must print its measured RPC count");
@@ -68,11 +68,11 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
   const marker = JSON.parse(printed[1]) + methods + JSON.parse(printed[2]);
   const f = fixture(t);
   f.hooks.consumer = result => { result.stdout = marker + result.stdout.slice(result.stdout.indexOf("\n") + 1); };
-  assert.equal(qualify(f.args, f.options).populated_rpc_message_pairs, methods);
+  assert.equal((await qualify(f.args, f.options)).populated_rpc_message_pairs, methods);
 });
 
-test("qualifier rejects the retired 25-pair completion marker", t => {
+test("qualifier rejects the retired 25-pair completion marker", async t => {
   const f = fixture(t);
   f.hooks.consumer = result => { result.stdout = result.stdout.replace("24 RPC message pairs", "25 RPC message pairs"); };
-  assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
+  await assert.rejects(async () => await qualify(f.args, f.options), /completion marker missing/);
 });

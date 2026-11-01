@@ -373,24 +373,25 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
             .collect::<Vec<_>>(),
         [".volumes/scratch", ".volumes/zzz"]
     );
+    // Complete the original physical entry before holding the second slot.
+    // The scope can then claim the first projection without waiting for I/O.
+    let first_root = projection_root(&scratch.destination, SCRATCH_PATH)?;
+    drop(scratch.enter(first_root, SCRATCH_PATH, false).await?);
+    assert_eq!(*scratch.users.lock().unwrap(), 0);
     let ran = std::sync::atomic::AtomicBool::new(false);
     let second_entry = blocked.native().await;
     let mut scope = Box::pin(native_scope(&table, async |claims| {
         ran.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(((), claims))
     }));
-    tokio::select! {
-        result = &mut scope => panic!("scope returned before the first physical entry: {result:?}"),
-        () = async {
-            loop {
-                if scratch.native().await.is_some() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        } => {}
-    }
-    assert!(futures::poll!(&mut scope).is_pending());
+    // Observe the actual held slot, independently of the executor's unrelated
+    // cooperative scheduling budget for this test task.
+    assert!(futures::poll!(tokio::task::unconstrained(scope.as_mut())).is_pending());
+    assert_eq!(
+        *scratch.users.lock().unwrap(),
+        1,
+        "scope did not claim its first projection before waiting for the second"
+    );
     drop(second_entry);
     scope
         .await

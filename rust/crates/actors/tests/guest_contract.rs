@@ -24,7 +24,7 @@ proptest! {
     /// and nonzero versions/expiries, preserving all admitted values verbatim.
     #[test]
     fn host_metadata_construction_preserves_valid_input(value in ".{0,128}", version in any::<u32>(), expiry in any::<u64>()) {
-        let valid = value.len() <= MAX_GUEST_METADATA_BYTES && !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
+        let valid = !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
         let capability = CallerCapability::new(version, value.clone());
         let runtime = RuntimeHandle::new(version, value.clone());
         prop_assert_eq!(capability.is_ok(), valid && version != 0);
@@ -193,6 +193,11 @@ proptest! {
     fn socket_admission_results_round_trip(attachment in prop::collection::vec(any::<u8>(), 0..2048), tag in ".{0,64}") {
         for result in [
             GuestEventResult::SocketAccept { subprotocol: Some("chat".into()), attachment: attachment.clone().into(), tags: vec![tag.clone()] },
+            GuestEventResult::SocketAccept {
+                subprotocol: None,
+                attachment: vec![attachment.first().copied().unwrap_or(0); 2049].into(),
+                tags: vec![format!("{tag}{}", "x".repeat(257)); 11],
+            },
             GuestEventResult::SocketReject { status: 403, reason: tag },
             GuestEventResult::Reply { payload: attachment.into() },
         ] {

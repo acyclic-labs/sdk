@@ -116,7 +116,7 @@ async fn fixture(
     let src_id = FileId::from_bytes([2; 16]);
     let file_id = FileId::from_bytes([3; 16]);
     let metadata = put_file_metadata(store, metadata()).await?;
-    let main_name = LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec(), 255)?;
+    let main_name = LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec())?;
     let src_tree = put_tree_page(
         store,
         &TreePage::Leaf(vec![TreeEntry {
@@ -127,8 +127,8 @@ async fn fixture(
         8,
     )
     .await?;
-    let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?;
-    let alias_name = LogicalName::new(NameEncoding::Utf8, b"alias".to_vec(), 255)?;
+    let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?;
+    let alias_name = LogicalName::new(NameEncoding::Utf8, b"alias".to_vec())?;
     let root_tree = put_tree_page(
         store,
         &TreePage::Leaf(vec![
@@ -197,7 +197,7 @@ async fn binding_fixture(
     let root_id = FileId::from_bytes([21; 16]);
     let child_id = FileId::from_bytes([22; 16]);
     let metadata = put_file_metadata(store, metadata()).await?;
-    let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
+    let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?;
     let root_tree = put_tree_page(
         store,
         &TreePage::Leaf(vec![TreeEntry {

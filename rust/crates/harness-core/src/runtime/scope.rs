@@ -147,15 +147,50 @@ impl RuntimeScope {
     }
 
     pub(super) fn allows_authority(&self, grants: &Capabilities, limits: &Limits) -> bool {
+        let narrows = |ancestor: Option<usize>, child: Option<usize>| {
+            ancestor.is_none_or(|maximum| child.is_some_and(|value| value <= maximum))
+        };
         grants.is_subset_of(&self.grants)
-            && limits.file_bytes <= self.limits.file_bytes
-            && limits.path_bytes <= self.limits.path_bytes
-            && limits.attachments <= self.limits.attachments
-            && limits.render_bytes <= self.limits.render_bytes
-            && limits.model_steps <= self.limits.model_steps
-            && limits.model_events_per_step <= self.limits.model_events_per_step
-            && limits.tool_calls_per_step <= self.limits.tool_calls_per_step
-            && limits.context_messages <= self.limits.context_messages
+            && self
+                .limits
+                .file_bytes
+                .is_none_or(|maximum| limits.file_bytes.is_some_and(|value| value <= maximum))
+            && narrows(
+                self.limits.path_bytes.map(std::num::NonZeroUsize::get),
+                limits.path_bytes.map(std::num::NonZeroUsize::get),
+            )
+            && narrows(
+                self.limits.attachments.map(std::num::NonZeroUsize::get),
+                limits.attachments.map(std::num::NonZeroUsize::get),
+            )
+            && self
+                .limits
+                .render_bytes
+                .is_none_or(|maximum| limits.render_bytes.is_some_and(|value| value <= maximum))
+            && narrows(
+                self.limits.model_steps.map(std::num::NonZeroUsize::get),
+                limits.model_steps.map(std::num::NonZeroUsize::get),
+            )
+            && narrows(
+                self.limits
+                    .model_events_per_step
+                    .map(std::num::NonZeroUsize::get),
+                limits
+                    .model_events_per_step
+                    .map(std::num::NonZeroUsize::get),
+            )
+            && narrows(
+                self.limits
+                    .tool_calls_per_step
+                    .map(std::num::NonZeroUsize::get),
+                limits.tool_calls_per_step.map(std::num::NonZeroUsize::get),
+            )
+            && narrows(
+                self.limits
+                    .context_messages
+                    .map(std::num::NonZeroUsize::get),
+                limits.context_messages.map(std::num::NonZeroUsize::get),
+            )
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

@@ -88,7 +88,7 @@ impl FileTool {
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
-        let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
+        let encoded = super::value(&FileResult { file: file.0 }, None, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn search(
@@ -115,7 +115,15 @@ impl FileTool {
         };
         let encoded = super::value(
             &result,
-            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
+            Some(
+                context
+                    .effective_scope()
+                    .limits()
+                    .file_bytes
+                    .map_or(maximum_result_bytes, |maximum| {
+                        maximum_result_bytes.min(maximum)
+                    }),
+            ),
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -140,9 +148,9 @@ impl FileTool {
         if work.is_none() {
             limits.validate()?;
         }
-        if input.0.file.descriptor().byte_length() > limits.maximum_bytes
-            || input.0.diff.len() as u64 > limits.maximum_bytes
-        {
+        if limits.maximum_bytes.is_some_and(|maximum| {
+            input.0.file.descriptor().byte_length() > maximum || input.0.diff.len() as u64 > maximum
+        }) {
             return Err(invalid("patch input exceeds original task file bound"));
         }
         let bytes = context.read_file(&input.0.file, io).await?;
@@ -206,14 +214,14 @@ impl FileTool {
             .0
             .range
             .map_or(Some(length), |range| range.end.checked_sub(range.start));
-        if selected_length.is_none_or(|length| {
-            length
-                > context
-                    .effective_scope()
-                    .limits()
-                    .render_bytes
-                    .min(context.effective_scope().limits().file_bytes)
-        }) {
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .render_bytes
+            .into_iter()
+            .chain(context.effective_scope().limits().file_bytes)
+            .min();
+        if selected_length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum)) {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
         let bytes = if let Some(bytes) = resolved {
@@ -274,8 +282,10 @@ impl FileTool {
             .effective_scope()
             .limits()
             .render_bytes
-            .min(context.effective_scope().limits().file_bytes);
-        if count > maximum {
+            .into_iter()
+            .chain(context.effective_scope().limits().file_bytes)
+            .min();
+        if maximum.is_some_and(|maximum| count > maximum) {
             return Err(invalid("file selection exceeds text rendering bound"));
         }
         let empty = count == 0;
@@ -541,7 +551,7 @@ impl ToolExecutor for FileTool {
                     .await?;
             match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                    let encoded = super::value(&FileResult { file }, None, Some(work))?;
                     Ok((
                         Some(ToolResult { value: encoded.0 }),
                         encoded.1.ok_or(Error::NativeBoundary {
@@ -615,7 +625,7 @@ impl ToolExecutor for FileTool {
                 return receipt
                     .0
                     .map(|file| {
-                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        let encoded = super::value(&FileResult { file }, None, None)?;
                         Ok(ToolResult { value: encoded.0 })
                     })
                     .transpose();
@@ -646,7 +656,7 @@ fn read_result(
         file: FileReadSource,
         text: &'a str,
     }
-    let encoded = super::value(&Read { file, text }, u64::MAX, work)?;
+    let encoded = super::value(&Read { file, text }, None, work)?;
     Ok((ToolResult { value: encoded.0 }, encoded.1))
 }
 

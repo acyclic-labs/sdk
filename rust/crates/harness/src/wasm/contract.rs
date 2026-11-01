@@ -46,15 +46,45 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             let js = to_js(&value)?;
             for (key, bound) in [
                 ("file_bytes", value.file_bytes),
-                ("path_bytes", value.path_bytes as u64),
-                ("attachments", value.attachments as u64),
                 ("render_bytes", value.render_bytes),
-                ("model_steps", value.model_steps as u64),
-                ("model_events_per_step", value.model_events_per_step as u64),
-                ("tool_calls_per_step", value.tool_calls_per_step as u64),
-                ("context_messages", value.context_messages as u64),
             ] {
-                set_js_field(&js, key, &exact_js_number(bound)?)?;
+                let bound = bound
+                    .map(exact_js_number)
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
+            }
+            for (key, bound) in [
+                (
+                    "path_bytes",
+                    value.path_bytes.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "attachments",
+                    value.attachments.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "context_messages",
+                    value.context_messages.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "model_steps",
+                    value.model_steps.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "model_events_per_step",
+                    value.model_events_per_step.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "tool_calls_per_step",
+                    value.tool_calls_per_step.map(std::num::NonZeroUsize::get),
+                ),
+            ] {
+                let bound = bound
+                    .map(|count| exact_js_number(count as u64))
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
             }
             Ok(js)
         }

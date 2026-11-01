@@ -29,16 +29,17 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
         Box::pin(async move {
-            if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
-                return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
+            if request.timeout_ms == Some(0) || request.maximum_response_bytes == Some(0) {
+                return Err(Error::Invalid(
+                    "HTTP exchange needs positive configured allowances".into(),
+                ));
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
+            let mut builder = self.0.request(method, &request.endpoint).body(request.body);
+            if let Some(timeout) = request.timeout_ms {
+                builder = builder.timeout(Duration::from_millis(timeout));
+            }
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
             }
@@ -61,7 +62,10 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             let body = response.bytes_stream().map(move |chunk| {
                 let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
                 received = received.saturating_add(chunk.len());
-                if received as u64 > u64::from(request.maximum_response_bytes) {
+                if request
+                    .maximum_response_bytes
+                    .is_some_and(|maximum| received as u64 > u64::from(maximum))
+                {
                     return Err(Error::Indeterminate(operation));
                 }
                 Ok(chunk)
@@ -100,6 +104,7 @@ mod tests {
                 .local_addr()
                 .map_err(|e| Error::Storage(e.to_string()))?;
             let operation = OperationId::from_bytes([9; 16]);
+            let (completed, completion) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener
                     .accept()
@@ -142,49 +147,49 @@ mod tests {
                 assert!(request.contains("tools/call"));
                 if mode == "lost" {
                     drop(socket);
-                    assert!(
-                        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                            .await
-                            .is_err()
-                    );
-                    return Ok(());
-                }
-                let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
-                let response = if mode == "redirect" {
-                    format!(
-                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    )
                 } else {
-                    let body = if mode == "sse" {
-                        format!("data: {result}\r\n\r\n")
+                    let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
+                    let response = if mode == "redirect" {
+                        format!(
+                            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
                     } else {
-                        result
+                        let body = if mode == "sse" {
+                            format!("data: {result}\r\n\r\n")
+                        } else {
+                            result
+                        };
+                        let media = if mode == "sse" {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        };
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
                     };
-                    let media = if mode == "sse" {
-                        "text/event-stream"
-                    } else {
-                        "application/json"
-                    };
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
-                socket
-                    .write_all(response.as_bytes())
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-                socket
-                    .shutdown()
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-                // A second connection would prove an implicit retry/redirect.
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    socket
+                        .write_all(response.as_bytes())
                         .await
-                        .is_err()
-                );
-                Ok::<_, Error>(())
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                    socket
+                        .shutdown()
+                        .await
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                }
+                // A second connection would prove an implicit retry/redirect.
+                // Check queued admission before the original call's completion.
+                tokio::select! {
+                    biased;
+                    accepted = listener.accept() => {
+                        accepted.map_err(|error| Error::Storage(error.to_string()))?;
+                        Err(Error::Invalid("HTTP call opened another connection".into()))
+                    },
+                    completed = completion => {
+                        completed.map_err(|_| Error::Invalid("HTTP call completion was dropped".into()))
+                    },
+                }
             });
             let provider = Arc::new(NativeMcpHttpProvider::new(
                 reqwest::header::HeaderMap::new(),
@@ -194,11 +199,12 @@ mod tests {
                 format!("http://{address}/mcp"),
                 Some("session".into()),
                 8192,
-                1000,
+                if mode == "json" { None } else { Some(1000) },
                 None,
             )?;
             let result = transport.call(operation, "echo", json!({}), None).await;
             assert!(transport.reconcile(operation, None).await?.is_none());
+            let _ = completed.send(());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text("local")]);

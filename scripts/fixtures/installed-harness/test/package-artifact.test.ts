@@ -14,8 +14,7 @@ test("installed package resolves the public client and default WASM artifacts", 
   expect(prepared.bytes()).toEqual(original);
 });
 
-test("installed command admission refuses asserted identity and oversized input", async () => {
+test("installed command admission refuses asserted identity", async () => {
   await initializeClientQueries();
   expect(() => new PreparedAgentCommand(encodeCanonicalJson({ kind: "root", principal: "admin" }))).toThrow();
-  expect(() => new PreparedAgentCommand(new Uint8Array(PreparedAgentCommand.maximumCommandBytes() + 1))).toThrow();
 });

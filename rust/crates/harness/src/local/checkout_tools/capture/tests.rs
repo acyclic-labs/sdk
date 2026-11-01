@@ -89,7 +89,7 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
     let mut cursor = Cursor::open(&tools.workspace, &tools.capture_policy)?;
     cursor
         .watcher
-        .watch_arrivals(&batch, &tools.capture_policy, MAXIMUM_PATHS)
+        .watch_arrivals(&batch, &tools.capture_policy, None)
         .map_err(storage)?;
     let error = std::fs::symlink_metadata(directory.path().join(relative))
         .err()
@@ -225,56 +225,6 @@ async fn invalidated_registration_converges() -> Result<()> {
 #[tokio::test]
 async fn invalidated_replay_converges() -> Result<()> {
     recovers("replay").await
-}
-
-#[tokio::test]
-async fn repeated_invalidation_is_bounded_and_never_publishes_a_candidate() -> Result<()> {
-    let (directory, harness, tools) = fixture().await?;
-    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
-    cursor.initial = Some(WatchBatch::RescanRequired {
-        epoch: 1,
-        reason: WatchInvalidationReason::QueueOverflow,
-    });
-    let delivered = Arc::new(AtomicUsize::new(0));
-    cursor.injection = Some(Injection {
-        stage: "baseline",
-        remaining: usize::MAX,
-        delivered: delivered.clone(),
-        path: directory.path().join("marker"),
-    });
-    let mut slot = Some(cursor);
-    let generation = tools
-        .workspace
-        .view()
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map_err(storage)?
-        .value
-        .id();
-    assert!(matches!(
-        run(&tools, &mut slot).await,
-        Err(Error::Conflict(_))
-    ));
-    assert!(slot.is_none(), "a failed cursor must be discarded");
-    assert_eq!(delivered.load(Ordering::Relaxed), converge::MAXIMUM_RESCANS);
-    assert_eq!(
-        tools
-            .workspace
-            .view()
-            .workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(storage)?
-            .value
-            .id(),
-        generation
-    );
-    run(&tools, &mut slot).await?;
-    assert_eq!(contents(&tools).await?, b"after");
-    drop(slot);
-    drop(tools);
-    harness.disconnect().await
 }
 
 #[tokio::test]

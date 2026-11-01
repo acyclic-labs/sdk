@@ -625,7 +625,7 @@ proptest::proptest! {
             } else { Ok(()) }
         };
         let result = catalog("1", &["a","b"]).install_checked(
-            &mut registry, None, &transport, &projection, (8, 8192), &check,
+            &mut registry, None, &transport, &projection, (Some(8), Some(8192)), &check,
         );
         let definitions = registry.definitions(None).unwrap();
         if result.is_err() {

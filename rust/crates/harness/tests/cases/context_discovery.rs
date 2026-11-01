@@ -77,7 +77,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -183,7 +183,7 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
         root,
         io: None,
     }
-    .skill_prefix(path, &generation, declaration.limits.header_bytes)?
+    .skill_prefix(path, &generation, 16_384)?
     .await?;
     let retained = reader.prefix.lock().unwrap();
     let retained = retained.as_ref().expect("real prefix read completed");
@@ -336,7 +336,6 @@ impl Fixture {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let reader = FilesystemContentVerifier::new(
@@ -389,10 +388,10 @@ impl Fixture {
             }],
             policy: ContextDiscoveryPolicy::default(),
             limits: ContextDiscoveryLimits {
-                entries: 64,
-                directories: 8,
-                header_bytes: 256,
-                instruction_bytes: 512,
+                entries: Some(64),
+                directories: Some(8),
+                header_bytes: Some(256),
+                instruction_bytes: Some(512),
             },
         }
     }
@@ -594,12 +593,12 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     assert_eq!(captured.skills[0].source.path, "skills/a/SKILL.md");
     assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
     declaration.policy.skill_name = None;
-    declaration.limits.entries = 1;
+    declaration.limits.entries = Some(1);
     assert!(matches!(
         declaration.capture(fixture.reader.as_ref()).await,
         Err(Error::Invalid(_))
     ));
-    declaration.limits.entries = 64;
+    declaration.limits.entries = Some(64);
     let scope = fixture
         .issuer
         .bootstrap_scope(
@@ -760,8 +759,17 @@ async fn admitted_frontmatter_has_no_extra_size_or_node_ceilings() -> Result<()>
             .map(Vec::len),
         Some(3_000)
     );
+    fixture
+        .put("skills/a/SKILL.md", prefix.as_bytes(), "large")
+        .await?;
+    declaration.limits = ContextDiscoveryLimits::default();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let discovered = first_skill(&captured)?;
+    assert_eq!(discovered.name, metadata.name);
+    assert_eq!(discovered.description, metadata.description);
+    assert_eq!(discovered.fields, metadata.fields);
     declaration.skills.clear();
-    declaration.limits.header_bytes = 65_537;
+    declaration.limits.header_bytes = Some(65_537);
     assert!(
         declaration
             .capture(fixture.reader.as_ref())
@@ -839,7 +847,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
         operation_id: OperationId::from_bytes([7; 16]),
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let first = original_executor
         .model_step(&journal, &input, 0, &[])
