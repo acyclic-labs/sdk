@@ -27,8 +27,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
-        use crate::workspace::WorkspaceError;
         let mut accounting = work.accounting(cancellation);
+        let result = self
+            .workspace_join_changes_with_accounting(
+                base,
+                source,
+                maximum_changes,
+                &mut accounting,
+                cancellation,
+            )
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn workspace_join_changes_with_accounting(
+        &self,
+        base: GenerationId,
+        source: &crate::Generation<A, O>,
+        maximum_changes: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
+        use crate::workspace::WorkspaceError;
+        let mut accounting = accounting.allocation_scope();
         let result = async {
             if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             {
@@ -87,7 +108,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Ok(output)
         }
         .await;
-        work.finish(result, &accounting)
+        if result.is_ok() {
+            accounting.keep();
+        }
+        result
     }
 }
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
