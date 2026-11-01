@@ -277,7 +277,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         kind: ObjectKind,
         encoded: (Vec<u8>, KernelOwnedAllocation),
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
@@ -291,13 +291,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut encoded.0,
                 allocation,
                 original,
-                cancellation,
+                _cancellation,
             )?;
             let hashed =
                 crate::async_storage::prepare_object(&self.inner.objects, hashed, accounting)
                     .await?;
             let object = hashed.object_id();
-            let mut work = authority_work(accounting, cancellation)?;
+            let mut work = authority_work(accounting, _cancellation)?;
             self.inner.objects.put_hashed(hashed, &mut work).await?;
             return Ok(object);
         }
@@ -326,21 +326,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed =
             crate::async_storage::prepare_object(&self.inner.objects, hashed, accounting).await?;
         let object = hashed.object_id();
-        let mut object_work = authority_work(accounting, cancellation)?;
-        let result = self
-            .inner
-            .objects
-            .put_hashed(hashed, &mut object_work)
-            .await;
-        let spent = object_work.spent();
-        let (allocations, work, budget, _) = accounting
+        let result = {
+            let mut object_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+            let result = self
+                .inner
+                .objects
+                .put_hashed(hashed, &mut object_work)
+                .await;
+            object_work.spent().verify(object_work.budget)?;
+            result
+        };
+        let (allocations, ..) = accounting
             .standalone_parts()
             .ok_or(FsError::HandleAllocationFailed)?;
-        *work = work.with_backend(spent, allocations.live_bytes())?;
         allocations
             .release(capacity)
             .map_err(|error| error.into_work_or(FsError::PendingMutationAllocationFailed))?;
-        work.verify(budget)?;
         result.map_err(FsError::from)?;
         Ok(object)
     }

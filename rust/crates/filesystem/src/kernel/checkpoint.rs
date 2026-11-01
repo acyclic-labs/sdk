@@ -176,18 +176,13 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
             accounting.record_completed(hashing)?;
             let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
             let object = hashed.object_id();
-            let receipt = {
-                let mut object_work =
-                    crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+            let result = {
+                let mut object_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
                 let result = store.put_hashed(hashed, &mut object_work).await;
-                object_work.receipt(result)
+                object_work.spent().verify(object_work.budget)?;
+                result
             };
-            let spent = match &receipt {
-                Ok(receipt) => receipt.work,
-                Err(failure) => *failure.work,
-            };
-            super::file_read::complete_standalone_backend(accounting, spent, 0)?;
-            receipt.map_err(|failure| checkpoint_storage_error(failure.error))?;
+            result.map_err(checkpoint_storage_error)?;
             Ok(object)
         }
         .await;

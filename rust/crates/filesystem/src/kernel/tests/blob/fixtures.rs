@@ -1,6 +1,5 @@
 use super::*;
 use crate::Digest;
-use crate::ObjectFailure;
 use crate::ObjectStoreError;
 use crate::async_storage::AsyncObjectStore;
 use crate::memory::MemoryObjectStore;
@@ -8,66 +7,7 @@ use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectRead, ObjectReadRequest};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
-
-struct PeakRecordingStore {
-    calls: AtomicU64,
-    peak: u64,
-}
-
-impl AsyncObjectStore for PeakRecordingStore {
-    async fn put(
-        &self,
-        _id: ObjectId,
-        _bytes: OwnedBytes,
-        _work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        unreachable!()
-    }
-    async fn put_many(
-        &self,
-        _writes: &[crate::storage::ObjectWrite],
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(ObjectStoreError::NativeUnavailable);
-        }
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        let completed = WorkCounters {
-            peak_allocation_bytes: self.peak,
-            ..WorkCounters::UNCHARGED
-        };
-        completed.verify(work.work.remaining(work.budget)?)?;
-        work.accept(Ok::<_, ObjectFailure>(crate::OperationReceipt {
-            value: (),
-            work: completed,
-        }))
-    }
-    async fn read(
-        &self,
-        _id: ObjectId,
-        _max: u64,
-        _work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        unreachable!()
-    }
-    async fn read_many(
-        &self,
-        _requests: &[ObjectReadRequest],
-        _work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        unreachable!()
-    }
-    async fn contains(
-        &self,
-        _id: ObjectId,
-        _work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        unreachable!()
-    }
-}
 
 struct ScriptedSource {
     bytes: OwnedBytes,
