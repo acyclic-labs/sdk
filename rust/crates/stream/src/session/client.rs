@@ -22,6 +22,7 @@ pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
+mod deadline;
 mod observation;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use cache::Cache;
@@ -364,6 +365,7 @@ impl Client {
         }));
         PoolHandle {
             connections,
+            executor,
             commands,
             removed,
             next_id: Arc::new(AtomicU64::new(1)),

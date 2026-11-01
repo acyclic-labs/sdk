@@ -23,9 +23,8 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamError, StreamProvider, wire,
+    AppendOutcome, CommitId, CommitOutcome, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
 
 mod client;
@@ -34,7 +33,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::StreamPath;
+use crate::{AppendRequest, StreamPath};
 #[cfg(test)]
 mod receipt_tests;
 mod server;

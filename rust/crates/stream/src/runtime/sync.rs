@@ -1,10 +1,10 @@
 #[cfg(loom)]
 pub(crate) use loom::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
 #[cfg(not(loom))]
 pub(crate) use std::sync::{
-    Mutex,
+    Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
