@@ -251,7 +251,12 @@ async fn reinstall_restores_saved_tool_revisions_and_approval_digests() -> Resul
 
 #[tokio::test]
 async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread() -> Result<()> {
-    for _ in 0..8 {
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
+
+    for release_worker in [true, false] {
         let caller = std::thread::current().id();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let (started, worker) = tokio::sync::oneshot::channel();
@@ -260,7 +265,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         let worker_active = active.clone();
         let connection = Arc::new(Remote::default());
         let worker_connection = connection.clone();
-        let task = tokio::spawn(register_before(deadline, move |check| {
+        let registration = register_before(deadline, move |check| {
             let _connection = worker_connection;
             worker_active.fetch_add(1, Ordering::SeqCst);
             let _ = started.send(std::thread::current().id());
@@ -270,23 +275,35 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
             worker_active.fetch_sub(1, Ordering::SeqCst);
             check()?;
             result
-        }));
-        assert_ne!(
-            worker
-                .await
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-            caller
-        );
+        });
+        tokio::pin!(registration);
+        tokio::select! {
+            result = &mut registration => panic!("registration completed before worker admission: {result:?}"),
+            worker = worker => assert_ne!(
+                worker.map_err(|error| Error::Invalid(error.to_string()))?,
+                caller,
+            ),
+        }
         tokio::time::pause();
+        // Advance the configured MCP startup deadline; retirement uses the worker event.
         tokio::time::advance(Duration::from_secs(11)).await;
-        tokio::task::yield_now().await;
-        assert!(!task.is_finished(), "timeout must await worker retirement");
-        release
-            .send(())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        poll_fn(|cx| {
+            assert!(
+                registration.as_mut().poll(cx).is_pending(),
+                "timeout must await worker retirement"
+            );
+            Poll::Ready(())
+        })
+        .await;
+        if release_worker {
+            release
+                .send(())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        } else {
+            drop(release);
+        }
         assert!(matches!(
-            task.await
-                .map_err(|error| Error::Invalid(error.to_string()))?,
+            registration.await,
             Err(Error::Process(crate::ProcessError::Timeout { .. }))
         ));
         assert_eq!(active.load(Ordering::SeqCst), 0);
