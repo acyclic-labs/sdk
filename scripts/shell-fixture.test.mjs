@@ -40,6 +40,7 @@ wait "$producer"
     });
     if (mode === "lost") {
       await assert.rejects(execution, error => {
+        assert.ok(error instanceof Error);
         assert.match(error.message, /gate 0 producer closed before its event/);
         assert.ok(error.message.includes(`recovery command: ${recovery}`));
         return true;

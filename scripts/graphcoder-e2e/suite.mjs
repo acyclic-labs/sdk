@@ -18,6 +18,13 @@ export function commandCancellation() {
 // Preparation retains that owner but settles before the active sample begins.
 // Phase observers enqueue small records; their failure cannot skip retirement.
 // `origin` includes module load and preparation in the elapsed-time report.
+/**
+ * @template Result
+ * @param {{processes: {close(): unknown}, prepare?: () => any,
+ * run: (prepared: any) => Result | Promise<Result>,
+ * onPhase?: (event: {phase: string, outcome: string, seconds: number}) => void,
+ * origin?: number, signal?: AbortSignal}} options
+ */
 export async function withOwnedCase({ processes, prepare, run, onPhase, origin, signal = undefined }) {
   assert.ok(processes && typeof processes.close === "function" && typeof run === "function",
     "owned-case step=admit failed; recovery command: call withOwnedCase({processes,run}) with the caller's process scope");
@@ -28,19 +35,20 @@ export async function withOwnedCase({ processes, prepare, run, onPhase, origin, 
     catch (error) { phaseFailure ??= error; }
   };
   let result;
+  /** @type {Promise<unknown> | undefined} */
   let pending;
   const invoke = operation => {
     signal?.throwIfAborted();
     if (!signal) return operation();
     return (async () => {
-    let reject;
-    const cancelled = new Promise((_, no) => { reject = no; });
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    try {
-      pending = Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); });
-      return await Promise.race([pending, cancelled]);
-    } finally { signal.removeEventListener("abort", abort); }
+      let reject;
+      const cancelled = new Promise((_, no) => { reject = no; });
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        pending = Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); });
+        return await Promise.race([pending, cancelled]);
+      } finally { signal.removeEventListener("abort", abort); }
     })();
   };
   try {

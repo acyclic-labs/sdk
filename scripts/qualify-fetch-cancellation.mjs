@@ -43,8 +43,10 @@ const server = createServer(async (request, response) => {
     response.end(sse({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 8 } } }));
   } catch (error) { rejectFailure(error); response.writeHead(500); response.end("fixture validation failed"); }
 });
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const base = `http://127.0.0.1:${server.address().port}`; source = `${base}/source`;
+await /** @type {Promise<void>} */ (new Promise(resolve => server.listen(0, "127.0.0.1", resolve)));
+const address = server.address();
+assert.ok(address && typeof address !== "string", "step=read original HTTP listener address; recovery command: node scripts/qualify-fetch-cancellation.mjs ABSOLUTE_GRAPHCODER");
+const base = `http://127.0.0.1:${address.port}`; source = `${base}/source`;
 writeFileSync(catalog, JSON.stringify({ e2e: { adapter: "responses", authentication: "optional", base_url: base,
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
@@ -61,7 +63,9 @@ const inputs = [
   ], exit: 2, settled_contains: [prompt, "cancelled", "○"] },
   { resume: true, actions: [{ when: { contains: ["GraphCoder", prompt, "interaction cancelled", "STOPPED", "○"], cursor: true }, send: "\u0004" }], exit: 2, settled_contains: [prompt, "interaction cancelled", "STOPPED", "○"] },
 ];
-let passed = false, activePty;
+let passed = false;
+/** @type {ReturnType<typeof pty> | undefined} */
+let activePty;
 try {
   await withOwnedCase({ processes, signal: cancellation.signal, run: async () => {
     for (const input of inputs) { activePty = pty(processes, binary, fixture, input, capture => captures.push(capture)); await Promise.race([failed, activePty]); }

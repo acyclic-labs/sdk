@@ -156,7 +156,9 @@ test('a producer edit reopens unchanged callers through recursive dependencies',
  assert.deepEqual(newProjectPollingSites(before, before), []);
  assert.deepEqual(newProjectPollingSites(before, new Map(before).set(second, '// retained source comment\n' + before.get(second))), []);
  assert.deepEqual(newProjectPollingSites(before, new Map(before).set(unrelated, 'export const value = 2;')), []);
- const changed = new Map(before).set(second, before.get(second).replace('ready()', 'otherReady()'));
+ const originalSecond = before.get(second);
+ assert.ok(originalSecond);
+ const changed = new Map(before).set(second, originalSecond.replace('ready()', 'otherReady()'));
  assert.ok(newProjectPollingSites(before, changed).some(site => site.file === script && site.kind === 'polling-helper-reference'));
  const accepted = projectPollingSites(before).map(site => disposition(site, 'event-wait', 'original producer', 'original producer loss', 'suppress the original event'));
  assert.ok(newProjectPollingSites(before, changed, accepted).some(site => site.file === script));
@@ -175,7 +177,9 @@ test('a legitimate helper requires an exact caller disposition rather than a hel
   assert.ok(added.some(site => site.file === script && site.kind === 'polling-helper-reference'));
   const accepted = added.map(site => disposition(site, classification, event, terminal, 'remove or suppress the original event and require the original terminal result'));
   assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
-  assert.ok(newProjectPollingSites(before, new Map(after).set(script, after.get(script).replace('pause(original)', 'pause(replacement)')), accepted).length);
+  const originalCaller = after.get(script);
+  assert.ok(originalCaller);
+  assert.ok(newProjectPollingSites(before, new Map(after).set(script, originalCaller.replace('pause(original)', 'pause(replacement)')), accepted).length);
  }
 });
 

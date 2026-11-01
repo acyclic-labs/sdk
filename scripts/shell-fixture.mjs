@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 // Only a producer record releases it; shell exit closes every unfinished gate.
 export function runShellFixture(bash, script, { gates, env, recovery, event }) {
   return new Promise((resolve, reject) => {
+    const pipe = /** @type {const} */ ("pipe");
     const child = spawn(bash, ["-c", script], {
-      env, stdio: ["ignore", "pipe", "pipe", ...Array.from({ length: gates }, () => "pipe")],
+      env, stdio: ["ignore", pipe, pipe, ...Array.from({ length: gates }, () => pipe)],
     });
     const inputs = child.stdio.slice(3).map(input => {
       assert.ok(input instanceof Duplex,
