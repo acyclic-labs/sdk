@@ -161,6 +161,7 @@ fn refresh_io_preserves_original_roots_and_concurrent_observations()
                     )
                     .await
                     .map(|receipt| receipt.value)
+                    .map_err(engine_error)
             })?;
             let reader = bind_test_access(
                 CheckoutMountSource::new(
