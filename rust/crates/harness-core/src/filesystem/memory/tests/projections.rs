@@ -156,12 +156,15 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
             ]),
             limits,
         )?,
+        content: Some(task.tool_read_content().clone()),
         artifacts: Some(private.content_bindings()),
         ..Bindings::local()
     }
     .build()?
     .agent_context(&Capabilities::default(), private.content_bindings())?;
-    let destination = exact.projection_destination(None)?.unwrap();
+    let destination = exact
+        .projection_destination(None)?
+        .expect("the original source and private projection destination stay distinct");
     let output = &selected.outputs[0].file;
     let operation = OperationId::parse(output.path().rsplit('/').next().unwrap())?;
     assert_eq!(
