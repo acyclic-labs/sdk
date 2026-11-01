@@ -1,7 +1,7 @@
 //! Borrowed cell spans keep unselected outputs out of the allocation graph.
 //! Edits splice those spans back into the same authoritative nbformat file.
 use super::*;
-use crate::executor::json::JsonObject;
+use crate::executor::json::{BorrowedText, JsonObject};
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 use std::{borrow::Cow, fmt};
@@ -84,13 +84,13 @@ struct NotebookMetadata<'a> {
 #[derive(Deserialize, crate::HeapLayout)]
 struct LanguageInfo<'a> {
     #[serde(borrow)]
-    name: Option<Cow<'a, str>>,
+    name: Option<BorrowedText<'a>>,
 }
 
 #[derive(Deserialize, crate::HeapLayout)]
 struct KernelSpec<'a> {
     #[serde(borrow)]
-    language: Option<Cow<'a, str>>,
+    language: Option<BorrowedText<'a>>,
 }
 
 fn language<'a>(
@@ -114,7 +114,7 @@ fn language<'a>(
         )?;
         if let Some(value) = info.value.name {
             return Ok(Some(Decoded {
-                value,
+                value: value.0,
                 _hold: info._hold,
             }));
         }
@@ -127,7 +127,7 @@ fn language<'a>(
         )?;
         if let Some(value) = spec.value.language {
             return Ok(Some(Decoded {
-                value,
+                value: value.0,
                 _hold: spec._hold,
             }));
         }
