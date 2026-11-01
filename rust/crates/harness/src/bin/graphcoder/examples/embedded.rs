@@ -56,10 +56,11 @@ async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str)
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     use acyclic_harness_providers::{Credentials, Registry};
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    let [workspace, catalog, state, prompt] = arguments.as_slice() else {
-        return Err("usage: embedded WORKSPACE CATALOG STATE PROMPT".into());
+    let [workspace, catalog, state, operation, prompt] = arguments.as_slice() else {
+        return Err("usage: embedded WORKSPACE CATALOG STATE OPERATION PROMPT".into());
     };
     let workspace = std::path::Path::new(workspace);
+    let operation = operation.to_str().ok_or("operation must be UTF-8")?;
     let prompt = prompt.to_str().ok_or("prompt must be UTF-8")?;
     let mut registry = Registry::new(Credentials::default())?;
     registry.load_catalog(std::path::Path::new(catalog))?;
@@ -70,7 +71,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .working_directory(workspace)?;
     let runtime = acyclic_native_runtime::coordination_runtime()?;
     let result = runtime.block_on(async {
-        let mut text = answer(config, "embedded", prompt).await?;
+        let mut text = answer(config, operation, prompt).await?;
         text.push('\n');
         acyclic_native_runtime::InheritedOutput::stdout()?
             .write_owned(text.into_bytes())

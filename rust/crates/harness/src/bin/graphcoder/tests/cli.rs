@@ -343,16 +343,20 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         ),
         "fixture answer\n"
     );
-    let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
-    registry.load_catalog(&model.catalog).unwrap();
-    let config = registry
-        .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
-        .without_user_settings()
-        .state_directory(fixture._directory.path().join("embedded-state"))
-        .working_directory(&fixture.workspace)
-        .unwrap();
+    let embedded_config = || {
+        let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
+        registry.load_catalog(&model.catalog).unwrap();
+        registry
+            .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+            .without_user_settings()
+            .state_directory(fixture._directory.path().join("embedded-state"))
+            .working_directory(&fixture.workspace)
+            .unwrap()
+    };
     assert_eq!(
-        embedded::answer(config, "parity", "hello").await.unwrap(),
+        embedded::answer(embedded_config(), "parity", "hello")
+            .await
+            .unwrap(),
         "fixture answer"
     );
     let requests = model.requests.lock().unwrap().clone();
@@ -403,9 +407,42 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
             "fixture answer"
         );
         let actual = model.requests.lock().unwrap().last().unwrap().clone();
+        if changed_model {
+            assert_eq!(actual["model"], "drifted");
+            assert_eq!(actual["tools"], cli["tools"]);
+        } else {
+            assert_eq!(actual["model"], cli["model"]);
+            assert_ne!(actual["tools"], cli["tools"]);
+            assert_eq!(
+                actual["tools"].as_array().unwrap().len() + 1,
+                cli["tools"].as_array().unwrap().len()
+            );
+        }
         assert!(!same_contract(cli, &actual), "{actual}");
     }
     assert_eq!(model.generated(), 4);
+    // A new identity appends another prompt to the same persistent conversation.
+    assert_eq!(
+        embedded::answer(embedded_config(), "next", "another prompt")
+            .await
+            .unwrap(),
+        "fixture answer"
+    );
+    assert_eq!(model.generated(), 5);
+    // Reopening with the same identity and prompt recovers without dispatch.
+    assert_eq!(
+        embedded::answer(embedded_config(), "next", "another prompt")
+            .await
+            .unwrap(),
+        "fixture answer"
+    );
+    assert_eq!(model.generated(), 5);
+    assert!(
+        embedded::answer(embedded_config(), "next", "changed prompt")
+            .await
+            .is_err()
+    );
+    assert_eq!(model.generated(), 5);
     model.close().await;
 }
 
