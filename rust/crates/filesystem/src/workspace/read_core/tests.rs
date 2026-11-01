@@ -5,7 +5,7 @@ async fn comparison_peak(
     workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
     selected: GenerationId,
     original: GenerationId,
-    tracked: bool,
+    duplicate: bool,
     ceiling: u64,
 ) -> Result<u64, WorkspaceError> {
     let cancellation = CancellationToken::new();
@@ -28,34 +28,25 @@ async fn comparison_peak(
         .value
         .lookup_no_follow_with_accounting(&path.value, &mut accounting, &cancellation, true)
         .await?;
-    if tracked {
-        let mut original = workspace
-            .open_checkout(
-                GenerationSelector::Exact(original),
-                CheckoutMode::read_only_pinned(),
-                &mut accounting,
-                &cancellation,
-            )
-            .await?;
-        original
-            .value
-            .lookup_no_follow_with_accounting(&path.value, &mut accounting, &cancellation, false)
-            .await?;
-        original.retire(&mut accounting)?;
+    let mut original = workspace
+        .open_checkout(
+            GenerationSelector::Exact(original),
+            CheckoutMode::read_only_pinned(),
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+    // Negative control: reintroduce the extra admission for the same checkout.
+    let _duplicate = if duplicate {
+        Some(accounting.claim_owned(original.value.logical_owned_bytes(), 0)?)
     } else {
-        // Negative control: the old path retained a checkout without reserving it.
-        let mut original = workspace
-            .checkout_accounted(
-                GenerationSelector::Exact(original),
-                CheckoutMode::read_only_pinned(),
-                &mut accounting,
-                &cancellation,
-            )
-            .await?;
-        original
-            .lookup_no_follow_with_accounting(&path.value, &mut accounting, &cancellation, false)
-            .await?;
-    }
+        None
+    };
+    original
+        .value
+        .lookup_no_follow_with_accounting(&path.value, &mut accounting, &cancellation, false)
+        .await?;
+    original.retire(&mut accounting)?;
     Ok(accounting
         .standalone_parts()
         .ok_or(crate::WorkError::Overflow)?
@@ -67,13 +58,13 @@ async fn minimum_ceiling(
     workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
     selected: GenerationId,
     original: GenerationId,
-    tracked: bool,
+    duplicate: bool,
     upper: u64,
 ) -> Result<u64, WorkspaceError> {
     let (mut low, mut high) = (0, upper);
     while low < high {
         let candidate = low + (high - low) / 2;
-        if comparison_peak(workspace, selected, original, tracked, candidate)
+        if comparison_peak(workspace, selected, original, duplicate, candidate)
             .await
             .is_ok()
         {
@@ -82,12 +73,12 @@ async fn minimum_ceiling(
             low = candidate + 1;
         }
     }
-    comparison_peak(workspace, selected, original, tracked, low).await?;
+    comparison_peak(workspace, selected, original, duplicate, low).await?;
     Ok(low)
 }
 
 #[tokio::test]
-async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
+async fn cold_original_checkout_transfers_its_existing_memory_charge()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
@@ -112,9 +103,15 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
     let upper = comparison_peak(&workspace, selected.id(), original.id(), true, u64::MAX).await?;
     // Probe/cache capacities adapt to the allowance. Find actual admitted floors,
     // rather than assuming the unbounded peak is a lower bound at smaller budgets.
-    let broken = minimum_ceiling(&workspace, selected.id(), original.id(), false, upper).await?;
-    let owned = minimum_ceiling(&workspace, selected.id(), original.id(), true, upper).await?;
-    assert!(owned > broken, "{owned} <= {broken}");
+    let owned = minimum_ceiling(&workspace, selected.id(), original.id(), false, upper).await?;
+    let duplicated = minimum_ceiling(&workspace, selected.id(), original.id(), true, upper).await?;
+    eprintln!("checkout_live_ceiling={owned} duplicate_checkout_live_ceiling={duplicated}");
+    assert!(duplicated > owned, "{duplicated} <= {owned}");
+    assert!(
+        comparison_peak(&workspace, selected.id(), original.id(), true, owned)
+            .await
+            .is_err()
+    );
     let denied = selected
         .read_range_if_unchanged(
             &original,
@@ -124,7 +121,7 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
                 length: 0,
             },
             WorkBudget {
-                peak_allocation_bytes: broken,
+                peak_allocation_bytes: owned - 1,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
@@ -138,7 +135,7 @@ async fn cold_original_checkout_counts_against_the_live_memory_ceiling()
                 counter: "peak_allocation_bytes", ..
             }))
         )),
-        "original checkout escaped the live allocation ceiling ({broken} < {owned}): {denied:?}"
+        "original checkout escaped its required live allocation ceiling ({owned}): {denied:?}"
     );
     let admitted = selected
         .read_range_if_unchanged(

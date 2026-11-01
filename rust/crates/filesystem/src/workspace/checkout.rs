@@ -157,7 +157,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         };
         Ok(crate::kernel::Owned::new(
             checkout,
-            accounting.claim_owned(bytes, 0)?,
+            // Opening already charged this ledger. Transfer that charge so
+            // retirement releases it once, without a second admission.
+            accounting.claim_owned(0, 0)?,
             bytes,
         ))
     }
