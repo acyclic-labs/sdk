@@ -70,9 +70,8 @@ impl StockExecution<'_> {
         }
     }
 
-    /// Settles an admitted call as failed. The model receives `reason` and the bounded, sanitized
-    /// cause as the call's result and the turn continues; only the journal append itself can
-    /// still fail the command.
+    /// Settles an admitted call as failed. The complete sanitized result must fit the
+    /// pinned model limits before its cause can be recorded and returned to the model.
     pub(super) async fn reject_tool_call(
         &self,
         journal: &dyn ExecutionJournal,
@@ -112,7 +111,7 @@ impl StockExecution<'_> {
             .await
     }
 
-    /// Appends the call's failure with its bounded cause, unless the call is already settled.
+    /// Appends the call's failure with its admitted cause, unless the call is already settled.
     pub(super) async fn settle_tool_cause(
         &self,
         journal: &dyn ExecutionJournal,
@@ -151,8 +150,11 @@ impl StockExecution<'_> {
         }) {
             return Err(Error::Indeterminate(operation_id));
         }
-        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Failed, self.io)?;
         let content = tool_failure_content(reason, &cause, self.io)?;
+        with_history_io(self.io, |work| {
+            content.validate_limits(self.stock.limits, work)
+        })?;
+        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Failed, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,
             call_id: stock_string_copy(call_id, self.io)?,
