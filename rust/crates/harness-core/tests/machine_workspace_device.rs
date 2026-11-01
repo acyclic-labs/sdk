@@ -773,11 +773,34 @@ async fn committed_handover(refused_close: bool) -> Result {
                 }
             }
         }
+        // A delayed presence follow cannot turn original socket loss into a
+        // fatal validation error, even while its retained roster says online.
+        assert_eq!(
+            directory.roster().select(Some("desktop"))?.state,
+            TargetState::Online
+        );
+        assert!(matches!(
+            directory.resolve(Some("desktop")),
+            Err(acyclic_harness_core::Error::Target(
+                acyclic_harness_core::agent::TargetRefusal {
+                    refused: acyclic_harness_core::agent::Refused::Offline,
+                    ..
+                }
+            ))
+        ));
         // Lose the roster producer as well as the original device. Recovery
         // opens the exact saved target without a live connection; fresh calls
         // still refuse it. Never reuse the executor retained while online.
         drop(following);
-        assert!(directory.resolve(Some("desktop")).is_err());
+        assert!(matches!(
+            directory.resolve(Some("desktop")),
+            Err(acyclic_harness_core::Error::Target(
+                acyclic_harness_core::agent::TargetRefusal {
+                    refused: acyclic_harness_core::agent::Refused::Offline,
+                    ..
+                }
+            ))
+        ));
         assert!(directory.recover("user:ana").is_err());
         assert!(directory.recover("absent").is_err());
         let recovery_target = directory.recover("desktop")?;

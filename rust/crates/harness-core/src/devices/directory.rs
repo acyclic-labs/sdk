@@ -247,42 +247,39 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
     }
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {
-        let roster = self.roster();
-        let record = roster.select(target).map_err(Error::Target)?;
-        if record.name == self.home.record.name {
-            return Ok(Arc::clone(&self.home));
-        }
-        self.selected(record, &roster, false)
+        self.selected(target, false)
     }
 
     fn recover(&self, name: &str) -> Result<Arc<Target>> {
-        let roster = self.roster();
-        let record = roster
-            .targets()
-            .iter()
-            .find(|record| record.name == name)
-            .ok_or_else(|| Error::Invalid("original recovery target is absent".into()))?;
-        if record.name == self.home.record.name {
-            return Ok(Arc::clone(&self.home));
-        }
-        self.selected(record, &roster, true)
+        self.selected(Some(name), true)
     }
 }
 
 impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
-    fn selected(
-        &self,
-        record: &crate::agent::TargetRecord,
-        roster: &Roster,
-        recovery: bool,
-    ) -> Result<Arc<Target>> {
-        let connection = self
-            .devices
-            .borrow()
+    fn selected(&self, target: Option<&str>, recovery: bool) -> Result<Arc<Target>> {
+        // One watch borrow binds the rendered record and original connection.
+        // Release it before calling the socket host; a concurrent disconnect
+        // can then refuse that original socket, never select a new incarnation.
+        let devices = self.devices.borrow();
+        let roster = devices.roster();
+        let record = if recovery {
+            roster
+                .targets()
+                .iter()
+                .find(|record| Some(record.name.as_str()) == target)
+                .ok_or_else(|| Error::Invalid("original recovery target is absent".into()))?
+        } else {
+            roster.select(target).map_err(Error::Target)?
+        };
+        if record.name == self.home.record.name {
+            return Ok(Arc::clone(&self.home));
+        }
+        let connection = devices
             .statuses
             .get(&record.name)
             .cloned()
             .ok_or_else(|| Error::Invalid("listed device has no original connection".into()))?;
+        drop(devices);
         let terminal = if recovery {
             None
         } else {
