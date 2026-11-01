@@ -223,6 +223,160 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     );
 }
 
+#[test]
+fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
+    use std::{
+        sync::atomic::AtomicUsize,
+        task::{Context, Poll},
+    };
+
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+    impl futures::task::ArcWake for Wakes {
+        fn wake_by_ref(owner: &Arc<Self>) {
+            owner.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let mut world = world();
+    let trust = follower(&world);
+    let (mut second, genesis) = world.issuer.genesis("second", key(4), NOW).unwrap();
+    for record in genesis {
+        trust.apply(&record, NOW).unwrap();
+    }
+    trust.serve("second");
+    let (first_bytes, first_id) = credential(&world, &trust, 0);
+    let first = verify::verify(&first_bytes, &trust, NOW)
+        .unwrap()
+        .trust_evidence()
+        .unwrap();
+    let leaf = key(5);
+    let signer = CertifiedSigner::new(
+        world.issuer.certify(&second, certification(&leaf)).unwrap(),
+        leaf,
+    )
+    .unwrap();
+    let token = signer.mint(vec![], key(6), &trust, NOW).unwrap();
+    let other = token.trust_evidence().unwrap();
+    let mut first_event = first.changed(&trust);
+    let mut other_event = other.changed(&trust);
+    let first_wakes = Arc::new(Wakes::default());
+    let other_wakes = Arc::new(Wakes::default());
+    let first_waker = futures::task::waker_ref(&first_wakes);
+    let other_waker = futures::task::waker_ref(&other_wakes);
+    assert_eq!(
+        first_event
+            .as_mut()
+            .poll(&mut Context::from_waker(&first_waker)),
+        Poll::Pending
+    );
+    assert_eq!(
+        other_event
+            .as_mut()
+            .poll(&mut Context::from_waker(&other_waker)),
+        Poll::Pending
+    );
+    let unscoped = trust.changed();
+    let record = second
+        .revoke(&[(token.block_ids()[0], NOW + 10_000)], NOW)
+        .unwrap();
+    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Changed));
+    assert_eq!(first_wakes.0.load(Ordering::Relaxed), 0);
+    assert_eq!(other_wakes.0.load(Ordering::Relaxed), 1);
+    assert_eq!(other_event.now_or_never(), Some(Ok(())));
+    assert_eq!(unscoped.now_or_never(), Some(Ok(())));
+    assert_eq!(other.check(&trust, NOW), Err(VerifyError::Revoked));
+    assert!(first.check(&trust, NOW).is_ok());
+    let mut other_event = other.changed(&trust);
+    assert!((&mut other_event).now_or_never().is_none());
+    assert_eq!(trust.apply(&record, NOW), Ok(Applied::Duplicate));
+    assert!((&mut other_event).now_or_never().is_none());
+    assert_eq!(first_wakes.0.load(Ordering::Relaxed), 0);
+
+    // Subscription alone cannot allocate or admit a new account.
+    let accounts = trust.accounts.read().unwrap().len();
+    assert_eq!(
+        trust.changed_for("absent").now_or_never(),
+        Some(Err(SourceClosed))
+    );
+    assert_eq!(trust.accounts.read().unwrap().len(), accounts);
+
+    // Original account refusal, recovery and catch-up all reach the same key.
+    trust.refuse("account");
+    assert_eq!(first_event.now_or_never(), Some(Ok(())));
+    assert!(first.check(&trust, NOW).is_err());
+    assert!((&mut other_event).now_or_never().is_none());
+    let released = first.changed(&trust);
+    trust.release("account");
+    assert_eq!(released.now_or_never(), Some(Ok(())));
+    assert!(first.check(&trust, NOW).is_ok());
+    let served = first.changed(&trust);
+    trust.serve("account");
+    assert_eq!(served.now_or_never(), Some(Ok(())));
+    assert!((&mut other_event).now_or_never().is_none());
+
+    // Registration precedes the check even when publication precedes polling.
+    let revoked = first.changed(&trust);
+    trust
+        .apply(
+            &world.root.revoke(&[(first_id, NOW + 10_000)], NOW).unwrap(),
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(revoked.now_or_never(), Some(Ok(())));
+    assert_eq!(first.check(&trust, NOW), Err(VerifyError::Revoked));
+    assert!((&mut other_event).now_or_never().is_none());
+
+    // Advancing the original protected clock is a genuine global dependency.
+    let time_changed = first.changed(&trust);
+    let clock_record = second.revoke(&[([88; 32], NOW + 10_000)], NOW + 1).unwrap();
+    trust.apply(&clock_record, NOW + 1).unwrap();
+    assert_eq!(time_changed.now_or_never(), Some(Ok(())));
+    assert_eq!(other_event.now_or_never(), Some(Ok(())));
+    assert_eq!(trust.protected_now(NOW), NOW + 1);
+    let other_event = other.changed(&trust);
+
+    let rotated = first.changed(&trust);
+    let mut frontier = EnvironmentFrontier::genesis("test", world.issuer.anchor());
+    let successor = Issuer::new("test", key(7));
+    let rotation = world
+        .issuer
+        .environment_keyring(&mut frontier, &successor.anchor(), NOW)
+        .unwrap();
+    trust.apply(&rotation, NOW).unwrap();
+    assert_eq!(rotated.now_or_never(), Some(Ok(())));
+    assert_eq!(other_event.now_or_never(), Some(Ok(())));
+
+    // Global withdrawal never locks or scans accounts to notify their waits.
+    let fenced = first.changed(&trust);
+    let other_fenced = other.changed(&trust);
+    let accounts = trust.accounts.write().unwrap();
+    trust.fence(FenceCause::LostFollow);
+    assert_eq!(fenced.now_or_never(), Some(Ok(())));
+    assert_eq!(other_fenced.now_or_never(), Some(Ok(())));
+    drop(accounts);
+    let mut resumed = first.changed(&trust);
+    assert!((&mut resumed).now_or_never().is_none());
+    trust.resume();
+    assert_eq!(resumed.now_or_never(), Some(Ok(())));
+    let closed = first.changed(&trust);
+    trust.close(FenceCause::Shutdown);
+    assert_eq!(closed.now_or_never(), Some(Err(SourceClosed)));
+    assert_eq!(
+        first.changed(&trust).now_or_never(),
+        Some(Err(SourceClosed))
+    );
+
+    // A retained account operation cannot keep the global producer alive.
+    let trust = follower(&world);
+    let retained = trust.find_account("account").unwrap().unwrap();
+    let mut lost = first.changed(&trust);
+    assert!((&mut lost).now_or_never().is_none());
+    drop(trust);
+    assert_eq!(lost.now_or_never(), Some(Err(SourceClosed)));
+    drop(retained);
+}
+
 /// `record`, a keyring, with `edit` applied and re-signed by `signer`: a
 /// validly signed record custody itself would never produce.
 fn resign(record: &[u8], signer: u8, edit: impl FnOnce(&mut KeyringSnapshot)) -> Vec<u8> {
@@ -596,14 +750,21 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
         .issuer
         .environment_keyring(&mut environment, &successor.anchor(), NOW)
         .unwrap();
-    let sequence = account.read().unwrap().keyring.as_ref().unwrap().sequence;
+    let sequence = account
+        .state
+        .read()
+        .unwrap()
+        .keyring
+        .as_ref()
+        .unwrap()
+        .sequence;
     let verifying = trust.clone();
     VERIFYING_KEYRING.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move || {
             // Interleave at the real signature boundary inside account_record.
             // The local lock is held. Try-lock assertions fail immediately if
             // either global lock regresses, before an independent writer waits.
-            assert!(account.try_write().is_err());
+            assert!(account.state.try_write().is_err());
             assert!(verifying.accounts.try_write().is_ok());
             assert!(verifying.environment.try_write().is_ok());
             let mut changed = verifying.changed();
@@ -626,6 +787,7 @@ fn account_publication_does_not_hold_global_storage_or_accept_a_retired_signer()
             .find_account("account")
             .unwrap()
             .unwrap()
+            .state
             .read()
             .unwrap()
             .keyring

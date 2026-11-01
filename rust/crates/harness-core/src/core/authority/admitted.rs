@@ -193,7 +193,9 @@ impl acyclic_auth::trust::ChangeSource for AdmittedAuthority {
         self.caller.verifier.public.trust.check_open()
     }
     fn changed(&self) -> acyclic_auth::trust::Changed {
-        self.caller.verifier.public.trust.changed()
+        self.caller
+            .evidence
+            .changed(&*self.caller.verifier.public.trust)
     }
 }
 

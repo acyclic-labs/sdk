@@ -352,6 +352,16 @@ impl VerifiedCapability {
 }
 
 impl TrustEvidence {
+    /// Register the original trust owner's publications for this authenticated
+    /// account and its environment before rechecking this evidence. The owner
+    /// must be the same source used by `check`; this transfers no authority.
+    pub fn changed(
+        &self,
+        source: &(impl crate::trust::ChangeSource + ?Sized),
+    ) -> crate::trust::Changed {
+        source.changed_for(&self.account)
+    }
+
     /// The same-key admission preservation check without retaining the parent's
     /// bearer, append key or policy graph. See `VerifiedCapability::preserved_by`.
     pub fn preserved_by(&self, descendant: &VerifiedCapability) -> Result<bool, VerifyError> {

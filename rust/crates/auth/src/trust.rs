@@ -92,6 +92,14 @@ pub trait ChangeSource: Send + Sync {
     fn check_open(&self) -> Result<(), SourceClosed>;
     /// Register the next real owner publication or producer loss.
     fn changed(&self) -> Changed;
+    /// Register publications affecting this exact account, environment changes,
+    /// protected time advancement, or producer loss. Owners without keyed
+    /// publications retain the complete source event. Registration never admits
+    /// or starts following an account; an unavailable account may refuse with
+    /// `SourceClosed`. The caller must recheck authority after registering.
+    fn changed_for(&self, _account: &str) -> Changed {
+        self.changed()
+    }
 }
 /// Same trust publication contract for a browser owner.
 #[cfg(target_arch = "wasm32")]
@@ -100,6 +108,14 @@ pub trait ChangeSource {
     fn check_open(&self) -> Result<(), SourceClosed>;
     /// Register the next real owner publication or producer loss.
     fn changed(&self) -> Changed;
+    /// Register publications affecting this exact account, environment changes,
+    /// protected time advancement, or producer loss. Owners without keyed
+    /// publications retain the complete source event. Registration never admits
+    /// or starts following an account; an unavailable account may refuse with
+    /// `SourceClosed`. The caller must recheck authority after registering.
+    fn changed_for(&self, _account: &str) -> Changed {
+        self.changed()
+    }
 }
 
 /// Trust that announces its own publications: one owner answers both the
