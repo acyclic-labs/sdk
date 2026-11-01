@@ -628,7 +628,7 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "1", "2", "unknown"] {
+        for version in ["0", "1", "2", "3", "4", "5", "unknown"] {
             for bytes in [valid.bytes.clone(), Vec::new().into()] {
                 let mut checkpoint = valid.clone();
                 checkpoint.codec.version = version.into();
