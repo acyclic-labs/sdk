@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {readdir,rm} from 'node:fs/promises';
+import {mkdir,readdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createModels} from '@earendil-works/pi-ai/models';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
@@ -35,10 +35,11 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
   const result=await models.completeSimple(model,{messages:[{role:'user',content:'keyless admission',timestamp:0}]});
   assert.equal(result.stopReason,'error');
   assert.match(result.errorMessage,/step=admit Pi keyless Responses provider: No API key for provider: fixture/);
+  const workspace=join(root,'workspace');await mkdir(workspace);
   const env=environment(join(root,'profile')),native=await nativeHost('pi',env);
   const before=await readdir(root),effects=[];
   await assert.rejects(installedHost({host:'pi',processes:scope,
-   fixture:{env:{...env,E2E_PLUGIN_BINARY:native.entry},workspace:root,url:process.env.ACYCLIC_E2E_MODEL_URL},
+   fixture:{env:{...env,E2E_PLUGIN_BINARY:native.entry},workspace,url:process.env.ACYCLIC_E2E_MODEL_URL},
    tools:[],capture:record=>effects.push(record),execute:()=>effects.push('execute')}),error=>
    error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER'&&error.message.includes(`${native.package.name}@${native.package.version}`));
   assert.deepEqual(await readdir(root),before,'unsupported provider must not stage a package, state, approval file or Git root');
