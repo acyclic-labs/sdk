@@ -7,30 +7,27 @@ import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 
 // Subscribe before the snapshot. Both native model and command acceptance use
 // this one readiness barrier and the caller's existing process/tree custody.
-export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,args=[],capture=()=>{},signal}) {
+export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,args=[],capture=()=>{}}) {
  const descriptor=join(workspace,'.acyclic-sdk/host-files/owner.json');
  let ready,failed;
  const notified=new Promise((yes,no)=>{ready=yes;failed=no;});
- const aborted=()=>failed(signal.reason);
  const watcher=watch(workspace,{recursive:true});
  watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
  try {
-  signal?.addEventListener('abort',aborted,{once:true});
-  if(signal?.aborted){aborted();await notified;}
   const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
    {cwd:workspace,env,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
   owner.closed.then(record=>{capture(record);failed(new Error('workspace owner exited before descriptor'));},failed);
   if(existsSync(descriptor))ready();
   await notified;return owner;
- } finally {signal?.removeEventListener('abort',aborted);watcher.close();}
+ } finally {watcher.close();}
 }
 
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
  const scope=new Processes();
  const cancellation=new AbortController();
- let ended,failed;
+ let ended,failed,ready=false;
  const input=new Promise((yes,no)=>{
-  ended=()=>{cancellation.abort(new Error('workspace owner input closed before readiness'));yes();};
+  ended=()=>{if(!ready)cancellation.abort(new Error('workspace owner input closed before readiness'));yes();};
   failed=error=>{cancellation.abort(error);no(error);};
   process.stdin.once('end',ended);process.stdin.once('error',failed);process.stdin.resume();
  });
@@ -38,8 +35,9 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
  try {
   const [binary,workspace,state,root,...extra]=process.argv.slice(2);
   assert.ok(binary&&workspace&&state&&root&&!extra.length,'expected GRAPHCODER WORKSPACE STATE ROOT');
-  await withOwnedCase({processes:scope,run:async()=>{
-   const owner=await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env,signal:cancellation.signal});
+  await withOwnedCase({processes:scope,signal:cancellation.signal,run:async()=>{
+   const owner=await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env});
+   ready=true;
    console.log(JSON.stringify({event:'workspace-owner-ready'}));
    await Promise.race([input,owner.closed.then(()=>{throw new Error('workspace owner ended before input closure');})]);
   }});

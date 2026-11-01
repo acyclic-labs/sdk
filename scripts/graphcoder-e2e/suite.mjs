@@ -29,9 +29,10 @@ export async function withOwnedCase({ processes, prepare, run, onPhase, origin, 
   };
   let result;
   let pending;
-  const invoke = async operation => {
+  const invoke = operation => {
     signal?.throwIfAborted();
     if (!signal) return operation();
+    return (async () => {
     let reject;
     const cancelled = new Promise((_, no) => { reject = no; });
     const abort = () => reject(signal.reason);
@@ -40,6 +41,7 @@ export async function withOwnedCase({ processes, prepare, run, onPhase, origin, 
       pending = Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); });
       return await Promise.race([pending, cancelled]);
     } finally { signal.removeEventListener("abort", abort); }
+    })();
   };
   try {
     signal?.throwIfAborted();

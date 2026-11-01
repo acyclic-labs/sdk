@@ -26,9 +26,9 @@ test('workspace startup cancellation and early exit settle the original watch an
     mkdirSync(join(root,'.acyclic-sdk/host-files'),{recursive:true});
     writeFileSync(join(root,'.acyclic-sdk/host-files/owner.json'),'{}');
    }
-   const running=withOwnedCase({processes:scope,run:async()=>{
+   const running=withOwnedCase({processes:scope,signal:cancellation.signal,run:async()=>{
     const started=startWorkspaceOwner({scope:owner,binary:process.execPath,workspace:root,
-     state:root,root,env:process.env,signal:cancellation.signal});
+     state:root,root,env:process.env});
     started.catch(()=>{});
     if(mode==='cancel-live'){
      await events.keyed('started');
