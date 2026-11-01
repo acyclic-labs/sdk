@@ -577,6 +577,15 @@ async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Resul
 
 #[tokio::test]
 async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
+    let render_bytes = 65_536;
+    let string_bytes = render_bytes - crate::tool::schema::json_envelope_bytes()? - 2;
+    let code = format!("'x'.repeat({string_bytes})");
+    let (mut boundary_executor, model, _) = executor(&code, allowed()?, true)?;
+    boundary_executor.limits.render_bytes = render_bytes as u64;
+    boundary_executor
+        .execute(input(), &Journal::default())
+        .await?;
+    assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "'x'.repeat(1000000)",

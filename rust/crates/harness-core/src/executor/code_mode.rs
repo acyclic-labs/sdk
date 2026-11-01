@@ -290,7 +290,13 @@ impl StockExecution<'_> {
                     value
                 }
             };
-            stock_json_bound(&value, maximum as u64, self.io)?;
+            // Only the projected result consumes render capacity. The private
+            // receipt wrapper is never part of the model's output.
+            stock_json_bound(
+                value.get("value").unwrap_or(&value),
+                maximum as u64,
+                self.io,
+            )?;
             let mut context = Vec::new();
             for message in stock_into_iter(inner_context, self.io)? {
                 let ModelContent::Text(text) = message.content else {
