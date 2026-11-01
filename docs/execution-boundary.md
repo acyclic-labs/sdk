@@ -122,6 +122,10 @@ Root file types are bound with their identities at grant construction. A
 pinned inode's type cannot change; launch reuses that type after checking
 identity, removing one repeated metadata syscall per declared root.
 Missing native facilities return a typed unsupported refusal before execution.
+The public preparation and consuming launch entries use the same refusal
+mapper, including failures in preparation or its invocation meter. Cancellation
+retains its `Interrupted` classification. Refusals carry exactly one
+`tool execution failed: <reason>` prefix.
 Conformance checks verify that refusal and the absence of guest effects on
 unsupported kernels; kernel enforcement requires a supported kernel.
 

@@ -150,19 +150,28 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
         assert!(!workspace.join("new").exists());
         // The actual launch must use this same ledger for preparation. Its
         // first root open is refused before a process can acquire custody.
-        let exhausted = crate::tests::ReadBudgetMeter::new(0, u64::MAX);
-        let mut exhausted_command = make_command();
-        exhausted_command.env_clear();
-        ProcessTree::spawn_granted_controlled(
-            exhausted_command,
-            &grant,
-            custody,
-            Some(&exhausted),
-            &mut retained,
-        )
-        .expect_err("an exhausted invocation prepared an execution boundary");
-        assert!(retained.is_none());
-        assert!(!workspace.join("new").exists());
+        for (limit, failure) in [(0, None), (1, Some(1))] {
+            let mut exhausted = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+            exhausted.fail_recorded_operation = failure;
+            let mut exhausted_command = make_command();
+            exhausted_command.env_clear();
+            let error = ProcessTree::spawn_granted_controlled(
+                exhausted_command,
+                &grant,
+                custody,
+                Some(&exhausted),
+                &mut retained,
+            )
+            .expect_err("an unfunded invocation prepared an execution boundary");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            assert_eq!(
+                error.to_string().matches("tool execution failed: ").count(),
+                1
+            );
+            assert!(retained.is_none());
+            assert!(!workspace.join("new").exists());
+        }
         let mut command = make_command();
         command.env_clear();
         let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);

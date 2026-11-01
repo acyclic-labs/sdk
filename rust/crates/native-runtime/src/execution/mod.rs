@@ -295,7 +295,7 @@ impl ExecutionGrant {
     /// Prepares OS objects without starting untrusted code. A failure is a
     /// refusal, never an instruction to retry without confinement.
     pub fn prepare(&self) -> io::Result<PreparedExecution> {
-        self.prepare_launch(None, None)
+        self.prepare_launch(None, None).map_err(failure)
     }
 
     pub(crate) fn prepare_launch(
@@ -369,9 +369,10 @@ fn canonical(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub(crate) fn failure(error: io::Error) -> io::Error {
-    if error
-        .get_ref()
-        .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+    if error.kind() == io::ErrorKind::Interrupted
+        || error
+            .get_ref()
+            .is_some_and(|cause| cause.is::<ExecutionRefusal>())
     {
         return error;
     }
