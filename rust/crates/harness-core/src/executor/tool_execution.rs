@@ -462,6 +462,14 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
     ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+        // A native call runs where its capability's call would, and its start
+        // records that target. A call its declaration refuses runs nowhere;
+        // admission settles the refusal.
+        let canonical = match self.stock.tools.get(&invocation.name, None, None)? {
+            Some(tool) => tool.executor.canonical(invocation).ok().flatten(),
+            None => None,
+        };
+        let invocation = canonical.as_ref().unwrap_or(invocation);
         if let Some(original) = original {
             if let Some(identity) = original.filesystem {
                 return if original.target.is_none()
