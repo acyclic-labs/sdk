@@ -150,6 +150,28 @@ impl Cut<'_> {
             records,
             Some((observation, checkpoint)),
         )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = prepared
+            .1
+            .work()
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .cloned()
+        {
+            let bytes = prepared.1.retained();
+            let mut allocation = prepared.1.observer()?.take_native_custody(bytes)?;
+            prepared.1.transfer();
+            if let Err(error) = prepared.0.retain_native_custody(&mut allocation, &original) {
+                // Refusal leaves both guards intact. Destroy their request
+                // before either construction owner can refund its backing.
+                drop(prepared);
+                drop(allocation);
+                return Err(match error {
+                    acyclic_fs::AuthorityStoreError::NativeOriginal(cause) => cause.into(),
+                    error => acyclic_fs::FsError::from(error).into(),
+                });
+            }
+        }
         Ok(prepared)
     }
 
