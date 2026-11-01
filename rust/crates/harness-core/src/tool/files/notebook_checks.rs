@@ -118,6 +118,32 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     drop(error);
     assert_eq!(native.live_allocation_bytes(), baseline);
 
+    // Typed field diagnostics retain the same recoverable classification and
+    // original ownership on malformed cells, missing fields and duplicates.
+    for malformed in [
+        r#"{"cells":[]}"#,
+        r#"{"nbformat":4,"cells":null}"#,
+        r#"{"nbformat":4,"cells":[],"cells":[]}"#,
+        r#"{"nbformat":4,"cells":[{"source":[]}] }"#,
+        r#"{"nbformat":4,"cells":[{"cell_type":"code","source":null,"source":[]}] }"#,
+    ] {
+        let error = edit(
+            malformed,
+            &NotebookEdit::Replace {
+                index: 0,
+                id: None,
+                source: "new".into(),
+            },
+            Some(&native),
+        )
+        .err()
+        .expect("malformed notebook refused");
+        assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+        assert!(error.is_tool_failure(), "{error:?}");
+        drop(error);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+
     // Refusal happens on the original ledger before a decoded value escapes.
     cancellation.cancel();
     assert!(

@@ -32,7 +32,7 @@ where
             seed,
             source.as_bytes(),
             crate::executor::json::JsonValueSchema::None,
-            crate::executor::json::preparation_serde_diagnostic_label_bytes(),
+            crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
             crate::wire::ErrorCode::Invalid,
         )?;
         let (value, hold) = crate::filesystem::native_decoded(decoded)?;
