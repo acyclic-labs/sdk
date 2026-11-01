@@ -475,24 +475,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         let mut accounting = accounting.allocation_scope();
         let result = async {
             let identity = WorkspaceName::with_accounting(identity, &mut accounting)?;
-            let label = copy_workspace_label(&identity, &mut accounting)?;
-            let publication = self
-                .publication_closure
-                .as_ref()
-                .and_then(crate::facade::GenerationClosure::take_pin);
-            self.workspace
-                .volume
-                .fs
-                .retain_workspace_generation_with_accounting(
-                    &self.workspace.volume,
-                    self.id,
-                    crate::kernel::RetentionKind::Pin,
-                    label,
-                    publication,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
+            {
+                let mut temporary = accounting.allocation_scope();
+                let label = copy_workspace_label(&identity, &mut temporary)?;
+                let publication = self
+                    .publication_closure
+                    .as_ref()
+                    .and_then(crate::facade::GenerationClosure::take_pin);
+                self.workspace
+                    .volume
+                    .fs
+                    .retain_workspace_generation_with_accounting(
+                        &self.workspace.volume,
+                        self.id,
+                        crate::kernel::RetentionKind::Pin,
+                        label,
+                        publication,
+                        &mut temporary,
+                        cancellation,
+                    )
+                    .await?;
+            }
             Ok((identity, self.clone()))
         }
         .await;
