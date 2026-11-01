@@ -65,16 +65,8 @@ impl CheckoutPublisher {
                     .source
                     .as_ref()
                     .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-                BoundedContentFuture::new(access.io, || {
-                    access::require_volume_access(
-                        workspace,
-                        volume,
-                        &self.tools.signed,
-                        access.ceiling.unwrap_or(self.tools.signed.capabilities()),
-                        "local checkout publication",
-                    )
-                })?
-                .await?;
+                // The shared writer checks the signed scope and caller ceiling
+                // for each action and missing parent at the publication cut.
                 let writer = self.writer_for(volume, workspace)?;
                 let (original, original_hold) = writer
                     .observe_changes(volume, operation, maximum, access)?
