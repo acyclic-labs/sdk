@@ -55,7 +55,7 @@ pub(crate) struct Body<'a> {
 }
 impl Serialize for Body<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.serialize_fields(serializer, None, None)
+        self.serialize_fields(serializer, None, None::<&str>)
     }
 }
 
@@ -64,7 +64,7 @@ impl Body<'_> {
         &self,
         serializer: S,
         include: Option<&[&str]>,
-        model: Option<&str>,
+        model: Option<impl Serialize>,
     ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         for (name, value) in &self.fields {
@@ -75,7 +75,7 @@ impl Body<'_> {
             }
         }
         if let Some(model) = model {
-            map.serialize_entry("model", model)?;
+            map.serialize_entry("model", &model)?;
         }
         if let Some(tools) = &self.tools
             && include.is_none_or(|fields| fields.contains(&"tools"))

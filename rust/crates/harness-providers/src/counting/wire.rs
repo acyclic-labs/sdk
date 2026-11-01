@@ -112,15 +112,23 @@ impl Serialize for CountInput<'_, '_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         if self.adapter == Adapter::Gemini {
-            self.generation.serialize_fields(
-                serializer,
-                None,
-                Some(&format!("models/{}", self.model)),
-            )
+            self.generation
+                .serialize_fields(serializer, None, Some(CountModel(self.model)))
         } else {
             self.generation
-                .serialize_fields(serializer, Some(fields(self.adapter)), None)
+                .serialize_fields(serializer, Some(fields(self.adapter)), None::<&str>)
         }
+    }
+}
+
+struct CountModel<'a>(&'a str);
+
+impl Serialize for CountModel<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("models/{}", self.0))
     }
 }
 
