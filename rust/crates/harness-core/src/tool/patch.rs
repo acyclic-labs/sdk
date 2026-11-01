@@ -275,7 +275,9 @@ fn apply_update_core(
     meter: &mut NativeCustody,
 ) -> Result<String> {
     plan_output(meter, |meter| {
-        if maximum_bytes.is_some_and(|maximum| source.len() as u64 > maximum || diff.len() as u64 > maximum) {
+        if maximum_bytes
+            .is_some_and(|maximum| source.len() as u64 > maximum || diff.len() as u64 > maximum)
+        {
             return Err(invalid(meter, "patch input exceeds byte bound"));
         }
         retain(
@@ -389,7 +391,8 @@ mod tests {
                     "@@\n-one\n+two\n*** End of File\n+later\n",
                 ] {
                     assert!(
-                        apply_update_admitted("one\nthree\n", invalid, Some(4096), &mut custody).is_err()
+                        apply_update_admitted("one\nthree\n", invalid, Some(4096), &mut custody)
+                            .is_err()
                     );
                     // Both a later matching failure and a grammar failure
                     // release scratch without erasing earlier live outputs.
