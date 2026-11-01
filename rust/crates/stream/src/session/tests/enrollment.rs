@@ -261,7 +261,7 @@ async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit(
                 };
                 session.channels.get_mut(&1).unwrap().credit = session.credit;
                 session.refresh_source(1);
-                assert!(futures::poll!(session.next_frame()).is_pending());
+                assert!(futures::poll!(std::pin::pin!(session.next_frame())).is_pending());
             }
             assert_eq!(started.load(Ordering::SeqCst), usize::from(dispatch));
             session.credit = Default::default();
@@ -282,7 +282,7 @@ async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit(
                 &token(false),
                 session.limits.channels,
             )?;
-            let closed = futures::poll!(session.next_frame());
+            let closed = futures::poll!(std::pin::pin!(session.next_frame()));
             if omit_terminal {
                 assert!(closed.is_pending());
                 assert_eq!(dropped.load(Ordering::SeqCst), 0);
@@ -384,7 +384,7 @@ async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_c
             session.next_frame().await?.unwrap().wire().body,
             Some(Body::Opened(_))
         ));
-        assert!(futures::poll!(session.next_frame()).is_pending());
+        assert!(futures::poll!(std::pin::pin!(session.next_frame())).is_pending());
         assert_eq!(
             session.channels[&3].pending.len(),
             1,
@@ -399,7 +399,8 @@ async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_c
         } else {
             drop(owner);
         }
-        let std::task::Poll::Ready(closed) = futures::poll!(session.next_frame()) else {
+        let std::task::Poll::Ready(closed) = futures::poll!(std::pin::pin!(session.next_frame()))
+        else {
             panic!("original producer loss must complete without data credit");
         };
         let closed = closed?.ok_or("original producer loss ended the session")?;
