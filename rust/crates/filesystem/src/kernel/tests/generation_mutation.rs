@@ -141,9 +141,6 @@ async fn prove_candidate(
         generation,
         crate::kernel::ClosureLimits {
             decode: DecodeLimits::for_volume(config()),
-            maximum_objects: u64::MAX,
-            maximum_files: u64::MAX,
-            maximum_object_bytes: u64::MAX,
             profile: config().profile,
             symbolic_links: config().symbolic_links,
             hard_links: config().hard_links,

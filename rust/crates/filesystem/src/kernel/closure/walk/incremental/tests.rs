@@ -42,9 +42,6 @@ fn native_proof_aliases_keep_original_credit_after_cache_and_ticket_retirement()
     let store = crate::memory::MemoryObjectStore::default();
     let limits = ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: u64::MAX,
-        maximum_files: u64::MAX,
-        maximum_object_bytes: u64::MAX,
         profile: FilesystemProfile::Portable,
         symbolic_links: false,
         hard_links: false,

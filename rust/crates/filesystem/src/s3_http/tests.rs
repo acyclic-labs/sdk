@@ -1,4 +1,5 @@
 use super::*;
+use crate::{Digest, ObjectKind};
 include!("access_tests.rs");
 
 #[cfg(not(target_arch = "wasm32"))]

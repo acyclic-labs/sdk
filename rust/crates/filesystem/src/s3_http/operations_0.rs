@@ -257,9 +257,6 @@ where
                 ..UploadPartOutput::default()
             }));
         }
-        if snapshot.tail.saturating_add(2) >= u64::from(self.limits.maximum_multipart_records) {
-            return Err(s3s::s3_error!(SlowDown));
-        }
         if self
             .multipart_append(
                 &workspace,

@@ -906,7 +906,7 @@ mod tests {
                 let mut work = crate::native_host::ordinary_work();
                 let refused = (0..2).all(|_| {
                     matches!(
-                        shared.read_events_and_deliver(Duration::MAX, &mut work),
+                        shared.read_events_and_deliver(&mut work),
                         Err(DemandError::Io(error)) if error.raw_os_error() == Some(libc::EIO)
                     )
                 });

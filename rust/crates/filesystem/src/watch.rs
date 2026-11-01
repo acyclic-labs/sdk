@@ -3783,6 +3783,7 @@ impl NativeWatch {
         let _cancel = cancellation
             .on_cancel(original, move || {
                 let _state = shared
+                    .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 fenced.notify_all();
@@ -3790,6 +3791,7 @@ impl NativeWatch {
             .map_err(NativeWatchError::NativeWork)?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         loop {

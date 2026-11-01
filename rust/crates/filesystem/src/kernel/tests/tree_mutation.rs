@@ -165,7 +165,6 @@ async fn two_leaf_tree(
             TreeMutation::Insert(entry("n", 3, FileKind::Regular)?),
             TreeMutation::Insert(entry("x", 4, FileKind::Regular)?),
         ],
-        4,
         pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
