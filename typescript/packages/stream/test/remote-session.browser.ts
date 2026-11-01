@@ -70,6 +70,7 @@ export async function test(endpoint: string) {
   const finite = portable.read("browser/history", options)[Symbol.asyncIterator]();
   const firstRecord = await finite.next();
   if (firstRecord.done || firstRecord.value.sequence !== 0n || firstRecord.value.value.length !== payload.length) throw new Error("finite session read lost its first record");
+  if (readObservations !== 0) throw new Error("finite read reported completion before its terminal");
   if (cursorReads !== 1) throw new Error("finite read captured its cursor more than once");
   if (firstRecord.value.committedAtMicros !== records[0]!.committedAtMicros || firstRecord.value.commitId.some((byte, index) => byte !== records[0]!.commitId[index])) throw new Error("finite session read changed record identity");
   if (firstRecord.value.origin !== (records[0]!.origin || "browser/history")) throw new Error("finite session read changed its appending stream");
@@ -90,6 +91,7 @@ export async function test(endpoint: string) {
   const retained = await abandoned.next();
   if (retained.done || retained.value.value[0] !== 7) throw new Error("returned bytes mutated retained history");
   await abandoned.return?.();
+  if (readObservations !== 2) throw new Error("finite read cleanup did not report one terminal");
   await stream.dispatch("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, {
     source: "browser/history", destination: "browser/inherited", idempotencyKey: new TextEncoder().encode("browser-origin"),
   })));
