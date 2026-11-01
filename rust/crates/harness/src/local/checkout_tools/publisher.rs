@@ -4,6 +4,7 @@ use crate::conversation::{
     BoundedContentFuture, ContentHold, ContentIo, ContentPublisher, FileRef,
 };
 
+mod batch;
 mod observed;
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
@@ -239,6 +240,58 @@ impl CheckoutPublisher {
 }
 
 impl ContentPublisher for CheckoutPublisher {
+    fn stage_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::ContentChanges,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        let maximum_receipt_bytes = access
+            .io
+            .map(|io| io.remaining().map(|work| work.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX);
+        self.publish_changes(
+            volume,
+            operation,
+            Some(changes),
+            maximum_receipt_bytes,
+            access,
+            |receipt| {
+                receipt.ok_or_else(|| {
+                    Error::Storage("conditional publication returned no receipt".into())
+                })
+            },
+        )
+    }
+
+    fn observe_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        maximum: u64,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                Option<crate::conversation::ContentChanges>,
+                Option<ContentHold<'io>>,
+            ),
+        >,
+    > {
+        self.publish_changes(volume, operation, None, maximum, access, Ok)
+    }
+
     fn volume(&self) -> &VolumeRef {
         &self.volume
     }
@@ -251,11 +304,6 @@ impl ContentPublisher for CheckoutPublisher {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
         let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
-            acyclic_fs::access::Action::Write,
-            &relative,
-            self.tools.clock.now_unix_millis() / 1000,
-        )?;
         Ok((&mount.view.volume, relative))
     }
 

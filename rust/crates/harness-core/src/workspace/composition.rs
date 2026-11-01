@@ -76,10 +76,42 @@ impl<T> Mount<T> {
 pub struct MountTable<T> {
     /// Absolute native process root.
     pub root: PathBuf,
-    entries: BTreeMap<String, Option<Mount<T>>>,
+    entries: BTreeMap<Arc<str>, Option<usize>>,
+    // Immutable indices into canonical path order. Paths share their allocation
+    // with the namespace; neither identity lookup nor iteration copies a path.
+    mounted: Vec<(Arc<str>, Mount<T>)>,
+    volumes: std::collections::HashMap<[u8; 32], usize>,
 }
 
 impl<T> MountTable<T> {
+    /// Resolves an admitted volume without scanning the mounted namespace.
+    #[doc(hidden)]
+    pub fn by_volume(
+        &self,
+        volume: &VolumeRef,
+        io: Option<&crate::conversation::ContentIo>,
+    ) -> Result<&Mount<T>> {
+        let digest = crate::executor::with_history_io(io, |work| {
+            volume.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work,
+            )
+        })?;
+        let mount = self
+            .volumes
+            .get(&digest)
+            .and_then(|&index| self.mounted.get(index))
+            .map(|(_, mount)| mount)
+            .filter(|mount| &mount.view.volume == volume);
+        mount.ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "volume is not mounted in this task view",
+            )
+        })
+    }
+
     /// Resolves either a task-relative path or an exact volume's relative path.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     #[doc(hidden)]
@@ -127,30 +159,36 @@ impl<T> MountTable<T> {
                 .select(path, work)
                 .map(|(mount, path)| (mount, Cow::Borrowed(path)));
         }
-        if work.is_some() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let io: Option<&crate::conversation::ContentIo> = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = io.as_ref();
+        let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
+        crate::executor::with_history_io(io, |history| {
+            crate::conversation::validate_content_path(path, history)
+        })?;
+        if Path::new(path)
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
             return Err(path_error(
-                crate::wire::ErrorCode::Unsupported,
-                "native explicit-volume path allocation is unavailable; recovery: resolve the canonical mounted content path",
+                crate::wire::ErrorCode::Invalid,
+                "path escapes the task view",
                 work,
             ));
         }
-        let selected = if let Some(volume) = volume {
-            let (prefix, _) = self
-                .mounts()
-                .find(|(_, mount)| &mount.view.volume == volume)
-                .ok_or_else(|| {
-                    Error::Unauthorized("volume is not mounted in this task view".into())
-                })?;
-            self.resolve(&Path::new(prefix).join(path))?
-        } else {
-            self.resolve(Path::new(path))?
-        };
-        if volume.is_some_and(|volume| volume != &selected.0.view.volume) {
-            return Err(Error::Unauthorized(
-                "file path names another mounted volume".into(),
+        if path.starts_with(".volumes/") {
+            return Err(path_error(
+                crate::wire::ErrorCode::Unauthorized,
+                "explicit-volume path crosses the mounted namespace",
+                work,
             ));
         }
-        Ok((selected.0, Cow::Owned(selected.1)))
+        Ok((mount, Cow::Borrowed(path)))
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
@@ -171,16 +209,16 @@ impl<T> MountTable<T> {
     /// Mutable mounts in canonical path order, independent of the source backend.
     #[doc(hidden)]
     pub fn mounts_mut(&mut self) -> impl Iterator<Item = (&str, &mut Mount<T>)> {
-        self.entries
+        self.mounted
             .iter_mut()
-            .filter_map(|(path, mount)| mount.as_mut().map(|mount| (path.as_str(), mount)))
+            .map(|(path, mount)| (&**path, mount))
     }
 
     /// Visible mounts in canonical path order; the primary path is empty.
     pub fn mounts(&self) -> impl Iterator<Item = (&str, &Mount<T>)> {
-        self.entries
+        self.mounted
             .iter()
-            .filter_map(|(path, mount)| mount.as_ref().map(|mount| (path.as_str(), mount)))
+            .map(|(path, mount)| (path.as_ref(), mount))
     }
 
     /// Resolves a relative path without permitting traversal outside the view.
@@ -213,13 +251,14 @@ impl<T> MountTable<T> {
         let mut prefix = relative;
         loop {
             if let Some(entry) = self.entries.get(prefix) {
-                let mount = entry.as_ref().ok_or_else(|| {
+                let index = entry.ok_or_else(|| {
                     path_error(
                         crate::wire::ErrorCode::NotFound,
                         "volume is not mounted in this task view",
                         work,
                     )
                 })?;
+                let mount = &self.mounted[index].1;
                 let selected = relative
                     .get(prefix.len()..)
                     .unwrap_or_default()
@@ -340,9 +379,33 @@ pub fn compose<T>(
             native_root: None,
         }));
     }
+    let mut mounted = Vec::new();
+    let mut entries = BTreeMap::new();
+    let mut volumes_by_identity = std::collections::HashMap::new();
+    for (path, mount) in mounts {
+        let path: Arc<str> = path.into();
+        let index = match mount {
+            Some(mount) => {
+                let index = mounted.len();
+                let digest = mount.view.volume.identity_digest(
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    &mut None,
+                )?;
+                // Canonical order chooses the same first visible alias for a
+                // repeated volume identity, without an invocation-time scan.
+                volumes_by_identity.entry(digest).or_insert(index);
+                mounted.push((Arc::clone(&path), mount));
+                Some(index)
+            }
+            None => None,
+        };
+        entries.insert(path, index);
+    }
     Ok(MountTable {
         root,
-        entries: mounts,
+        entries,
+        mounted,
+        volumes: volumes_by_identity,
     })
 }
 

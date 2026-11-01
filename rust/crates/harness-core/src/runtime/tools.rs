@@ -521,6 +521,202 @@ impl ToolContext {
         .await
     }
 
+    /// Publishes one conditional batch on the original selected writer. Every
+    /// source is checked against this invocation's grants before publication.
+    pub(crate) async fn stage_tool_changes(
+        &self,
+        operation: OperationId,
+        volume: &VolumeRef,
+        changes: &[crate::conversation::ContentChange<'_>],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(crate::conversation::ContentChanges, u64)> {
+        use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult};
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
+        for change in changes {
+            crate::executor::with_history_io(io, |work| {
+                crate::conversation::validate_content_path(change.path(), work)?;
+                if change.path().len() > self.effective_scope().limits().path_bytes
+                    || crate::conversation::is_internal_path(change.path())
+                {
+                    return Err(Error::tool_rejected(
+                        "conditional path exceeds original task admission",
+                    ));
+                }
+                Ok(())
+            })?;
+            if let Some(source) = change.source() {
+                self.task().authorize_file_read(
+                    source,
+                    self.effective_scope(),
+                    self.effective_scope().grants(),
+                    None,
+                    io,
+                )?;
+                if source.volume() != volume {
+                    return Err(Error::Unauthorized(
+                        "conditional source differs from writer".into(),
+                    ));
+                }
+            }
+            let bytes = match change {
+                ContentChange::CreateAbsent { bytes, .. }
+                | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
+                ContentChange::DeleteExpected { .. } => 0,
+            };
+            if bytes > self.effective_scope().limits().file_bytes {
+                return Err(Error::tool_rejected(
+                    "conditional file exceeds original task capacity",
+                ));
+            }
+        }
+        writer.supports_stage(io)?;
+        let (files, hold) = writer
+            .stage_changes(
+                volume,
+                operation,
+                changes,
+                ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
+            .await?;
+        if files.members.len() != changes.len() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "conditional publisher returned another member count",
+            ));
+        }
+        for (change, member) in changes.iter().zip(&files.members) {
+            if member.path() != change.path() {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "conditional publisher returned another destination",
+                ));
+            }
+            let file = match (change, member) {
+                (ContentChange::CreateAbsent { .. }, ContentChangeResult::Created(file))
+                | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
+                    file
+                }
+                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                _ => {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "conditional publisher returned another action",
+                    ));
+                }
+            };
+            let (bytes, media, display) = match change {
+                ContentChange::CreateAbsent {
+                    bytes,
+                    media_type,
+                    display_name,
+                    ..
+                } => (*bytes, *media_type, *display_name),
+                ContentChange::UpdateExpected { source, bytes } => (
+                    *bytes,
+                    source.descriptor().media_type(),
+                    source.display_name(),
+                ),
+                ContentChange::DeleteExpected { .. } => continue,
+            };
+            if file.volume() != volume
+                || file.path() != change.path()
+                || file.descriptor().media_type() != media
+                || file.display_name() != display
+            {
+                return Err(Error::Storage(
+                    "conditional publisher returned another file identity".into(),
+                ));
+            }
+            crate::executor::with_history_io(io, |work| {
+                self.effective_scope().limits().validate_file(file, work)?;
+                file.descriptor().verify(bytes, work)
+            })?;
+            content
+                .reader
+                .verify_publication(file, file.descriptor().byte_length(), io)?
+                .await?;
+        }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok((files, retained))
+    }
+
+    /// Recovers the original batch receipt after the original journal has
+    /// authenticated the complete invocation; never reconstructs it from HEAD.
+    pub(crate) async fn observe_tool_changes(
+        &self,
+        operation: OperationId,
+        volume: &VolumeRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<crate::conversation::ContentChanges>, u64)> {
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
+        #[cfg(feature = "filesystem")]
+        let maximum = io
+            .map(|io| io.remaining().map(|work| work.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX);
+        #[cfg(not(feature = "filesystem"))]
+        let maximum = u64::MAX;
+        let (files, hold) = writer
+            .observe_changes(
+                volume,
+                operation,
+                maximum,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
+            .await?;
+        if let Some(files) = &files {
+            for file in files.files() {
+                crate::executor::with_history_io(io, |work| {
+                    self.effective_scope().limits().validate_file(file, work)
+                })?;
+                if file.volume() != volume {
+                    return Err(Error::Storage(
+                        "conditional receipt differs from selected volume".into(),
+                    ));
+                }
+                content
+                    .reader
+                    .verify_publication(file, file.descriptor().byte_length(), io)?
+                    .await?;
+            }
+        }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok((files, retained))
+    }
+
     /// Publishes a file tool's new file once where the task's commands
     /// write, under the effective tool scope and caller IO limits.
     pub async fn stage_tool_file_once(
@@ -763,6 +959,23 @@ impl ToolContext {
             0
         };
         Ok((selected, bytes, retained))
+    }
+
+    /// Resolves a write destination through the original admitted publisher.
+    /// Read routing remains independent of writer presence and write policy.
+    pub(crate) fn tool_write_path_selection<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (_, volume, relative) = super::content_write::publication_destination(
+            self.task().tool_content(None),
+            self.effective_scope(),
+            None,
+            path,
+            io,
+        )?;
+        Ok((volume, relative))
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.
