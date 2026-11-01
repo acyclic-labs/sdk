@@ -48,8 +48,8 @@ where
             seed,
             source.as_bytes(),
             crate::executor::json::JsonBounds {
-                maximum_bytes: source.len() as u64,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(source.len() as u64),
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,
@@ -362,8 +362,8 @@ fn convert_cell(
         cursor.feed(
             raw.get().as_bytes(),
             JsonBounds {
-                maximum_bytes: raw.get().len() as u64,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(raw.get().len() as u64),
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),

@@ -153,7 +153,7 @@ impl FileTool {
                 media: selection,
                 outputs: Vec::new(),
             },
-            u64::MAX,
+            None,
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))

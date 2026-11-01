@@ -394,7 +394,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &[],
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -418,7 +418,7 @@ impl ToolProjection for FileProjection {
                                     outputs: &result.0.outputs,
                                 },
                             },
-                            u64::MAX,
+                            None,
                             work,
                         );
                     }
@@ -431,7 +431,7 @@ impl ToolProjection for FileProjection {
                                 page: result.0.page.as_ref(),
                             },
                         },
-                        u64::MAX,
+                        None,
                         work,
                     );
                 }

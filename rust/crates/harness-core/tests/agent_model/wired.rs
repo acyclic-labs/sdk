@@ -93,7 +93,10 @@ fn executors_with_targets(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
             if matching_limits {
                 acyclic_harness_core::conversation::Limits {
-                    model_steps: usize::try_from(LIMITS.max_steps)?,
+                    model_steps: LIMITS
+                        .max_steps
+                        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+                        .transpose()?,
                     ..base
                 }
             } else {
@@ -103,18 +106,23 @@ fn executors_with_targets(
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (
-            acyclic_harness_core::conversation::Limits {
-                model_steps: usize::try_from(LIMITS.max_steps)?,
-                ..base
-            },
-            CompactionPolicy::Disabled,
+    Ok(Arc::new(
+        preset.executors(
+            (selection, model),
+            ToolRegistry::default(),
+            (
+                acyclic_harness_core::conversation::Limits {
+                    model_steps: LIMITS
+                        .max_steps
+                        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+                        .transpose()?,
+                    ..base
+                },
+                CompactionPolicy::Disabled,
+            ),
+            Arc::new(Tasks(bindings)),
         ),
-        Arc::new(Tasks(bindings)),
-    )))
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -1968,7 +1976,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(first.len(), 2, "parts share the original finite allowance");
     let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Default::default()
     };
     assert!(

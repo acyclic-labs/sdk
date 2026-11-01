@@ -110,12 +110,6 @@ impl FileTool {
                         "byte ranges and projections are mutually exclusive",
                     ));
                 }
-                let maximum = scope
-                    .limits()
-                    .render_bytes
-                    .into_iter()
-                    .chain(scope.limits().file_bytes)
-                    .min();
                 let length = match input.0.range {
                     Some(range)
                         if source
@@ -131,9 +125,7 @@ impl FileTool {
                         .as_ref()
                         .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if maximum.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX)
-                    || length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum))
-                {
+                if length.is_none() {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file selection exceeds source bounds",

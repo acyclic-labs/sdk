@@ -247,7 +247,7 @@ pub(super) async fn read(
             file: window.source,
             text: shown,
         },
-        u64::MAX,
+        None,
         work,
     )?;
     Ok((ToolResult { value: result.0 }, result.1))
