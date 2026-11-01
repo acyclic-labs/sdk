@@ -199,7 +199,6 @@ impl StreamProvider for Remote {
                         tonic_web_wasm_client::limits::UnaryResponseLimits::new(
                             wire_codec::requests::accepted_response_limit(&body)?,
                         )
-                        .ok_or(StreamError::LimitExceeded)?
                     } else {
                         self.response_limits
                     };
