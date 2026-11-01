@@ -31,18 +31,34 @@ impl Remote {
             operation_claims: crate::OperationClaims::default(),
         })
     }
-    fn service(&self) -> Service {
+    fn service(
+        &self,
+        response_limits: tonic_web_wasm_client::limits::UnaryResponseLimits,
+    ) -> Service {
         use tonic_web_wasm_client::options::Redirect;
         Service::new(tonic_web_wasm_client::Client::new_with_options(
             self.endpoint.url.clone(),
             tonic_web_wasm_client::options::FetchOptions::new()
-                .response_limits(self.response_limits)
+                .response_limits(response_limits)
                 .redirect(Redirect::Error),
         ))
-        .max_decoding_message_size(MAX_COMMAND_BYTES)
+        .max_decoding_message_size(response_limits.message_bytes())
         .max_encoding_message_size(MAX_COMMAND_BYTES)
     }
     async fn call<B, T, F, Fut>(&self, body: B, dispatch: F) -> Result<T, StreamError>
+    where
+        F: FnOnce(Service, tonic::Request<B>) -> Fut,
+        Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    {
+        self.call_with_limits(body, self.response_limits, dispatch)
+            .await
+    }
+    async fn call_with_limits<B, T, F, Fut>(
+        &self,
+        body: B,
+        response_limits: tonic_web_wasm_client::limits::UnaryResponseLimits,
+        dispatch: F,
+    ) -> Result<T, StreamError>
     where
         F: FnOnce(Service, tonic::Request<B>) -> Fut,
         Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
@@ -63,7 +79,7 @@ impl Remote {
             .metadata_mut()
             .insert("authorization", authorization);
         lease.check().await.map_err(|_| StreamError::AccessDenied)?;
-        let response = match dispatch(self.service(), request).await {
+        let response = match dispatch(self.service(response_limits), request).await {
             Ok(response) => response,
             Err(error) => {
                 if error.code() == tonic::Code::Unauthenticated
@@ -180,10 +196,20 @@ impl StreamProvider for Remote {
                 Box::pin(async move {
                     let mut body = wire_codec::commit_to_wire(&request);
                     body.include_envelope = accepted;
+                    let response_limits = if accepted {
+                        tonic_web_wasm_client::limits::UnaryResponseLimits::new(
+                            wire_codec::requests::accepted_response_limit(&body)?,
+                        )
+                        .ok_or(StreamError::LimitExceeded)?
+                    } else {
+                        self.response_limits
+                    };
                     let response = self
-                        .call(body, |mut service, request| async move {
-                            service.commit(request).await
-                        })
+                        .call_with_limits(
+                            body,
+                            response_limits,
+                            |mut service, request| async move { service.commit(request).await },
+                        )
                         .await?;
                     let outcome = wire_codec::commit_write_outcome_from_wire(response, accepted)?;
                     if let Some(receipt) = outcome.commit_receipt() {

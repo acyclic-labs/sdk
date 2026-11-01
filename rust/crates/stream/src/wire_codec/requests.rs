@@ -620,3 +620,29 @@ mod tests {
         Ok(())
     }
 }
+
+// An accepted reply adds the original envelope to the compact acknowledgement.
+// Keep the existing acknowledgement budget, then fund the envelope from this
+// admitted command budget: unchanged payload/path/header bytes, 34 commit-id bytes plus two
+// eleven-byte u64 fields per record, and at most four extra delimiter bytes.
+// Each mutation adds at most three u64 fields and two growing delimiters (45
+// bytes); the envelope adds its commit id, timestamp and enclosing delimiter.
+// Count vector lengths, never records, payload bytes or unrelated retained history.
+pub(crate) fn accepted_response_limit(
+    input: &crate::wire::CommitRequest,
+) -> Result<usize, crate::StreamError> {
+    let mut maximum = 2 * crate::MAX_COMMAND_BYTES + 64;
+    for mutation in &input.mutations {
+        let records = match mutation.mutation.as_ref() {
+            Some(crate::wire::commit_mutation::Mutation::Append(append)) => append.records.len(),
+            Some(crate::wire::commit_mutation::Mutation::Fork(fork)) => fork.records.len(),
+            None => return Err(crate::StreamError::InvalidArgument),
+        };
+        maximum = records
+            .checked_mul(60)
+            .and_then(|bytes| bytes.checked_add(45))
+            .and_then(|bytes| maximum.checked_add(bytes))
+            .ok_or(crate::StreamError::LimitExceeded)?;
+    }
+    Ok(maximum)
+}

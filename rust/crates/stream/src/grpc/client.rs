@@ -200,8 +200,14 @@ impl StreamProvider for Client {
                 Box::pin(async move {
                     let mut body = commit_to_wire(&request);
                     body.include_envelope = accepted;
+                    let maximum = accepted
+                        .then(|| crate::wire_codec::requests::accepted_response_limit(&body))
+                        .transpose()?;
                     let response = self
                         .unary(body, |mut service, request| {
+                            if let Some(maximum) = maximum {
+                                service = service.max_decoding_message_size(maximum);
+                            }
                             Box::pin(async move { service.commit(request).await })
                         })
                         .await?;

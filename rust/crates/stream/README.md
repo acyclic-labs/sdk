@@ -67,6 +67,13 @@ Postgres, browser journal and the existing gRPC Commit route preserve this
 selection. The JSON HTTP adapter refuses it with `Unsupported` before effects;
 it never reconstructs an accepted result from caller bytes or a later read.
 The envelope observes a publication and grants no execution authority.
+Both browser adapters and the native gRPC client admit accepted replies using
+the original compact reply budget plus one command budget and the request's
+added envelope metadata. A
+valid command can therefore return its full accepted result even when record
+sequence numbers, commit IDs and timestamps make the reply larger than the
+command. Computing that budget reads only mutation vector lengths and adds no
+allocation, record traversal or payload copy.
 
 An actor fork is `CommitMutation::Fork` plus its activation append in one
 `CommitRequest`, guarded by destination absence and the required source head.
