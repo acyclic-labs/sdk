@@ -27,15 +27,15 @@ impl State {
     fn publish(&self, trust: signed::Snapshot, now: u64) {
         *self.trust.write().unwrap() = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
-        self.published.send_replace(Ok(()));
-        self.clock_events.send_replace(Ok(()));
+        let _ = self.published.send_replace(Ok(()));
+        let _ = self.clock_events.send_replace(Ok(()));
     }
     /// The trust owner is lost.
     fn lose(&self) {
-        self.published.send_replace(Err(SourceClosed));
+        let _ = self.published.send_replace(Err(SourceClosed));
     }
     fn lose_clock(&self) {
-        self.clock_events.send_replace(Err(SourceClosed));
+        let _ = self.clock_events.send_replace(Err(SourceClosed));
     }
 }
 impl ChangeSource for State {
