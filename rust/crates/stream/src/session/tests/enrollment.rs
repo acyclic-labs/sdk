@@ -524,26 +524,33 @@ async fn client_enrollment_uses_the_original_pool_and_target_slot() -> TestResul
         Bytes::from_static(b"private"),
     )
     .await?;
+    let (runtime, lifetime) = tokio::sync::watch::channel(());
     let client = Client::in_process_with_products(
         session.provider,
         session.authority,
         None,
         session.calls.ok_or("missing original call provider")?,
         Arc::new(crate::runtime::PlatformExecutor),
-        None,
+        Some(lifetime),
     );
     client.register_credential(0, token(false))?;
-    assert_eq!(
-        client
-            .actor_call_enrolling(&Bytes::from_static(b"select"), 0, 1, 32)
-            .await?
-            .as_ref(),
-        b"selected"
-    );
+    let (reply, held) = client
+        .actor_call_enrolling(&Bytes::from_static(b"select"), 0, 1, 32)
+        .await?;
+    assert_eq!(reply.as_ref(), b"selected");
+    let selected = held.client();
+    drop(held);
     let mut follow = subscribe(3, "selected", 0, false);
     follow.channel = None;
     follow.credential = 1;
-    let mut records = client.subscribe(follow).await?;
+    assert!(
+        matches!(
+            client.subscribe(follow.clone()).await,
+            Err(StreamError::AccessDenied)
+        ),
+        "a numerical slot cannot borrow the retained enrollment"
+    );
+    let mut records = selected.subscribe(follow.clone()).await?;
     let record = records
         .next()
         .await
@@ -553,5 +560,68 @@ async fn client_enrollment_uses_the_original_pool_and_target_slot() -> TestResul
         matches!(record.item, Some(Item::Record(record)) if record.value.as_ref() == b"private")
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    drop(records);
+
+    // Clearing a slot invalidates its original admission before replacement.
+    // Reusing that number never revives a client retaining the old admission.
+    client.register_credential(1, Bytes::new())?;
+    assert!(matches!(
+        selected.subscribe(follow.clone()).await,
+        Err(StreamError::Unavailable)
+    ));
+    let (_, replacement_credential) = client
+        .actor_call_enrolling(&Bytes::from_static(b"select"), 0, 1, 32)
+        .await?;
+    let replacement = replacement_credential.client();
+    drop(replacement_credential);
+    assert!(matches!(
+        selected.subscribe(follow.clone()).await,
+        Err(StreamError::Unavailable)
+    ));
+    drop(selected);
+    let mut records = replacement.subscribe(follow.clone()).await?;
+    assert!(
+        records
+            .next()
+            .await
+            .ok_or("replacement follow ended")??
+            .into_data()
+            .is_ok()
+    );
+    drop(records);
+    drop(replacement);
+
+    // Last-drop cancellation clears only the matching original slot identity.
+    let (_, replacement_credential) = client
+        .actor_call_enrolling(&Bytes::from_static(b"select"), 0, 1, 32)
+        .await?;
+    let replacement = replacement_credential.client();
+    drop(replacement_credential);
+    let mut records = replacement.subscribe(follow.clone()).await?;
+    records
+        .next()
+        .await
+        .ok_or("replacement follow ended")??
+        .into_data()?;
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+    // The original physical producer ends. A retained credential cannot dial
+    // another session or turn an ephemeral enrollment into a portable token.
+    drop(runtime);
+    loop {
+        match records.next().await {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                assert_eq!(error, StreamError::Unavailable);
+                break;
+            }
+            None => return Err("lost enrollment must retain its typed terminal".into()),
+        }
+    }
+    assert!(matches!(
+        replacement.subscribe(follow).await,
+        Err(StreamError::Unavailable)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "loss must not re-enroll");
     Ok(())
 }

@@ -7,6 +7,7 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     let route_a = pool.routes.rehome(&1, "good").unwrap();
     route_a.records = records;
     let client = Client {
+        credential: None,
         pool: PoolHandle {
             connections: super::super::super::Connections::new(),
             commands: mpsc::channel(2).0,

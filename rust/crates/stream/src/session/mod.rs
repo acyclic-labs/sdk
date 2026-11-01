@@ -62,6 +62,7 @@ pub(crate) use client::Cache;
 pub use client::transport;
 pub use client::{
     ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, Client,
+    SessionCredential,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{

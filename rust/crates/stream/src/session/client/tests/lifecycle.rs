@@ -4,6 +4,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
     (
         Client {
+            credential: None,
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
                 commands,

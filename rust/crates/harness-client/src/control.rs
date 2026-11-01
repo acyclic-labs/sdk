@@ -249,7 +249,7 @@ impl AgentControls {
         client: Client,
         credential: u32,
     ) -> Result<(Self, String), AgentExchangeError> {
-        Self::discover_selected(client, credential, None).await
+        Self::discover_selected(client, credential, None, None).await
     }
 
     /// Select a descendant without creating another session or credential slot.
@@ -257,17 +257,44 @@ impl AgentControls {
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
     ) -> Result<(Self, String), AgentExchangeError> {
-        Self::discover_selected(self.client.clone(), self.credential, Some(agent)).await
+        Self::discover_selected(self.client.clone(), self.credential, Some(agent), None).await
+    }
+
+    /// Select and enroll exact observation grants on this original pool. The
+    /// returned controls retain the original physical session and selected
+    /// credential; session loss requires fresh admission by the original caller.
+    pub async fn select_enrolling(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        enrollment_slot: u32,
+    ) -> Result<(Self, String), AgentExchangeError> {
+        Self::discover_selected(
+            self.client.clone(),
+            self.credential,
+            Some(agent),
+            Some(enrollment_slot),
+        )
+        .await
     }
 
     async fn discover_selected(
         client: Client,
         credential: u32,
         agent: Option<acyclic_harness_core::agent::AgentPath>,
+        enrollment: Option<u32>,
     ) -> Result<(Self, String), AgentExchangeError> {
         let discovery = Self::new(client.clone(), credential, AgentBinding::discovery());
         let invocation = discovery.prepare(PreparedCommand::new(&AgentCommand::Bind { agent })?)?;
-        let (binding, tools) = AgentBinding::from_reply(&discovery.execute(&invocation).await?)?;
+        let (client, credential, reply) = if let Some(slot) = enrollment {
+            let (reply, held) = invocation
+                .execute_enrolling(&client, credential, slot)
+                .await?;
+            (held.client(), held.slot(), reply)
+        } else {
+            let reply = discovery.execute(&invocation).await?;
+            (client, credential, reply)
+        };
+        let (binding, tools) = AgentBinding::from_reply(&reply)?;
         Ok((Self::new(client, credential, binding), tools))
     }
 
@@ -697,6 +724,34 @@ impl<'a> PreparedAgentInvocation<'a> {
         })
         .await?
         .map_err(AgentExchangeError::Control)
+    }
+
+    /// Enroll one original Bind reply before disclosure and retain its exact
+    /// physical session. Staged or mutating commands cannot request enrollment.
+    pub async fn execute_enrolling(
+        &self,
+        session: &Client,
+        credential: u32,
+        enrollment_slot: u32,
+    ) -> Result<(AgentReply, acyclic_stream::session::SessionCredential), AgentExchangeError> {
+        let command = self.command.decoded()?;
+        let [invocation] = self.invocations.as_slice() else {
+            return Err(CommandError::Invalid.into());
+        };
+        if !matches!(command, AgentCommand::Bind { .. }) {
+            return Err(CommandError::Invalid.into());
+        }
+        let (bytes, held) = session
+            .actor_call_enrolling(
+                invocation,
+                credential,
+                enrollment_slot,
+                acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+            )
+            .await
+            .map_err(AgentExchangeError::Session)?;
+        let reply = response(&bytes, &command)?.map_err(AgentExchangeError::Control)?;
+        Ok((reply, held))
     }
 }
 

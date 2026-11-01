@@ -1,6 +1,34 @@
 //! Finite one-shot replies on the existing authenticated, credited session pool.
 use super::*;
 
+/// A credential held only by its original physical session. Clones retain the
+/// same enrollment; the last drop clears its slot through the original cursor
+/// cancellation owner. No bearer bytes or reconnect recipe are exposed.
+#[derive(Clone)]
+pub struct SessionCredential(pub(super) Arc<Enrollment>);
+
+pub(super) struct Enrollment {
+    pub(super) cursor: Cursor,
+    slot: u32,
+}
+
+impl SessionCredential {
+    /// The original session's credential slot.
+    #[must_use]
+    pub fn slot(&self) -> u32 {
+        self.0.slot
+    }
+
+    /// The same pool, constrained to this original enrollment. Opens fail after
+    /// clearing, replacement, movement or physical session loss; they never dial.
+    #[must_use]
+    pub fn client(&self) -> Client {
+        let mut client = self.0.cursor.client.clone();
+        client.credential = Some(self.clone());
+        client
+    }
+}
+
 impl Client {
     /// Invoke once and enroll its original result in an empty slot on this
     /// physical session. No credential bytes are exported or retained for
@@ -11,7 +39,7 @@ impl Client {
         credential: u32,
         enrollment_slot: u32,
         maximum_reply_bytes: usize,
-    ) -> Result<Bytes, StreamError> {
+    ) -> Result<(Bytes, SessionCredential), StreamError> {
         if invocation.is_empty()
             || invocation.len() > crate::MAX_COMMAND_BYTES
             || maximum_reply_bytes == 0
@@ -22,15 +50,27 @@ impl Client {
         {
             return Err(StreamError::InvalidArgument);
         }
-        self.reply(
-            Kind::ActorEnrollment(wire::SessionActorEnrollment {
-                invocation: invocation.clone(),
-                credential_slot: enrollment_slot,
-            }),
-            credential,
-            maximum_reply_bytes,
-        )
-        .await
+        let mut cursor = self
+            .open_cursor(
+                Kind::ActorEnrollment(wire::SessionActorEnrollment {
+                    invocation: invocation.clone(),
+                    credential_slot: enrollment_slot,
+                }),
+                cursor(0),
+                false,
+                false,
+                None,
+                credential,
+            )
+            .await?;
+        let reply = collect_reply(&mut cursor, maximum_reply_bytes).await?;
+        Ok((
+            reply,
+            SessionCredential(Arc::new(Enrollment {
+                cursor,
+                slot: enrollment_slot,
+            })),
+        ))
     }
 
     /// Invokes one canonical encoded Actors request on the shared session.
@@ -117,36 +157,45 @@ impl Client {
         // No acknowledgement/resume cursor is useful for a one-shot reply.
         // Dropping this cursor still returns all queued frame credit and removes
         // the interest through the same cancellation owner as a follow.
-        let source = self
-            .open_subscription(kind, cursor(0), false, false, None, credential)
+        let mut cursor = self
+            .open_cursor(kind, cursor(0), false, false, None, credential)
             .await?;
-        futures::pin_mut!(source);
-        let mut reply = Vec::new();
-        let mut total = None;
-        while let Some(item) = source.next().await {
-            let data = item?
-                .into_data()
-                .map_err(|_| StreamError::InvalidResponse)?;
-            let length = wire_codec::session::actor_call_total(&data)?;
-            if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
-                return Err(StreamError::InvalidResponse);
-            }
-            if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
-                total = Some(length);
-            }
-            let chunk = wire_codec::session::reply_chunk(data.item.as_ref())
-                .ok_or(StreamError::InvalidResponse)?;
-            if chunk.len() > length - reply.len() {
-                return Err(StreamError::InvalidResponse);
-            }
-            reply.extend_from_slice(chunk);
-            if reply.len() == length {
-                return Ok(reply.into());
-            }
-        }
-        Err(StreamError::Unavailable)
+        collect_reply(&mut cursor, maximum_reply_bytes).await
     }
+}
+
+async fn collect_reply(
+    cursor: &mut Cursor,
+    maximum_reply_bytes: usize,
+) -> Result<Bytes, StreamError> {
+    let operation = cursor.observation.operation.clone();
+    operation
+        .scope(async {
+            let mut reply = Vec::new();
+            let mut total = None;
+            while let Some(item) = cursor.frame().await? {
+                let data = item.into_data().map_err(|_| StreamError::InvalidResponse)?;
+                let length = wire_codec::session::actor_call_total(&data)?;
+                if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+                    return Err(StreamError::InvalidResponse);
+                }
+                if total.is_none() {
+                    reply
+                        .try_reserve_exact(length)
+                        .map_err(|_| StreamError::Capacity)?;
+                    total = Some(length);
+                }
+                let chunk = wire_codec::session::reply_chunk(data.item.as_ref())
+                    .ok_or(StreamError::InvalidResponse)?;
+                if chunk.len() > length - reply.len() {
+                    return Err(StreamError::InvalidResponse);
+                }
+                reply.extend_from_slice(chunk);
+                if reply.len() == length {
+                    return Ok(reply.into());
+                }
+            }
+            Err(StreamError::Unavailable)
+        })
+        .await
 }

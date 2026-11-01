@@ -106,6 +106,8 @@ pub(in crate::session::client) fn route(
         revisions: Arc::default(),
         filter: None,
         credential: 0,
+
+        affinity: None,
         raw: false,
         watermark: None,
         buffered_data: 0,
@@ -133,6 +135,7 @@ pub(in crate::session::client) fn route(
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
     let (commands, _) = mpsc::channel(2);
     Client {
+        credential: None,
         pool: PoolHandle {
             connections: super::super::super::Connections::new(),
             commands,

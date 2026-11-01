@@ -184,7 +184,9 @@ impl Pool {
         self.reads.clear();
         self.dials.clear();
         self.pending.clear();
-        self.routes.clear();
+        for (id, route) in std::mem::take(&mut self.routes) {
+            self.forget_enrollment(id, &route);
+        }
     }
     pub(super) fn reset_home(&mut self) {
         // Admissions mirror `home`; an empty home has nothing to rebind.
@@ -237,10 +239,18 @@ impl Pool {
             Command::Credential { slot, credential } => {
                 let total = self
                     .credential_bytes
-                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
+                    .checked_sub(
+                        self.credentials
+                            .get(&slot)
+                            .and_then(CredentialSlot::bytes)
+                            .map_or(0, Bytes::len),
+                    )
                     .and_then(|current| current.checked_add(credential.len()))
                     .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
                     .ok_or(StreamError::Capacity)?;
+                if let Some(CredentialSlot::Enrolled(id)) = self.credentials.get(&slot) {
+                    self.reject(*id, StreamError::Unavailable);
+                }
                 let encoded = frame(
                     0,
                     0,
@@ -252,7 +262,8 @@ impl Pool {
                 if credential.is_empty() {
                     self.credentials.remove(&slot);
                 } else {
-                    self.credentials.insert(slot, credential);
+                    self.credentials
+                        .insert(slot, CredentialSlot::Portable(credential));
                 }
                 self.credential_bytes = total;
                 let nodes = self.links.keys().cloned().collect::<Vec<_>>();
@@ -301,6 +312,7 @@ impl Pool {
                     kind,
                     filter,
                     credential,
+                    affinity,
                     raw,
                     progress,
                     records,
@@ -319,16 +331,49 @@ impl Pool {
                 if records.is_closed() || progress.cancelled() {
                     return Ok(());
                 }
+                // A non-portable slot is usable only through its original
+                // retained admission, on that admission's physical link.
+                let node = if let Some(owner) = affinity {
+                    let selected = self.routes.get(&owner).filter(|route| {
+                        route.live()
+                            && matches!(&route.kind, Kind::ActorEnrollment(enrollment) if enrollment.credential_slot == credential)
+                            && self.credentials.get(&credential) == Some(&CredentialSlot::Enrolled(owner))
+                            && self.links.contains_key(&route.node)
+                    });
+                    let Some(selected) = selected else {
+                        let _ = ready.send(Err(StreamError::Unavailable));
+                        return Ok(());
+                    };
+                    selected.node.clone()
+                } else {
+                    if matches!(
+                        self.credentials.get(&credential),
+                        Some(CredentialSlot::Enrolled(_))
+                    ) {
+                        let _ = ready.send(Err(StreamError::AccessDenied));
+                        return Ok(());
+                    }
+                    self.home.clone()
+                };
                 let from = progress.next()?;
+                if let Kind::ActorEnrollment(enrollment) = &kind {
+                    if self.credentials.contains_key(&enrollment.credential_slot) {
+                        let _ = ready.send(Err(StreamError::AlreadyExists));
+                        return Ok(());
+                    }
+                    self.credentials
+                        .insert(enrollment.credential_slot, CredentialSlot::Enrolled(id));
+                }
                 self.routes.insert(
                     id,
                     Route {
                         revisions,
-                        node: self.home.clone(),
+                        node: node.clone(),
                         attempt_epoch,
                         kind,
                         filter,
                         credential,
+                        affinity,
                         raw,
                         watermark: None,
                         buffered_data: 0,
@@ -346,12 +391,12 @@ impl Pool {
                         observation,
                     },
                 );
-                if self.links.contains_key(&self.home) {
+                if self.links.contains_key(&node) {
                     self.subscribe(id)
                 } else {
                     self.dial(
                         wire::SessionNode {
-                            node_id: self.home.clone(),
+                            node_id: node,
                             endpoint: String::new(),
                             placement_epoch: 0,
                         },
@@ -496,12 +541,29 @@ impl Pool {
                 }
             }
             Some(Body::Closed(closed)) => {
+                if closed.code == wire_codec::session::END_CODE
+                    && route.opened
+                    && <[u8; 8]>::try_from(route.received_opaque.as_ref()).is_ok_and(|total| {
+                        let total = u64::from_le_bytes(total);
+                        total != 0
+                            && route.received == total.div_ceil(crate::MAX_RECORD_BYTES as u64)
+                    })
+                    && let Kind::ActorEnrollment(enrollment) = &mut route.kind
+                {
+                    // The finite response ends; the original cursor now owns
+                    // the slot and physical link until its last lease drops.
+                    // Drop the invocation body rather than retaining history.
+                    enrollment.invocation = Bytes::new();
+                    route.progress.end();
+                    return Ok(());
+                }
                 let error = Self::closed(route, id, &closed);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.
                     self.flush_watermark(id)?;
                 }
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
+                self.retire_enrollment(id, &route)?;
                 if let Some(error) = error {
                     self.executor.spawn(Box::pin(async move {
                         let _ = route.records.send(Err(error)).await;
@@ -782,6 +844,20 @@ impl Pool {
 
     pub(super) fn reject(&mut self, id: u64, error: StreamError) {
         if let Some(mut route) = self.routes.remove(&id) {
+            if let Err(failure) = self.retire_enrollment(id, &route) {
+                self.fail(&failure);
+            }
+            if matches!(route.kind, Kind::ActorEnrollment(_))
+                && let Err(failure) = self.cancel_subscription(
+                    &route.node,
+                    wire::SessionChannel {
+                        channel_id: id,
+                        generation: route.generation,
+                    },
+                )
+            {
+                self.fail(&failure);
+            }
             if let Some(ready) = route.ready.take() {
                 let _ = ready.send(Err(error.clone()));
             }
@@ -807,6 +883,9 @@ impl Pool {
             .collect::<Vec<_>>();
         for id in ids {
             if let Some(mut route) = self.routes.remove(&id) {
+                if let Err(failure) = self.retire_enrollment(id, &route) {
+                    self.fail(&failure);
+                }
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Err(error.clone()));
                 }
@@ -820,6 +899,8 @@ impl Pool {
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
         for (id, mut route) in std::mem::take(&mut self.routes) {
+            // The pool is ending; no physical slot can survive it.
+            self.forget_enrollment(id, &route);
             if let Some(ready) = route.ready.take() {
                 let checked = matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty());
                 let _ = ready.send(if checked { Err(error.clone()) } else { Ok(id) });
@@ -830,6 +911,37 @@ impl Pool {
                 let _ = records.send(Err(error)).await;
             }));
         }
+    }
+
+    fn forget_enrollment(&mut self, id: u64, route: &Route) -> Option<u32> {
+        let Kind::ActorEnrollment(enrollment) = &route.kind else {
+            return None;
+        };
+        let slot = enrollment.credential_slot;
+        if self.credentials.get(&slot) != Some(&CredentialSlot::Enrolled(id)) {
+            return None;
+        }
+        self.credentials.remove(&slot);
+        Some(slot)
+    }
+
+    pub(super) fn retire_enrollment(&mut self, id: u64, route: &Route) -> Result<(), StreamError> {
+        if let Some(slot) = self.forget_enrollment(id, route)
+            && self.links.contains_key(&route.node)
+        {
+            self.send(
+                &route.node,
+                frame(
+                    0,
+                    0,
+                    Body::Credential(wire::SessionCredential {
+                        slot,
+                        credential: Bytes::new(),
+                    }),
+                ),
+            )?;
+        }
+        Ok(())
     }
 }
 

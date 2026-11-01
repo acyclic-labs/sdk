@@ -127,8 +127,9 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
                 1,
                 crate::MAX_RECORD_BYTES + 7
             )
-            .await,
-        Err(StreamError::Unsupported)
+            .await
+            .err(),
+        Some(StreamError::Unsupported)
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),

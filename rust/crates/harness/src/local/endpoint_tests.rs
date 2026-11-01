@@ -3,11 +3,9 @@ use crate::local::{
     Event, Observer,
     tests::{text, volume, volume_config},
 };
-use acyclic_harness_client::AgentBinding;
 use acyclic_stream::{
     AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProviderExt,
 };
-use futures::StreamExt as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Cut(AtomicBool);
@@ -76,9 +74,8 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         AgentReply::Root { .. }
     ));
     eprintln!("original adoption observed");
-    // Exercise the actual signing, serving and enrollment source. Keep an
-    // existing follow on this physical session: the client API for retaining
-    // an enrolled selection across a finite call is a separate contract.
+    // Exercise actual signing, serving and enrollment, retaining that exact
+    // physical session through the shared controls after its finite Bind ends.
     let hosted = harness.agents.get().expect("original hosted runtime");
     let server = hosted.server();
     let bound = server.bound();
@@ -103,63 +100,23 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let (controls, _) = AgentControls::discover(enrolled.clone(), 0)
         .await
         .map_err(exchange)?;
-    let subscription = |credential| acyclic_stream::wire::SessionSubscription {
-        credential,
-        kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
-            acyclic_stream::wire::SessionFollow {
-                resource: acyclic_stream::wire_codec::session::stream_resource(
-                    connection
-                        .root
-                        .status()
-                        .expect("original status path")
-                        .as_str(),
-                ),
-                ..Default::default()
-            },
-        )),
-        ..Default::default()
-    };
-    let mut original = enrolled
-        .subscribe(subscription(0))
+    let (selected_controls, _) = controls
+        .select_enrolling(connection.root.clone(), 1)
         .await
         .map_err(exchange)?;
-    original
-        .next()
-        .await
-        .ok_or_else(|| Error::Invalid("original follow ended".into()))?
-        .map_err(exchange)?;
-    let discovery = AgentControls::new(enrolled.clone(), 0, AgentBinding::discovery());
-    let binding = discovery
-        .prepare(PreparedCommand::new(&AgentCommand::Bind { agent: None }).map_err(exchange)?)
-        .map_err(exchange)?;
-    let reply = binding
-        .send::<AgentExchangeError, _, _>(|invocation| {
-            let client = &enrolled;
-            async move {
-                client
-                    .actor_call_enrolling(
-                        &invocation,
-                        0,
-                        1,
-                        acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
-                    )
-                    .await
-                    .map_err(AgentExchangeError::Session)
-            }
+    let mut selected = selected_controls
+        .observe_all(acyclic_harness_client::AgentSelection {
+            agent: connection.root.clone(),
+            conversation_from: 0,
+            status_from: 0,
         })
-        .await
-        .map_err(exchange)?
         .map_err(exchange)?;
-    assert!(matches!(reply, AgentReply::Bound { .. }));
-    let mut selected = enrolled
-        .subscribe(subscription(1))
-        .await
-        .map_err(exchange)?;
-    selected
-        .next()
-        .await
-        .ok_or_else(|| Error::Invalid("selected follow ended".into()))?
-        .map_err(exchange)?;
+    loop {
+        if matches!(selected.next().await.map_err(exchange)?, acyclic_harness_client::AgentEvent::Status { status, .. } if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
     // Enrollment accepts only the same original Bind query, before effects.
     let unsupported = controls
         .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(exchange)?)
@@ -172,8 +129,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
                 2,
                 acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
             )
-            .await,
-        Err(StreamError::Unsupported)
+            .await
+            .err(),
+        Some(StreamError::Unsupported)
     );
     eprintln!("original selected observation enrolled");
     // The same real session without an in-process owner has no local cause to add.
@@ -239,17 +197,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     eprintln!("original failed runtime custody ended");
     assert_eq!(custody.check(), Err(StreamError::Unavailable));
     loop {
-        match selected.next().await {
-            Some(Ok(_)) => {}
-            Some(Err(error)) => {
-                assert_eq!(error, StreamError::Unavailable);
-                break;
-            }
-            None => {
-                return Err(Error::Invalid(
-                    "selected source lost its typed terminal".into(),
-                ));
-            }
+        if let Err(error) = selected.next().await {
+            assert_eq!(error.code(), StreamError::Unavailable.code());
+            break;
         }
     }
     // A rejected command still reports its own admission error after storage fails.

@@ -63,14 +63,25 @@ impl Pool {
         let opening_credentials = std::mem::take(&mut link.opening_credentials);
         let slots = opening_credentials
             .keys()
-            .chain(self.credentials.keys())
             .copied()
+            .chain(
+                self.credentials
+                    .iter()
+                    .filter_map(|(slot, credential)| credential.bytes().map(|_| *slot)),
+            )
             .collect::<BTreeSet<_>>();
         for slot in slots {
-            if opening_credentials.get(&slot) == self.credentials.get(&slot) {
+            if opening_credentials.get(&slot)
+                == self.credentials.get(&slot).and_then(CredentialSlot::bytes)
+            {
                 continue;
             }
-            let credential = self.credentials.get(&slot).cloned().unwrap_or_default();
+            let credential = self
+                .credentials
+                .get(&slot)
+                .and_then(CredentialSlot::bytes)
+                .cloned()
+                .unwrap_or_default();
             let value = frame(
                 0,
                 0,
@@ -91,7 +102,12 @@ impl Pool {
         }
         let connect = self.connect.clone();
         let identity = self.identity.clone();
-        let credentials = self.credentials.clone();
+        // Only portable registrations can cross a physical-session boundary.
+        let credentials: BTreeMap<_, _> = self
+            .credentials
+            .iter()
+            .filter_map(|(slot, credential)| credential.bytes().map(|bytes| (*slot, bytes.clone())))
+            .collect();
         let epoch = self.dial_epoch;
         let executor = self.executor.clone();
         // Capture only the subscriber. Neither a dial nor a shared Link owns
@@ -301,7 +317,7 @@ impl Pool {
         let Some(route) = self
             .routes
             .get_mut(&id)
-            .filter(|route| route.opened && route.live())
+            .filter(|route| route.opened && route.live() && !route.progress.ended())
         else {
             return Ok(());
         };
@@ -329,6 +345,7 @@ impl Pool {
         let Some(route) = self.routes.remove(&id) else {
             return Ok(());
         };
+        self.retire_enrollment(id, &route)?;
         let node = route.node.clone();
         self.cancel_subscription(
             &node,

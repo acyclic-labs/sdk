@@ -22,6 +22,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
             let client = Client {
+                credential: None,
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
                     commands,
@@ -46,6 +47,8 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         revisions: Arc::clone(&client.revisions),
                         filter: None,
                         credential: 0,
+
+                        affinity: None,
                         raw: false,
                         id,
                         attempt_epoch: client.pool.attempt_epoch.load(Ordering::Acquire),
@@ -135,6 +138,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            credential: None,
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
                 commands,
@@ -156,6 +160,8 @@ pub fn verify_pool_lifetime(fault: u8) {
                 revisions: Arc::clone(&client.revisions),
                 filter: None,
                 credential: 0,
+
+                affinity: None,
                 raw: false,
                 id,
                 attempt_epoch: 0,
@@ -246,6 +252,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
+            credential: None,
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
                 commands,
@@ -399,6 +406,8 @@ pub fn verify_link_isolation(broken: bool) {
             revisions: Arc::default(),
             filter: None,
             credential: 0,
+
+            affinity: None,
             raw: false,
             id: 5,
             attempt_epoch: 0,
@@ -438,6 +447,7 @@ pub fn verify_registration_cancellation(broken: bool) {
         loom::model(move || {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
+                credential: None,
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
                     commands,
@@ -537,6 +547,7 @@ pub fn verify_node_dials(fault: u8) {
                 pool.routes.rehome(&1, "good").unwrap();
             }
             let client = Client {
+                credential: None,
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
                     commands: mpsc::channel(2).0,
@@ -652,6 +663,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.routes.get_mut(&1).unwrap().records = records;
         pool.routes.rehome(&1, "good").unwrap();
         let client = Client {
+            credential: None,
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
                 commands: mpsc::channel(2).0,
