@@ -64,6 +64,8 @@ mod publication;
 mod read_core;
 mod reads;
 mod restore;
+#[cfg(all(test, feature = "memory"))]
+mod retention_accounting_tests;
 mod reverse_paths;
 mod reverse_traversal;
 mod transaction;
