@@ -406,13 +406,15 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         let mut adoption = adopted(id(1));
         adoption.brief = Some(super::driver::file("frames")?);
         let root = host.create(&intent("create"), adoption).await?;
-        let failures = host.runtime().drain().await;
-        assert!(failures.is_empty(), "{failures:?}");
+        host.drain(&root).await?;
         let target = if children {
             root.child(&AgentId::derive(&root.id(), "result"))?
         } else {
             root.clone()
         };
+        if children {
+            host.drain(&target).await?;
+        }
         let admitted = bytes < maximum && !parent_only;
         let outcome = if admitted {
             AgentOutcome::Succeeded {
@@ -424,6 +426,10 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
             }
         };
         let state = host.state(&target).await?;
+        assert!(
+            matches!(state.phase, Phase::Done { .. }),
+            "completion missing: children={children} field={field} bytes={bytes} parent_only={parent_only}"
+        );
         assert_eq!(
             state.phase,
             Phase::Done {
