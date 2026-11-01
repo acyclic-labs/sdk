@@ -145,6 +145,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
     runtime.block_on(async {
         for case in [
             "report",
+            "empty",
             "generation",
             "deadline",
             "owner-lost",
@@ -183,6 +184,8 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     result
                 },
             );
+            let (settled, settlement) = tokio::sync::oneshot::channel();
+            let mut release = Some(release);
             let (terminate, signal) = tokio::sync::oneshot::channel();
             let shutdown = async {
                 signal.await.unwrap();
@@ -192,8 +195,16 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
             .shared();
             let stopped = shutdown.clone();
             let operation = async {
-                stopped.await.unwrap();
-                completion.await??;
+                if case == "empty" {
+                    // Only the original completed native future can certify
+                    // that its live wait has retired before the empty snapshot.
+                    completion.await??;
+                    settled.send(()).unwrap();
+                    stopped.await.unwrap();
+                } else {
+                    stopped.await.unwrap();
+                    completion.await??;
+                }
                 Ok(0)
             };
             let original = observe(&report, Ok(Some(port)), shutdown, true, operation);
@@ -207,6 +218,10 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     GENERATION
                 );
                 started.await.unwrap();
+                if case == "empty" {
+                    release.take().unwrap().send(()).unwrap();
+                    settlement.await.unwrap();
+                }
                 if case == "owner-lost" {
                     return Ok::<_, io::Error>(());
                 }
@@ -228,6 +243,9 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                 if matches!(case, "generation" | "deadline") {
                     assert_eq!(ack.outcome, ReportOutcome::Unsupported);
                     assert!(ack.waits.is_empty());
+                } else if case == "empty" {
+                    assert_eq!(ack.outcome, ReportOutcome::Empty);
+                    assert!(ack.waits.is_empty());
                 } else {
                     assert_eq!(ack.outcome, ReportOutcome::Report);
                     assert_eq!(ack.waits.len(), 1);
@@ -245,22 +263,24 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                 result = &mut host => panic!("original terminal preceded release: {result:?}"),
                 result = controller => result?,
             }
-            assert!(!retired.load(Ordering::Acquire));
+            assert_eq!(retired.load(Ordering::Acquire), case == "empty");
             assert_eq!(text.stats().retained, 1);
             terminate.send(()).unwrap();
-            poll_fn(|cx| {
-                assert!(
-                    host.as_mut().poll(cx).is_pending(),
-                    "cancellation is not physical retirement"
-                );
-                Poll::Ready(())
-            })
-            .await;
-            assert!(!retired.load(Ordering::Acquire));
-            if case == "producer-lost" {
-                drop(release);
-            } else {
-                release.send(()).unwrap();
+            if case != "empty" {
+                poll_fn(|cx| {
+                    assert!(
+                        host.as_mut().poll(cx).is_pending(),
+                        "cancellation is not physical retirement"
+                    );
+                    Poll::Ready(())
+                })
+                .await;
+                assert!(!retired.load(Ordering::Acquire));
+                if case == "producer-lost" {
+                    drop(release.take());
+                } else {
+                    release.take().unwrap().send(()).unwrap();
+                }
             }
             let ((result, report_result), failure) = host.await;
             if let Err(error) = report_result {
