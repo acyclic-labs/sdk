@@ -1042,7 +1042,7 @@ impl<'a> TurnContext<'a> {
     /// Decode each selected input once, retaining its ordered exact references
     /// for both grant derivation and the eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for (_, _, input, _) in &mut self.settled {
+        for SettledTurn { input, .. } in &mut self.settled {
             let original = std::mem::replace(input, ModelContent::Text(String::new()));
             *input = crate::agent::expand_attachments(original, reader).await?;
         }
