@@ -489,12 +489,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentMachines<P> {
         target: &str,
         executors: Arc<dyn MachineExecutors>,
     ) -> Result<Arc<dyn ToolExecutor>> {
-        Ok(Arc::new(OnFirstUse::new(
-            Arc::clone(self),
-            agent,
-            target,
-            executors,
-        )?))
+        Ok(Arc::new(OnFirstUse::new(self, agent, target, executors)?))
     }
 }
 
@@ -528,6 +523,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> crate::agent::AgentLif
 struct OnFirstUse<P: ?Sized> {
     machines: Arc<AgentMachines<P>>,
     agent: AgentPath,
+    // Position admitted once in this retained, immutable target table.
     target: usize,
     executors: Arc<dyn MachineExecutors>,
     bound: OnceCell<Arc<dyn ToolExecutor>>,
@@ -535,14 +531,14 @@ struct OnFirstUse<P: ?Sized> {
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static> OnFirstUse<P> {
     fn new(
-        machines: Arc<AgentMachines<P>>,
+        machines: &Arc<AgentMachines<P>>,
         agent: AgentPath,
         target: &str,
         executors: Arc<dyn MachineExecutors>,
     ) -> Result<Self> {
         let target = machines.target_position(target)?;
         Ok(Self {
-            machines,
+            machines: Arc::clone(machines),
             agent,
             target,
             executors,

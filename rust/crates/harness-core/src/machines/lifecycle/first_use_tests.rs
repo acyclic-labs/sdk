@@ -121,7 +121,9 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             let provider_ref =
                 ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
             let unrelated = Arc::new(SimulatedMachines::default());
-            let unrelated_host = MachinesHost::new(unrelated.clone(), provider_ref.clone())?;
+            let unrelated_ref =
+                ProviderRef::new("unrelated".into(), "machines".into(), "1".into(), &mut None)?;
+            let unrelated_host = MachinesHost::new(unrelated.clone(), unrelated_ref)?;
             let mut targets = (1..target_count)
                 .map(|position| ProvisionedTarget {
                     name: format!("unheld-{position}"),
@@ -147,7 +149,7 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 executor: Arc::new(NeverRun),
             });
             let target = OnFirstUse::new(
-                machines,
+                &machines,
                 AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
                 "machine",
                 executors.clone(),
@@ -212,7 +214,7 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             // A fresh observer binds the same original Machine; an absent
             // original binding remains indeterminate without allocation.
             let invocation = ToolInvocation {
-                operation_id: OperationId::new(),
+                operation_id: crate::OperationId::new(),
                 call_id: "replay".into(),
                 name: "shell".into(),
                 arguments: serde_json::Value::Null,
@@ -224,12 +226,8 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                     false,
                 ),
             ] {
-                let recovered = OnFirstUse::new(
-                    Arc::clone(&target.machines),
-                    agent,
-                    "machine",
-                    executors.clone(),
-                )?;
+                let recovered =
+                    OnFirstUse::new(&target.machines, agent, "machine", executors.clone())?;
                 let result = recovered.reconcile(invocation.clone(), None).await;
                 if original {
                     assert!(matches!(result, Err(Error::Unsupported(_))));
