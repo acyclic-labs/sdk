@@ -61,21 +61,27 @@ impl AdmittedAuthority {
         context.check().map_err(|_| Error::Cancelled)?;
         let parent = self.parent(request.parent)?;
         let issued = self
-            .run(context, operation, async {
-                match &self.custody {
-                    Custody::Native(root) => root.resource_credential(
-                        request.parent,
-                        request.grants,
-                        request.caller,
-                        request.now,
-                    ),
-                    Custody::Platform(source) => {
-                        source
-                            .resource_credential(context, operation, request)
-                            .await
+            .run(
+                context,
+                operation,
+                &parent,
+                request.caller.map(|(_, evidence)| evidence),
+                async {
+                    match &self.custody {
+                        Custody::Native(root) => root.resource_credential(
+                            request.parent,
+                            request.grants,
+                            request.caller,
+                            request.now,
+                        ),
+                        Custody::Platform(source) => {
+                            source
+                                .resource_credential(context, operation, request)
+                                .await
+                        }
                     }
-                }
-            })
+                },
+            )
             .await?;
         self.check_scope(request.parent)
             .map_err(|error| Self::after_dispatch(error, operation))?;
@@ -84,7 +90,9 @@ impl AdmittedAuthority {
             let principal = issued.effective().principal();
             let selected = match parent {
                 Parent::Original(owner) => owner.caller.evidence.contributed_to(&issued),
-                Parent::Descendant(parent) => parent
+                Parent::Descendant {
+                    capability: parent, ..
+                } => parent
                     .contributed_to(&issued)
                     .map_err(workload::unauthorized)?,
             };

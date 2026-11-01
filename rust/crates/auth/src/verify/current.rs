@@ -435,6 +435,20 @@ impl VerifiedCapability {
             .contributed_to(self.trust_requirements(), recipient))
     }
 
+    /// Register original trust publications for this account and every signed
+    /// contribution before rechecking authority. Uses the same owner as `check`;
+    /// registration transfers no authority and never starts a trust follower.
+    pub fn changed(
+        &self,
+        source: &(impl crate::trust::ChangeSource + ?Sized),
+    ) -> Result<crate::trust::Changed, VerifyError> {
+        Ok(changed(
+            source,
+            self.account_id()?,
+            self.trust_requirements(),
+        ))
+    }
+
     fn trust_requirements(&self) -> impl Iterator<Item = &TrustRequirement> + Clone {
         self.blocks
             .first()
@@ -676,17 +690,7 @@ impl TrustEvidence {
         &self,
         source: &(impl crate::trust::ChangeSource + ?Sized),
     ) -> crate::trust::Changed {
-        if self.requirements.is_empty() {
-            return source.changed_for(&self.account);
-        }
-        let registrations = std::iter::once(source.changed_for(&self.account))
-            .chain(
-                self.requirements
-                    .iter()
-                    .map(|requirement| source.changed_for(&requirement.account)),
-            )
-            .collect::<Vec<_>>();
-        Box::pin(async move { futures::future::select_all(registrations).await.0 })
+        changed(source, &self.account, self.requirements.iter())
     }
 
     /// The same-key admission preservation check without retaining the parent's
@@ -768,6 +772,22 @@ impl TrustEvidence {
             .try_fold(base, u64::checked_add)
             .ok_or(VerifyError::Malformed)
     }
+}
+
+fn changed<'a>(
+    source: &(impl crate::trust::ChangeSource + ?Sized),
+    account: &str,
+    requirements: impl Iterator<Item = &'a TrustRequirement>,
+) -> crate::trust::Changed {
+    let mut requirements = requirements.peekable();
+    let original = source.changed_for(account);
+    if requirements.peek().is_none() {
+        return original;
+    }
+    let registrations = std::iter::once(original)
+        .chain(requirements.map(|requirement| source.changed_for(&requirement.account)))
+        .collect::<Vec<_>>();
+    Box::pin(async move { futures::future::select_all(registrations).await.0 })
 }
 
 pub(super) fn check(
