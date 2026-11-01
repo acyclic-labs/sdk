@@ -2,18 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
-import {mkdtemp,mkdir,readFile,writeFile,rename,rm,rmdir,copyFile,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
 import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
 
-test('installed host admission launches package entries and binds their actual closure',async()=>{
- const directory=dirname(fileURLToPath(import.meta.url)),scope=new Processes();
+test('installed host admission launches the actual package entries',async()=>{
+ const scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
- let entry,dependency,backup,retained;
  try {
   for(const {inputs:[{host}]} of cases) {
    const native=await nativeHost(host,{});
@@ -21,41 +19,10 @@ test('installed host admission launches package entries and binds their actual c
    assert.equal(result.code,0,result.stderr);
    assert.ok(result.stdout.trim(),'actual host version must be nonempty');
   }
-  ({entry}=await nativeHost('pi',{}));
-  const env={E2E_PI:entry,E2E_CODEX:(await nativeHost('codex',{})).entry,
-   E2E_CLAUDE:(await nativeHost('claude-code',{})).entry};
-  const before=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
-  // The pinned Pi 1.1.0 dist/bundle/cli.js loads this real module through
-  // createRequire(import.meta.url)("./cli-runtime.js"). Replace the directory
-  // entry rather than modifying an inode shared with another installation.
-  dependency=join(dirname(entry),'cli-runtime.js');
-  const original=await readFile(dependency);
-  // Stay on the runtime's filesystem, and arm restoration only after the
-  // original move succeeds. A failed move must leave its source untouched.
-  backup=await mkdtemp(join(dirname(dependency),'.pi-runtime-'));
-  const destination=join(backup,'runtime.js');
-  await rename(dependency,destination);
-  retained=destination;
-  await writeFile(dependency,Buffer.concat([original,Buffer.from('\n')]));
-  const changed=await acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
-  assert.deepEqual(changed.hosts,before.hosts,'the executable entries did not change');
-  assert.notDeepEqual(changed,before,'changed imported bytes must fence partition composition');
-  const imported=Object.keys(before.source).find(name=>name.endsWith('/@earendil-works/pi-coding-agent/dist/bundle/cli-runtime.js'));
-  assert.ok(imported,'the binding must retain the actual imported module');
-  assert.notEqual(changed.source[imported],before.source[imported],'the changed import itself must have a different digest');
-  await rename(entry,entry+'.withdrawn');
-  try {await assert.rejects(nativeHost('pi',{}),/step=admit E2E_PI/);}
-  finally {await rename(entry+'.withdrawn',entry);}
+  const {entry}=await nativeHost('pi',{});
   await assert.rejects(nativeHost('pi',{E2E_PI:process.execPath}),/step=admit E2E_PI/);
-  await assert.rejects(nativeHost('pi',{E2E_PI:dependency}),/declared package bin/);
- } finally {
-  try {
-   if(retained) {
-    await rm(dependency,{force:true});await rename(retained,dependency);
-   }
-   if(backup)await rmdir(backup);
-  }finally{await scope.close();}
- }
+  await assert.rejects(nativeHost('pi',{E2E_PI:join(dirname(entry),'cli-runtime.js')}),/declared package bin/);
+ }finally{await scope.close();}
 });
 
 test('installed host admission binds second trees, nested hidden files and link edges',async()=>{
@@ -74,11 +41,15 @@ test('installed host admission binds second trees, nested hidden files and link 
    await mkdir(dirname(entry),{recursive:true});
    await copyFile(join(source,'package.json'),join(target,'package.json'));
    await copyFile(native.entry,entry);
+   // The pinned Pi entry loads this captured module through
+   // createRequire(import.meta.url)("./cli-runtime.js").
+   if(host==='pi')await copyFile(join(dirname(native.entry),'cli-runtime.js'),join(dirname(entry),'cli-runtime.js'));
    return entry;
   }
   const first=await packageEntry('codex','@openai/codex',join(hosts,'node_modules'));
   const secondModules=join(root,'second/node_modules');
   const second=await packageEntry('pi','@earendil-works/pi-coding-agent',secondModules);
+  const imported=join(dirname(second),'cli-runtime.js');
   const nested=join(secondModules,'.retained/node_modules/runtime.js');
   await mkdir(dirname(nested),{recursive:true});await copyFile(second,nested);
   // Directory junctions retain link-edge coverage on Windows without requiring
@@ -89,12 +60,19 @@ test('installed host admission binds second trees, nested hidden files and link 
   const env={E2E_CODEX:first,E2E_PI:second};
   const bind=()=>acceptanceBinding(directory,process.execPath,process.execPath,cases,env);
   const before=await bind(),key='installed-hosts/pi/.retained/node_modules/runtime.js';
+  const importedKey='installed-hosts/pi/@earendil-works/pi-coding-agent/dist/bundle/cli-runtime.js';
   assert.notEqual(before.hosts.codex.closure,before.hosts.pi.closure,'distinct installations need distinct provenance');
   assert.match(before.source[key],/^[a-f0-9]{64}$/,'second-tree nested hidden bytes must be retained');
+  assert.match(before.source[importedKey],/^[a-f0-9]{64}$/,'the actual imported module must be retained');
   await writeFile(nested,Buffer.concat([await readFile(nested),Buffer.from('\n')]));
+  await writeFile(imported,Buffer.concat([await readFile(imported),Buffer.from('\n')]));
   const changed=await bind();
   assert.deepEqual(changed.hosts,before.hosts,'both package entries stay unchanged');
   assert.notEqual(changed.source[key],before.source[key],'second-tree dependency changes must fence composition');
+  assert.notEqual(changed.source[importedKey],before.source[importedKey],'the changed import itself must have a different digest');
+  await rename(second,second+'.withdrawn');
+  try {await assert.rejects(nativeHost('pi',env),/step=admit E2E_PI/);}
+  finally {await rename(second+'.withdrawn',second);}
   await rm(link);await symlink(dirname(nested),link,type);
   const retargeted=await bind(),edge='installed-hosts/pi/runtime-link';
   assert.notEqual(retargeted.source[edge],changed.source[edge],'internal link retargeting must fence composition');
