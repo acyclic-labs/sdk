@@ -352,10 +352,18 @@ impl StreamProvider for JournalStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        if !request.at_least.is_empty() {
-            self.wait_revision(&request.at_least).await?;
-        }
-        self.query(async move |p| p.read(request).await).await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let request = request.validate()?;
+                if !request.request().at_least.is_empty() {
+                    self.wait_revision(&request.request().at_least).await?;
+                }
+                self.query(async move |p| p.read_inner(request).await).await
+            }
+        )
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {

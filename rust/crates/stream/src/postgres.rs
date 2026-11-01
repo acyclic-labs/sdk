@@ -380,6 +380,7 @@ impl StreamProvider for PostgresStream {
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
+                let request = request.validate()?;
                 self.refresh().await?;
                 self.inner.core.read_inner(request).await
             }

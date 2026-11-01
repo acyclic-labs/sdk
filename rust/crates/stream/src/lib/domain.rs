@@ -222,7 +222,8 @@ pub struct ForkRequest {
     pub idempotency_key: IdempotencyKey,
 }
 
-/// Required-bounds finite read.
+/// Required-bounds finite read. Invalid bounds or keys refuse before waiting
+/// for the minimum revision or observing storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadRequest {
     /// Optional exact indexed key. Results are ascending matches in
@@ -238,6 +239,29 @@ pub struct ReadRequest {
     pub limit: u32,
     /// Minimum applied cut; a lagging provider parks, a foreign one refuses.
     pub at_least: RevisionCut,
+}
+
+/// The original request, admitted before adapter IO or revision waits.
+pub(crate) struct ValidatedReadRequest(ReadRequest);
+
+impl ReadRequest {
+    pub(crate) fn validate(self) -> Result<ValidatedReadRequest, StreamError> {
+        crate::memory::validate_limit(self.limit)?;
+        if let Some(key) = &self.key {
+            key.validate()?;
+        }
+        Ok(ValidatedReadRequest(self))
+    }
+}
+
+impl ValidatedReadRequest {
+    pub(crate) fn request(&self) -> &ReadRequest {
+        &self.0
+    }
+
+    pub(crate) fn into_request(self) -> ReadRequest {
+        self.0
+    }
 }
 
 /// A bounded historical lookup over opaque record header keys.

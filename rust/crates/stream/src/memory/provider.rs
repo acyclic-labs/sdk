@@ -49,13 +49,10 @@ impl MemoryStream {
 
     pub(crate) async fn read_inner(
         &self,
-        request: ReadRequest,
+        request: crate::ValidatedReadRequest,
     ) -> Result<RecordStream, StreamError> {
-        validate_limit(request.limit)?;
-        if let Some(key) = &request.key {
-            key.validate()?;
-        }
-        self.revisions.wait(&request.at_least).await?;
+        self.revisions.wait(&request.request().at_least).await?;
+        let request = request.into_request();
         let state = self.state.read().await;
         let path = state
             .paths
@@ -522,7 +519,7 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.read",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            self.read_inner(request)
+            async { self.read_inner(request.validate()?).await }
         )
     }
 
@@ -588,7 +585,13 @@ impl crate::NativeStreamProvider for MemoryStream {
         crate::NativeProviderFuture::observed(
             &original,
             crate::native::span!("acyclic.stream.read"),
-            self.native_read_inner(request, meter),
+            async move {
+                let request = match request.validate() {
+                    Ok(request) => request,
+                    Err(error) => return Ok(Err(error)),
+                };
+                self.native_read_inner(request, meter).await
+            },
             |result| crate::native::outcome(result, StreamError::code),
         )
     }
@@ -901,20 +904,13 @@ impl MemoryStream {
 
     pub(crate) async fn native_read_inner(
         &self,
-        request: ReadRequest,
+        request: crate::ValidatedReadRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeStreamResult<crate::NativeRecordStream> {
-        if let Err(error) = validate_limit(request.limit) {
+        if let Err(error) = self.revisions.wait(&request.request().at_least).await {
             return Ok(Err(error));
         }
-        if let Some(key) = &request.key
-            && let Err(error) = key.validate()
-        {
-            return Ok(Err(error));
-        }
-        if let Err(error) = self.revisions.wait(&request.at_least).await {
-            return Ok(Err(error));
-        }
+        let request = request.into_request();
         let state = self.state.read().await;
         let path = inspect(&meter, || state.paths.get(&request.path))?;
         let Some(path) = path else {

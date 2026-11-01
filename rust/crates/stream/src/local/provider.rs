@@ -183,11 +183,12 @@ impl StreamProvider for LocalStream {
         let completion = acyclic_observability::Completion::new(&span).on_drop_error("cancelled");
         let result = span
             .scope(async {
+                let request = request.validate()?;
                 // Parks before any visibility guard, so no writer waits on a parked read.
                 self.inner
                     .provider
                     .revisions
-                    .wait(&request.at_least)
+                    .wait(&request.request().at_least)
                     .await?;
                 self.accepted(self.inner.provider.read_inner(request))
                     .await?
@@ -364,7 +365,17 @@ impl crate::NativeStreamProvider for LocalStream {
             &original,
             crate::native::span!("acyclic.stream.read"),
             async move {
-                if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
+                let request = match request.validate() {
+                    Ok(request) => request,
+                    Err(error) => return Ok(Err(error)),
+                };
+                if let Err(error) = self
+                    .inner
+                    .provider
+                    .revisions
+                    .wait(&request.request().at_least)
+                    .await
+                {
                     return Ok(Err(error));
                 }
                 self.accepted(self.inner.provider.native_read_inner(request, meter))

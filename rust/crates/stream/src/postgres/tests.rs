@@ -38,6 +38,34 @@ async fn publication_uses_only_required_sql_observations()
     // The held session excludes its background refresh. Server statement logs
     // distinguish each real operation without a proxy port or timing inference.
     let mut replica = provider.inner.session.lock().await;
+    // Invalid reads must finish even while the real SQL session is unavailable.
+    // Moving validation behind refresh parks here instead of returning a refusal.
+    let mut future = provider.inner.core.revisions.current();
+    future.index += 1;
+    for (limit, key) in [
+        (0, None),
+        (u32::MAX, None),
+        (
+            1,
+            Some(crate::ReadKeySeek {
+                key: vec![0; crate::MAX_RECORD_KEY_BYTES + 1].into(),
+                before: 1,
+            }),
+        ),
+    ] {
+        assert!(matches!(
+            provider
+                .read(ReadRequest {
+                    path: StreamPath::new("invalid")?,
+                    from: 0,
+                    limit,
+                    key,
+                    at_least: crate::RevisionCut::of(future.clone()),
+                })
+                .now_or_never(),
+            Some(Err(StreamError::LimitExceeded))
+        ));
+    }
     let original = AppendRequest {
         path: StreamPath::new("accepted")?,
         records: vec!["original".into()],
