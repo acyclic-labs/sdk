@@ -51,20 +51,49 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 
 #[tokio::test]
 async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> Result {
-    struct Frames(Vec<Out>);
+    struct Frames(Vec<Out>, Option<(bool, usize, bool)>);
     impl TurnDriver for Frames {
         fn step<'a>(
             &'a self,
-            _: &'a AgentState,
-            _: u64,
+            agent: &'a AgentState,
+            cursor: u64,
             _: Option<Queued>,
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
             Box::pin(async move {
+                let wait = if let Some((approval, extra, escaped)) = self.1 {
+                    let phase = if approval {
+                        Phase::WaitingApproval { id: intent("x") }
+                    } else {
+                        Phase::WaitingHost { host: "x".into() }
+                    };
+                    let envelope = StatusRecord {
+                        phase,
+                        cursor,
+                        conversation: agent.conversation_tail
+                            + self
+                                .0
+                                .iter()
+                                .filter(|out| matches!(out, Out::Conversation(_)))
+                                .count() as u64,
+                    }
+                    .encode()?
+                    .len()
+                        - 1;
+                    let text = if escaped { "\"" } else { "x" }
+                        .repeat(acyclic_stream::MAX_RECORD_BYTES - envelope + extra);
+                    if approval {
+                        Wait::Approval(IntentId::try_from(text)?)
+                    } else {
+                        Wait::Host(text)
+                    }
+                } else {
+                    Wait::Done(AgentOutcome::Succeeded { result: None })
+                };
                 Ok(TurnStep {
-                    checkpoint: None,
+                    checkpoint: Some(vec![7]),
                     outs: self.0.clone(),
-                    wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
+                    wait,
                     drops: None,
                 })
             })
@@ -86,15 +115,16 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
     let escaped = done("\u{0001}".repeat(maximum / 3));
     assert!(escaped.encode()?.len() > maximum);
     let peer = AgentPath::root(&id(2));
-    for (out, admitted) in [
-        (Out::Conversation(vec![b'x'; maximum]), true),
-        (Out::Conversation(vec![b'x'; maximum + 1]), false),
+    for (out, admitted, wait) in [
+        (Out::Conversation(vec![b'x'; maximum]), true, None),
+        (Out::Conversation(vec![b'x'; maximum + 1]), false, None),
         (
             Out::Send {
                 to: peer.clone(),
                 record: exact,
             },
             true,
+            None,
         ),
         (
             Out::Send {
@@ -102,7 +132,18 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                 record: escaped,
             },
             false,
+            None,
         ),
+        (Out::Conversation(vec![b'x']), true, Some((false, 0, false))),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((false, 1, false)),
+        ),
+        (Out::Conversation(vec![b'x']), false, Some((false, 0, true))),
+        (Out::Conversation(vec![b'x']), true, Some((true, 0, false))),
+        (Out::Conversation(vec![b'x']), false, Some((true, 1, false))),
+        (Out::Conversation(vec![b'x']), false, Some((true, 0, true))),
     ] {
         let provider = Arc::new(MemoryStream::default());
         super::create(&provider, id(2)).await?;
@@ -110,7 +151,7 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         let expected = out.clone();
         let host = AgentHost::new(
             provider.clone(),
-            Frames(vec![out]),
+            Frames(vec![out], wait),
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
@@ -118,21 +159,44 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
         let mut adoption = adopted(id(1));
         adoption.brief = Some(super::driver::file("frames")?);
         let root = host.create(&intent("create"), adoption).await?;
-        host.drain(&root).await?;
+        assert!(host.runtime().drain().await.is_empty());
         let state = host.state(&root).await?;
-        assert_eq!(
-            state.phase,
-            Phase::Done {
-                outcome: if admitted {
-                    AgentOutcome::Succeeded { result: None }
-                } else {
-                    AgentOutcome::Failed {
-                        message: INADMISSIBLE_EFFECT.into(),
+        if admitted && let Some((approval, ..)) = wait {
+            assert!(if approval {
+                matches!(state.phase, Phase::WaitingApproval { .. })
+            } else {
+                matches!(state.phase, Phase::WaitingHost { .. })
+            });
+            assert_eq!(
+                state
+                    .turn
+                    .as_ref()
+                    .ok_or("missing waiting checkpoint")?
+                    .checkpoint,
+                vec![7]
+            );
+        } else {
+            assert_eq!(
+                state.phase,
+                Phase::Done {
+                    outcome: if admitted {
+                        AgentOutcome::Succeeded { result: None }
+                    } else {
+                        AgentOutcome::Failed {
+                            message: INADMISSIBLE_EFFECT.into(),
+                        }
                     }
                 }
-            }
-        );
+            );
+            assert!(state.turn.is_none());
+        }
         let status = values(&provider, root.status()?).await?;
+        if admitted && wait.is_some() {
+            assert_eq!(
+                status.last().ok_or("missing waiting status")?.len(),
+                maximum
+            );
+        }
         assert_eq!(
             StatusRecord::decode(status.last().ok_or("missing terminal status")?)?.phase,
             state.phase

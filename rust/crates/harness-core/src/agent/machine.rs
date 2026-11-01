@@ -741,6 +741,32 @@ fn valid_effect(out: &Out) -> bool {
     }
 }
 
+/// Admit the exact waiting status before accepting any of the driver's effects.
+/// Move the original identity through the shared record codec, without copying it.
+fn admit_wait(wait: Wait, cursor: u64, conversation: u64) -> Option<Wait> {
+    let phase = match wait {
+        Wait::Host(host) if super::records::check_text(&host).is_ok() => {
+            Phase::WaitingHost { host }
+        }
+        Wait::Approval(id) => Phase::WaitingApproval { id },
+        Wait::Host(_) | Wait::Done(AgentOutcome::FailedDiagnostic { .. }) => return None,
+        wait => return Some(wait),
+    };
+    let status = StatusRecord {
+        phase,
+        cursor,
+        conversation,
+    };
+    if !super::records::fits_frame(&status) {
+        return None;
+    }
+    match status.phase {
+        Phase::WaitingHost { host } => Some(Wait::Host(host)),
+        Phase::WaitingApproval { id } => Some(Wait::Approval(id)),
+        _ => unreachable!(),
+    }
+}
+
 /// Position of the queued input the waiting turn takes next (see [`awaits`]).
 fn approval_position(state: &AgentState) -> Option<usize> {
     state
@@ -792,13 +818,32 @@ async fn run<T: TurnDriver + ?Sized>(
     };
     // The driver's effects are the step's one unchecked input: a turn
     // returning an invalid effect fails without publishing those effects.
-    if !turn.outs.iter().all(valid_effect)
-        || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
-        || matches!(
-            &turn.wait,
-            Wait::Done(AgentOutcome::FailedDiagnostic { .. })
-        )
-    {
+    let mut conversation = state.conversation_tail;
+    for out in outs.iter() {
+        if matches!(out, Out::Conversation(_)) {
+            conversation = conversation
+                .checked_add(1)
+                .ok_or(Error::Record("agent conversation tail overflow"))?;
+        }
+    }
+    let valid = turn.outs.iter().all(|out| {
+        if !valid_effect(out) {
+            return false;
+        }
+        if matches!(out, Out::Conversation(_)) {
+            let Some(next) = conversation.checked_add(1) else {
+                return false;
+            };
+            conversation = next;
+        }
+        true
+    });
+    let wait = valid
+        .then(|| admit_wait(turn.wait, cursor, conversation))
+        .flatten();
+    if let Some(wait) = wait {
+        turn.wait = wait;
+    } else {
         turn = TurnStep {
             checkpoint: None,
             outs: Vec::new(),

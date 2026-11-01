@@ -51,10 +51,10 @@ pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> 
     })
 }
 
-/// A driver-supplied inbox frame must fit the same physical Streams record
+/// A driver-supplied frame must fit the same physical Streams record
 /// before the machine accepts its effects. Count the original envelope without
 /// allocating another encoding; logical payloads use their existing references.
-pub(super) fn fits_frame(record: &InboxRecord) -> bool {
+pub(super) fn fits_frame<T: Serialize + ?Sized>(record: &T) -> bool {
     crate::executor::json::json_byte_length(
         &Sealed {
             record,
@@ -142,9 +142,15 @@ impl<'de> Deserialize<'de> for Header<'de> {
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "String")]
 pub struct IntentId(String);
+
+impl Serialize for IntentId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 impl IntentId {
     /// Canonical text.
