@@ -447,13 +447,13 @@ mod tests {
             notice: widest_notice(),
         };
         let InboxRecord::Notice {
-            notice: NoticePayload::Waking(file),
+            notice: NoticePayload::Waking(waking_file),
             ..
         } = &waking
         else {
             unreachable!()
         };
-        assert_eq!(file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
+        assert_eq!(waking_file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
         assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
         for by in senders() {
             Closed { by, id: intent() }
