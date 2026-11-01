@@ -193,6 +193,16 @@ fn fixture_with_proof(
     (session, owner, calls)
 }
 
+// Each fixture's in-memory input and credit are already available. A Pending
+// here is a missing scheduler event, not a reason to wait for a timeout.
+async fn admitted_frame(session: &mut Session<MemoryStream>) -> Result<Frame, StreamError> {
+    let std::task::Poll::Ready(result) = futures::poll!(std::pin::pin!(session.next_frame()))
+    else {
+        panic!("original admission and Window events must settle the available frame");
+    };
+    Ok(result?.expect("original finite frame must precede session loss"))
+}
+
 async fn enroll(session: &mut Session<MemoryStream>) -> TestResult {
     session.interest(wire::SessionInterest {
         revision: 2,
@@ -202,14 +212,14 @@ async fn enroll(session: &mut Session<MemoryStream>) -> TestResult {
     session.receive(window(0))?;
     session.receive(window(1))?;
     assert!(matches!(
-        session.next_frame().await?.unwrap().wire().body,
+        admitted_frame(session).await?.wire().body,
         Some(Body::InterestApplied(_))
     ));
     assert!(matches!(
-        session.next_frame().await?.unwrap().wire().body,
+        admitted_frame(session).await?.wire().body,
         Some(Body::Opened(_))
     ));
-    let reply = session.next_frame().await?.unwrap();
+    let reply = admitted_frame(session).await?;
     assert!(
         matches!(&reply.wire().body, Some(Body::Data(wire::SessionData { item: Some(Item::ActorCall(bytes)), .. })) if bytes.as_ref() == b"selected")
     );
@@ -244,11 +254,11 @@ async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit(
                 remove: vec![],
             })?;
             assert!(matches!(
-                session.next_frame().await?.unwrap().wire().body,
+                admitted_frame(&mut session).await?.wire().body,
                 Some(Body::InterestApplied(_))
             ));
             assert!(matches!(
-                session.next_frame().await?.unwrap().wire().body,
+                admitted_frame(&mut session).await?.wire().body,
                 Some(Body::Opened(_))
             ));
             if dispatch {
@@ -329,11 +339,11 @@ async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_c
             remove: vec![],
         })?;
         assert!(matches!(
-            session.next_frame().await?.unwrap().wire().body,
+            admitted_frame(&mut session).await?.wire().body,
             Some(Body::InterestApplied(_))
         ));
         assert!(matches!(
-            session.next_frame().await?.unwrap().wire().body,
+            admitted_frame(&mut session).await?.wire().body,
             Some(Body::Opened(_))
         ));
         assert!(futures::poll!(std::pin::pin!(session.next_frame())).is_pending());
@@ -418,9 +428,9 @@ async fn enrollment_requires_sealed_original_identity_and_an_exclusive_slot() ->
         })?;
         session.receive(window(0))?;
         session.receive(window(1))?;
-        session.next_frame().await?;
-        session.next_frame().await?;
-        let closed = session.next_frame().await?.unwrap();
+        admitted_frame(&mut session).await?;
+        admitted_frame(&mut session).await?;
+        let closed = admitted_frame(&mut session).await?;
         assert!(matches!(&closed.wire().body, Some(Body::Closed(value)) if value.code == code));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         session.slots.can_reserve(1, session.limits.channels)?;
