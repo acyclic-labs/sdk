@@ -473,11 +473,6 @@ async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
         ));
     }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
-    let command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
-    assert!(matches!(
-        StdioMcpTransport::spawn(command, None, 4096, 5_000).await,
-        Err(Error::Process(crate::ProcessError::NotFound { .. }))
-    ));
     let grant = acyclic_native_runtime::execution::ExecutionGrant::new(
         directory.path(),
         acyclic_native_runtime::execution::ExecutionAccess::ReadOnly,
@@ -485,6 +480,24 @@ async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
         acyclic_native_runtime::execution::ExecutionNetwork::Off,
     )
     .map_err(Error::process_io)?;
+    // With the stderr guard removed, this absent executable reaches native
+    // admission and fails there, without a child that could wait on an unread pipe.
+    for grant in [None, Some(grant.clone())] {
+        let mut command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
+        command
+            .env_clear()
+            .current_dir(directory.path())
+            .stderr(ProcessStdio::piped());
+        assert!(matches!(
+            StdioMcpTransport::spawn(command, grant, 4096, 5_000).await,
+            Err(Error::Invalid(reason)) if reason.starts_with("MCP spawn rejected piped stderr:")
+        ));
+    }
+    let command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
+    assert!(matches!(
+        StdioMcpTransport::spawn(command, None, 4096, 5_000).await,
+        Err(Error::Process(crate::ProcessError::NotFound { .. }))
+    ));
     // Ordinary MCP permits inherited environment. Supplying a grant must
     // preserve its definitive admission refusal, even on unsupported platforms.
     let command = fixture::command(directory.path())?;

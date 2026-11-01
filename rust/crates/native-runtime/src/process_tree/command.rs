@@ -343,6 +343,12 @@ impl ProcessCommand {
         self.cwd.as_deref()
     }
 
+    /// The selected standard error; `None` inherits the parent's stream.
+    #[must_use]
+    pub fn get_stderr(&self) -> Option<&ProcessStdio> {
+        self.stderr.as_ref()
+    }
+
     /// The same description as a standard command. Owned streams are
     /// duplicated, so this description stays reusable.
     #[cfg(any(unix, test))]
@@ -439,6 +445,13 @@ impl ProcessStdio {
     #[must_use]
     pub const fn piped() -> Self {
         Self(Stdio::Piped)
+    }
+
+    /// Whether launch creates a pipe whose other endpoint stays in the process tree.
+    /// An adapter must service that endpoint or reject the selection before launch.
+    #[must_use]
+    pub const fn is_piped(&self) -> bool {
+        matches!(self.0, Stdio::Piped)
     }
 
     #[cfg(any(unix, test))]

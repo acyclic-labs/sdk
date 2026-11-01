@@ -71,11 +71,13 @@ impl StdioMcpTransport {
 
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
     /// Arguments, environment, workspace and stderr are supplied through `command`.
+    /// Piped stderr is refused before launch: this transport consumes only stdout.
+    /// A caller-owned stderr descriptor must retain its own live consumer.
     /// A grant must come from authenticated host approval, never server configuration
     /// or tool arguments. `None` retains ordinary native execution. A supplied grant
     /// is enforced by the original process launch owner, with no unrestricted retry.
     /// Confined commands require an explicit environment and workspace cwd; stderr
-    /// must also satisfy that owner's descriptor policy (for example, null or a pipe).
+    /// must also satisfy that owner's descriptor policy (for example, null).
     pub async fn spawn(
         mut command: ProcessCommand,
         grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
@@ -83,6 +85,11 @@ impl StdioMcpTransport {
         timeout_ms: u32,
     ) -> Result<Self> {
         validate_bounds(maximum_bytes, timeout_ms)?;
+        if command.get_stderr().is_some_and(ProcessStdio::is_piped) {
+            return Err(Error::Invalid(
+                "MCP spawn rejected piped stderr: no stderr reader; recovery: command.stderr(ProcessStdio::null())".into(),
+            ));
+        }
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         let timeout = Duration::from_millis(u64::from(timeout_ms));
         let runtime = tokio::runtime::Handle::current();
