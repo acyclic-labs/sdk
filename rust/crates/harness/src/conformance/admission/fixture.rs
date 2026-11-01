@@ -81,8 +81,8 @@ impl Fixture {
             admission,
             executors.clone(),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                history_turns: Some(8),
             },
             Default::default(),
         ));

@@ -68,7 +68,6 @@ impl Fixture {
                 vec![acyclic_fs::kernel::LogicalName::new(
                     acyclic_fs::kernel::NameEncoding::Utf8,
                     b"payload".to_vec(),
-                    checkout.volume_config().limits.maximum_component_bytes,
                 )?],
                 checkout.volume_config().limits,
             )?;

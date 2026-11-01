@@ -34,7 +34,7 @@ pub(crate) fn is_safe_integer(value: f64) -> bool {
         && value <= crate::MAX_SAFE_INTEGER as f64
 }
 
-pub struct SafeNumber(u64);
+pub struct SafeNumber(pub(crate) u64);
 impl<'de> Deserialize<'de> for SafeNumber {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SafeVisitor;

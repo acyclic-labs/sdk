@@ -166,6 +166,8 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         if early_allocation {
             budget.peak_allocation_bytes =
                 crate::NativeMaterializationWork::accounting_state_bytes();
+        } else {
+            budget.backend_read_operations = 3;
         }
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
@@ -176,10 +178,7 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
             owner_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::future::ready(Ok::<(), NativePublicationTestError>(()))
         };
-        let mut admitted = limits();
-        if !early_allocation {
-            admitted.maximum_objects = 3;
-        }
+        let admitted = limits();
         let failure = publish_generation_async_guarded_with_native_work(
             crate::Fs::new(
                 authority.clone(),
@@ -199,22 +198,16 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
         .await
         .err()
         .ok_or("unadmitted native publication succeeded")?;
+        assert!(matches!(
+            failure,
+            NativePublicationTestError::Fs(crate::FsError::Work(_))
+                | NativePublicationTestError::Fs(crate::FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Work(_)
+                ))
+        ));
         if early_allocation {
-            assert!(matches!(
-                failure,
-                NativePublicationTestError::Fs(crate::FsError::Work(_))
-                    | NativePublicationTestError::Fs(crate::FsError::NativeKernel(
-                        crate::NativeTreeMaterializationError::Work(_)
-                    ))
-            ));
             assert_eq!(original.receipt().backend_read_operations, 0);
         } else {
-            assert!(matches!(
-                failure,
-                NativePublicationTestError::Fs(crate::FsError::Closure(
-                    ClosureError::TooManyObjects { .. }
-                ))
-            ));
             assert!(original.receipt().backend_read_operations > 0);
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -231,14 +224,14 @@ async fn native_publication_partial_closure_and_allocation_denials_release_owned
 #[tokio::test]
 async fn native_publication_lost_ack_reopens_original_without_resealing_or_second_append()
 -> TestResult {
-    use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
+    use crate::simulation::{Simulation, SimulationFault, SimulationOperation};
     let objects = std::sync::Arc::new(MemoryObjectStore::default());
     let authority = std::sync::Arc::new(MemoryAuthorityStore::default());
     let volume_id = VolumeId::from_bytes([34; 16]);
     let root = native_fixture(&objects, volume_id).await?;
     let changed_root = fixture(&objects, volume_id).await?;
     let request = native_request(&objects, &authority, volume_id, root).await?;
-    let simulation = Simulation::wrap(authority, objects, SimulationOptions::default())?;
+    let simulation = Simulation::wrap(authority, objects);
     let (authority, objects) = simulation.stores();
     simulation.schedule_next(
         SimulationOperation::AuthorityAppend,

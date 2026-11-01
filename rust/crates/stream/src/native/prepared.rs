@@ -1,11 +1,43 @@
 use super::*;
 
+/// Storage selected by the caller before a prepared record's external effect.
+/// These capacities reserve the original operation's bytes and header controls;
+/// there is no implicit header count or default capacity.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedRecordCapacity {
+    /// Combined value, key, attribute-name and attribute-value bytes.
+    pub payload_bytes: usize,
+    /// Indexed key slots to reserve before issuance.
+    pub keys: usize,
+    /// Attribute slots to reserve before issuance.
+    pub attributes: usize,
+}
+
+impl PreparedRecordCapacity {
+    pub(crate) fn validate(
+        &self,
+        value: &OwnedBytes,
+        headers: &crate::RecordHeaders,
+    ) -> Result<(), StreamError> {
+        // Inspect counts before traversing header payload: a recovered record may
+        // have been published by an independent writer after this reservation.
+        if headers.keys().len() > self.keys
+            || headers.attributes().len() > self.attributes
+            || value.len() > self.payload_bytes
+            || headers.payload_bytes() > self.payload_bytes - value.len()
+        {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
+
 /// A genuine prepared Commit-family ingress.
 pub struct PreparedNativeCommit {
     future: NativeProviderFuture<'static, CommitOutcome>,
     recovery: Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>>,
     record: Arc<NativeCommitRecordSlot>,
-    maximum_record_bytes: usize,
+    capacity: PreparedRecordCapacity,
 }
 
 impl PreparedNativeCommit {
@@ -13,13 +45,13 @@ impl PreparedNativeCommit {
         future: NativeProviderFuture<'static, CommitOutcome>,
         recovery: NativeProviderFuture<'static, Option<IdempotencyObservation>>,
         record: Arc<NativeCommitRecordSlot>,
-        maximum_record_bytes: usize,
+        capacity: PreparedRecordCapacity,
     ) -> Self {
         Self {
             future,
             recovery: Some(recovery),
             record,
-            maximum_record_bytes,
+            capacity,
         }
     }
 
@@ -37,10 +69,11 @@ impl PreparedNativeCommit {
     ) -> NativeProviderFuture<'static, CommitOutcome> {
         let record = if record.value.is_empty() {
             Err(StreamError::InvalidArgument)
-        } else if record.payload_bytes() > self.maximum_record_bytes {
-            Err(StreamError::LimitExceeded)
         } else {
-            crate::changes::validate(&record.value, &record.headers).map(|()| record)
+            self.capacity
+                .validate(&record.value, &record.headers)
+                .and_then(|()| crate::changes::validate(&record.value, &record.headers))
+                .map(|()| record)
         };
         self.record.supply(record);
         std::mem::replace(

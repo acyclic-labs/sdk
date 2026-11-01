@@ -23,11 +23,9 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamError, StreamProvider, wire,
+    AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
-pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;
 #[cfg(test)]
@@ -35,7 +33,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::StreamPath;
+use crate::{AppendRequest, CommitOutcome, StreamPath};
 #[cfg(test)]
 mod receipt_tests;
 mod server;
@@ -56,7 +54,7 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
-    /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
+    /// Caller-supplied private CA bundle is empty.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
     /// The platform certificate verifier could not be initialized.
@@ -91,6 +89,7 @@ pub struct Client {
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
+    operation_timeout: Option<Duration>,
     sessions: Arc<crate::session::Cache>,
     /// Read-your-writes floors; kept across credential changes, which only
     /// replace the session pool.
@@ -147,6 +146,14 @@ impl Client {
         client
     }
 
+    /// Selects an optional whole-operation timeout, including credential resolution and retries.
+    /// The default waits for the operation outcome or cancellation by dropping its future.
+    #[must_use]
+    pub fn with_operation_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.operation_timeout = timeout;
+        self
+    }
+
     /// Uses a request-local credential while retaining this client's TLS channel.
     pub fn with_credential(&self, bearer_token: &str) -> Result<Self, ConnectError> {
         let mut client = self.clone();
@@ -194,7 +201,7 @@ impl Client {
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
         let pem = certificate_pem.as_ref();
-        if pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES {
+        if pem.is_empty() {
             return Err(ConnectError::InvalidCaCertificate);
         }
         Self::connect_tls(endpoint.as_ref(), bearer_token.as_ref(), Some(pem)).await
@@ -243,8 +250,7 @@ impl Client {
         endpoint: &str,
         certificate_pem: Option<&[u8]>,
     ) -> Result<Channel, ConnectError> {
-        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES)
-        {
+        if certificate_pem.is_some_and(|pem| pem.is_empty()) {
             return Err(ConnectError::InvalidCaCertificate);
         }
         channel_tls(endpoint, certificate_pem).await
@@ -256,6 +262,7 @@ impl Client {
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
+            operation_timeout: None,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             revisions: crate::query_sync::Arc::default(),
@@ -274,6 +281,7 @@ impl Client {
             authorization: None,
             credential: Some(credential),
             acknowledge_deliveries: true,
+            operation_timeout: None,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             revisions: crate::query_sync::Arc::default(),
@@ -334,66 +342,73 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
-        let mut attempt = 0_u64;
-        loop {
-            attempt = attempt.saturating_add(1);
-            // One span describes one physical RPC attempt.
-            let mut completion = Completion::new(tracing::info_span!(
-                "acyclic.stream.grpc.call",
-                rpc = std::any::type_name::<T>().rsplit("::").next(),
-                attempt,
-                rpc.code = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            ));
-            let result = completion
-                .span
-                .scope(async {
-                    let request = self.request(body.clone()).await?;
-                    let lease = request
-                        .extensions()
-                        .get::<acyclic_auth::credential::ResolvedCredential>()
-                        .cloned();
-                    let result = call(self.service(), request).await;
-                    if result.as_ref().is_err_and(|error| {
-                        error.code() == Code::Unauthenticated
-                            && std::error::Error::source(error).is_none()
-                    }) {
-                        if let Some(lease) = &lease {
-                            lease.reject().await.map_err(|_| {
-                                Status::unauthenticated("credential source unavailable")
-                            })?;
+        let work = async {
+            let mut attempt = 0_u64;
+            loop {
+                attempt = attempt.saturating_add(1);
+                // One span describes one physical RPC attempt.
+                let mut completion = Completion::new(tracing::info_span!(
+                    "acyclic.stream.grpc.call",
+                    rpc = std::any::type_name::<T>().rsplit("::").next(),
+                    attempt,
+                    rpc.code = Empty,
+                    outcome = Empty,
+                    error.kind = Empty
+                ));
+                let result = completion
+                    .span
+                    .scope(async {
+                        let request = self.request(body.clone()).await?;
+                        let lease = request
+                            .extensions()
+                            .get::<acyclic_auth::credential::ResolvedCredential>()
+                            .cloned();
+                        let result = call(self.service(), request).await;
+                        if result.as_ref().is_err_and(|error| {
+                            error.code() == Code::Unauthenticated
+                                && std::error::Error::source(error).is_none()
+                        }) {
+                            if let Some(lease) = &lease {
+                                lease.reject().await.map_err(|_| {
+                                    Status::unauthenticated("credential source unavailable")
+                                })?;
+                            }
                         }
-                    }
-                    if result.is_ok() {
-                        if let Some(lease) = &lease {
-                            lease.check().await.map_err(|error| {
-                                let mut status = Status::unauthenticated(
-                                    "credential source unavailable or changed",
-                                );
-                                status.set_source(Arc::new(error));
-                                status
-                            })?;
+                        if result.is_ok() {
+                            if let Some(lease) = &lease {
+                                lease.check().await.map_err(|error| {
+                                    let mut status = Status::unauthenticated(
+                                        "credential source unavailable or changed",
+                                    );
+                                    status.set_source(Arc::new(error));
+                                    status
+                                })?;
+                            }
                         }
-                    }
-                    result
-                })
-                .await;
-            let error = match result {
-                Ok(response) => return Ok((response.into_inner(), completion)),
-                Err(error) => error,
-            };
-            completion.status(&error);
-            if !retryable(&error) {
-                return Err(status(&error));
+                        result
+                    })
+                    .await;
+                let error = match result {
+                    Ok(response) => return Ok((response.into_inner(), completion)),
+                    Err(error) => error,
+                };
+                completion.status(&error);
+                if !retryable(&error) {
+                    return Err(status(&error));
+                }
+                tracing::warn!(
+                    attempt,
+                    rpc.code = error.code() as u64,
+                    "stream rpc retried"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
             }
-            tracing::warn!(
-                attempt,
-                rpc.code = error.code() as u64,
-                "stream rpc retried"
-            );
-            // Backoff follows retryable's captured transient HTTP/2 or I/O failure.
-            tokio::time::sleep(RETRY_DELAY).await;
+        };
+        match self.operation_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, work)
+                .await
+                .unwrap_or(Err(StreamError::DeadlineElapsed)),
+            None => work.await,
         }
     }
 }

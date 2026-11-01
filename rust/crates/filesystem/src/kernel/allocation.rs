@@ -697,7 +697,6 @@ mod scope;
 
 pub(crate) struct VisitedObjectSet {
     slots: Vec<Option<ObjectId>>,
-    maximum_entries: usize,
     length: usize,
     logical_bytes: u64,
 }
@@ -713,14 +712,10 @@ impl VisitedObjectSet {
     const INITIAL_ENTRIES: usize = 8;
 
     pub(crate) fn new_with_accounting(
-        maximum_entries: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<super::persistent_point::Owned<Self>, crate::FsError> {
         use super::persistent_point::Owned;
-        if maximum_entries == 0 {
-            return Err(crate::FsError::PendingMutationAllocationFailed);
-        }
-        let slot_count = Self::slot_count(maximum_entries.min(Self::INITIAL_ENTRIES))
+        let slot_count = Self::slot_count(Self::INITIAL_ENTRIES)
             .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
         let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
         slots.value.resize(slot_count, None);
@@ -732,7 +727,6 @@ impl VisitedObjectSet {
         Ok(Owned::new(
             Self {
                 slots: value,
-                maximum_entries,
                 length: 0,
                 logical_bytes: bytes,
             },
@@ -801,9 +795,6 @@ impl VisitedObjectSet {
                         });
                     }
                     Some(_) => index = (index + 1) & mask,
-                    None if self.length == self.maximum_entries => {
-                        return Err(crate::FsError::PendingMutationAllocationFailed);
-                    }
                     None if self.length < self.entry_capacity() => {
                         *self.slots.get_mut(index).ok_or(WorkError::Overflow)? = Some(object);
                         self.length += 1;
@@ -830,8 +821,7 @@ impl VisitedObjectSet {
         let next_entries = self
             .entry_capacity()
             .checked_mul(2)
-            .ok_or(WorkError::Overflow)?
-            .min(self.maximum_entries);
+            .ok_or(WorkError::Overflow)?;
         let slot_count = Self::slot_count(next_entries)
             .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
         let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
@@ -880,7 +870,7 @@ impl VisitedObjectSet {
     }
 
     fn entry_capacity(&self) -> usize {
-        (self.slots.len() / Self::LOAD_NUMERATOR).min(self.maximum_entries)
+        self.slots.len() / Self::LOAD_NUMERATOR
     }
 
     fn slot_count(entries: usize) -> Result<usize, AllocationError> {

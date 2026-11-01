@@ -17,9 +17,9 @@ pub struct DiscoveredContext {
 #[derive(Clone, Copy, Default)]
 pub struct DiscoveryWork {
     #[doc(hidden)]
-    pub entries: u32,
+    pub entries: u64,
     #[doc(hidden)]
-    pub directories: u32,
+    pub directories: u64,
     #[doc(hidden)]
     pub limits: ContextDiscoveryLimits,
 }
@@ -66,7 +66,10 @@ impl DiscoveredContext {
             .ok_or_else(|| {
                 stock_boundary(io, ErrorCode::Invalid, "discovered context count overflows")
             })?;
-        if count > limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -86,19 +89,7 @@ impl DiscoveredContext {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
             self.validate_skills(quota.work())?;
-            sources.reservation(
-                limits
-                    .render_bytes
-                    .checked_sub(skill_bytes)
-                    .ok_or_else(|| {
-                        stock_boundary(
-                            io,
-                            ErrorCode::Invalid,
-                            "skill metadata exceeds render bound",
-                        )
-                    })?,
-                io,
-            )?;
+            sources.reservation(limits.render_bytes.map(|maximum| maximum - skill_bytes), io)?;
             self.project_messages(limits, io, count, skill_bytes, &sources)
         })
     }
@@ -161,7 +152,7 @@ impl DiscoveredContext {
     /// Composes this immutable revision through the existing source/stage path.
     pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
         self.validate(&mut None)?;
-        let revision = crate::executor::json::canonical_json_digest(&self, u64::MAX, &mut None)?;
+        let revision = crate::executor::json::canonical_json_digest(&self, None, &mut None)?;
         let revision = blake3::Hash::from_bytes(revision).to_hex().to_string();
         Ok(SourceStage::new(
             "declared-context",

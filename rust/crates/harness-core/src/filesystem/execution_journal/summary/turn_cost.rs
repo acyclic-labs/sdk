@@ -153,11 +153,9 @@ async fn append_cost_measurements() -> Result<()> {
             // A bounded cache may read cold index pages, never a journal
             // prefix. Retry and tool-state preloads plus their two updates
             // each traverse at most 256 branches, a leaf and an external value.
-            // Acknowledged appends are not reads: publication need not read
-            // its own records back. Bound all actual reads, including replay.
-            let historical = after.authority_records_read - before.authority_records_read;
+            let records_read = after.authority_records_read - before.authority_records_read;
             assert!(
-                historical <= 4 * 258,
+                records_read <= 4 * 258,
                 "append exceeded fixed-width index work at step {step}"
             );
             {
@@ -181,12 +179,11 @@ async fn append_cost_measurements() -> Result<()> {
             );
             if [0, 9, 99, 999].contains(&step) {
                 eprintln!(
-                    "append native={native} step={} elapsed_us={} records_received={} bytes_received={} historical_records={} bytes_written={} bytes_encoded={}",
+                    "append native={native} step={} elapsed_us={} records_received={} bytes_received={} bytes_written={} bytes_encoded={}",
                     step + 1,
                     elapsed[step as usize],
                     after.authority_records_read - before.authority_records_read,
                     after.authority_bytes_read - before.authority_bytes_read,
-                    historical,
                     after.authority_bytes_written - before.authority_bytes_written,
                     after.bytes_encoded - before.bytes_encoded
                 );
