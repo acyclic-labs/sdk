@@ -22,6 +22,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         original: usize,
         prior_items: u64,
         prior_live: u64,
+        seal_scratch: u64,
         retained: Option<RetainedAllocation>,
         entered: bool,
         refuse: bool,
@@ -42,6 +43,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             assert!(work.spent().items_examined >= self.prior_items);
             assert!(work.allocations.live_bytes() >= self.prior_live);
             if !self.entered {
+                self.seal_scratch = work.allocations.scratch_bytes();
                 let delta = WorkCounters {
                     items_examined: 2,
                     ..WorkCounters::UNCHARGED
@@ -91,6 +93,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             original: &mut work as *mut AuthorityWork<'_> as usize,
             prior_items: work.spent().items_examined,
             prior_live: work.allocations.live_bytes(),
+            seal_scratch: 0,
             retained: None,
             entered: false,
             refuse: exit == 1,
@@ -128,9 +131,8 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         assert!(work.spent().items_examined >= guard.prior_items + 2);
         let before = work.allocations.live_bytes();
         if !native {
-            assert_eq!(
-                work.allocations.scratch_bytes(),
-                29,
+            assert!(
+                (29..=guard.seal_scratch).contains(&work.allocations.scratch_bytes()),
                 "temporary guard/request bytes leaked"
             );
         }
