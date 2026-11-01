@@ -131,6 +131,7 @@ fn main() {
       const barrier = `127.0.0.1:${address.port}`;
       const target = join(fixture, "target");
       const run = async (args, buildDirectory, measure) => {
+        /** @type {NodeJS.ProcessEnv} */
         const env = { ...process.env, CODEX_HOME: join(fixture, "codex"),
           CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
         delete env.COMPILE_BARRIER;
