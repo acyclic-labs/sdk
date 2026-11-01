@@ -1,5 +1,30 @@
 # Polling and timed-wait inventory
 
+Identity cancellation successor, location on `8f31c227ee`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1156` | Yield/count quiet-window readiness loop | The real HTTP handler publishes its first exchange on one oneshot. After cancellation, the original operation releases its existing server mutex while stdout remains blocked. | Source complete; unqualified |
+
+The original ping and canceled-reply assertions remain. The new first-exchange
+join prevents an unstarted operation from satisfying the completion observation.
+The oneshot retains entry before observation and reports producer withdrawal as
+an error. Operation completion or task withdrawal releases the original mutex;
+the test checks retained approval before unblocking output. Expiry without
+cancellation clears approval and fails that assertion. Suppressing cancellation
+or withdrawing the entry producer are source-level negatives, not executed
+controls. This does not independently prove panic or transport-error causality.
+
+The quiet-window counter, wall-clock reads, repeated yields and its three-second
+refusal budget are deleted. One original operation-mutex acquisition replaces
+unbounded observations. The fixture replaces one Arc/atomic counter with one
+oneshot plus one Arc/mutex containing its sole sender; every HTTP request takes
+that fixed fixture mutex once instead of incrementing the old counter. No product
+work changes; no task, worker, HTTP request, payload copy, syscall or durability
+barrier is added. Channel allocation bytes and native operation counts remain
+unmeasured. Coordination is fixed per exchange, independent of history or agent
+count. Existing clock-pump and other readiness-deadline survivors remain open.
+
 Identity credential publication successor, location on `88568da9ff`:
 
 | Source | Kind | Replacement and terminal | Status |
@@ -4584,7 +4609,7 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original request/timer registration and explicit deterministic clock advancement after its producer event. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Same explicit registered-operation event; no continuously runnable sampling task. | Pending; product owner |
 | `plugin/identity/src/mcp.rs:808` | Credential-file yield/recheck | Original operation mutex release, followed by one credential read/assertion. | Source complete; unqualified |
-| `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original login cancellation/settlement event followed by deterministic poll-count assertion. | Pending; product owner |
+| `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original HTTP entry and operation mutex release; retained approval and canceled reply remain asserted. | Source complete; unqualified |
 
 The existing identity receipt/key re-send and failed-revocation caller re-send tests are not automatic retry loops. Their exact identities and real failure controls remain. This plugin extension is not a complete repository census and authorizes no surviving readiness delay.
 
