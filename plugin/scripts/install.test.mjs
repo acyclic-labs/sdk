@@ -203,7 +203,7 @@ scenario("the published package declares the native session MCP server on the in
   assert.equal(servers["acyclic-sessions"].cwd, ".");
   assert.equal(servers["acyclic-sessions"].command, "./bin/acyclic");
   assert.deepEqual(servers["acyclic-sessions"].args, ["__mcp", "codex"]);
-  assert.deepEqual(servers["acyclic-sessions"].env_vars, ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
+  assert.deepEqual(servers["acyclic-sessions"].env_vars, ["CODEX_HOME", "ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
   assert.equal(servers["acyclic-sessions"].required, true);
 });
 
