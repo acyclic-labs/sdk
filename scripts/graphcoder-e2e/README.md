@@ -180,11 +180,15 @@ model response so an additional generation fails the request/step oracle.
 The separate real-login tier accepts an existing Codex login directory by path:
 
 ```sh
-LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs /absolute/graphcoder /absolute/fresh-output
+LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs /absolute/graphcoder /absolute/fresh-output 5
 ```
 
 It runs session, shell, child-result, settled-operation resume and fork/merge
-cases serially. Selected case names can follow the output directory. It shares
+cases serially using gpt-6-luna from the shipping catalog. The required positive
+sample count follows the output directory; optional case names follow that count.
+Each attempt uses a fresh workspace. Results retain all attempts and failures;
+p50/p99 use nearest-rank successful complete-case times through physical
+retirement, rather than plugin or model overhead. It shares
 the fixture factory, process owner and case budget with deterministic acceptance;
 it reads no login files and supplies no API keys. The report preserves raw
 shipping output, so secret-scan it before exporting or publishing. Every failed

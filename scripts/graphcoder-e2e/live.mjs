@@ -11,7 +11,7 @@ import { withOwnedCase } from "./suite.mjs";
 import { publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 
-const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT [CASE ...]";
+const recovery = "LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs GRAPHCODER FRESH_OUTPUT SAMPLES [CASE ...]";
 export const liveCases = ["session", "shell", "child-result", "resume", "fork-merge"];
 
 export function answer(result, format) {
@@ -54,6 +54,7 @@ export function requireTools(hooks, names, expectedChildResult) {
 }
 
 async function runCase(binary, login, root, name) {
+  const setupBegin = performance.now();
   const directory = join(root, name), workspace = join(directory, "workspace");
   await mkdir(workspace, { recursive: true });
   const settings = join(directory, "settings");
@@ -67,19 +68,12 @@ async function runCase(binary, login, root, name) {
   await mkdir(join(settings, ".claude"), { recursive: true });
   await writeFile(join(settings, ".claude/settings.json"), JSON.stringify({ hooks: Object.fromEntries(
     ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].map(event => [event, [{ hooks: [{ type: "command", command }] }]])) }));
-  const catalog = join(directory, "catalog.json");
-  await writeFile(catalog, JSON.stringify({ openai: {
-    adapter: "responses", authentication: "api_key_or_codex_login", base_url: "https://api.openai.com/v1",
-    models: { "gpt-6.1-sol": { capacity: { context_tokens: 475000, output_tokens: 128000 }, features: { tools: true, images: true } } },
-    max_event_bytes: 1048576,
-    token_counter: { path: "responses/input_tokens", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
-  } }));
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
   let step = "invoke shipping GraphCoder", childHooks;
   const invoke = async (prompt, format = "text") => {
-    const args = ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog,
-      "--model", "openai/gpt-6.1-sol", "--operation", operation,
+    const args = ["--workspace", workspace, "--settings-root", settings,
+      "--model", "openai/gpt-6-luna", "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
     const result = await processes.run(binary, args, { cwd: workspace, env, scopeReport: true },
       format === "text" ? "" : JSON.stringify({ prompt, id: "live" }) + "\n");
@@ -92,15 +86,15 @@ async function runCase(binary, login, root, name) {
   };
   const collaborate = async (task, followup) => {
     const fixture = { id: name, workspace, env, args: ["--workspace", workspace,
-      "--settings-root", settings, "--catalog", catalog, "--model", "openai/gpt-6.1-sol"] };
+      "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
     await conversation(processes, binary, fixture, { operation, turns: [
       { id: "spawn", text: task, answer: "SPAWNED" },
       { id: "report", text: followup, answer: marker },
     ] }, capture => captures.push(capture));
   };
-  const begin = performance.now();
+  const begin = performance.now(), phases = [];
   try {
-    const receipt = await withOwnedCase({ processes, run: async () => {
+    const receipt = await withOwnedCase({ processes, onPhase: phase => phases.push(phase), run: async () => {
       if (name === "session") {
         const text = await invoke(`Reply with exactly ${marker}. Do not use tools.`);
         step = "assert session answer";
@@ -139,15 +133,20 @@ async function runCase(binary, login, root, name) {
       } else assert.fail(`unknown case ${name}`);
     } });
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
-    return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds, captures, hooks: childHooks };
+    return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds,
+      setup_seconds: (begin - setupBegin) / 1000, phases, captures, hooks: childHooks };
   } catch (error) {
     return { case: name, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000,
+      setup_seconds: (begin - setupBegin) / 1000, phases,
       error: `step=${step}: ${error.message}; recovery=${recovery}`, captures, hooks: childHooks };
   }
 }
 
 async function main() {
-  const [binary, output, ...selected] = process.argv.slice(2);
+  const [binary, output, count, ...selected] = process.argv.slice(2);
+  const samples = Number(count);
+  assert.ok(/^[1-9][0-9]*$/.test(count ?? "") && Number.isSafeInteger(samples),
+    `step=admit explicit positive sample count; recovery=${recovery}`);
   const login = process.env.LIVE_CODEX_HOME ?? process.env.E2E_LIVE_CODEX_HOME;
   assert.ok(binary && isAbsolute(binary) && output && login && isAbsolute(login), `step=admit arguments and existing login path; recovery=${recovery}`);
   const names = selected.length ? selected : liveCases;
@@ -156,8 +155,19 @@ async function main() {
   await mkdir(output); // An existing evidence identity must never be reused.
   const root = scratchDirectory("graphcoder-live-");
   const results = [];
-  for (const name of names) results.push(await runCase(resolve(binary), login, root, name));
-  const report = { tier: "real-codex-login", platform: process.platform, results,
+  for (let sample = 1; sample <= samples; sample++) {
+    for (const name of names) results.push({ sample, ...await runCase(resolve(binary), login, join(root, String(sample)), name) });
+  }
+  const cells = names.map(name => {
+    const attempts = results.filter(result => result.case === name);
+    const passed = attempts.filter(result => result.status === "pass").map(result => result.seconds).sort((a, b) => a - b);
+    const percentile = fraction => passed.length ? passed[Math.ceil(fraction * passed.length) - 1] : null;
+    return { case: name, attempts: attempts.length, n: passed.length, failures: attempts.length - passed.length,
+      p50_seconds: percentile(0.5), p99_seconds: percentile(0.99) };
+  });
+  const report = { tier: "real-codex-login", model: "openai/gpt-6-luna", platform: process.platform,
+    measurement: "complete case including original physical retirement; nearest-rank successful-case percentiles, not overhead",
+    cells, results,
     pass: results.every(result => result.status === "pass") };
   await publishReport(join(output, "matrix.json"), report);
   process.exitCode = report.pass ? 0 : 1;
