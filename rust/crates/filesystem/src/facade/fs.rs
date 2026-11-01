@@ -17,7 +17,6 @@ pub(super) struct FsInner<A, O> {
     pub(super) objects: O,
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
-    pub(super) generation_positions: super::generation_cache::GenerationPositions,
     pub(super) policy_cache: super::policy_cache::PolicyCache,
     pub(super) publication_proof: crate::kernel::PublicationCache,
     // This field must remain last: Rust drops fields in declaration order, so every durable
@@ -217,7 +216,6 @@ impl<A, O> Fs<A, O> {
                 objects,
                 capabilities,
                 workspace_namespace,
-                generation_positions: super::generation_cache::GenerationPositions::default(),
                 policy_cache: super::policy_cache::PolicyCache::default(),
                 publication_proof: Default::default(),
                 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

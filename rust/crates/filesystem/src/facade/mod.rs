@@ -154,7 +154,6 @@ pub use composition::{CreateSpec, ForkSpec};
 mod fork;
 mod fs;
 mod generation;
-mod generation_cache;
 mod generation_position;
 mod join_publication;
 mod join_request;

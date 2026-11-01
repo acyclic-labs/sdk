@@ -90,7 +90,6 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        generation_positions: super::super::generation_cache::GenerationPositions::default(),
         policy_cache: super::super::policy_cache::PolicyCache::default(),
         publication_proof: Default::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),

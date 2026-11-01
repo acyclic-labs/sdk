@@ -337,7 +337,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     durable: cfg!(any(unix, windows)),
                 },
                 workspace_namespace: [0; 16],
-                generation_positions: super::generation_cache::GenerationPositions::default(),
                 policy_cache: super::policy_cache::PolicyCache::default(),
                 publication_proof: Default::default(),
                 _local_root_lifecycle: lifecycle,

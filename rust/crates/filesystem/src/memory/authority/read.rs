@@ -1,6 +1,38 @@
 use super::*;
 
 impl MemoryAuthorityStore {
+    pub(super) fn lookup_generation(
+        &self,
+        authority: AuthorityId,
+        generation: crate::GenerationId,
+        through: Sequence,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Sequence>, FsError> {
+        accounting.charge(read_work())?;
+        let authorities = self
+            .authorities
+            .lock()
+            .map_err(|_| AuthorityStoreError::MemoryAuthorityPoisoned)?;
+        examine(accounting)?;
+        let state = authorities
+            .get(&authority)
+            .ok_or(AuthorityStoreError::Missing)?;
+        let head = state.head();
+        if through > head.sequence {
+            return Err(AuthorityStoreError::ReplayCursorAhead {
+                after: through,
+                head: head.sequence,
+            }
+            .into());
+        }
+        examine(accounting)?;
+        Ok(state
+            .generations
+            .get(&generation)
+            .map(|(sequence, _)| *sequence)
+            .filter(|sequence| *sequence <= through))
+    }
+
     pub(super) fn read_head(
         &self,
         authority: AuthorityId,
