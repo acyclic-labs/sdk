@@ -35,6 +35,32 @@ fn reject_with_funded_diagnostics<T: PreparationRecord>(bytes: &[u8]) -> Result<
 
 #[test]
 fn malformed_scalar_collections_cannot_escape_context_or_projection_funding() -> Result<()> {
+    for bytes in [
+        br#"{"z":1,"a":2}"#.as_slice(),
+        br#"{ "a":2,"z":1}"#.as_slice(),
+        br#"{"a":"\u0061"}"#.as_slice(),
+        br#"{"a":1e0}"#.as_slice(),
+        br#"{"a":1,"a":1}"#.as_slice(),
+    ] {
+        // Valid JSON with a different wire spelling cannot enter journal replay.
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(1024 * 1024, 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let io = if native {
+                PreparationIo::from_native_work(&work)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
+            };
+            assert!(crate::executor::decode_json::<Value>(bytes, Some(&io)).is_err());
+            assert_eq!(io.owned_bytes()?, 0);
+            drop(io);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        assert!(crate::executor::decode_json::<Value>(bytes, None).is_err());
+    }
     // Untagged serde buffers content before decoding typed collections. Even
     // invalid primitive elements must be funded before their rejection.
     for count in [1, 64, 512] {

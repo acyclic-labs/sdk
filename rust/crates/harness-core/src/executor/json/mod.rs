@@ -29,6 +29,8 @@ pub use diagnostics::{
 #[cfg(feature = "filesystem")]
 pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
+#[cfg(any(feature = "filesystem", test))]
+pub(crate) use serialization::json_bytes_match_bounded;
 mod copy;
 mod decode;
 pub(crate) mod layout;

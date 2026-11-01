@@ -107,13 +107,10 @@ pub fn decode_json<'a, T: PreparationRecord>(
                 bytes,
                 crate::wire::ErrorCode::Storage,
             )?;
-            let _canonical_hold;
             // The admitted Value already owns normalized JSON data. Sort it in
-            // place instead of encoding and decoding a duplicate Value tree.
+            // place and compare through the original encoder's borrowed sink.
             parsed.0.sort_all_objects();
-            let canonical = io.encode(&parsed.0, bytes.len() as u64, false)?;
-            _canonical_hold = io.guard_bytes(&canonical)?;
-            if canonical.as_ref() != bytes {
+            if !io.encoded_matches(&parsed.0, bytes)? {
                 return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Storage,
