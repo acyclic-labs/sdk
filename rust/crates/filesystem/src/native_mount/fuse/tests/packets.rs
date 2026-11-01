@@ -447,16 +447,39 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     // Retain the same negotiated capacity, rather than sizing from reply bytes.
     let capacity = MAXIMUM_WRITE as usize + 4096;
     let mut buffers = super::super::packet_buffers::PacketBuffers::new(capacity, &work)?;
+    assert!(
+        buffers.input.is_empty(),
+        "startup must not initialize an unread maximum request"
+    );
     assert_eq!(
         buffers.output.len(),
         OUTPUT_HEADER,
         "startup must not initialize every possible reply byte"
     );
+    let input_allocation = (buffers.input.as_ptr(), buffers.input.capacity());
     let allocation = (buffers.output.as_ptr(), buffers.output.capacity());
+    let before = work.receipt();
+    let failure = super::super::packet_buffers::PacketBuffers::input_for(
+        &mut buffers.input,
+        capacity + 1,
+        capacity,
+    )
+    .expect_err("a descriptor cannot enlarge the negotiated request envelope");
+    assert_eq!(callback_errno(&failure), libc::EMSGSIZE);
+    assert!(buffers.input.is_empty());
+    assert_eq!(work.receipt(), before);
     let mut seen = std::collections::BTreeSet::new();
+    let mut input_high_water = 0;
     for packet in packets {
-        let request =
-            PacketRequest::parse(&packet.request).map_err(std::io::Error::from_raw_os_error)?;
+        let before = work.receipt();
+        let input = super::super::packet_buffers::PacketBuffers::input_for(
+            &mut buffers.input,
+            packet.request.len(),
+            capacity,
+        )?;
+        assert_eq!(work.receipt(), before, "input growth needs no new credit");
+        input.copy_from_slice(&packet.request);
+        let request = PacketRequest::parse(input).map_err(std::io::Error::from_raw_os_error)?;
         seen.insert(request.opcode);
         if request.opcode == 16 {
             let before = work.receipt();
@@ -479,6 +502,10 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         )?;
         assert_eq!(work.receipt(), before, "initialization needs no new credit");
         if request.opcode == 26 {
+            assert!(
+                input.len() < capacity,
+                "the captured INIT must not need the maximum request"
+            );
             assert!(
                 response.len() < capacity,
                 "INIT must not touch the maximum reply"
@@ -519,6 +546,12 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
                 Ok(())
             })
             .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+        input_high_water = input_high_water.max(packet.request.len());
+        assert_eq!(
+            buffers.input.len(),
+            input_high_water,
+            "input initialization follows only selected request bytes"
+        );
     }
     for opcode in [26, 1, 15, 16, 18] {
         assert!(
@@ -530,9 +563,15 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
     // A quiet worker can need a larger refusal buffer after cancellation.
     // Reuse an actual captured request, without constructing another ledger.
     work.cancellation().cancel();
+    buffers.input.clear();
     buffers.output.truncate(OUTPUT_HEADER);
     let before = work.receipt();
     for packet in packets {
+        super::super::packet_buffers::PacketBuffers::input_for(
+            &mut buffers.input,
+            packet.request.len(),
+            capacity,
+        )?;
         let request =
             PacketRequest::parse(&packet.request).map_err(std::io::Error::from_raw_os_error)?;
         super::super::packet_buffers::PacketBuffers::output_for(
@@ -542,6 +581,11 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         )?;
     }
     assert_eq!(work.receipt(), before);
+    assert_eq!(
+        (buffers.input.as_ptr(), buffers.input.capacity()),
+        input_allocation,
+        "input growth must retain the original allocation through cancellation"
+    );
     assert_eq!(
         (buffers.output.as_ptr(), buffers.output.capacity()),
         allocation,

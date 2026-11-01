@@ -14,12 +14,22 @@ impl PacketBuffers {
         capacity: usize,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut input = fuse_vec(capacity, work)?;
-        // /dev/fuse requires its negotiated input envelope even for small requests.
-        input.resize(capacity, 0);
+        let input = fuse_vec(capacity, work)?;
         let mut output = fuse_vec(capacity, work)?;
         output.resize(capacity.min(OUTPUT_HEADER), 0);
         Ok(Self { input, output })
+    }
+
+    /// Host receives require the full envelope; descriptors name an exact prefix.
+    pub(super) fn input_for<'a>(
+        input: &'a mut FuseOwned<Vec<u8>>,
+        length: usize,
+        maximum: usize,
+    ) -> Result<&'a mut [u8], NativeMountError> {
+        if length > maximum {
+            return Err(libc::EMSGSIZE.into());
+        }
+        Self::initialized_prefix(input, length)
     }
 
     /// Initializes only the current reply's prefix of already-funded storage.
@@ -42,10 +52,20 @@ impl PacketBuffers {
                 .unwrap_or(capacity)
                 .min(capacity)
         };
-        if output.len() < required {
-            output.resize(required, 0);
+        Self::initialized_prefix(output, required)
+    }
+
+    fn initialized_prefix(
+        buffer: &mut FuseOwned<Vec<u8>>,
+        length: usize,
+    ) -> Result<&mut [u8], NativeMountError> {
+        if length > buffer.capacity() {
+            return Err(libc::ENOBUFS.into());
         }
-        Ok(&mut output[..required])
+        if buffer.len() < length {
+            buffer.resize(length, 0);
+        }
+        Ok(&mut buffer[..length])
     }
 }
 
