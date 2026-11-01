@@ -434,6 +434,32 @@ async fn follow_tool_output(
     );
     let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"]).await?;
     observation(harness, &reader, path).await?;
+    let directory = async |authority: &crate::filesystem::AgentAuthority<'_>, directory: &str| {
+        harness
+            .files
+            .directory_observation(
+                authority,
+                path,
+                directory,
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                None,
+            )
+            .await
+    };
+    let monitor_reader =
+        structured(&[Action::List, Action::Read], &["monitors", "monitors/**"]).await?;
+    directory(&monitor_reader, "monitors").await?;
+    assert!(directory(&monitor_reader, "schedules").await.is_err());
+    assert!(directory(&monitor_reader, "monitors-extra").await.is_err());
+    assert!(directory(&reader, "monitors").await.is_err());
+    assert!(directory(&writer, "monitors").await.is_err());
+    assert!(directory(&denied, "monitors").await.is_err());
+    assert!(
+        directory(&monitor_reader, "monitors/../schedules")
+            .await
+            .is_err()
+    );
+    assert!(directory(&authority().await?, ".system").await.is_err());
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(1).await?;
     let wait = std::time::Duration::from_secs(10);

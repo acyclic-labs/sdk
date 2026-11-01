@@ -1,5 +1,5 @@
 //! Live observation of one agent: its conversation and status streams and its
-//! tool output, `tools/` on its private volume.
+//! one authorized directory on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
@@ -10,10 +10,10 @@ use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
 /// A read-only observation of one agent: its conversation and status streams
-/// and its tool output, under one credential.
+/// and one private directory, under one credential.
 pub struct AgentObservation {
-    /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
-    /// `{resource}/{turn}`.
+    /// The selected directory's `fs:/` resource. For [`TOOL_OUTPUT`], a
+    /// turn's output is under `{resource}/{turn}`.
     pub resource: String,
     /// Sealed credential to follow the agent's conversation and status and to
     /// list and read under `resource`, bound to the agent's audience; it lives
@@ -44,6 +44,32 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
+        if volume != &authority.private.volume {
+            return Err(Error::Unauthorized(
+                "an observation uses the selected agent's private volume".into(),
+            ));
+        }
+        self.directory_observation(authority, agent, TOOL_OUTPUT, clock, calls)
+            .await
+    }
+
+    /// Enrolls one explicitly selected private directory through the original
+    /// native issuer. The path supplies no authority: the selected agent's
+    /// original scope must grant list/read throughout that subtree. Internal
+    /// storage paths cannot be delegated. A directory need not exist yet.
+    ///
+    /// The resulting resource uses the existing filesystem change provider,
+    /// whose per-record policy checks and terminal revocation/expiry retain
+    /// their original session lifetime. This method opens no follow.
+    pub async fn directory_observation(
+        &self,
+        authority: &AgentAuthority<'_>,
+        agent: &crate::agent::AgentPath,
+        directory: &str,
+        clock: Arc<dyn UnixMillisClock>,
+        calls: Option<&str>,
+    ) -> Result<AgentObservation> {
+        let volume = &authority.private.volume;
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
@@ -56,15 +82,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &authority.verifier,
             &authority.scope,
             volume,
-            TOOL_OUTPUT,
+            directory,
             &mut None,
         )?;
         let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
         let workspace = self.open(&reference, None).await?;
         // A structured filesystem scope is only enforced by its compiled
         // view, so prove it before minting: the derived credential may never
-        // reach a path or action the parent cannot. The parent must list and
-        // read all of `tools/`; the rest of the volume does not matter.
+        // reach a path or action the parent cannot. Only this selected subtree
+        // is enrolled; the rest of the volume does not matter.
         if let Some(label) =
             crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
         {
@@ -83,7 +109,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             )
             .await?;
             if !view.0.allows_subtree(
-                TOOL_OUTPUT,
+                directory,
                 &[
                     acyclic_fs::access::Action::List,
                     acyclic_fs::access::Action::Read,
@@ -91,12 +117,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 super::access::access_now()?,
             ) {
                 return Err(Error::Unauthorized(
-                    "an observation needs list and read on all of the tool output".into(),
+                    "an observation needs list and read throughout its directory".into(),
                 ));
             }
         }
-        let resource = acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
-            .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
+        let resource = acyclic_fs::session::resource(workspace.id().volume_id(), directory)
+            .map_err(|error| Error::Invalid(format!("directory resource: {error}")))?;
         let stream =
             |path: std::result::Result<acyclic_stream::StreamPath, crate::agent::Error>| {
                 path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))

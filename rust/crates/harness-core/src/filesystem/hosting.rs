@@ -460,6 +460,23 @@ where
         calls: &str,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     ) -> Result<super::AgentObservation, Error> {
+        self.client_directory_credential(root, super::TOOL_OUTPUT, calls, clock)
+            .await
+    }
+
+    /// Enrolls the selected agent's original private directory under its own
+    /// authority. The credential adds no observation of other agents. Opening
+    /// a follow still requires the session's existing resource provider and
+    /// current-policy authorization; a snapshot cursor alone grants nothing.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn client_directory_credential(
+        &self,
+        agent: &AgentPath,
+        directory: &str,
+        calls: &str,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<super::AgentObservation, Error> {
+        let root = agent;
         self.admit_path(root)?;
         let state = self.agents.state(root).await?;
         let authority = agent_authority(
@@ -472,13 +489,7 @@ where
         .await
         .map_err(turn)?;
         self.volumes
-            .agent_observation(
-                &authority,
-                &state.path,
-                &authority.private.volume,
-                clock,
-                Some(calls),
-            )
+            .directory_observation(&authority, &state.path, directory, clock, Some(calls))
             .await
             .map_err(turn)
     }
