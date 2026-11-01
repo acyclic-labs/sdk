@@ -21,7 +21,14 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
         }
         GitCompatError::Store(error) => S::error(error),
         GitCompatError::RequestObservation(error) => {
-            acyclic_fs::LazyWorkspaceError::NativeRecordIo(error, None).into()
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                acyclic_fs::LazyWorkspaceError::NativeRecordIo(error, None).into()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                acyclic_fs::LazyWorkspaceError::Demand(acyclic_fs::DemandError::Io(error)).into()
+            }
         }
         GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
             Error::Storage(error.to_string())
