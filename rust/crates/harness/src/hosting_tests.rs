@@ -235,7 +235,7 @@ mod machine_results;
 async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
     use crate::conversation::{ContentAccess, ContentPublisher};
     use crate::filesystem::{FilesystemContentPublisher, agent_authority};
-    use acyclic_harness_client::{MAX_READ_BYTES, ReadTarget};
+    use acyclic_harness_client::{CommandError, MAX_READ_BYTES, ReadTarget};
     use acyclic_stream::wire as session_wire;
     use futures::StreamExt as _;
 
@@ -442,8 +442,19 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             ContentAccess::default(),
         )?
         .await?;
+    // Traversal is refused by the original command admission before transport.
+    assert!(matches!(
+        PreparedCommand::new(&AgentCommand::Read {
+            agent: root.clone(),
+            target: ReadTarget::ToolOutput {
+                path: "../outside".into(),
+                at: None,
+            },
+            offset: 0,
+        }),
+        Err(CommandError::Invalid)
+    ));
     for (agent, path) in [
-        (root.clone(), "../outside"),
         (root.clone(), "tools/missing"),
         (root.clone(), "notes/private"),
         (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
