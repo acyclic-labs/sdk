@@ -248,11 +248,11 @@ impl ProcessTree {
             Self::spawn_granted_controlled(command, grant, custody, None, &mut retained)
         {
             if let Some(tree) = retained.as_mut() {
-                tree.terminate(None).map_err(crate::execution::failure)?;
+                tree.terminate(None)?;
             }
             return Err(error);
         }
-        retained.ok_or_else(|| crate::execution::failure(io::ErrorKind::NotFound.into()))
+        retained.ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
     /// Consumes a confined command while retaining the original launch meter
@@ -262,6 +262,8 @@ impl ProcessTree {
     /// The meter covers the shared process owner and Linux root/ruleset calls.
     /// Grant construction and remaining launch allocations still require
     /// invocation-local resource accounting.
+    /// Only grant preparation failures are definitive execution refusals;
+    /// later launch and cleanup errors retain their original classification.
     pub fn spawn_granted_controlled(
         mut command: ProcessCommand,
         grant: &crate::execution::ExecutionGrant,
@@ -269,26 +271,26 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
     ) -> io::Result<()> {
-        (|| {
-            if retained.is_some() {
-                return Err(io::ErrorKind::AlreadyExists.into());
-            }
-            if let Some(meter) = meter {
-                meter.check()?;
-            }
-            command.boundary = Some({
+        command.boundary = Some(
+            (|| {
+                if retained.is_some() {
+                    return Err(io::ErrorKind::AlreadyExists.into());
+                }
+                if let Some(meter) = meter {
+                    meter.check()?;
+                }
                 let cwd =
                     grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-                grant.prepare_launch(Some(cwd), meter)?
-            });
-            match custody {
-                Some(custody) => {
-                    Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
-                }
-                None => Self::spawn_controlled(&mut command, meter, retained),
+                grant.prepare_launch(Some(cwd), meter)
+            })()
+            .map_err(crate::execution::failure)?,
+        );
+        match custody {
+            Some(custody) => {
+                Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
             }
-        })()
-        .map_err(crate::execution::failure)
+            None => Self::spawn_controlled(&mut command, meter, retained),
+        }
     }
 
     /// Starts a child whose whole tree is tied to this host process and

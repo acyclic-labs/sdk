@@ -238,12 +238,17 @@ impl LocalWorkspace {
     ///
     /// Its file publisher writes through the same checkout selection and
     /// command lock, so a tool's file lands where its commands run.
+    /// `execution_grant` confines shell commands and lifecycle hooks. Supply it
+    /// only after host authentication and approval; it does not authorize file
+    /// publication, change workspace grants or make other tools read-only.
+    /// A different selected workspace must fit the same grant or launch refuses.
     pub async fn executor(
         self: &Arc<Self>,
         (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, u64),
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
         verifier: &crate::core::AuthorityVerifier,
+        execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
     ) -> Result<(
         Arc<dyn crate::tool::ToolExecutor>,
         Arc<dyn crate::conversation::ContentPublisher>,
@@ -255,6 +260,7 @@ impl LocalWorkspace {
                 clock,
                 signed,
                 verifier,
+                execution_grant,
             )
             .await?,
         );

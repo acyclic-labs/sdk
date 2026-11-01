@@ -78,6 +78,12 @@ impl CheckoutTools {
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
             let check = owner_check(Arc::clone(&workspace), control);
+            let execution = self.execution_grant.as_ref().map(|grant| {
+                Arc::new(crate::hooks::HookExecution {
+                    grant: grant.clone(),
+                    environment: self.environment.clone(),
+                })
+            });
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
                 let (result, (state, claims)) = with_workers((state, claims), check, |check| {
@@ -87,7 +93,7 @@ impl CheckoutTools {
                         input,
                         registry,
                         context.effective_scope().limits().file_bytes,
-                        (check, Some(wake), None),
+                        (check, Some(wake), execution),
                     )
                 })
                 .await?;

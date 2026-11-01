@@ -59,6 +59,7 @@ async fn fixture() -> Result<(tempfile::TempDir, LocalHarness, CheckoutTools)> {
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
         &harness.verifier,
+        None,
     )
     .await?;
     Ok((directory, harness, tools))

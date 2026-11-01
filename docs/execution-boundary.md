@@ -5,6 +5,19 @@ This milestone provides the Linux launch core and typed refusals on unsupported
 platforms. Stock harness tool admission is separate follow-up work; existing
 shell calls do not acquire confinement merely by using this library.
 
+An embedded native host can supply the same grant when binding
+`LocalWorkspace::executor`. That binding retains the grant for its shell and
+lifecycle hook launches, including the original selected workspace and capture
+owners. Hooks use the executor's already selected ordinary environment. A
+workspace outside the grant refuses; a definitive native refusal remains
+unauthorized or unsupported instead of becoming an unknown process outcome.
+The original signed scope, volume access checks and approval path still apply.
+This input neither grants volume authority nor restricts the executor's file
+facade or publication tools. It is not a read-only role preset. Stock root and
+child bindings still explicitly select no grant until their original admission
+issues one; an embedded host must bind each executor under its own approved
+ceiling. No configuration file or tool argument can populate this input.
+
 The authenticated host decides an `ExecutionGrant` after Auth and the existing
 approval chain. A grant binds one workspace, read-only roots, workspace write
 or read-only access, and network authority. It is not a model tool parameter,
@@ -43,6 +56,10 @@ checks cancellation before preparing enforcement. Admission errors preserve
 any acquired tree or custody record in that slot. Recovery remains a separately
 admitted operation; the controlled entry performs no hidden cleanup. Original
 control interruption remains interruption, rather than a definitive refusal.
+Only preparation failures carry the definitive refusal classification. Errors
+from the subsequent process launch and recovery retain their original process
+classification, including failed termination. A checkout cannot release its
+volume claims as a completed command on that failure; its outcome stays unknown.
 Linux preparation charges each root open and identity query, device metadata, ABI
 query, ruleset creation and rule insertion to that same invocation ledger.
 Every operation reserves before the native call. Successful handles acquire

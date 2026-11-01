@@ -33,6 +33,8 @@ pub(super) struct CheckoutTools {
     expiry_unix_ms: u64,
     /// Tool locations selected once by the native owner, never guest input.
     environment: std::collections::BTreeMap<String, String>,
+    /// Host-approved shell/hook ceiling, independent of logical volume authority.
+    execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -87,6 +89,7 @@ impl CheckoutTools {
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
         verifier: &AuthorityVerifier,
+        execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
     ) -> Result<Self> {
         let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
         let environment =
@@ -131,6 +134,7 @@ impl CheckoutTools {
             clock,
             expiry_unix_ms,
             environment,
+            execution_grant,
             state: shared,
         })
     }
@@ -250,12 +254,17 @@ impl CheckoutTools {
                             claims,
                         )
                         .await?;
-                    if !result.as_ref().is_ok_and(|result| {
-                        result
-                            .value
-                            .get("stop")
-                            .is_none_or(|stop| stop.is_null() || stop["cleanup_completed"] == true)
-                    }) {
+                    // Native preparation refusals precede process acquisition.
+                    // Later launch/cleanup errors keep the unknown outcome.
+                    let refused =
+                        matches!(&result, Err(Error::Unauthorized(_) | Error::Unsupported(_)));
+                    if !refused
+                        && !result.as_ref().is_ok_and(|result| {
+                            result.value.get("stop").is_none_or(|stop| {
+                                stop.is_null() || stop["cleanup_completed"] == true
+                            })
+                        })
+                    {
                         return Err(Error::Indeterminate(invocation.operation_id));
                     }
                     Ok(((result, state, files), claims))

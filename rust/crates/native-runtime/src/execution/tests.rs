@@ -207,6 +207,17 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
             }
             Err(error) => panic!("confined launch failed: {error}"),
         }
+        // A real admitted tree still needs cleanup. Refusing that operation
+        // must not turn it into a pre-launch capability refusal or retire it.
+        let denied_cleanup = crate::tests::ReadBudgetMeter::new(0, 0);
+        let tree = retained.as_mut().expect("admitted tree");
+        let cleanup = tree.terminate(Some(&denied_cleanup)).unwrap_err();
+        assert!(
+            !cleanup
+                .get_ref()
+                .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+        );
+        assert!(!tree.is_reaped());
         // An existing recovery slot is authority, not replaceable output.
         // The rejected command would create another observable file if the
         // consuming entry accidentally launched or overwrote that slot.
@@ -542,7 +553,14 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
             &mut retained,
         )
         .expect_err("an outside writable stdio descriptor entered the guest");
-        assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+        // Unsupported preparation is definitive. A native launch rejection
+        // can retain a warden or custody record and must stay a process error.
+        assert_eq!(
+            error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<ExecutionRefusal>()),
+            error.kind() == io::ErrorKind::Unsupported
+        );
         assert!(matches!(
             error.kind(),
             io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported

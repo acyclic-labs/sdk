@@ -27,6 +27,7 @@ pub(super) async fn cost_fixture() -> Result<(
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &harness.signed,
             &harness.verifier,
+            None,
         )
         .await?,
     );
