@@ -7,7 +7,7 @@ use serde_json::Value;
 pub(super) async fn decode(
     mut response: McpHttpResponse,
     operation: OperationId,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
 ) -> Result<Value> {
     if response.status != 200 {
@@ -38,7 +38,7 @@ pub(super) async fn decode(
         bytes
             .len()
             .checked_add(chunk.len())
-            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
+            .filter(|total| maximum_bytes.is_none_or(|maximum| *total as u64 <= u64::from(maximum)))
             .ok_or(Error::Indeterminate(operation))?;
         bytes.extend_from_slice(&chunk);
     }

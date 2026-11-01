@@ -162,8 +162,8 @@ pub fn assert_stream_invariants(input: &[u8]) {
                     // Independent bounded literal decoder: native admission must
                     // reject invalid strings, including inside skipped fields.
                     let bounds = acyclic_harness_core::JsonBounds {
-                        maximum_bytes: block.continuity.len() as u64,
-                        maximum_items: block.continuity.len() as u64,
+                        maximum_bytes: Some(block.continuity.len() as u64),
+                        maximum_items: Some(block.continuity.len() as u64),
                         maximum_depth: 128,
                     };
                     assert!(
@@ -318,7 +318,7 @@ mod properties {
         fn catalog_codec_has_an_idempotent_canonical_form(endpoint in "[a-z]{0,32}", maximum in 1usize..65536) {
             for mut spec in crate::default_catalog().into_values() {
                 spec.base_url = format!("https://example.test/{endpoint}");
-                spec.max_event_bytes = maximum;
+                spec.max_event_bytes = Some(maximum);
                 prop_assert!(catalog_round_trip(&serde_json::to_vec(&spec).unwrap()));
             }
         }

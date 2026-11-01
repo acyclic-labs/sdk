@@ -19,7 +19,10 @@ fn deployment() -> Result<DeploymentRequest, DomainError> {
 #[test]
 fn secret_selections_round_trip_and_replace_without_inheritance()
 -> Result<(), Box<dyn std::error::Error>> {
-    let secret = SecretSelection::new("MODEL_KEY".to_owned(), reference("models", "primary")?)?;
+    let secret = SecretSelection::new(
+        format!("MODEL_{}", "KEY".repeat(128)),
+        reference("models", "primary")?,
+    )?;
     let mut secrets = vec![secret.clone()];
     for index in 1..65 {
         secrets.push(SecretSelection::new(
@@ -124,7 +127,10 @@ fn secret_fields_are_additive_for_the_actual_predecessor_reader()
     let pool = DescriptorPool::decode(
         include_bytes!("../../tests/fixtures/actors/v1/actors-pre-secrets.bin").as_slice(),
     )?;
-    let selected = SecretSelection::new("MODEL_KEY".to_owned(), reference("models", "primary")?)?;
+    let selected = SecretSelection::new(
+        format!("MODEL_{}", "KEY".repeat(128)),
+        reference("models", "primary")?,
+    )?;
     let base: wire::DeploymentRequest = deployment()?.into();
     assert!(
         wire::DeploymentRequest::decode(base.encode_to_vec().as_slice())?

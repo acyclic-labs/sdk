@@ -217,7 +217,7 @@ and retains the original invocation/flush identity; guest packets carry no
 provider, actor, placement epoch or publication key. A hosted runtime must use
 this same materializer and native producer, not a private guest storage API.
 
-`transaction` runs synchronously. Its borrowed `get`, `put`, `entries`, journal
+`transaction` runs synchronously. Its borrowed `get`, `put`, `delete`, `entries`, journal
 append and alarm operations expire at callback return. Failure rolls back the
 callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.

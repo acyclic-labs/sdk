@@ -49,9 +49,6 @@ where
             .resolver
             .list_buckets(access_key, request_session_token(&request))
             .await?;
-        if names.len() > self.limits.maximum_list_entries_examined as usize {
-            return Err(s3s::s3_error!(SlowDown));
-        }
         for name in &names {
             self.scoped_principal(&request, name, false).await?;
         }
@@ -105,7 +102,7 @@ where
             .scoped_principal(&request, &request.input.bucket, true)
             .await?
             .workspace;
-        validate_http_key(&request.input.key, self.limits.maximum_key_bytes)?;
+        validate_http_key(&request.input.key)?;
         reject_create_multipart_extensions(&request.input)?;
         let operation = request_operation(&request)?;
         let upload_id = Self::multipart_upload_id(&workspace, operation);
@@ -195,7 +192,24 @@ where
         let expected_crc32 = parse_crc32(request.input.checksum_crc32.as_deref())?;
         let part_number = u32::try_from(request.input.part_number)
             .map_err(|_| s3s::s3_error!(InvalidArgument))?;
-        if part_number == 0 || part_number > self.limits.maximum_multipart_parts {
+        if part_number == 0
+            || self
+                .limits
+                .maximum_multipart_parts
+                .is_some_and(|maximum| part_number > maximum)
+        {
+            return Err(s3s::s3_error!(InvalidArgument));
+        }
+        let mut snapshot = self
+            .multipart_snapshot(&workspace, &request.input.upload_id)
+            .await?;
+        if snapshot.key != request.input.key || snapshot.terminal.is_some() {
+            return Err(s3s::s3_error!(NoSuchUpload));
+        }
+        if snapshot
+            .maximum_parts
+            .is_some_and(|maximum| part_number > maximum)
+        {
             return Err(s3s::s3_error!(InvalidArgument));
         }
         let operation = request_operation(&request)?;
@@ -209,7 +223,7 @@ where
         let staged = transaction
             .stage_content(
                 &mut source,
-                self.limits.maximum_multipart_part_bytes,
+                snapshot.maximum_part_bytes,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -242,9 +256,6 @@ where
                 e_tag: Some(etag(existing_etag)?),
                 ..UploadPartOutput::default()
             }));
-        }
-        if snapshot.tail.saturating_add(2) >= u64::from(self.limits.maximum_multipart_records) {
-            return Err(s3s::s3_error!(SlowDown));
         }
         if self
             .multipart_append(
@@ -289,7 +300,7 @@ where
         let marker = request.input.part_number_marker.unwrap_or(0);
         let maximum = request.input.max_parts.unwrap_or(1_000).clamp(
             0,
-            i32::try_from(self.limits.maximum_multipart_parts).unwrap_or(i32::MAX),
+            i32::try_from(self.limits.maximum_list_keys).unwrap_or(i32::MAX),
         );
         let maximum = usize::try_from(maximum).map_err(|_| s3s::s3_error!(InvalidArgument))?;
         let mut selected = snapshot.parts.iter().filter(|(number, _)| {
@@ -518,7 +529,6 @@ where
             delimiter,
             start_after: request.input.marker.clone(),
             maximum_keys,
-            maximum_entries_examined: self.limits.maximum_list_entries_examined,
             ..S3ListOptions::default()
         };
         let view = principal.workspace.s3();

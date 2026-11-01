@@ -391,7 +391,35 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                         .await?;
                     source = destination;
                 }
+                let (latest, previous) = {
+                    let state = provider.state.read().await;
+                    (
+                        state
+                            .paths
+                            .node(source.as_str())
+                            .cloned()
+                            .ok_or(StreamError::Unavailable)?,
+                        state
+                            .paths
+                            .node("c19998")
+                            .cloned()
+                            .ok_or(StreamError::Unavailable)?,
+                    )
+                };
                 drop(provider);
+                let start = std::sync::Barrier::new(2);
+                std::thread::scope(|scope| {
+                    let first = std::thread::Builder::new()
+                        .stack_size(256 * 1024)
+                        .spawn_scoped(scope, || {
+                            start.wait();
+                            drop(latest);
+                        })
+                        .map_err(|_| StreamError::Unavailable)?;
+                    start.wait();
+                    drop(previous);
+                    first.join().map_err(|_| StreamError::Unavailable)
+                })?;
                 Ok(())
             })
         })?

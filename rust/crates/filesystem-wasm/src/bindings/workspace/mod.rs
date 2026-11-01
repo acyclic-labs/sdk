@@ -333,13 +333,18 @@ impl BrowserWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Vec<u8>>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_generations: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_generations: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_changes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserWorkspaceRebaseResult>, JsValue> {
-        let maximum_generations = wasm_u32(&maximum_generations)?;
-        let maximum_changes = wasm_u32(&maximum_changes)?;
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+        let maximum_generations =
+            if maximum_generations.is_undefined() || maximum_generations.is_null() {
+                None
+            } else {
+                Some(wasm_u32(&maximum_generations)?)
+            };
+        let maximum_changes = wasm_optional_u32(&maximum_changes)?;
+        let maximum_conflicts = wasm_optional_u32(&maximum_conflicts)?;
 
         let idempotency_key = idempotency_key.map_or_else(
             || Ok(IdempotencyKey::new()),
@@ -364,9 +369,9 @@ impl BrowserWorkspace {
         &self,
         from: &BrowserGeneration,
         to: &BrowserGeneration,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_changes: JsValue,
     ) -> Result<BrowserChangeSet, JsValue> {
-        let maximum_changes = wasm_u32(&maximum_changes)?;
+        let maximum_changes = wasm_optional_u32(&maximum_changes)?;
         let engine = sdk_value!(unbounded_future!(
             self.engine,
             diff(&from.engine, &to.engine, maximum_changes)
@@ -423,7 +428,7 @@ pub(in crate::bindings) fn browser_workspace_name(value: JsValue) -> Result<Logi
     let value: BrowserWorkspaceName = serde_wasm_bindgen::from_value(value).map_err(js_error)?;
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| js_error("unknown name encoding"))?;
-    LogicalName::new(encoding, value.bytes, u32::MAX).map_err(js_error)
+    LogicalName::new(encoding, value.bytes).map_err(js_error)
 }
 
 pub(in crate::bindings) fn browser_workspace_metadata(

@@ -48,6 +48,8 @@ struct Cutter {
     landed: AtomicUsize,
     crashed: AtomicBool,
     unfaithful: Mutex<Option<CutSimulationError>>,
+    #[cfg(test)]
+    lose_unflushed_ack: bool,
 }
 
 impl Cutter {
@@ -67,7 +69,7 @@ impl PersistenceCut for Cutter {
     #[cfg(test)]
     fn written(&self) -> bool {
         let next = Cut::LostAck(self.landed.load(Ordering::SeqCst) + 1);
-        if LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get) && self.cut == Some(next) {
+        if self.lose_unflushed_ack && self.cut == Some(next) {
             self.landed.fetch_add(1, Ordering::SeqCst);
             return !self.fires(next);
         }
@@ -136,6 +138,8 @@ where
         landed: AtomicUsize::new(0),
         crashed: AtomicBool::new(false),
         unfaithful: Mutex::new(None),
+        #[cfg(test)]
+        lose_unflushed_ack: LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get),
     });
     stream.cut_persistence(cutter.clone());
     let result = run(stream.clone()).await;

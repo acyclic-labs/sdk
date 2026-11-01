@@ -53,8 +53,10 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_eq!(metrics.num_alive_tasks(), tasks);
     assert_eq!(std::fs::read_dir("/proc/self/task")?.count(), threads);
+    let namespace_key = blake3::hash(namespace.as_bytes()).to_hex();
+    let diagnostic_label = &namespace_key.as_str()[..32];
     let connections: i64 = client.query_one("SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 OR application_name=$2", &[
-        &format!("acyclic-stream-query-{namespace}"), &format!("acyclic-stream-listener-{namespace}")
+        &format!("acyclic-stream-query-{diagnostic_label}"), &format!("acyclic-stream-listener-{diagnostic_label}")
     ]).await?.get(0);
     assert_eq!(connections, 2);
     println!(

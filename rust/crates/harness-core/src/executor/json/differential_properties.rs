@@ -142,10 +142,11 @@ proptest! {
         let value = serde_json::json!({"z": text, "a": (0..width).collect::<Vec<_>>()});
         for canonical in [false, true] {
             for bounds in [
-                JsonBounds { maximum_bytes: 65536, maximum_items: 65536, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: limit, maximum_items: 65536, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: 65536, maximum_items: limit, maximum_depth: 128 },
-                JsonBounds { maximum_bytes: 65536, maximum_items: 65536, maximum_depth: 0 },
+                JsonBounds { maximum_bytes: None,maximum_items: None,maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536),maximum_items: Some(65536),maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(limit),maximum_items: Some(65536),maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536),maximum_items: Some(limit),maximum_depth: 128 },
+                JsonBounds { maximum_bytes: Some(65536),maximum_items: Some(65536),maximum_depth: 0 },
             ] { compare(&value, canonical, bounds)?; }
         }
     }

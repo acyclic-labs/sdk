@@ -67,12 +67,10 @@ pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId>
     fn value_owned_bytes(value: &Self::Value) -> u64;
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E>;
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E>;
     fn encode_with_accounting(
@@ -151,8 +149,6 @@ pub(super) fn reaches<K: Ord>(last: Option<&K>, key: &K) -> bool {
 pub(crate) enum Error<E: std::error::Error> {
     #[error("persistent B+tree mutation batch is empty")]
     Empty,
-    #[error("persistent B+tree mutation count exceeds its bound")]
-    TooManyMutations,
     #[error("persistent B+tree root has the wrong object kind")]
     WrongRootKind,
     #[error("persistent B+tree limits are invalid")]
@@ -262,7 +258,6 @@ where
 pub(super) fn validate<F, M>(
     root: Option<ObjectId>,
     mutations: &[M],
-    maximum_mutations: u32,
     limits: DecodeLimits,
 ) -> Result<(), Error<M::Error>>
 where
@@ -273,10 +268,6 @@ where
         Some(Error::WrongRootKind)
     } else if mutations.is_empty() {
         Some(Error::Empty)
-    } else if maximum_mutations == 0
-        || u32::try_from(mutations.len()).unwrap_or(u32::MAX) > maximum_mutations
-    {
-        Some(Error::TooManyMutations)
     } else if !limits.page_limits_valid(2) {
         Some(Error::InvalidLimits)
     } else {

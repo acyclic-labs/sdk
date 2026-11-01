@@ -21,6 +21,7 @@ async fn idle_skips_need_no_credit_and_never_pass_a_queued_match() -> TestResult
     keyed(&provider, "private").await?;
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 0)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     let mut subscription = subscribe(1, "progress", 1, false);
     if let Some(Kind::Follow(follow)) = &mut subscription.kind {
         follow.opening_cut = true;

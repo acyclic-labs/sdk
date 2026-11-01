@@ -82,9 +82,6 @@ pub(crate) fn actor_error(cause: crate::agent::Error) -> JsValue {
 }
 
 pub(super) fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
-    if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
-        return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
-    }
     AgentPath::try_from(
         agent
             .as_string()
@@ -260,11 +257,6 @@ impl WasmAgentClient {
         resources: js_sys::Array,
     ) -> Result<(), JsValue> {
         let selections = selections(agents, conversation_from, status_from)?;
-        if resources.length() as usize
-            > acyclic_harness_client::DemandPolicy::default().selected_capacity()
-        {
-            return Err(error("selected_capacity", "too many output panes"));
-        }
         let mut subscriptions = Vec::with_capacity(resources.length() as usize);
         for value in resources.iter() {
             let encoded = value
@@ -470,14 +462,10 @@ fn selections(
     status_from: js_sys::BigUint64Array,
 ) -> Result<Vec<AgentSelection>, JsValue> {
     let length = agents.length();
-    if length == 0
-        || length as usize > AgentClient::selected_capacity()
-        || conversation_from.length() != length
-        || status_from.length() != length
-    {
+    if length == 0 || conversation_from.length() != length || status_from.length() != length {
         return Err(error(
             "selected_capacity",
-            "view requires 1..=8 agents and matching cursor arrays",
+            "view requires agents and matching cursor arrays",
         ));
     }
     let mut selections = Vec::with_capacity(length as usize);
