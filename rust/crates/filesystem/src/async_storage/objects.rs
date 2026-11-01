@@ -28,7 +28,10 @@ pub struct PublicationScope<'a> {
 }
 
 contract! {
+forward_object_store;
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
+/// A method that only forwards preserves the provider's original future and
+/// synchronous admission; it adds no suspension point of its own.
 pub trait AsyncObjectStore: ProviderPlatform {
     /// Whether publication requires every referenced child to be stored first.
     fn requires_child_first_publication(&self) -> bool { false }
@@ -39,8 +42,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
     fn prepare_hashed(
         &self,
         object: crate::HashedObject,
-        _context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<crate::HashedObject, crate::ObjectStoreError>> + ProviderTask {
+        _context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<crate::HashedObject, crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move { Ok(object) }
     }
     /// Whether decoded-cache hooks may retain or reject a decoded page.
@@ -54,27 +57,27 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Observes a decoded value or retains its original miss across I/O.
     fn decoded_cache_lookup(
         &self,
-        key: DecodedCacheKey,
-    ) -> Result<DecodedCacheLookup<'_>, crate::storage::ObjectStoreError> {
-        Ok(DecodedCacheLookup::Miss(DecodedCacheMiss::uncached(key)))
+        key: crate::async_storage::DecodedCacheKey,
+    ) -> std::result::Result<crate::async_storage::DecodedCacheLookup<'_>, crate::storage::ObjectStoreError> {
+        Ok(crate::async_storage::DecodedCacheLookup::Miss(crate::async_storage::DecodedCacheMiss::uncached(key)))
     }
 
     /// Writes one immutable object.
     fn put(
         &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask;
+        object_id: crate::storage::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask;
     /// Imports the exact immutable representation named by the full reference.
     /// Plain stores use their ordinary write boundary. Sealed stores must
     /// authenticate the association and preserve the original CAS bytes.
     fn put_stored(
         &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
+        object_id: crate::storage::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             if object_id.storage.is_some() {
                 return Err(crate::ObjectStoreError::DigestMismatch);
@@ -86,8 +89,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
     fn put_hashed(
         &self,
         object: crate::storage::HashedObject,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             context.object_fallback()?;
             let (id, bytes) = object.into_parts();
@@ -97,9 +100,9 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Writes an atomic batch when the backend supports it.
     fn put_many(
         &self,
-        writes: &[ObjectWrite],
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
+        writes: &[crate::storage::ObjectWrite],
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             context.object_fallback()?;
             let _ = writes;
@@ -112,8 +115,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
     fn put_many_hashed(
         &self,
         objects: &[crate::storage::HashedObject],
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             #[cfg(not(target_arch = "wasm32"))]
             if context.is_native() {
@@ -124,7 +127,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
             context.object_fallback()?;
             let writes = objects
                 .iter()
-                .map(|object| ObjectWrite {
+                .map(|object| crate::storage::ObjectWrite {
                     object_id: object.object_id(),
                     bytes: object.bytes().clone(),
                 })
@@ -135,9 +138,9 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Makes the publication scope durable and retains its hold.
     fn flush_before_publish(
         &self,
-        _scope: PublicationScope<'_>,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<crate::PublicationHold, crate::ObjectStoreError>> + ProviderTask
+        _scope: crate::async_storage::PublicationScope<'_>,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<crate::PublicationHold, crate::ObjectStoreError>> + acyclic_stream::ProviderTask
     {
         async move {
             context.object_fallback()?;
@@ -152,13 +155,13 @@ pub trait AsyncObjectStore: ProviderPlatform {
         _record: &crate::DurableCommit,
         _maximum_bytes: u64,
         _maximum_objects: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<
-        Output = Result<
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<
             Option<crate::kernel::HistoricalGenerationEvidence>,
             crate::ObjectStoreError,
         >,
-    > + ProviderTask {
+    > + acyclic_stream::ProviderTask {
         async move {
             context.object_fallback()?;
             context
@@ -171,17 +174,17 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Reads one object up to its byte limit.
     fn read(
         &self,
-        object_id: ObjectId,
+        object_id: crate::storage::ObjectId,
         maximum_bytes: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<crate::ObjectRead, crate::ObjectStoreError>> + ProviderTask;
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<crate::ObjectRead, crate::ObjectStoreError>> + acyclic_stream::ProviderTask;
     /// Reads the exact CAS representation named by the full reference.
     fn read_stored(
         &self,
-        object_id: ObjectId,
+        object_id: crate::storage::ObjectId,
         maximum_bytes: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<crate::ObjectRead, crate::ObjectStoreError>> + ProviderTask {
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<crate::ObjectRead, crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             if object_id.storage.is_some() { return Err(crate::ObjectStoreError::DigestMismatch); }
             self.read(object_id, maximum_bytes, context).await
@@ -190,21 +193,21 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Reads a batch and retains its native vector allocation.
     fn read_many(
         &self,
-        requests: &[ObjectReadRequest],
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<
-        Output = Result<
+        requests: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<
             (Vec<crate::ObjectRead>, crate::AuthorityAllocation),
             crate::ObjectStoreError,
         >,
-    > + ProviderTask;
+    > + acyclic_stream::ProviderTask;
     /// Exports exact stored bytes in request order, retaining the batch custody.
     /// Limits refer to plaintext; sealed providers admit their seal overhead.
     fn read_many_stored(
         &self,
-        requests: &[ObjectReadRequest],
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>> + ProviderTask {
+        requests: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>> + acyclic_stream::ProviderTask {
         async move {
             if requests.iter().any(|request| request.object_id.storage.is_some()) {
                 return Err(crate::ObjectStoreError::DigestMismatch);
@@ -215,14 +218,14 @@ pub trait AsyncObjectStore: ProviderPlatform {
     /// Tests whether an object exists.
     fn contains(
         &self,
-        object_id: ObjectId,
-        context: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = Result<bool, crate::ObjectStoreError>> + ProviderTask;
+        object_id: crate::storage::ObjectId,
+        context: &mut crate::async_storage::AuthorityWork<'_>,
+    ) -> impl std::future::Future<Output = std::result::Result<bool, crate::ObjectStoreError>> + acyclic_stream::ProviderTask;
     /// The collection this store runs while it stays open, if it collects.
-    fn collection(&self) -> Option<&Arc<crate::Collection>> {
+    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         None
     }
-    /// The count a proof records before it starts, for [`PublicationScope`].
+    /// The count a proof records before it starts, for [`crate::async_storage::PublicationScope`].
     fn collection_sweeps(&self) -> u64 {
         self.collection()
             .map_or(0, |collection| collection.sweeps())

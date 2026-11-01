@@ -424,3 +424,58 @@ async fn default_guarded_fork_preserves_owner_rejection_and_rejects_managed_perm
     }
     Ok(())
 }
+
+#[cfg(feature = "conformance")]
+#[tokio::test]
+async fn object_store_adapters_preserve_dispatch_bytes_and_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::testing::Counted;
+    use std::sync::Arc;
+
+    let inner = Arc::new(Counted::new(MemoryObjectStore::default()));
+    let objects = Arc::new(crate::CachedObjectStore::with_default_options(
+        inner.clone(),
+    ));
+    let cancel = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    let bytes = OwnedBytes::from_static(b"original");
+    let id = ObjectId {
+        storage: None,
+        kind: ObjectKind::BlobChunk,
+        digest: object_digest(&bytes),
+    };
+
+    // Dispatch records one request even if its original future is dropped.
+    let before = inner.requests().data();
+    let pending = objects.put_stored(id, bytes.clone(), &mut work);
+    assert_eq!(inner.requests().data(), before + 1);
+    drop(pending);
+    assert!(!inner.inner().contains(id, &mut work).await?);
+
+    // Negative control: an extra async frame postpones the same admission.
+    let before = inner.requests().data();
+    let deferred = async { objects.put_stored(id, bytes.clone(), &mut work).await };
+    assert_eq!(inner.requests().data(), before);
+    deferred.await?;
+    assert_eq!(inner.requests().data(), before + 1);
+
+    let before = inner.requests().data();
+    let original = objects.read_stored(id, 8, &mut work);
+    assert_eq!(inner.requests().data(), before + 1);
+    let read = original.await?;
+    assert_eq!(read.bytes.as_ref(), bytes.as_ref());
+    assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
+    assert!(matches!(
+        objects.read_stored(id, 7, &mut work).await,
+        Err(ObjectStoreError::TooLarge {
+            observed: 8,
+            maximum: 7
+        })
+    ));
+    cancel.cancel();
+    assert!(matches!(
+        objects.read_stored(id, 8, &mut work).await,
+        Err(ObjectStoreError::Cancelled)
+    ));
+    Ok(())
+}

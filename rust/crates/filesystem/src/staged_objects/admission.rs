@@ -1,19 +1,11 @@
 use super::*;
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
-    fn requires_child_first_publication(&self) -> bool {
-        self.inner.requires_child_first_publication()
-    }
-    fn maximum_reference_bytes(&self) -> usize {
-        self.inner.maximum_reference_bytes()
-    }
-    async fn prepare_hashed(
-        &self,
-        object: crate::HashedObject,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::HashedObject, ObjectStoreError> {
-        self.inner.prepare_hashed(object, context).await
-    }
+    crate::async_storage::forward_object_store!(self => self.inner;
+        requires_child_first_publication,
+        maximum_reference_bytes,
+        prepare_hashed,
+    );
 
     async fn put_stored(
         &self,

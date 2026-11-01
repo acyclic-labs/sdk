@@ -40,77 +40,21 @@ pub(super) fn compose_backend(
     Ok(())
 }
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
-    fn requires_child_first_publication(&self) -> bool {
-        self.store.requires_child_first_publication()
-    }
+    crate::async_storage::forward_object_store!(self => self.store;
+        requires_child_first_publication,
+        maximum_reference_bytes,
+        prepare_hashed,
+        supports_decoded_cache,
+        put_stored,
+        read_many_stored,
+        read_stored,
+        decoded_cache_lookup,
+        put,
+        contains,
+        collection,
+        collection_sweeps,
+    );
 
-    fn maximum_reference_bytes(&self) -> usize {
-        self.store.maximum_reference_bytes()
-    }
-
-    async fn prepare_hashed(
-        &self,
-        object: crate::HashedObject,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::HashedObject, ObjectStoreError> {
-        self.store.prepare_hashed(object, work).await
-    }
-
-    fn supports_decoded_cache(&self) -> bool {
-        self.store.supports_decoded_cache()
-    }
-
-    async fn put_stored(
-        &self,
-        id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.store.put_stored(id, bytes, context).await
-    }
-    async fn read_many_stored(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        self.store.read_many_stored(requests, context).await
-    }
-    async fn read_stored(
-        &self,
-        id: ObjectId,
-        maximum: u64,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::ObjectRead, ObjectStoreError> {
-        self.store.read_stored(id, maximum, context).await
-    }
-
-    fn decoded_cache_lookup(
-        &self,
-        key: crate::async_storage::DecodedCacheKey,
-    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
-        self.store.decoded_cache_lookup(key)
-    }
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        self.store.put(object_id, bytes, context).await
-    }
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        self.store.contains(object_id, context).await
-    }
-    fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
-        self.store.collection()
-    }
-    fn collection_sweeps(&self) -> u64 {
-        self.store.collection_sweeps()
-    }
     async fn read(
         &self,
         object_id: ObjectId,
