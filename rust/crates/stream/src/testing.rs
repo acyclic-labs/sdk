@@ -12,9 +12,7 @@ use std::sync::{
 };
 
 mod provider;
-#[cfg(feature = "conformance")]
 mod sample;
-#[cfg(feature = "conformance")]
 pub use sample::{Sample, SampleStart};
 
 /// Request classes used by every primitive's conformance budgets.

@@ -39,11 +39,11 @@ required-features = ["grpc", "http"]
 
 [features]
 conformance = ["dep:web-time"]
-model-checking = ["dep:loom", "dep:tempfile"]
-test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
+model-checking = ["conformance", "dep:loom", "dep:tempfile"]
+test-support = ["conformance", "acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
 grpc = ["session", "acyclic-auth/grpc", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
-http = ["grpc", "dep:reqwest"]
+http = ["conformance", "grpc", "dep:reqwest"]
 local = ["tokio/rt"]
 # The in-process session protocol, without a network transport.
 session = ["tokio/rt", "tokio/macros"]
@@ -107,6 +107,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 
 [dev-dependencies]
+web-time = "1.1.0"
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 ed25519-dalek = "=3.0.0"
 tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
