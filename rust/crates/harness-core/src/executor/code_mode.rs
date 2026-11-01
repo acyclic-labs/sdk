@@ -113,24 +113,28 @@ impl StockExecution<'_> {
             .transpose()?;
         #[cfg(not(feature = "filesystem"))]
         let decoded: Option<(ModelMessage, crate::conversation::ContentHold<'_>)> = None;
-        let message = match decoded {
-            Some(decoded) => retain_preparation(decoded)?,
-            None => serde_json::from_slice(&bytes).map_err(|_| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "tool notice decoding failed",
-                )
-            })?,
+        let decoded = match decoded {
+            Some((message, hold)) => (message, Some(hold)),
+            None => (
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "tool notice decoding failed",
+                    )
+                })?,
+                None,
+            ),
         };
         // The active input cursor is already authenticated. Insert immediately
         // after it, keeping the same prefix when later model steps add results.
         let index = context
             .current_input_index
             .map_or(context.messages.len(), |index| index as usize + 1);
-        if context.messages.get(index) == Some(&message) {
+        if context.messages.get(index) == Some(&decoded.0) {
             return Ok(());
         }
+        let message = retain_preparation(decoded)?;
         crate::context::ContextInsertion {
             local_index: index,
             message,
