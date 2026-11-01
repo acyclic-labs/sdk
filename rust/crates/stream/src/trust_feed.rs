@@ -66,8 +66,14 @@ pub struct Accounts(mpsc::UnboundedSender<String>);
 impl Accounts {
     /// Follow `account` from now on. Its trust is served once its Stream is
     /// caught up to the tail observed when the follow opened.
-    pub fn follow(&self, account: impl Into<String>) {
-        let _ = self.0.unbounded_send(account.into());
+    ///
+    /// # Errors
+    /// Returns `Unavailable` if the original feed was closed or dropped;
+    /// accepting a request does not establish that its trust is served.
+    pub fn follow(&self, account: impl Into<String>) -> Result<(), StreamError> {
+        self.0
+            .unbounded_send(account.into())
+            .map_err(|_| StreamError::Unavailable)
     }
 }
 
