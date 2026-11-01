@@ -328,12 +328,12 @@ impl<S> CachedObjectStore<S> {
         if let Some(bytes) = cached_read(&mut state, object_id)? {
             return Ok(ReadPlan::Hit(bytes));
         }
-        state.misses = increment(state.misses)?;
         drop(state);
         let mut lookup = flights::read_work(accounting)?;
         {
-            let state = self.lock_state()?;
+            let mut state = self.lock_state()?;
             if let Some(flight) = state.flights.get(object_id, &mut lookup)? {
+                state.misses = increment(state.misses)?;
                 return Ok(ReadPlan::Follower(flight));
             }
         }
@@ -346,7 +346,10 @@ impl<S> CachedObjectStore<S> {
         if let Some(bytes) = cached_read(&mut state, object_id)? {
             return Ok(ReadPlan::Hit(bytes));
         }
-        state.flights.install(object_id, &flight, &mut insertion)
+        let misses = increment(state.misses)?;
+        let plan = state.flights.install(object_id, &flight, &mut insertion)?;
+        state.misses = misses;
+        Ok(plan)
     }
 
     fn cached_contains(&self, object_id: ObjectId) -> Result<bool, ObjectStoreError> {
