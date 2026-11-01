@@ -2,7 +2,10 @@ use super::*;
 use crate::core::{AggregateKind, AuthorityRoot};
 use crate::{AgentId, conversation::VolumeOwner, core::Authority};
 
-fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGrant, ContentGrant)> {
+fn publication_grants(
+    volume: &VolumeRef,
+    agent: AgentId,
+) -> Result<(AuthorityRoot, ContentGrant, ContentGrant)> {
     let issuer = AuthorityRoot::new(
         "batch",
         [41; 32],
@@ -37,7 +40,7 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
         64,
         &mut None,
     )?;
-    Ok((write, read))
+    Ok((issuer, write, read))
 }
 
 #[tokio::test]
@@ -55,7 +58,7 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
             &mut None,
         )?;
         host.create_volume(&volume).await?;
-        let (write, read) = publication_grants(&volume, agent)?;
+        let (_issuer, write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -301,7 +304,7 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
             &mut None,
         )?;
         host.create_volume(&volume).await?;
-        let (write, read) = publication_grants(&volume, agent)?;
+        let (_issuer, write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
@@ -613,7 +616,7 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
                 &mut None,
             )?;
             host.create_volume(&volume).await?;
-            let (write, read) = publication_grants(&volume, agent)?;
+            let (_issuer, write, read) = publication_grants(&volume, agent)?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
