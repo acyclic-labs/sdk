@@ -33,6 +33,8 @@ resolves narrower roots with `openat2` beneath the verified parent object,
 refusing symlink substitution and resolution races. Other platforms currently
 refuse subtree attenuation until an equivalent native operation is available;
 retaining the same verified roots can still remove writes or network authority.
+Explicit read-root matches are verified before overlapping subtree proofs, so
+retaining a granted root does not require subtree support from its ancestor.
 `ProcessTree::spawn_granted` prepares active enforcement and enters the same
 process creation, custody, capture, cancellation and retirement implementation.
 `spawn_granted_controlled` borrows the original invocation's launch meter and

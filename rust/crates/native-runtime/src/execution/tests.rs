@@ -18,16 +18,28 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
     let workspace = root.path().join("workspace");
     let nested = workspace.join("nested");
     let external = root.path().join("external");
+    let external_nested = external.join("nested");
     std::fs::create_dir_all(&nested).unwrap();
-    std::fs::create_dir(&external).unwrap();
+    std::fs::create_dir_all(&external_nested).unwrap();
     let ports = BTreeSet::from([443, 8443]);
     let parent = ExecutionGrant::new(
         &workspace,
         ExecutionAccess::WorkspaceWrite,
-        [external.clone()],
+        [external.clone(), external_nested.clone(), nested.clone()],
         ExecutionNetwork::TcpPorts(ports),
     )
     .unwrap();
+    // Retaining explicit roots must not first require subtree support from an
+    // overlapping read root or workspace. Keep this before the subtree case,
+    // which may correctly refuse on platforms without rooted resolution.
+    parent
+        .attenuate(
+            &workspace,
+            ExecutionAccess::ReadOnly,
+            [external_nested, nested.clone()],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
     let child = match parent.attenuate(
         &nested,
         ExecutionAccess::ReadOnly,
@@ -328,6 +340,17 @@ fn replaced_grant_root_refuses_before_guest_execution() {
         // alone could otherwise be reused by the replacement directory.
         std::fs::remove_dir(replaced).unwrap();
         std::fs::create_dir(replaced).unwrap();
+        // Exact-root selection still verifies the original object; matching
+        // a declared name cannot refresh authority after replacement.
+        let error = grant
+            .attenuate(
+                &workspace,
+                ExecutionAccess::ReadOnly,
+                [external.clone()],
+                ExecutionNetwork::Off,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("root was replaced"), "{error}");
         // A lexical prefix alone used to refresh the replaced root's identity
         // and mint another child grant, including for a read-only root.
         let nested = replaced.join("nested");

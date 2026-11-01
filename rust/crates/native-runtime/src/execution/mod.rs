@@ -248,6 +248,17 @@ impl ExecutionGrant {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
         for path in &requested.0.read {
+            // An already granted root needs only its original object proof.
+            // An overlapping ancestor may require an unavailable subtree proof.
+            if let Ok(index) = self
+                .0
+                .read
+                .binary_search_by(|root| root.path.cmp(&path.path))
+            {
+                if self.0.read[index].contains(path)? {
+                    continue;
+                }
+            }
             if self.0.workspace.contains(path)? {
                 continue;
             }
