@@ -702,11 +702,17 @@ impl Follower {
 
     /// Monotone protected time: never earlier than any time this follower has
     /// returned or any accepted publication. A rolled-back host clock cannot
-    /// revive expired authority.
+    /// revive expired authority. Advancing it notifies the original global
+    /// dependency event after the new floor is visible; unchanged reads do not.
     pub fn protected_now(&self, observed_unix_seconds: u64) -> u64 {
-        self.floor
-            .fetch_max(observed_unix_seconds, Ordering::SeqCst)
-            .max(observed_unix_seconds)
+        let previous = self
+            .floor
+            .fetch_max(observed_unix_seconds, Ordering::SeqCst);
+        if previous < observed_unix_seconds {
+            self.notify(None);
+            self.global.send_replace(());
+        }
+        previous.max(observed_unix_seconds)
     }
 
     // Preserve the public unscoped publication watch. Account dependencies

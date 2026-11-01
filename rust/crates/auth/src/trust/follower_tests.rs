@@ -334,6 +334,55 @@ fn account_events_preserve_exact_dependencies_without_unrelated_wakes() {
     assert_eq!(time_changed.now_or_never(), Some(Ok(())));
     assert_eq!(other_event.now_or_never(), Some(Ok(())));
     assert_eq!(trust.protected_now(NOW), NOW + 1);
+
+    // Observing the original clock also advances the same global floor,
+    // without any signed publication. Already-polled dependencies must wake.
+    let mut first_time = first.changed(&trust);
+    let mut other_time = other.changed(&trust);
+    assert_eq!(
+        first_time
+            .as_mut()
+            .poll(&mut Context::from_waker(&first_waker)),
+        Poll::Pending
+    );
+    assert_eq!(
+        other_time
+            .as_mut()
+            .poll(&mut Context::from_waker(&other_waker)),
+        Poll::Pending
+    );
+    let first_before = first_wakes.0.load(Ordering::Relaxed);
+    let other_before = other_wakes.0.load(Ordering::Relaxed);
+    let unscoped_time = trust.changed();
+    // This transition cannot acquire or traverse account storage.
+    let accounts = trust.accounts.write().unwrap();
+    let expiry = NOW + 10_000;
+    assert_eq!(trust.protected_now(expiry), expiry);
+    assert_eq!(first_wakes.0.load(Ordering::Relaxed), first_before + 1);
+    assert_eq!(other_wakes.0.load(Ordering::Relaxed), other_before + 1);
+    drop(accounts);
+    assert_eq!(first_time.now_or_never(), Some(Ok(())));
+    assert_eq!(other_time.now_or_never(), Some(Ok(())));
+    assert_eq!(unscoped_time.now_or_never(), Some(Ok(())));
+    assert_eq!(
+        first.check(&trust, trust.protected_now(NOW)),
+        Err(VerifyError::Time)
+    );
+
+    // An unchanged or rolled-back observation performs no notification.
+    let mut unchanged_time = first.changed(&trust);
+    assert_eq!(
+        unchanged_time
+            .as_mut()
+            .poll(&mut Context::from_waker(&first_waker)),
+        Poll::Pending
+    );
+    let before = first_wakes.0.load(Ordering::Relaxed);
+    assert_eq!(trust.protected_now(expiry), expiry);
+    assert_eq!(trust.protected_now(NOW - 1), expiry);
+    assert_eq!(first_wakes.0.load(Ordering::Relaxed), before);
+    assert!((&mut unchanged_time).now_or_never().is_none());
+    drop(unchanged_time);
     let other_event = other.changed(&trust);
 
     let rotated = first.changed(&trust);
