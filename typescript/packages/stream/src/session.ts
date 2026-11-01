@@ -6,7 +6,7 @@ import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contr
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema, RecordSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { StreamError, type EncodedRecord, type FollowOptions, type ReadOptions, type Revision } from "./types.js";
-import { projectRecord } from "./record.js";
+import { checkedRecord, projectRecord } from "./record.js";
 
 export interface SessionTransport {
   /** Canonical v1 frames; the Rust session admits each untrusted message. */
@@ -91,7 +91,7 @@ export class StreamSessions {
   async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
-      yield projectRecord(data.item.value, path);
+      yield checkedRecord(data.item.value, data.item.value.sequence, path);
     }
   }
 
