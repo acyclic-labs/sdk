@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildContractTargets, runContractTarget } from "./contract-targets.mjs";
+import { workspaceManifests } from "./package-closure.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -30,16 +31,17 @@ const availableModules = [
   "generate-harness-file-tools-contract.mjs",
   "generate-machines-managed-oci-contract.mjs",
 ];
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const families = process.argv.slice(3);
+const knownFamilies = workspaceManifests(root);
 const matchesFamily = (name, family) => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
 for (const family of families) {
-  if (!availableModules.some(name => matchesFamily(name, family))) {
+  if (!knownFamilies.has(family)) {
     throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
   }
 }
 const modules = availableModules.filter(name => !families.length || families.some(family => matchesFamily(name, family)));
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2] ?? "write";
 if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
 // One build compiles every contract target from current Rust source; the
