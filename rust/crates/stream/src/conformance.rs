@@ -195,12 +195,40 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .children_page(ChildrenPageRequest {
             tail_stream: None,
             parent: Some(path("conformance")?),
-            after: first_page.next_after,
+            after: first_page.next_after.clone(),
             hierarchy_version: Some(first_page.hierarchy_version),
             limit: 1,
         })
         .await
         != Err(StreamError::HierarchyChanged)
+    {
+        return Err(StreamError::Unavailable);
+    }
+    let live_page = provider
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(path("conformance")?),
+            after: first_page.next_after,
+            hierarchy_version: None,
+            limit: 1,
+        })
+        .await?;
+    if !matches!(live_page.children.as_slice(), [child]
+        if child.path == path("conformance/paging-new")?
+            && live_page.next_after.as_ref() == Some(&child.path))
+    {
+        return Err(StreamError::Unavailable);
+    }
+    if provider
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(path("conformance")?),
+            after: Some(path("foreign/child")?),
+            hierarchy_version: None,
+            limit: 1,
+        })
+        .await
+        != Err(StreamError::InvalidArgument)
     {
         return Err(StreamError::Unavailable);
     }

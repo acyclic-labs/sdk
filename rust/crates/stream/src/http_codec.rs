@@ -280,9 +280,6 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 wire::ChildrenPageRequest::decode(input).map_err(|_| "invalid_argument")?;
             let request =
                 wire_codec::children_page_from_wire(request).map_err(|error| error.code())?;
-            if request.after.is_some() && request.hierarchy_version.is_none() {
-                return Err("invalid_argument");
-            }
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
             let mut value = serde_json::Map::from_iter([("limit".into(), json!(request.limit))]);
             if let Some(tail_stream) = request.tail_stream {

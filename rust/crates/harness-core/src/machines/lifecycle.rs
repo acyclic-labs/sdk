@@ -386,8 +386,9 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     // The original plan append already indexes ownership in Streams. Keep
-    // only one page, and preserve its hierarchy fence rather than restarting
-    // a changed census or treating a failed observation as an empty set.
+    // only one page. The original agent control joins admitted work before
+    // lifecycle traversal, so its plan membership is fixed; unrelated journal
+    // publication must not invalidate the next seek.
     fn held_targets<'a>(
         &'a self,
         agent: &AgentPath,
@@ -416,13 +417,13 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
                     let Some(mut next) = request.take() else {
                         return Ok(None);
                     };
+                    drop(children);
                     let page = self
                         .stream
                         .children_page(next.clone())
                         .await
                         .map_err(Error::MachineOwnership)?;
                     next.after = page.next_after;
-                    next.hierarchy_version = Some(page.hierarchy_version);
                     request = next.after.is_some().then_some(next);
                     children = page.children.into_iter();
                 }
@@ -432,12 +433,13 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
 
     /// Suspends every Machine `agent` holds: what a paused agent keeps.
     /// Its next exec wakes each one.
+    /// The caller must first join the agent's admitted work, as the original
+    /// [`crate::agent::AgentHost::pause`] control does, so no plan is added.
     ///
     /// # Errors
     /// When a provider refuses or its outcome is uncertain; suspending again
-    /// is harmless. A changed ownership hierarchy or unavailable page retains
-    /// its original cause in [`Error::MachineOwnership`]; no partial traversal
-    /// is reported as complete.
+    /// is harmless. A failed ownership page retains its original cause in
+    /// [`Error::MachineOwnership`]; no partial traversal is reported as complete.
     pub async fn suspend(&self, agent: &AgentPath) -> Result<()> {
         let pause = OperationId::new();
         let targets = self.held_targets(agent)?;
@@ -460,6 +462,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
 
     /// Destroys every Machine `agent` holds, each under the key of
     /// (agent, target): a retry replays the original destruction.
+    /// The caller must first join admitted work and prevent new first use, as
+    /// the original agent closing step does.
     ///
     /// A provider refuses to destroy a fork source while its forks live
     /// ([`acyclic_machines::Precondition::LiveForks`]).
@@ -469,8 +473,8 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// provider admits. Whichever fork closes last finds no live sibling.
     ///
     /// # Errors
-    /// When a provider refuses otherwise or its outcome is uncertain. A changed
-    /// ownership hierarchy or unavailable page retains its original cause in
+    /// When a provider refuses otherwise or its outcome is uncertain. A failed
+    /// ownership page retains its original cause in
     /// [`Error::MachineOwnership`]; a retry replays prior releases.
     pub async fn destroy(&self, agent: &AgentPath) -> Result<()> {
         let targets = self.held_targets(agent)?;

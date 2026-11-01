@@ -149,8 +149,17 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
         );
     }
 
-    // A changed hierarchy terminates this traversal with the original typed
-    // refusal. It cannot silently restart a partially completed lifecycle.
+    // Agent control has fixed this holder set. Publication elsewhere in the
+    // same namespace must not invalidate its next ownership page.
+    let fenced = stream
+        .children_page(ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(agent.machines()?),
+            after: None,
+            hierarchy_version: None,
+            limit: 64,
+        })
+        .await?;
     let held = machines.held_targets(&agent)?;
     futures::pin_mut!(held);
     for _ in 0..64 {
@@ -158,10 +167,23 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
     }
     let other = AgentPath::root(&AgentId::from_bytes([11; 16]));
     machines.plan(&other, &machines.targets()[0]).await?;
-    assert!(matches!(
-        held.try_next().await,
-        Err(Error::MachineOwnership(StreamError::HierarchyChanged))
-    ));
+    assert_eq!(
+        held.try_next().await?.map(|target| target.name.as_str()),
+        Some("held-064")
+    );
+    assert!(held.try_next().await?.is_none());
+    assert_eq!(
+        stream
+            .children_page(ChildrenPageRequest {
+                tail_stream: None,
+                parent: Some(agent.machines()?),
+                after: fenced.next_after,
+                hierarchy_version: Some(fenced.hierarchy_version),
+                limit: 64,
+            })
+            .await,
+        Err(StreamError::HierarchyChanged)
+    );
     Ok(())
 }
 
