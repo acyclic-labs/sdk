@@ -6,6 +6,25 @@ deliberately defective source controls; these counts are not a list of approved
 exceptions. Exact classifications and remaining readiness conversions are still
 incomplete.
 
+Additional command completion sites, locations at `d2e8326ccc`:
+
+| Source | Removed deadline | Original completion and retained negative control |
+| --- | --- | --- |
+| `scripts/typescript-qualification.mjs:269` | 90 seconds per command | Same selected package-manager, compiler and consumer process exit. Nonzero status or spawn error refuses the compiler receipt; successful commands retain their original source/output identity checks. No implicit command deadline remains. |
+| `scripts/test-plan-qualification.mjs:687` | 10 seconds | Same finite shell setup child exits; original tool-directory output remains checked. |
+
+Deadline configurations decrease from two to zero. Existing command launches,
+compiler work, output capture and receipt checks are unchanged; no operation,
+allocation, copy or barrier is added. These source deletions do not claim an
+actual package build or additional platform qualification.
+
+Linux x86_64: at `d2e8326ccc`, the original offline TypeScript-generation
+control passed 1/1, 1.319 seconds total test execution. It exercises real Buf
+generation with an empty cache under inherited socket denial, then restores the
+remote dependency and requires its real refusal. Both cases terminate through
+their original process exit with no test execution deadline. This does not
+qualify the separate package-consumer compiler path.
+
 Three additional implicit deadlines, locations at `5bbc66efb6`:
 
 | Source | Removed deadline | Original completion and retained negative control |

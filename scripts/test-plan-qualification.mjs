@@ -699,7 +699,7 @@ test("host qualification initializes runner-local tools before both Bun installe
   const bash = process.platform === "win32" ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "/bin/bash";
   try {
     const result = spawnSync(bash, ["-e", "-c", setup.run], {
-      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv }, encoding: "utf8", timeout: 10000,
+      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv }, encoding: "utf8",
     });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
