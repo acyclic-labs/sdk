@@ -240,21 +240,21 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 let Some(provider) = self.sockets.as_ref() else {
                     return Ok(Admission::Failed(identity, StreamError::Unsupported));
                 };
-                let resource = match provider.resource(&open) {
-                    Ok(resource) => resource,
+                let prepared = match Arc::clone(provider).prepare(open) {
+                    Ok(prepared) => prepared,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };
                 // A socket is admitted exactly as a call to the same actor.
                 let (authorization, context) = match self.authority.bind_call(
                     &self.slots,
                     subscription.credential,
-                    resource,
+                    prepared.resource().to_owned(),
                     channels,
                 ) {
                     Ok(binding) => binding,
                     Err(reason) => return Ok(Admission::Denied(identity, reason)),
                 };
-                let opened = match provider.open(open, context) {
+                let opened = match prepared.open(context) {
                     Ok(opened) => opened,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };

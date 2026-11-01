@@ -29,7 +29,9 @@ use crate::guest::{
 use crate::sockets::{SocketFrame, SocketInput, SocketOpen, input_record, open_invocation};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::runtime::Executor;
-use acyclic_stream::session::{CallAuthorization, SocketChannel, SocketInbound, SocketProvider};
+use acyclic_stream::session::{
+    CallAuthorization, PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider,
+};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitMutation,
     CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
@@ -1444,28 +1446,46 @@ impl<P: StreamProvider + ?Sized + 'static> Drop for Inbound<P> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
-    fn resource(&self, open: &[u8]) -> Result<String, StreamError> {
-        Ok(SocketOpen::decode(open)
-            .map_err(|_| StreamError::InvalidArgument)?
-            .resource())
+    fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError> {
+        let open = SocketOpen::decode(&open).map_err(|_| StreamError::InvalidArgument)?;
+        Ok(Box::new(PreparedOpen {
+            resource: open.resource(),
+            host: self,
+            open,
+        }))
+    }
+}
+
+struct PreparedOpen<P: StreamProvider + ?Sized + 'static> {
+    host: Arc<Sockets<P>>,
+    open: SocketOpen,
+    resource: String,
+}
+
+impl<P: StreamProvider + ?Sized + 'static> PreparedSocketOpen for PreparedOpen<P> {
+    fn resource(&self) -> &str {
+        &self.resource
     }
 
     fn open(
-        &self,
-        open: Bytes,
+        self: Box<Self>,
         authorization: CallAuthorization,
     ) -> Result<SocketChannel, StreamError> {
-        let open = SocketOpen::decode(&open).map_err(|_| StreamError::InvalidArgument)?;
+        let Self {
+            host,
+            open,
+            resource,
+        } = *self;
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
             .map_err(|_| StreamError::InvalidArgument)?;
         authorization.authorize_in_account(
             open.actor.account().as_bytes(),
-            &open.resource(),
+            &resource,
             &[],
             &attributes,
             acyclic_auth::authority::PolicyDecision::Allow,
         )?;
-        let shared = &self.shared;
+        let shared = &host.shared;
         let connection = format!(
             "{}-{}",
             shared.incarnation,

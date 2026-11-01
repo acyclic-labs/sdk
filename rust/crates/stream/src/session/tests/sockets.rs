@@ -36,16 +36,23 @@ impl Drop for EchoInbound {
 }
 
 impl SocketProvider for Echo {
-    fn resource(&self, open: &[u8]) -> Result<String, StreamError> {
-        if open != b"open" {
+    fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError> {
+        if open.as_ref() != b"open" {
             return Err(StreamError::InvalidArgument);
         }
-        Ok("actors:/fixture".into())
+        Ok(Box::new(EchoOpen(self)))
+    }
+}
+
+struct EchoOpen(Arc<Echo>);
+
+impl PreparedSocketOpen for EchoOpen {
+    fn resource(&self) -> &str {
+        "actors:/fixture"
     }
 
     fn open(
-        &self,
-        _: Bytes,
+        self: Box<Self>,
         authorization: CallAuthorization,
     ) -> Result<SocketChannel, StreamError> {
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
@@ -59,15 +66,16 @@ impl SocketProvider for Echo {
         let (frames, echoed) = mpsc::unbounded();
         let hello = stream::once(future::ready(Ok(Bytes::from_static(b"hello"))));
         Ok(SocketChannel {
-            outbound: if self.ends {
+            outbound: if self.0.ends {
                 Box::pin(hello)
             } else {
                 Box::pin(hello.chain(echoed.map(Ok)))
             },
             inbound: Box::new(EchoInbound {
                 frames,
-                received: self.received.clone(),
+                received: self.0.received.clone(),
                 gone: self
+                    .0
                     .gone
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

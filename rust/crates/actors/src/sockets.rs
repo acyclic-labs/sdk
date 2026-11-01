@@ -200,8 +200,21 @@ impl SocketOpen {
 
     /// Decode only the canonical encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, GuestError> {
+        #[cfg(test)]
+        OPEN_DECODE_WORK.with(|work| {
+            let (decodes, encoded) = work.get();
+            work.set((decodes + 1, encoded));
+        });
         let wire = OpenWire::decode(bytes).map_err(|_| invalid())?;
-        if wire.encode_to_vec().as_slice() != bytes {
+        if {
+            let canonical = wire.encode_to_vec();
+            #[cfg(test)]
+            OPEN_DECODE_WORK.with(|work| {
+                let (decodes, encoded) = work.get();
+                work.set((decodes, encoded + canonical.len()));
+            });
+            canonical.as_slice() != bytes
+        } {
             return Err(invalid());
         }
         Self::from_wire(wire)
@@ -217,6 +230,14 @@ impl SocketOpen {
             acyclic_auth::encode_component(self.actor.namespace().as_str().as_bytes())
         )
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// Work at the actual untrusted decoder, including rejected requests.
+    pub(crate) static OPEN_DECODE_WORK: std::cell::Cell<(usize, usize)> = const {
+        std::cell::Cell::new((0, 0))
+    };
 }
 
 /// One frame on a socket channel, in either direction.
