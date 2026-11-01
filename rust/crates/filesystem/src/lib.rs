@@ -62,6 +62,7 @@ mod sync;
 mod watch_queue;
 pub use acyclic_stream::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
+    RetainedOperationClaim,
 };
 
 pub mod accounting;

@@ -1,7 +1,5 @@
-//! The one bound on every host's `shell` and `fs` calls, applied by the shared
-//! workspace executor so each backend inherits it: operands within the
-//! scope's limits before dispatch, and a text-only result within the bytes
-//! one model context part renders.
+//! Workspace operand credit and the shell's retained-log presentation.
+//! General tool output uses the shared lossless spill envelope.
 use crate::{Error, Result, runtime::ToolContext, tool::ToolResult};
 use serde_json::{Map, Value};
 
@@ -11,27 +9,20 @@ pub(super) fn limits(context: &ToolContext) -> (u64, usize) {
     (limits.render_bytes, limits.path_bytes)
 }
 
-/// Refuses an operand the model must correct: a command longer than one
-/// rendered part, or a shell `cwd` longer than a path.
-pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usize)) -> Result<()> {
+/// Checks the task's path admission. Command intent is retained in the
+/// original invocation; presentation demand does not limit executable input.
+pub(super) fn operands(arguments: &Value, path: usize) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
-    if text("command").len() as u64 > render {
-        return Err(Error::Invalid(format!(
-            "{name} command exceeds its {render}-byte bound"
-        )));
-    }
     if text("cwd").len() > path {
         return Err(Error::Invalid(format!(
-            "{name} cwd exceeds its {path}-byte bound"
+            "shell cwd exceeds its {path}-byte bound"
         )));
     }
     Ok(())
 }
 
-/// The result within `maximum` encoded JSON bytes once the model projection
-/// wraps it. A shell result keeps its fields and shortens `stdout` then
-/// `stderr`; any other result becomes the leading text of its own encoding.
-/// Either way it is marked `truncated`.
+/// The shell's bounded view of its separately retained complete process log.
+/// Other results proceed intact to the shared model projection and spill path.
 pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
     if name == super::shell::PLATFORM.name {
         if let Value::Object(fields) = result.value {
@@ -49,28 +40,7 @@ pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<Too
             "shell result is not an object; recovery: bind the shared shell executor".into(),
         ));
     }
-    let maximum = maximum
-        .checked_sub(crate::tool::schema::json_envelope_bytes()? as u64)
-        .ok_or_else(|| bound_too_small(name))?;
-    let encoded = encoded(&result.value)?;
-    if encoded.len() as u64 <= maximum {
-        return Ok(result);
-    }
-    let maximum = usize::try_from(maximum).unwrap_or(usize::MAX);
-    let value = {
-        let mut fields = Map::new();
-        fields.insert("truncated".into(), Value::Bool(true));
-        fields.insert("text".into(), Value::String(String::new()));
-        let budget = maximum
-            .checked_sub(encoded_len(&Value::Object(fields.clone()))?)
-            .ok_or_else(|| bound_too_small(name))?;
-        fields.insert(
-            "text".into(),
-            Value::String(prefix(&encoded, budget).to_owned()),
-        );
-        Value::Object(fields)
-    };
-    Ok(ToolResult { value })
+    Ok(result)
 }
 
 fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
@@ -94,7 +64,6 @@ fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
     let error = escaped_len(&stderr);
     // Output keeps what stderr leaves, and at least half the budget.
-    let budget = budget.min(30_000);
     let output = suffix(&stdout, budget.saturating_sub(error).max(budget / 2));
     let error = suffix(&stderr, budget - escaped_len(output));
     let omitted =
@@ -130,10 +99,12 @@ fn bound_too_small(name: &str) -> Error {
     ))
 }
 
+#[cfg(test)]
 fn encoded(value: &Value) -> Result<String> {
     serde_json::to_string(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
+#[cfg(test)]
 fn encoded_len(value: &Value) -> Result<usize> {
     encoded(value).map(|text| text.len())
 }
@@ -188,17 +159,19 @@ mod tests {
     // once the projection wraps it.
     #[test]
     fn a_result_filling_the_bound_fits_its_projection() {
-        let flooded = ToolResult {
-            value: json!({"success": true, "exit_code": 0, "stop": null,
-                "stdout": "o".repeat(4096), "stderr": ""}),
-        };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
-        assert!(
-            projected_len(&bounded) <= BOUND,
-            "{}",
-            projected_len(&bounded)
-        );
-        assert!(projected_len(&bounded) > BOUND - 24);
+        for maximum in [BOUND, 65_536] {
+            let flooded = ToolResult {
+                value: json!({"success": true, "exit_code": 0, "stop": null,
+                    "stdout": "o".repeat(maximum as usize), "stderr": ""}),
+            };
+            let bounded = result(super::super::shell::PLATFORM.name, flooded, maximum).unwrap();
+            assert!(
+                projected_len(&bounded) <= maximum,
+                "{}",
+                projected_len(&bounded)
+            );
+            assert!(projected_len(&bounded) > maximum - 24);
+        }
     }
 
     // A shell that floods both streams still returns its exit status, within
@@ -219,30 +192,9 @@ mod tests {
         assert!(!bounded.value["stderr"].as_str().unwrap().is_empty());
     }
 
-    // An fs result too large to render becomes bounded text, never an
-    // oversized or non-text value.
+    // Operands are rejected before an effect, independently of output spill.
     #[test]
-    fn oversized_fs_result_becomes_bounded_text() {
-        let listing = ToolResult {
-            value: json!({"Paths": (0..512).map(|n| format!("dir/\"{n}\".bin")).collect::<Vec<_>>()}),
-        };
-        let bounded = result("fs", listing, BOUND).unwrap();
-        assert!(projected_len(&bounded) <= BOUND);
-        assert_eq!(bounded.value["truncated"], true);
-        assert!(
-            bounded.value["text"]
-                .as_str()
-                .unwrap()
-                .starts_with("{\"Paths\":[")
-        );
-        assert!(operands("fs", &json!({"command": "x".repeat(257)}), (BOUND, 8)).is_err());
-        assert!(
-            operands(
-                "shell",
-                &json!({"command": "ls", "cwd": "d".repeat(9)}),
-                (BOUND, 8)
-            )
-            .is_err()
-        );
+    fn oversized_operands_are_rejected() {
+        assert!(operands(&json!({"command": "ls", "cwd": "d".repeat(9)}), 8).is_err());
     }
 }

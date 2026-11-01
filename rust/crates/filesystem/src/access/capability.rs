@@ -29,7 +29,7 @@ pub fn is_filesystem_capability(label: &str) -> bool {
 pub enum VolumeOperation {
     /// Resolve exact file bytes.
     Read,
-    /// Create a new file version.
+    /// Create, replace or delete content.
     Write,
 }
 
@@ -67,7 +67,7 @@ impl ActionSet {
         use Action::*;
         match self {
             Self::SourceRead => &[List, Read, ReadHistory, Fork],
-            Self::DestinationWrite => &[Create, Write, MergeInto],
+            Self::DestinationWrite => &[Create, Write, Delete, MergeInto],
             Self::MountRead => &[List, Read, ReadHistory],
             Self::MountWrite => &[
                 List,

@@ -114,6 +114,7 @@ struct Reference {
     items: Vec<bool>,
     swaps: Vec<usize>,
     job: Option<(protocol::SummaryId, usize, Option<Completion>)>,
+    attempt: u64,
 }
 
 #[cfg(feature = "filesystem")]
@@ -166,6 +167,18 @@ impl Reference {
         true
     }
 
+    fn retry_failed(&mut self, id: protocol::SummaryId, end: usize) -> bool {
+        let Some((prior, through, Some(Completion::Failed))) = self.job else {
+            return false;
+        };
+        if id == prior || end < through || end > self.items.len() {
+            return false;
+        }
+        self.job = Some((id, end, None));
+        self.attempt += 1;
+        true
+    }
+
     fn swap(&mut self, id: protocol::SummaryId, expected: u64) -> bool {
         let Some((key, end, Some(Completion::Ready))) = self.job else {
             return false;
@@ -178,6 +191,7 @@ impl Reference {
         }
         self.swaps.push(end);
         self.job = None;
+        self.attempt = 0;
         true
     }
 }
@@ -186,7 +200,7 @@ proptest::proptest! {
     #[cfg(feature = "filesystem")]
     #[test]
     fn epoch_reducer_matches_materialized_history_at_every_commit_cut(
-        schedule in proptest::collection::vec((0_u8..6, 0_u8..8, proptest::bool::ANY), 1..128)
+        schedule in proptest::collection::vec((0_u8..7, 0_u8..8, proptest::bool::ANY), 1..128)
     ) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all().build().unwrap()
@@ -241,11 +255,19 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         (2, 0, false),
         (4, 0, true),
         (5, 0, false),
+        (0, 0, false),
+        (0, 0, false),
+        (1, 4, false),
+        (3, 0, false),
+        (6, 4, true),
+        (6, 4, false),
+        (2, 0, false),
+        (5, 2, false),
     ];
     for (operation, argument, crash_before_commit) in prefix.into_iter().chain(schedule) {
         let head = reference.items.len() as u64;
         let durable =
-            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, head).unwrap();
+            Snapshot::decode(&last_snapshot(&provider, &path).await, &source, head, &io).unwrap();
         if operation == 0 {
             let request = CommitRequest {
                 deadline_unix_millis: None,
@@ -267,7 +289,9 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             let mut candidate = durable.clone();
             let mut expected = reference.clone();
             let id = if operation == 1 {
-                candidate.epoch().key.digest_through(u64::from(argument))
+                candidate
+                    .epoch()
+                    .preparation_digest(u64::from(argument), reference.attempt)
             } else {
                 candidate
                     .state()
@@ -292,6 +316,15 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         expected.complete(id, result),
                     )
                 }
+                6 => {
+                    let id = candidate
+                        .epoch()
+                        .preparation_digest(u64::from(argument), reference.attempt + 1);
+                    (
+                        candidate.retry_failed(u64::from(argument), head).is_ok(),
+                        expected.retry_failed(id, usize::from(argument)),
+                    )
+                }
                 _ => {
                     let mut next = candidate.epoch().clone();
                     next.key.through = candidate
@@ -308,12 +341,12 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             };
             assert_eq!(actual, accepted);
             if !actual {
-                assert_eq!(candidate, durable);
+                assert_eq!(candidate, *durable);
             } else {
                 let request = snapshot_request(&candidate, path.clone(), &io);
                 if crash_before_commit {
                     interrupted[match operation {
-                        1 => 0,
+                        1 | 6 => 0,
                         2 | 3 => 1,
                         _ => 2,
                     }] = true;
@@ -349,6 +382,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             &last_snapshot(&provider, &path).await,
             &source,
             reference.items.len() as u64,
+            &io,
         )
         .unwrap();
         assert_eq!(
@@ -424,9 +458,8 @@ impl SnapshotRequest<'_> {
 }
 
 #[cfg(feature = "filesystem")]
-#[test]
-fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit() -> crate::Result<()>
-{
+#[tokio::test]
+async fn snapshot_codec_keeps_original_custody_and_refuses_without_credit() -> crate::Result<()> {
     let snapshot = Snapshot::genesis(Epoch {
         header: [1; 32],
         profile: [2; 32],
@@ -447,6 +480,20 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
     drop(encoded);
     assert_eq!(io.remaining()?.peak_allocation_bytes, baseline);
 
+    let provider = acyclic_stream::MemoryStream::default();
+    assert!(matches!(
+        snapshot_request(&snapshot, path.clone(), &io)
+            .commit(&provider)
+            .await?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let record = last_snapshot(&provider, &path).await;
+    let recovered = Snapshot::decode(&record, &snapshot.epoch().key.source, 0, &io).unwrap();
+    assert!(io.remaining()?.peak_allocation_bytes < baseline);
+    assert_eq!(recovered.epoch(), snapshot.epoch());
+    drop(recovered);
+    assert_eq!(io.remaining()?.peak_allocation_bytes, baseline);
+
     let mut budget = acyclic_fs::performance::work_budget(10_000_000, 10_000_000);
     budget.peak_allocation_bytes = 0;
     let denied = crate::filesystem::PreparationIo::from_budget(
@@ -454,6 +501,11 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
         &acyclic_fs::CancellationToken::new(),
     )?;
     assert!(snapshot.encode(path.clone(), &denied).is_err());
+    assert_eq!(denied.owned_bytes()?, 0);
+    // The former unobserved serde primitive accepts this exact well-formed
+    // record even when the original recovery has no allocation credit.
+    assert!(serde_json::from_slice::<serde_json::Value>(&record.value).is_ok());
+    assert!(Snapshot::decode(&record, &snapshot.epoch().key.source, 0, &denied).is_err());
     assert_eq!(denied.owned_bytes()?, 0);
 
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -464,6 +516,39 @@ fn snapshot_encoding_keeps_its_original_reservation_and_refuses_without_credit()
     cancellation.cancel();
     assert!(snapshot.encode(path, &cancelled).is_err());
     assert_eq!(cancelled.owned_bytes()?, 0);
+    assert!(Snapshot::decode(&record, &snapshot.epoch().key.source, 0, &cancelled).is_err());
+    assert_eq!(cancelled.owned_bytes()?, 0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+        let observer = crate::filesystem::PreparationIo::from_native_work(&original)?;
+        let baseline = original.live_allocation_bytes();
+        let foreign = StreamPath::new("account/other/conversation").unwrap();
+        let refused = Snapshot::decode(&record, &foreign, 0, &observer);
+        assert!(matches!(
+            refused,
+            Err(SnapshotError::Epoch(InvalidEpoch::Source))
+        ));
+        drop(refused);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        let recovered =
+            Snapshot::decode(&record, &snapshot.epoch().key.source, 0, &observer).unwrap();
+        let retained = original.live_allocation_bytes();
+        assert!(retained > baseline);
+        // Recovery cannot borrow the first observer for the session lifetime.
+        drop(observer);
+        cancellation.cancel();
+        assert_eq!(recovered.epoch(), snapshot.epoch());
+        assert_eq!(original.live_allocation_bytes(), retained);
+        drop(recovered);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
     Ok(())
 }
 
@@ -580,6 +665,368 @@ fn restoration_retains_pending_custody_and_refuses_torn_epoch_state() {
 
 #[cfg(feature = "filesystem")]
 #[tokio::test]
+async fn background_summary_custody_preserves_one_producer_and_crash_recovery() -> crate::Result<()>
+{
+    use crate::{
+        AgentId, OperationId,
+        context::{
+            CompactionPolicy, Context, ContextPipeline, ModelContextCapacity, ModelTokenCount,
+        },
+        executor::{StockExecutor, SummaryProduction},
+        filesystem::MemoryHarnessStorage,
+        model::{Model, ModelContent, ModelEvent, ModelMessage, ModelRole},
+        test_support::{
+            ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn,
+        },
+        tool::ToolRegistry,
+    };
+    use futures::FutureExt as _;
+    use std::sync::Arc;
+
+    // The real conditional store includes failure/replacement at both sides
+    // of commit and checks coverage independently after every restored step.
+    replay_snapshot_schedule(Vec::new()).await;
+    let budget = protocol::Budget::new(10_000, 2_000).unwrap();
+    assert_eq!(budget.pressure(4_799), protocol::Pressure::Below);
+    assert_eq!(budget.pressure(4_800), protocol::Pressure::Soft);
+    assert_eq!(budget.pressure(7_999), protocol::Pressure::Soft);
+    assert_eq!(budget.pressure(8_000), protocol::Pressure::Hard);
+    // The former unreserved boundary admits an input that cannot leave output
+    // headroom. Its decision differs from the production budget.
+    assert!(8_001 < 10_000);
+    assert!(!fits(8_001, 2_000, 10_000));
+    let genesis = Epoch {
+        header: [1; 32],
+        profile: [2; 32],
+        summary: None,
+        key: SummaryKey {
+            source: StreamPath::new("account/agent/conversation").unwrap(),
+            through: 0,
+            renderer: 1,
+            model: [3; 32],
+        },
+    };
+    let mut snapshot = Snapshot::genesis(genesis.clone()).unwrap();
+    let Admission::Produce {
+        summary,
+        foreground: false,
+    } = snapshot.admit(budget.pressure(4_800), 2, 3).unwrap()
+    else {
+        panic!("soft pressure did not prepare one background summary")
+    };
+    assert_eq!(snapshot.epoch(), &genesis);
+    assert_eq!(
+        snapshot.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    assert_eq!(
+        snapshot.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Await(summary)
+    );
+    let body = super::super::tests::file(AgentId::from_bytes([1; 16]), "summary.txt")?;
+    snapshot
+        .complete(summary, SummaryOutcome::Ready(body))
+        .unwrap();
+    assert_eq!(
+        snapshot.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    assert_eq!(snapshot.epoch(), &genesis);
+    assert_eq!(
+        snapshot.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Swap(summary)
+    );
+    let mut failed = Snapshot::genesis(genesis.clone()).unwrap();
+    let original = failed.prepare(2, 3).unwrap();
+    failed.complete(original, SummaryOutcome::Failed).unwrap();
+    assert_eq!(
+        failed.admit(budget.pressure(7_999), 3, 3).unwrap(),
+        Admission::Unchanged
+    );
+    let Admission::Produce {
+        summary: replacement,
+        foreground: true,
+    } = failed.admit(budget.pressure(8_000), 3, 3).unwrap()
+    else {
+        panic!("failed background summary did not prepare a foreground replacement")
+    };
+    assert_ne!(replacement, original);
+    assert!(failed.complete(original, SummaryOutcome::Failed).is_err());
+    assert_eq!(
+        failed.admit(budget.pressure(8_000), 3, 3).unwrap(),
+        Admission::Await(replacement)
+    );
+    let mut foreground = Snapshot::genesis(genesis.clone()).unwrap();
+    let Admission::Produce {
+        summary: first_foreground,
+        foreground: true,
+    } = foreground.admit(protocol::Pressure::Hard, 3, 3).unwrap()
+    else {
+        panic!("unprepared hard demand did not admit its foreground producer")
+    };
+    for (candidate, producer) in [(failed, replacement), (foreground, first_foreground)] {
+        use acyclic_stream::{CommitOutcome, MemoryStream};
+
+        let provider = MemoryStream::default();
+        let io = snapshot_io();
+        let path = StreamPath::new("account/agent/epochs").unwrap();
+        assert!(matches!(
+            snapshot_request(&candidate, path.clone(), &io)
+                .commit(&provider)
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut restored = Snapshot::decode(
+            &last_snapshot(&provider, &path).await,
+            &genesis.key.source,
+            3,
+            &io,
+        )
+        .unwrap();
+        assert_eq!(
+            restored.admit(protocol::Pressure::Hard, 3, 3).unwrap(),
+            Admission::Await(producer),
+            "restoring foreground preparation launched another producer"
+        );
+        restored.complete(producer, SummaryOutcome::Failed).unwrap();
+        assert!(matches!(
+            snapshot_request(&restored, path.clone(), &io)
+                .commit(&provider)
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut restored = Snapshot::decode(
+            &last_snapshot(&provider, &path).await,
+            &genesis.key.source,
+            3,
+            &io,
+        )
+        .unwrap();
+        let terminal = restored.clone();
+        assert_eq!(
+            restored.admit(protocol::Pressure::Hard, 3, 3).unwrap(),
+            Admission::Failed(producer),
+            "foreground failure launched another fallback"
+        );
+        assert_eq!(*restored, terminal);
+        // The former failed-only admission rule would replace this exact
+        // terminal producer again, even after its durable recovery.
+        let mut former = terminal.clone();
+        assert_ne!(former.retry_failed(3, 3).unwrap(), producer);
+        assert_ne!(former, terminal);
+    }
+    for completion in [None, Some(Completion::Ready), Some(Completion::Failed)] {
+        let mut state = State::default();
+        state.prepare([1; 32], 2, 3).unwrap();
+        if let Some(completion) = completion {
+            state.complete([1; 32], completion).unwrap();
+        }
+        let before = state;
+        assert_eq!(
+            state.retry_failed([1; 32], [2; 32], 3, 3).is_ok(),
+            completion == Some(Completion::Failed)
+        );
+        if completion != Some(Completion::Failed) {
+            assert_eq!(state, before);
+        }
+    }
+
+    for case in 0..4 {
+        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([31; 16]), 1_000_000).await?;
+        let journal = storage.journal();
+        let turns = match case {
+            2 => vec![ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])],
+            3 => vec![
+                ScriptedTurn::Events(vec![]),
+                ScriptedTurn::Text("fallback".into()),
+            ],
+            _ => vec![ScriptedTurn::Text("summary".into())],
+        };
+        let mut provider = ScriptedModelProvider::new(turns)
+            .with_context_capacity(ModelContextCapacity {
+                context_tokens: 8_192,
+                output_tokens: Some(1_024),
+            })
+            .with_token_counter(|request| {
+                Ok(ModelTokenCount::from_upper_bounds(
+                    request.request_digest(),
+                    10,
+                    vec![0; request.request().messages.len()],
+                ))
+            });
+        if case == 2 {
+            provider = provider.with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: Some(vec![
+                    ModelEvent::MessageCompleted {
+                        text: "resumed".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    },
+                ]),
+            }]);
+        }
+        let (dispatched, dispatch_event) = tokio::sync::oneshot::channel();
+        if case == 2 {
+            let dispatched = std::sync::Mutex::new(Some(dispatched));
+            provider = provider.with_dispatch_observer(move |_| {
+                dispatched
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("only the original summary dispatch is admitted")
+                    .send(())
+                    .expect("the hard-budget test still owns the dispatch event");
+            });
+        }
+        let provider = Arc::new(provider);
+        let executor = StockExecutor::new(
+            Model::new("test".into(), "summary".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(CompactionPolicy::Disabled);
+        let source = || Context {
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("original admitted source".into()),
+            }],
+            ..Default::default()
+        };
+        let instruction = || ModelContent::Text("Summarize the admitted source".into());
+        let operation = OperationId::new();
+        let SummaryProduction::Owned {
+            producer,
+            observation,
+        } = executor.summary_production(
+            journal.as_ref(),
+            operation,
+            source(),
+            instruction(),
+            None,
+        )?
+        else {
+            panic!("first producer was not admitted")
+        };
+        let SummaryProduction::Observed(competing) = executor.summary_production(
+            journal.as_ref(),
+            operation,
+            source(),
+            instruction(),
+            None,
+        )?
+        else {
+            panic!("duplicate summary producer was admitted")
+        };
+        assert_eq!(provider.requests().len(), 0);
+        match case {
+            0 => {
+                drop(producer);
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                assert_eq!(
+                    competing.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                assert_eq!(provider.requests().len(), 0);
+            }
+            1 => {
+                let summary = producer.await?;
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::Released
+                );
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"summary"
+                );
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    operation,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("completed summary could not replay")
+                };
+                assert_eq!(producer.await?, summary);
+                assert_eq!(provider.requests().len(), 1);
+            }
+            2 => {
+                let mut producer = Box::pin(producer);
+                tokio::select! {
+                    result = &mut producer => panic!("slow summary terminated before dispatch: {result:?}"),
+                    dispatched = dispatch_event => dispatched.expect("summary dispatch producer was dropped"),
+                }
+                let mut hard_wait = Box::pin(competing.terminated());
+                assert!(hard_wait.as_mut().now_or_never().is_none());
+                assert_eq!(provider.requests().len(), 1);
+                drop(producer);
+                assert_eq!(
+                    hard_wait.await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    operation,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("crashed summary could not resume")
+                };
+                let summary = producer.await?;
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"resumed"
+                );
+                assert_eq!(
+                    provider.requests().len(),
+                    1,
+                    "restore dispatched another producer"
+                );
+                assert_eq!(provider.reconciliations().len(), 1);
+            }
+            _ => {
+                assert!(
+                    matches!(producer.await, Err(crate::Error::Indeterminate(id)) if id == operation)
+                );
+                assert_eq!(
+                    observation.terminated().await,
+                    acyclic_fs::OperationTermination::ProducerDropped
+                );
+                let fallback = OperationId::new();
+                let SummaryProduction::Owned { producer, .. } = executor.summary_production(
+                    journal.as_ref(),
+                    fallback,
+                    source(),
+                    instruction(),
+                    None,
+                )?
+                else {
+                    panic!("fresh foreground attempt was refused")
+                };
+                let summary = producer.await?;
+                assert_eq!(
+                    journal.load(&summary.output, None)?.await?.as_ref(),
+                    b"fallback"
+                );
+                assert_eq!(provider.requests().len(), 2);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
 async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across_reopen() {
     use acyclic_stream::{CommitOutcome, MemoryStream};
 
@@ -624,7 +1071,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     let record = last_snapshot(&provider, &path).await;
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 1);
-    assert_eq!(hot, Snapshot::decode(&record, &source, 12).unwrap());
+    assert_eq!(hot, *Snapshot::decode(&record, &source, 12, &io).unwrap());
     let mut first = hot;
     let mut competing = first.clone();
     let summary = first.prepare(10, 12).unwrap();
@@ -632,7 +1079,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let request = snapshot_request(&first, path.clone(), &io);
     // A crash before commit leaves the previous complete snapshot intact.
     assert_eq!(
-        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12, &io)
             .unwrap()
             .state(),
         State::default()
@@ -660,9 +1107,44 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
 
     let prepared_record = last_snapshot(&provider, &path).await;
     assert_eq!(provider.tail(marker.clone()).await.unwrap(), 2);
-    let mut reopened = Snapshot::decode(&prepared_record, &source, 12).unwrap();
-    assert_eq!(first, reopened);
+    let mut reopened = Snapshot::decode(&prepared_record, &source, 12, &io).unwrap();
+    assert_eq!(first, *reopened);
     assert_eq!(reopened.state().demand(), Demand::Await(summary));
+    for header in [true, false] {
+        let mut foreign_epoch = reopened.epoch().clone();
+        if header {
+            foreign_epoch.header[0] ^= 1;
+        } else {
+            foreign_epoch.profile[0] ^= 1;
+        }
+        // The former range/model/renderer key aliases these actual different
+        // frozen requests. That key alone cannot authorize a producer result.
+        assert_eq!(
+            foreign_epoch.key.digest_through(10),
+            reopened.epoch().key.digest_through(10)
+        );
+        let mut foreign = Snapshot::genesis(foreign_epoch.clone()).unwrap();
+        let foreign_summary = foreign.prepare(10, 12).unwrap();
+        assert_ne!(foreign_summary, summary);
+        let unchanged = reopened.clone();
+        assert!(matches!(
+            reopened.complete(foreign_summary, SummaryOutcome::Failed),
+            Err(SnapshotError::Transition(Refusal::Stale))
+        ));
+        assert_eq!(*reopened, unchanged);
+
+        // Cold recovery binds the same identities; replacing only the frozen
+        // epoch in a pending record cannot transplant another producer.
+        let mut foreign_wire: serde_json::Value =
+            serde_json::from_slice(&prepared_record.value).unwrap();
+        foreign_wire["snapshot"]["epoch"] = serde_json::to_value(foreign_epoch).unwrap();
+        let mut foreign_record = prepared_record.clone();
+        foreign_record.value = serde_json::to_vec(&foreign_wire).unwrap().into();
+        assert!(matches!(
+            Snapshot::decode(&foreign_record, &source, 12, &io),
+            Err(SnapshotError::Identity)
+        ));
+    }
     assert!(matches!(
         reopened.prepare(11, 12),
         Err(SnapshotError::Transition(Refusal::Busy))
@@ -678,7 +1160,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         reopened.swap(0, next.clone(), 12),
         Err(SnapshotError::Transition(Refusal::NotReady))
     ));
-    assert_eq!(reopened, unchanged);
+    assert_eq!(*reopened, unchanged);
 
     let body = next.summary.clone().unwrap();
     reopened
@@ -696,16 +1178,23 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         reopened.complete(summary, SummaryOutcome::Failed),
         Err(SnapshotError::Transition(Refusal::Contradiction))
     ));
-    assert_eq!(reopened, ready);
+    assert_eq!(*reopened, ready);
     let request = snapshot_request(&reopened, path.clone(), &io);
     assert!(matches!(
         request.commit(&provider).await.unwrap(),
         CommitOutcome::Committed(_)
     ));
     let mut reopened =
-        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12).unwrap();
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12, &io).unwrap();
     assert_eq!(reopened.outcome(), Some(&SummaryOutcome::Ready(body)));
     let ready = reopened.clone();
+    let mut wrong = next.clone();
+    wrong.profile[0] ^= 1;
+    assert!(matches!(
+        reopened.swap(0, wrong, 12),
+        Err(SnapshotError::Identity)
+    ));
+    assert_eq!(*reopened, ready);
     let mut wrong = next.clone();
     wrong.key.through = 11;
     assert!(matches!(
@@ -723,7 +1212,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         reopened.swap(0, wrong, 12),
         Err(SnapshotError::ResultReference)
     ));
-    assert_eq!(reopened, ready);
+    assert_eq!(*reopened, ready);
     reopened.swap(0, next, 12).unwrap();
     let request = snapshot_request(&reopened, path.clone(), &io);
     assert!(matches!(
@@ -731,7 +1220,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         CommitOutcome::Committed(_)
     ));
     let final_record = last_snapshot(&provider, &path).await;
-    let settled = Snapshot::decode(&final_record, &source, 12).unwrap();
+    let settled = Snapshot::decode(&final_record, &source, 12, &io).unwrap();
     assert_eq!(settled.state().cursor(), 10);
     assert_eq!(settled.state().generation(), 1);
     assert!(settled.outcome().is_none());
@@ -757,7 +1246,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     ));
     assert_eq!(provider.tail(marker).await.unwrap(), 5);
     assert_ne!(
-        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12)
+        Snapshot::decode(&last_snapshot(&provider, &path).await, &source, 12, &io)
             .unwrap()
             .state()
             .cursor(),
@@ -769,7 +1258,7 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     let mut corrupt_record = prepared_record;
     corrupt_record.value = serde_json::to_vec(&corrupt).unwrap().into();
     assert!(matches!(
-        Snapshot::decode(&corrupt_record, &source, 12),
+        Snapshot::decode(&corrupt_record, &source, 12, &io),
         Err(SnapshotError::Identity)
     ));
 }

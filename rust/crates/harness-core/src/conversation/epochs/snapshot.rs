@@ -3,11 +3,11 @@
 
 use super::{
     Epoch, FileRef, InvalidEpoch,
-    protocol::{Completion, Pending, Refusal, State},
+    protocol::{Completion, Demand, Pending, Pressure, Refusal, State},
 };
+use acyclic_stream::CommitId;
 #[cfg(feature = "filesystem")]
-use acyclic_stream::{CommitCondition, OwnedBytes};
-use acyclic_stream::{CommitId, Record, StreamPath};
+use acyclic_stream::{CommitCondition, OwnedBytes, Record, StreamPath};
 use serde::{Deserialize, Serialize};
 
 /// A checked epoch and the preparation custody retained with it.
@@ -16,7 +16,30 @@ pub struct Snapshot {
     epoch: Epoch,
     state: State,
     outcome: Option<SummaryOutcome>,
+    attempt: u64,
     anchor: Option<(u64, CommitId)>,
+}
+
+/// The executor's next action after verified input accounting. Preparation
+/// changes only pending custody; the visible epoch stays fixed until swap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Admission {
+    /// Dispatch the original request with its byte-identical epoch prefix.
+    Unchanged,
+    /// Publish the preparation conditionally, then drive the sole producer.
+    Produce {
+        /// Original identity retained on restore and producer observation.
+        summary: [u8; 32],
+        /// Hard demand drives the same producer before dispatching a response.
+        foreground: bool,
+    },
+    /// Wait for the existing exact-generation event; do not start work.
+    Await([u8; 32]),
+    /// Conditionally install the existing successful summary before dispatch.
+    Swap([u8; 32]),
+    /// The foreground producer failed. Retain its original terminal result;
+    /// another admission or restore must not start another fallback.
+    Failed([u8; 32]),
 }
 
 /// One encoded contribution to the original conditional publication.
@@ -27,6 +50,30 @@ pub struct EncodedSnapshot<'io> {
     record: OwnedBytes,
     // Physical values retire before their original preparation reservation.
     _hold: Option<crate::conversation::ContentHold<'io>>,
+}
+
+/// A cold epoch and its original allocation custody. The physical value drops
+/// before its credit, even after the recovery observer has been destroyed.
+#[cfg(feature = "filesystem")]
+pub struct RecoveredSnapshot {
+    snapshot: Snapshot,
+    _custody: crate::filesystem::PreparationCustody,
+}
+
+#[cfg(feature = "filesystem")]
+impl std::ops::Deref for RecoveredSnapshot {
+    type Target = Snapshot;
+
+    fn deref(&self) -> &Snapshot {
+        &self.snapshot
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl std::ops::DerefMut for RecoveredSnapshot {
+    fn deref_mut(&mut self) -> &mut Snapshot {
+        &mut self.snapshot
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -41,6 +88,7 @@ impl EncodedSnapshot<'_> {
 
 /// The immutable result associated with the prepared summary identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(
     tag = "kind",
     content = "body",
@@ -78,9 +126,10 @@ pub enum SnapshotError {
     /// A swap supplied another body's reference for the prepared result.
     #[error("epoch summary differs from its committed producer result")]
     ResultReference,
-    /// Unsupported or malformed durable bytes.
-    #[error("epoch record encoding: {0}")]
-    Encoding(#[from] serde_json::Error),
+    /// Original codec, allocation or cancellation refusal.
+    #[cfg(feature = "filesystem")]
+    #[error(transparent)]
+    Preparation(#[from] crate::Error),
 }
 
 impl From<Refusal> for SnapshotError {
@@ -91,27 +140,65 @@ impl From<Refusal> for SnapshotError {
 
 // These are wire adapters only; all transitions use the one protocol reducer.
 #[derive(Serialize, Deserialize)]
+#[cfg(feature = "filesystem")]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(tag = "version", content = "snapshot", deny_unknown_fields)]
 enum RecordWire<E, O> {
-    #[serde(rename = "1")]
-    V1(SnapshotWire<E, O>),
+    #[serde(rename = "3")]
+    V3(SnapshotWire<E, O>),
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg(feature = "filesystem")]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(deny_unknown_fields)]
 struct SnapshotWire<E, O> {
     epoch: E,
     generation: u64,
+    attempt: u64,
     pending: Option<PendingWire<O>>,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg(feature = "filesystem")]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(deny_unknown_fields)]
 struct PendingWire<O> {
     summary: [u8; 32],
     generation: u64,
     through: u64,
     completion: Option<O>,
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for RecordWire<Epoch, SummaryOutcome> {
+    fn decoded_owned_bytes(&self) -> crate::Result<Option<u64>> {
+        let Self::V3(wire) = self;
+        let counts = 2 * size_of::<usize>();
+        let path = wire.epoch.key.source.as_str().len();
+        let shared_path = counts
+            .checked_add(path)
+            .and_then(|bytes| bytes.checked_add(align_of::<usize>() - 1))
+            .map(|bytes| bytes / align_of::<usize>() * align_of::<usize>())
+            .ok_or_else(|| crate::Error::Storage("epoch path ownership overflows".into()))?;
+        crate::core::owned_sum([
+            size_of::<Self>().max(size_of::<Snapshot>()) as u64,
+            shared_path as u64,
+            wire.epoch
+                .summary
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            match wire
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.completion.as_ref())
+            {
+                Some(SummaryOutcome::Ready(file)) => file.logical_owned_bytes()?,
+                _ => 0,
+            },
+        ])
+        .map(Some)
+    }
 }
 
 impl Snapshot {
@@ -123,15 +210,42 @@ impl Snapshot {
             epoch,
             state: State::default(),
             outcome: None,
+            attempt: 0,
             anchor: None,
         })
     }
 
-    /// Admits the one versioned record against its inherited source and head.
-    /// Decoding never scans previous snapshots or reconstructs a missing job.
-    pub fn decode(record: &Record, source: &StreamPath, head: u64) -> Result<Self, SnapshotError> {
-        let RecordWire::V1(wire): RecordWire<Epoch, SummaryOutcome> =
-            serde_json::from_slice(&record.value)?;
+    /// Admits the one versioned record on the original preparation ledger.
+    /// The returned owner retains custody independently of the recovery
+    /// observer. Decoding never scans previous snapshots or reconstructs a
+    /// missing job.
+    #[cfg(feature = "filesystem")]
+    pub fn decode(
+        record: &Record,
+        source: &StreamPath,
+        head: u64,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<RecoveredSnapshot, SnapshotError> {
+        let (wire, mut held) = io.decode(
+            std::marker::PhantomData::<RecordWire<Epoch, SummaryOutcome>>,
+            &record.value,
+            crate::wire::ErrorCode::Storage,
+        )?;
+        let snapshot = Self::restore(wire, record, source, head)?;
+        let custody = held.take_custody()?;
+        Ok(RecoveredSnapshot {
+            snapshot,
+            _custody: custody,
+        })
+    }
+
+    #[cfg(feature = "filesystem")]
+    fn restore(
+        RecordWire::V3(wire): RecordWire<Epoch, SummaryOutcome>,
+        record: &Record,
+        source: &StreamPath,
+        head: u64,
+    ) -> Result<Self, SnapshotError> {
         wire.epoch.validate(source, head)?;
         if (wire.generation == 0) != (wire.epoch.cursor() == 0) {
             return Err(Refusal::Stale.into());
@@ -150,14 +264,17 @@ impl Snapshot {
         };
         let state = State::restore(wire.generation, wire.epoch.cursor(), pending, head)?;
         if let Some(pending) = state.pending() {
-            if wire.epoch.key.digest_through(pending.through) != pending.summary {
+            if wire.epoch.preparation_digest(pending.through, wire.attempt) != pending.summary {
                 return Err(SnapshotError::Identity);
             }
+        } else if wire.attempt != 0 {
+            return Err(SnapshotError::Identity);
         }
         Ok(Self {
             epoch: wire.epoch,
             state,
             outcome,
+            attempt: wire.attempt,
             anchor: Some((record.sequence, record.commit_id)),
         })
     }
@@ -204,8 +321,72 @@ impl Snapshot {
     /// Pins exactly the content address of this source range. The common
     /// ancestor's conditional publication arbitrates shared producer ownership.
     pub fn prepare(&mut self, through: u64, head: u64) -> Result<[u8; 32], SnapshotError> {
-        let summary = self.epoch.key.digest_through(through);
-        self.state.prepare(summary, through, head)?;
+        self.prepare_attempt(through, head, self.attempt)
+    }
+
+    fn prepare_attempt(
+        &mut self,
+        through: u64,
+        head: u64,
+        attempt: u64,
+    ) -> Result<[u8; 32], SnapshotError> {
+        let summary = self.epoch.preparation_digest(through, attempt);
+        let mut state = self.state;
+        state.prepare(summary, through, head)?;
+        self.state = state;
+        self.attempt = attempt;
+        Ok(summary)
+    }
+
+    /// One decision per request admission, with no wait or history read. The
+    /// owner publishes a Produce candidate before attaching its future. A
+    /// foreground failure remains terminal across admissions and restore.
+    /// Attempt zero is background work; a positive attempt is foreground work.
+    pub fn admit(
+        &mut self,
+        pressure: Pressure,
+        closed: u64,
+        head: u64,
+    ) -> Result<Admission, SnapshotError> {
+        match (pressure, self.state.demand()) {
+            (Pressure::Below, _) => Ok(Admission::Unchanged),
+            (Pressure::Soft, Demand::Unprepared) if closed > self.state.cursor() => {
+                Ok(Admission::Produce {
+                    summary: self.prepare(closed, head)?,
+                    foreground: false,
+                })
+            }
+            (Pressure::Soft, _) => Ok(Admission::Unchanged),
+            (Pressure::Hard, Demand::Unprepared) => Ok(Admission::Produce {
+                summary: self.prepare_attempt(closed, head, 1)?,
+                foreground: true,
+            }),
+            (Pressure::Hard, Demand::Await(summary)) => Ok(Admission::Await(summary)),
+            (Pressure::Hard, Demand::Swap(summary)) => Ok(Admission::Swap(summary)),
+            (Pressure::Hard, Demand::Failed(_)) if self.attempt == 0 => Ok(Admission::Produce {
+                summary: self.retry_failed(closed, head)?,
+                foreground: true,
+            }),
+            (Pressure::Hard, Demand::Failed(summary)) => Ok(Admission::Failed(summary)),
+        }
+    }
+
+    /// A foreground fallback is a fresh attempt on the same content-addressed
+    /// source. The failed result remains immutable in the preceding snapshot.
+    /// Publication uses the original snapshot fence and codec.
+    pub(super) fn retry_failed(
+        &mut self,
+        through: u64,
+        head: u64,
+    ) -> Result<[u8; 32], SnapshotError> {
+        let pending = self.state.pending().ok_or(Refusal::Stale)?;
+        let attempt = self.attempt.checked_add(1).ok_or(Refusal::Exhausted)?;
+        let summary = self.epoch.preparation_digest(through, attempt);
+        let mut state = self.state;
+        state.retry_failed(pending.summary, summary, through, head)?;
+        self.state = state;
+        self.attempt = attempt;
+        self.outcome = None;
         Ok(summary)
     }
 
@@ -225,12 +406,16 @@ impl Snapshot {
         Ok(())
     }
 
-    /// Installs the summary and frozen Header together. Refusal leaves both
-    /// the epoch and its pending identity unchanged.
+    /// Installs the summary and next frozen Header under the original profile.
+    /// Refusal leaves both the epoch and its pending identity unchanged.
     pub fn swap(&mut self, expected: u64, next: Epoch, head: u64) -> Result<(), SnapshotError> {
         next.validate(&self.epoch.key.source, head)?;
         let pending = self.state.pending().ok_or(Refusal::Stale)?;
-        if next.key.digest() != pending.summary {
+        if next.profile != self.epoch.profile
+            || next.key.through != pending.through
+            || next.key.renderer != self.epoch.key.renderer
+            || next.key.model != self.epoch.key.model
+        {
             return Err(SnapshotError::Identity);
         }
         let mut state = self.state;
@@ -243,6 +428,7 @@ impl Snapshot {
         self.state = state;
         self.epoch = next;
         self.outcome = None;
+        self.attempt = 0;
         Ok(())
     }
 
@@ -271,9 +457,10 @@ impl Snapshot {
         } else {
             CommitCondition::Absent { path }
         };
-        let wire = RecordWire::V1(SnapshotWire {
+        let wire = RecordWire::V3(SnapshotWire {
             epoch: &self.epoch,
             generation: self.state.generation(),
+            attempt: self.attempt,
             pending: self.state.pending().map(|pending| PendingWire {
                 summary: pending.summary,
                 generation: pending.generation,

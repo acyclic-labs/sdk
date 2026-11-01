@@ -111,6 +111,7 @@ impl TurnExecutors for Approving {
             tools.register(
                 (
                     Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition: ToolDefinition {
                             name: TOOL.into(),
@@ -217,6 +218,7 @@ async fn asked(
         .create_root(
             &vectors::intent("root")?,
             RootRequest {
+                profile: None,
                 agent,
                 fresh: vec![private],
                 retained: Vec::new(),

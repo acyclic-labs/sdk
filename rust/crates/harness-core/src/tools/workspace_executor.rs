@@ -32,6 +32,7 @@ fn target(
     context: &ToolContext,
     invocation: &ToolInvocation,
     work: crate::NativeWork<'_>,
+    binding: crate::tool::WorkspaceBinding,
 ) -> Result<Workspace> {
     if let Some(target) = &context.execution_target {
         return Ok(Workspace::Target(Arc::clone(target)));
@@ -49,7 +50,7 @@ fn target(
         )
     };
     let targets = context.task().harness.targets().ok_or_else(unbound)?;
-    crate::runtime::call_target(&**targets, invocation)
+    crate::runtime::call_target(&**targets, invocation, Some(binding))
         .ok_or_else(unbound)?
         .map(Workspace::Target)
 }
@@ -93,25 +94,71 @@ struct WorkspaceExecutor {
     name: &'static str,
 }
 
+impl WorkspaceExecutor {
+    fn binding(&self) -> crate::tool::WorkspaceBinding {
+        if self.name == super::shell::PLATFORM.name {
+            crate::tool::WorkspaceBinding::Named
+        } else {
+            crate::tool::WorkspaceBinding::Home
+        }
+    }
+}
+
 impl ToolExecutor for WorkspaceExecutor {
     fn authorize_replay<'a>(
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
+        work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         let context = context?;
         if let Some(target) = &context.execution_target {
-            target.executor.authorize_replay(Some(context), invocation)
+            target
+                .executor
+                .authorize_replay(Some(context), invocation, work)
         } else if invocation.name == "fs" {
             context
                 .task()
                 .harness
                 .filesystem
                 .as_ref()?
-                .authorize_replay(Some(context), invocation)
+                .authorize_replay(Some(context), invocation, work)
         } else {
             None
         }
+    }
+
+    fn workspace_binding(&self) -> Option<crate::tool::WorkspaceBinding> {
+        Some(self.binding())
+    }
+
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<super::ShellInput> {
+        if self.name != "shell" {
+            return Err(boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "script projection requires shell; recovery: select the admitted shell tool",
+            ));
+        }
+        let context = context.ok_or_else(|| {
+            boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "script projection lacks its task; recovery: retain the original tool context",
+            )
+        })?;
+        context
+            .task()
+            .harness
+            .target(None)?
+            .executor
+            .prepare_shell_script(source, input, Some(context), work)
     }
 
     fn authorize(
@@ -138,7 +185,7 @@ impl ToolExecutor for WorkspaceExecutor {
                 "workspace tool call identity changed",
             ));
         }
-        match target(context, invocation, work) {
+        match target(context, invocation, work, self.binding()) {
             Ok(target) => target
                 .executor()
                 .authorize(scope, Some(context), invocation, work),
@@ -157,18 +204,14 @@ impl ToolExecutor for WorkspaceExecutor {
         let Some(context) = context else {
             return Ok(None);
         };
-        if super::bounds::operands(
-            self.name,
-            &invocation.arguments,
-            super::bounds::limits(context),
-        )
+        if super::bounds::operands(&invocation.arguments, super::bounds::limits(context).1)
         .is_err()
         {
             // Ordinary execution returns this same rejection to the model.
             // Nothing may be handed to a remote target before that verdict.
             return Ok(None);
         }
-        target(context, invocation, None)?
+        target(context, invocation, None, self.binding())?
             .executor()
             .dispatch(invocation, Some(context))
     }
@@ -188,10 +231,10 @@ impl ToolExecutor for WorkspaceExecutor {
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
             let limits = super::bounds::limits(&context);
-            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+            if let Err(error) = super::bounds::operands(&invocation.arguments, limits.1) {
                 return Ok(super::rejected_input(error));
             }
-            let target = target(&context, &invocation, None)?;
+            let target = target(&context, &invocation, None, self.binding())?;
             let result = target.executor().execute(invocation, Some(context)).await?;
             super::bounds::result(self.name, echo(self.name, &target, result)?.0, limits.0)
         })
@@ -217,10 +260,10 @@ impl ToolExecutor for WorkspaceExecutor {
             }
             self.authorize(None, Some(&context), &invocation, None)?;
             let limits = super::bounds::limits(&context);
-            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+            if let Err(error) = super::bounds::operands(&invocation.arguments, limits.1) {
                 return Ok(Some(super::rejected_input(error)));
             }
-            let target = target(&context, &invocation, None)?;
+            let target = target(&context, &invocation, None, self.binding())?;
             target
                 .executor()
                 .reconcile(invocation, Some(context))
@@ -249,7 +292,7 @@ impl ToolExecutor for WorkspaceExecutor {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        let target = target(context, invocation, Some(work))?;
+        let target = target(context, invocation, Some(work), self.binding())?;
         let name = self.name;
         crate::NativeFutureBundle::new(work, move || async move {
             let (result, mut allocation) = target
@@ -275,7 +318,7 @@ impl ToolExecutor for WorkspaceExecutor {
             return Err(Error::Indeterminate(invocation.operation_id));
         }
         self.authorize(None, Some(context), invocation, Some(work))?;
-        let target = target(context, invocation, Some(work))?;
+        let target = target(context, invocation, Some(work), self.binding())?;
         let name = self.name;
         crate::NativeFutureBundle::new(work, move || async move {
             let (result, mut allocation) = target

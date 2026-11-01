@@ -34,7 +34,9 @@ pub(crate) use native_stock::{
 
 pub(crate) mod execution_claim;
 mod journal;
-pub use execution_claim::{ExecutionAttempt, ExecutionClaim, ExecutionClaims};
+pub use execution_claim::{
+    ExecutionAttempt, ExecutionClaim, ExecutionClaims, RetainedExecutionClaim,
+};
 use journal::validate_journal;
 pub use journal::{
     ExecutionJournal, ExecutionJournalCacheId, ExecutionRecordQuery, IndexedExecutionFuture,
@@ -44,9 +46,16 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
+pub(crate) use accounting::{stock_context_capacity, stock_count_tokens};
 mod binding;
+#[cfg(feature = "filesystem")]
+mod code_mode;
 mod compaction;
 mod composition;
+#[cfg(feature = "filesystem")]
+pub(crate) use code_mode::filesystem_skill_marker_bytes;
+#[cfg(feature = "filesystem")]
+pub use code_mode::{CODE_REVISION, call_tool, code_tool};
 mod content;
 mod dispatch;
 mod live_reply;
@@ -77,6 +86,7 @@ pub(crate) use transcript::load_projection as load_response_projection;
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
 mod summary;
+pub use summary::SummaryProduction;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
@@ -183,7 +193,7 @@ impl TurnInput {
             .ok_or_else(|| {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
-        input.validate_user_input(&mut None)?;
+        input.validate_turn_input(&mut None)?;
         selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,
@@ -485,6 +495,46 @@ pub struct TurnOutput {
     pub steps: u32,
 }
 
+impl TurnOutput {
+    /// Projects already verified result bytes through the original result
+    /// codec. Only the assistant text survives; metadata and attachment storage
+    /// retire before their original preparation custody. This grants no access.
+    pub fn project_text(bytes: &[u8], original: Option<&PreparationIo>) -> Result<String> {
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::new(original)?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = original;
+        let output: Self = match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => crate::filesystem::retain_decoded(io.decode(
+                std::marker::PhantomData::<Self>,
+                bytes,
+                crate::wire::ErrorCode::Storage,
+            )?)?,
+            _ => crate::contract::json_from_slice(bytes).map_err(|_| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "staged turn output is malformed",
+                )
+            })?,
+        };
+        let Self {
+            text,
+            attachments,
+            metadata,
+            ..
+        } = output;
+        drop(attachments);
+        drop(metadata);
+        #[cfg(feature = "filesystem")]
+        scope.finish(text.capacity() as u64)?;
+        Ok(text)
+    }
+}
+
 /// Execution progress with its settled value or pending approval operation.
 pub enum ExecutionProgress<T> {
     /// Preparation failed before any provider attempt could start.
@@ -546,6 +596,14 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    #[cfg(feature = "filesystem")]
+    profile: Option<(
+        Arc<crate::profile::Profiles>,
+        crate::agent::AgentProfilePin,
+        String,
+    )>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    session: Option<Arc<crate::filesystem::SessionWork>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

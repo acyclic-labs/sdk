@@ -313,12 +313,18 @@ impl LocalHarness {
     /// harness's model, tools, limits and compaction, in its context.
     fn executors(self: &Arc<Self>) -> Arc<dyn TurnExecutors> {
         match &self.agent {
-            Some(model) => Arc::new(self.preset.executors(
-                model.clone(),
-                self.tools().clone(),
-                (self.limits, self.compaction.clone()),
-                Arc::new(LocalContext(Arc::downgrade(self))),
-            )),
+            Some(model) => {
+                let mut executors = self.preset.executors(
+                    model.clone(),
+                    self.tools().clone(),
+                    (self.limits, self.compaction.clone()),
+                    Arc::new(LocalContext(Arc::downgrade(self))),
+                );
+                if let Some((profiles, models)) = &self.profiles {
+                    executors = executors.with_profile_models(profiles.clone(), models.clone());
+                }
+                Arc::new(executors)
+            }
             None => Arc::new(NativeHost),
         }
     }
@@ -501,6 +507,11 @@ impl LocalHarness {
                     volume: volume.clone(),
                 };
                 let request = RootRequest {
+                    profile: self
+                        .profiles
+                        .as_ref()
+                        .map(|(profiles, _)| profiles.root())
+                        .transpose()?,
                     agent: id,
                     fresh: Vec::new(),
                     retained: vec![
@@ -526,7 +537,7 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
+        let runtime = crate::hosting::Runtime::start(Arc::clone(&server))?;
         Ok(Hosted { server, runtime })
     }
 }

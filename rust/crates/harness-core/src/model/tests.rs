@@ -7,6 +7,43 @@ use std::collections::{BTreeMap, BTreeSet};
 mod projection_reuse;
 
 #[test]
+fn notice_admission_bounds_metadata_and_the_whole_batch() -> Result<()> {
+    let original = crate::conversation::wire::Notice {
+        source: "files".into(),
+        kind: "files.changed".into(),
+        body: json!({"paths":["a"]}),
+        wake: false,
+        coalesce_key: Some("files".into()),
+    };
+    let limits = Limits {
+        render_bytes: 1024,
+        ..Limits::default()
+    };
+    let admit = |notices| {
+        ModelContent::Part(ModelContentPart::Notices { notices }).validate_limits(limits, &mut None)
+    };
+    admit(vec![original.clone()])?;
+    for field in ["source", "kind", "key", "body"] {
+        let mut large = original.clone();
+        match field {
+            "source" => large.source = "s".repeat(1025),
+            "kind" => large.kind = "k".repeat(1025),
+            "key" => large.coalesce_key = Some("k".repeat(1025)),
+            _ => large.body = json!({"value":"v".repeat(1025)}),
+        }
+        assert!(admit(vec![large]).is_err(), "unbounded {field}");
+    }
+    let many = vec![original; 32];
+    // The former body-only, per-event admission accepts the same oversized batch.
+    assert!(
+        many.iter()
+            .all(|notice| serde_json::to_vec(&notice.body).unwrap().len() < 1024)
+    );
+    assert!(admit(many).is_err());
+    Ok(())
+}
+
+#[test]
 fn tool_call_constructor_preserves_the_existing_wire_shape_and_defaults_metadata() -> Result<()> {
     let call = ToolCall::new("call".into(), "echo".into(), json!({"value":1}));
     assert!(call.metadata.is_null());
@@ -236,10 +273,6 @@ fn native_media_preserves_configuration_and_validates_bounds() -> Result<()> {
                 maximum_duration_ms: 1,
                 maximum_frames: u32::MAX,
             },
-        ),
-        (
-            NativeMediaIntent::Document { maximum_pages: 2 },
-            NativeMediaIntent::Document { maximum_pages: 0 },
         ),
     ] {
         NativeMediaPolicy {

@@ -61,7 +61,7 @@ pub(crate) fn validate_projected_context(
 }
 
 /// Validate projection metadata against messages owned by an admitted request.
-/// The borrowed encoding is identical to `Context` and needs no second history.
+/// Render bounds apply to each part; verified token admission bounds the request.
 pub(crate) fn validate_projected_messages(
     context: &Context,
     messages: &[ModelMessage],
@@ -86,19 +86,10 @@ pub(crate) fn validate_projected_messages(
         for file in context.metadata.values() {
             limits.validate_record(file, work)?;
         }
-        let borrowed = BorrowedContext {
-            messages: ContextMessages {
-                first: messages,
-                user: None,
-                second: &[],
-            },
-            metadata: &context.metadata,
-            current_input_index: context.current_input_index,
-        };
-        crate::executor::json::json_byte_length(&borrowed, limits.render_bytes, work)
+        Ok(())
     })
-    .and_then(|bytes| {
-        let mut remaining = limits.render_bytes - bytes;
+    .and_then(|()| {
+        let mut remaining = limits.render_bytes;
         crate::model::reserve_instruction_bodies(messages, &mut remaining, io)
     })
 }

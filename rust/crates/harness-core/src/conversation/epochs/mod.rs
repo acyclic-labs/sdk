@@ -13,12 +13,14 @@ mod kernel;
 pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
 pub mod protocol;
 mod snapshot;
+pub use snapshot::{Admission, Snapshot, SnapshotError, SummaryOutcome};
 #[cfg(feature = "filesystem")]
-pub use snapshot::EncodedSnapshot;
-pub use snapshot::{Snapshot, SnapshotError, SummaryOutcome};
+pub use snapshot::{EncodedSnapshot, RecoveredSnapshot};
 
-/// Immutable identity of a shared summary on the source's common ancestor.
+/// Immutable source-range identity of a shared summary on its common ancestor.
+/// Preparation additionally binds the epoch's frozen Header and profile.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(deny_unknown_fields)]
 pub struct SummaryKey {
     /// The stream whose original items are summarized.
@@ -41,19 +43,24 @@ impl SummaryKey {
 
     pub(super) fn digest_through(&self, through: u64) -> [u8; 32] {
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.epoch.summary.v1");
+        self.hash_through(through, &mut hash);
+        *hash.finalize().as_bytes()
+    }
+
+    fn hash_through(&self, through: u64, hash: &mut blake3::Hasher) {
         let path = self.source.as_str().as_bytes();
         hash.update(&(path.len() as u64).to_le_bytes());
         hash.update(path);
         hash.update(&through.to_le_bytes());
         hash.update(&self.renderer.to_le_bytes());
         hash.update(&self.model);
-        *hash.finalize().as_bytes()
     }
 }
 
 /// A committed epoch's immutable model prefix. Publication and the agent's
 /// epoch pointer must share one conditional stream commit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "filesystem", derive(crate::HeapLayout))]
 #[serde(deny_unknown_fields)]
 pub struct Epoch {
     /// Digest of the frozen Header, including its tool definitions.
@@ -67,6 +74,17 @@ pub struct Epoch {
 }
 
 impl Epoch {
+    // One hash over the original range and constant-size admitted identities.
+    // A producer for another frozen request must never satisfy this epoch.
+    pub(super) fn preparation_digest(&self, through: u64, attempt: u64) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.epoch.preparation.v1");
+        self.key.hash_through(through, &mut hash);
+        hash.update(&self.header);
+        hash.update(&self.profile);
+        hash.update(&attempt.to_le_bytes());
+        *hash.finalize().as_bytes()
+    }
+
     /// The first verbatim item. Access never scans older epochs or items.
     #[must_use]
     pub const fn cursor(&self) -> u64 {

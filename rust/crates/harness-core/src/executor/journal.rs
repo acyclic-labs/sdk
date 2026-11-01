@@ -105,6 +105,22 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&PreparationIo>,
     ) -> Result<ExecutionAttempt<'a>>;
 
+    /// Acquires a purpose-specific attempt under the original execution's
+    /// authority. A bound journal validates `operation`, while its shared
+    /// registry uses the canonical derived attempt identity.
+    fn acquire_model_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        purpose: ModelPurpose,
+        io: Option<&PreparationIo>,
+    ) -> Result<ExecutionAttempt<'a>> {
+        let attempt = match purpose {
+            ModelPurpose::Response => operation,
+            ModelPurpose::Summary => purpose.attempt_operation(operation, io)?,
+        };
+        self.acquire_execution(attempt, io)
+    }
+
     /// Excludes live attempts before replay can mistake them for crashed work.
     /// The ordinary execution policy is shared by every journal adapter.
     fn claim_execution<'a>(
@@ -115,11 +131,23 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         self.acquire_execution(operation, io)?.into_owner(io)
     }
 
+    /// The original actor delivery's stop signal, independent of session memory.
+    /// Synchronous executors observe this same token at their interrupt boundary.
+    fn model_stop(&self) -> Option<&acyclic_actors::guest::CancellationToken> {
+        None
+    }
+
     /// Follows an authorized cancellation while awaiting a model, approval or
     /// tool invocation whose executor guarantees cancellation on future drop.
     /// The default journal has no filesystem cancellation binding.
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        Box::pin(std::future::pending())
+        Box::pin(async {
+            match self.model_stop() {
+                Some(stop) => stop.cancelled().await,
+                None => std::future::pending().await,
+            }
+            Ok(())
+        })
     }
 
     /// Implementations must scope sequences and retry keys by `operation_id`.

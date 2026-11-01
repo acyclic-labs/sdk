@@ -165,13 +165,16 @@ impl MachinesWorkspace {
         maximum_output: Option<u64>,
         task_deadline: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
+        if input.output_lines.is_some() {
+            return Err(Error::Unsupported("machine query output selection is unavailable before original output retention; recovery: invoke Grep with head_limit=0 and offset=0 until the original complete-output selector is bound".into()));
+        }
         input.validate()?;
         let expiry = self.verifier.expiry(&self.signed)?.checked_mul(1000)
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
         let expiry = task_deadline.map_or(expiry, |deadline| deadline.min(expiry));
         let timeout = input.timeout_ms()?.map(u64::from);
-        let (arguments, stdin) = self.shell.prepare(input.command);
-        let argv = std::iter::once(self.executable.clone())
+        let (program, arguments, stdin) = input.command.prepare(self.shell)?;
+        let argv = std::iter::once(program.unwrap_or_else(|| self.executable.clone()))
             .chain(arguments)
             .collect();
         let mut command = ExecCommand::new(argv, timeout)
@@ -191,6 +194,16 @@ impl MachinesWorkspace {
 }
 
 impl ToolExecutor for MachinesWorkspace {
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        _context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<ShellInput> {
+        ShellInput::from_script(self.shell, source, input, work)
+    }
+
     fn read_path<'a>(
         &'a self,
         path: &'a str,
@@ -245,7 +258,10 @@ impl ToolExecutor for MachinesWorkspace {
         if invocation.name != "shell"
             || context.operation_id() != invocation.operation_id
             || context.call_id() != invocation.call_id
-            || !grants.contains(&crate::contract::capability::tool_call("shell"))
+            || !context.admitted_capability().map_or_else(
+                || grants.contains(&crate::contract::capability::tool_call("shell")),
+                |capability| grants.contains(capability),
+            )
             || !grants.contains(&self.read)
             || !grants.contains(&self.write)
         {

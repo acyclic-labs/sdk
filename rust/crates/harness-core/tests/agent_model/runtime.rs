@@ -32,6 +32,7 @@ impl TurnDriver for Spawner {
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
+                        profile: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),
@@ -48,6 +49,163 @@ impl TurnDriver for Spawner {
 
 fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
     Ok(Store::new(provider.clone(), StreamPath::new(ACTORS)?))
+}
+
+#[tokio::test]
+async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn() -> Result {
+    struct Calls {
+        count: Arc<AtomicUsize>,
+        pause: bool,
+    }
+    impl TurnDriver for Calls {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            input: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            assert!(matches!(
+                input,
+                Some(Queued {
+                    input: TurnInput::Notice { .. } | TurnInput::Approval { .. },
+                    ..
+                })
+            ));
+            let first = self.count.fetch_add(1, Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                Ok(TurnStep {
+                    reserved_children: 0,
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: if self.pause && first {
+                        Wait::Approval(intent("decision"))
+                    } else {
+                        Wait::Input
+                    },
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    for pause in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let count = Arc::new(AtomicUsize::new(0));
+        let host = AgentHost::new(
+            provider.clone(),
+            Calls {
+                count: count.clone(),
+                pause,
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let notice = |name: &str, wake| InboxRecord::Notice {
+            id: intent(name),
+            notice: acyclic_harness_core::conversation::wire::Notice {
+                source: "filesystem".into(),
+                kind: "arbitrary.open.tag".into(),
+                body: serde_json::json!({"paths": [name]}),
+                wake,
+                coalesce_key: Some("files".into()),
+            },
+        };
+        let quiet = notice("before", false);
+        host.send(&root, &user(), &quiet).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+
+        let waking = notice("waking", true);
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let before = host.state(&root).await?;
+        // The original append key owns delivery deduplication, including a
+        // caller retry after losing the successful acknowledgement.
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        let after = notice("after", false);
+        host.send(&root, &user(), &after).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let reopened = host.state(&root).await?;
+        assert_eq!(reopened.phase, before.phase);
+        assert_eq!(reopened.turn, before.turn);
+        let records = values(&provider, root.inbox()?).await?;
+        let notices = records
+            .iter()
+            .map(|record| InboxRecord::decode(record))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(reopened.pending_notices, Some(1..notices.len() as u64));
+        assert_eq!(
+            notices
+                .iter()
+                .filter(|record| matches!(record,
+                    InboxRecord::Notice { notice, .. } if notice.kind == "agent.started"
+                ))
+                .count(),
+            1,
+            "adoption publishes once and never wakes the driver"
+        );
+        assert_eq!(
+            notices
+                .into_iter()
+                .filter(|record| !matches!(record,
+                    InboxRecord::Notice { notice, .. } if notice.kind.starts_with("agent.")
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
+                quiet,
+                waking,
+                after
+            ]
+        );
+        if pause {
+            let approval = InboxRecord::Approval(Approval {
+                id: intent("decision"),
+            });
+            host.send(&root, &user(), &approval).await?;
+            assert!(host.runtime().drain().await.is_empty());
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            assert_eq!(host.state(&root).await?.phase, Phase::Idle);
+            let records = values(&provider, root.inbox()?).await?;
+            let events = records
+                .iter()
+                .map(|record| InboxRecord::decode(record))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let resumed = events
+                .iter()
+                .filter_map(|record| match record {
+                    InboxRecord::Notice { notice, .. } if notice.kind == "agent.resumed" => {
+                        Some(notice)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(resumed.len(), 1);
+            assert!(!resumed[0].wake);
+            assert_eq!(resumed[0].coalesce_key, None);
+            assert_eq!(
+                resumed[0].body["from"],
+                serde_json::json!({
+                    "waiting_approval": {"id": "decision"}
+                })
+            );
+            // Losing the delivery acknowledgement cannot resume or publish twice.
+            host.send(&root, &user(), &approval).await?;
+            assert!(host.runtime().drain().await.is_empty());
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            assert_eq!(values(&provider, root.inbox()?).await?, records);
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -335,22 +493,27 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     assert!(failures.is_empty(), "{failures:?}");
     let actors = store(&provider)?;
     let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
-    assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
+    assert_eq!(
+        cursor(&actors.load(&host.actor(&root)?).await?),
+        Some(inbox_tail(&*provider, &root).await?)
+    );
     let child = root.child(&AgentId::derive(&root.id(), "c"))?;
     let record = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: child.clone(),
         id: intent("q"),
     });
-    assert!(matches!(
-        host.send(&root, &user(), &record).await?,
-        Delivered::Committed { .. }
-    ));
+    let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
+        return Err("spawn input was not committed".into());
+    };
     // Confirmed delivery wakes the tracked root without an idle inbox follow.
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
-    assert_eq!(cursor(&state), Some(2));
-    assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
+    assert_eq!(cursor(&state), Some(inbox + 1));
+    assert_eq!(
+        values(&provider, child.inbox()?).await?.len() as u64,
+        inbox + 2
+    );
     // The child inherits the root's inbox prefix. Its unconsumed adoption is
     // at its actor subscription cursor, rather than record zero.
     let inherited = host.state(&child).await?;
@@ -362,7 +525,19 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
-    assert_eq!(cursor(&state), Some(3));
+    assert_eq!(cursor(&state), Some(inbox_tail(&*provider, &child).await?));
+    let child_events = values(&provider, child.inbox()?).await?;
+    let forked = child_events
+        .iter()
+        .filter_map(|bytes| match InboxRecord::decode(bytes) {
+            Ok(InboxRecord::Notice { notice, .. }) if notice.kind == "agent.forked" => Some(notice),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(forked.len(), 1);
+    assert_eq!(forked[0].source, child.as_str());
+    assert_eq!(forked[0].body["parent"], serde_json::json!(root));
+    assert!(!forked[0].wake);
     assert!(state.state().and_then(|s| s.checkpoint()).is_some());
     let observed = host.state(&child).await?;
     assert_eq!(observed.path, child);

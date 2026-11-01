@@ -29,7 +29,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-mod cancellation;
 mod canonical;
 mod checkpoint;
 mod checkpoint_maps;
@@ -57,6 +56,9 @@ pub mod codec_fuzz {
         Ok(seeds)
     }
 }
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cancellation_tests;
+mod claims;
 mod configuration;
 mod content;
 #[cfg(not(target_arch = "wasm32"))]

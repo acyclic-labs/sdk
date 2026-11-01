@@ -282,6 +282,18 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    fn prepare_shell_script(
+        &self,
+        source: &str,
+        input: &serde_json::Value,
+        _context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<crate::tools::ShellInput> {
+        // This executor's native process preparation uses this same PLATFORM
+        // selection, including its resolved executable and stdin contract.
+        crate::tools::ShellInput::from_script(&crate::tools::shell::PLATFORM, source, input, work)
+    }
+
     fn read_path<'a>(
         &'a self,
         path: &'a str,
@@ -344,9 +356,14 @@ impl ToolExecutor for CheckoutTools {
             || context.call_id() != invocation.call_id
             || !(scope.grants().contains(&self.read_grant)
                 && scope.grants().contains(&self.write_grant))
-            || crate::tools::catalog()
-                .find(|spec| spec.name == invocation.name)
-                .is_none_or(|spec| !scope.grants().contains(&spec.capability()))
+            || !context.admitted_capability().map_or_else(
+                || {
+                    crate::tools::catalog()
+                        .find(|spec| spec.name == invocation.name)
+                        .is_some_and(|spec| scope.grants().contains(&spec.capability()))
+                },
+                |capability| scope.grants().contains(capability),
+            )
         {
             return Err(Error::Unauthorized(
                 "checkout command differs from its task authority".into(),

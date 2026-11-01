@@ -49,7 +49,7 @@ impl GuestIo {
         request: Request<tonic::Streaming<wire::ExecInput>>,
     ) -> Result<Response<ExecStreamWire>, Status> {
         use wire::exec_input::Input;
-        let relative_timeout = request.metadata().contains_key("grpc-timeout");
+        let receipt_timeout = request.metadata().contains_key("grpc-timeout");
         let mut input = request.into_inner();
         let Some(Input::Start(start)) = input.message().await?.and_then(|frame| frame.input) else {
             return Err(Status::invalid_argument("missing command admission"));
@@ -58,7 +58,7 @@ impl GuestIo {
             start,
             argv: vec![],
             stdin: vec![],
-            relative_timeout,
+            receipt_timeout,
         };
         let mut argument = Vec::new();
         let mut complete = false;
@@ -121,7 +121,7 @@ struct ReceivedCommand {
     start: wire::ExecStart,
     argv: Vec<String>,
     stdin: Vec<u8>,
-    relative_timeout: bool,
+    receipt_timeout: bool,
 }
 
 async fn fixture() -> (
@@ -322,8 +322,8 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     assert_eq!(request.start.maximum_output_bytes, Some(4));
     assert_eq!(request.start.timeout_ms, None);
     assert!(
-        request.relative_timeout,
-        "the original authority expiry lost its transport deadline"
+        request.receipt_timeout,
+        "the caller's explicit receipt expiry must remain on the original transport"
     );
     let output = machine
         .exec(ExecCommand::new(vec!["cat".into()], None).unwrap())
@@ -333,7 +333,7 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     assert_eq!(request.start.timeout_ms, None);
     assert_eq!(request.start.expiry_unix_ms, None);
     assert!(
-        !request.relative_timeout,
+        !request.receipt_timeout,
         "an unbounded command without authority expiry gained a transport deadline"
     );
     drop(output);

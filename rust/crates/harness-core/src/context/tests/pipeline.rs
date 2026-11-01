@@ -69,7 +69,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             projected.current_input_index,
             Some(u32::from(placement == ContextPlacement::Prepend))
         );
-        let exact = crate::contract::canonical_json_bytes(&projected)?.len() as u64;
+        let exact = "current".len() as u64;
         for rejected in [
             Limits {
                 context_messages: 1,
@@ -97,7 +97,18 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
         );
     }
     assert_eq!(probe.0.lock().unwrap()[0], limits);
-    let oversized = context(vec![text(ModelRole::System, &"x".repeat(2048))], None);
+    let full_parts = context(
+        vec![
+            text(ModelRole::System, &"x".repeat(2048)),
+            text(ModelRole::Assistant, &"y".repeat(2048)),
+        ],
+        None,
+    );
+    assert_eq!(
+        full_parts.load(&input, limits, None)?.await?,
+        full_parts.messages
+    );
+    let oversized = context(vec![text(ModelRole::System, &"x".repeat(2049))], None);
     assert!(oversized.load(&input, limits, None)?.await.is_err());
     let file = message(ModelRole::System, "0123456789")?
         .content

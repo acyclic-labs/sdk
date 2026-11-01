@@ -38,6 +38,24 @@ record!(
     self.path.capacity(),
     self.version.as_ref().map_or(0, String::capacity),
     self.old_text.capacity(),
+    self.new_text.capacity(),
+    self.notebook.as_ref().map_or(0, |edit| match edit {
+        NotebookEdit::Replace { id, source, .. } =>
+            id.as_ref().map_or(0, String::capacity) + source.capacity(),
+        NotebookEdit::Insert {
+            id,
+            cell_type,
+            source,
+            ..
+        } => id.capacity() + cell_type.capacity() + source.capacity(),
+        NotebookEdit::Delete { id, .. } => id.as_ref().map_or(0, String::capacity),
+    })
+);
+record!(
+    InsertFileInput,
+    self,
+    self.path.capacity(),
+    self.version.as_ref().map_or(0, String::capacity),
     self.new_text.capacity()
 );
 record!(
@@ -57,5 +75,11 @@ record!(
     ReadFileResult,
     self,
     self.file.logical_owned_bytes()?,
-    self.text.capacity()
+    self.text.capacity(),
+    self.outputs.capacity() * std::mem::size_of::<NotebookOutput>(),
+    self.outputs.iter().try_fold(0u64, |total, output| {
+        total
+            .checked_add(output.file.logical_owned_bytes()?)
+            .ok_or_else(|| invalid("notebook output ownership overflow"))
+    })?
 );

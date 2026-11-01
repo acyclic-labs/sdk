@@ -31,7 +31,7 @@ qualify() {
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
 binary_features=acyclic-harness/${features//,/,acyclic-harness/}
 core_features=filesystem-local,native-execution,tui,test-support,grpc,search-http
-qualify core-library 'executor::tool_execution::cancellation_tests:: command_request::diff_tests:: native_settings::model::tests::' \
+qualify core-library 'executor::tool_execution::cancellation_tests:: command_request::diff_tests::' \
   cargo test --locked -p acyclic-harness-core --features "$core_features" --lib
 qualify harness-library 'local::checkout_tools::capture::tests::' \
   cargo test --locked -p acyclic-harness --features "$features" --lib

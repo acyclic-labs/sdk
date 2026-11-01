@@ -24,7 +24,8 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
-/// Replaces one exact, unambiguous match at a project path. An optional opaque
+/// Edits exact text or notebook cells at a project path. Text replacements require
+/// one unambiguous match unless all occurrences are requested. An optional opaque
 /// version rejects publication if that source generation is no longer current.
 pub fn edit() -> Result<Tool> {
     FileTool::Edit.assemble(super::schema::ProjectionMode::Full)
@@ -49,15 +50,26 @@ mod inputs;
 mod source;
 pub(crate) use inputs::FileView;
 pub use inputs::{
-    EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult, WriteFileInput,
+    EditFileInput, FileResult, InsertFileInput, NotebookEdit, NotebookOutput, PatchFileInput,
+    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;
 mod version;
 pub(crate) use executor::FileTool;
+pub(crate) use version::{
+    decode_tool_version, encode_version, encode_version as encode_file_version,
+};
 mod assembly;
 mod authorization;
+mod index;
+mod lines;
+mod notebook;
+mod notebook_outputs;
+mod notebook_read;
 mod projection;
+mod read;
+mod window;
 pub use projection::FileProjection;
 #[cfg(test)]
 mod tests;

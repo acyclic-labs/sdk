@@ -24,7 +24,7 @@ const options = {
     model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
   principal: "do-conformance",
   // This host explicitly accepts every action its agents take.
-  preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
+  preset: { approval_policy: { approvers: [{ kind: "rules", principal: "do-conformance", rules: [], fallback: "allow" }] } },
   handler_timeout_ms: 30_000n,
 };
 
@@ -102,7 +102,7 @@ export class Agent extends DurableObject {
     if (protocol) this.registry.registerTool(hostFixtureTool(),
       (invocation: { arguments: unknown }) => { ++this.executions; return { value: invocation.arguments }; },
       () => null, (_invocation: unknown, result: { value: unknown }) => result.value);
-    this.registry.configureModel({ provider: "conformance", name: "scripted", revision: "1", options: {} },
+    this.registry.configureModel({ provider: "conformance", name: "scripted", revision: "1" },
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
           lifecycle.started();

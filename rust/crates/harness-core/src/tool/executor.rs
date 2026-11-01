@@ -10,13 +10,47 @@ pub struct Dispatch {
     pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
 }
 
+/// Workspace selection retained by an executor's immutable registry binding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceBinding {
+    /// Always use the task's home target.
+    Home,
+    /// Use the call's optional `target`, otherwise the task's home target.
+    Named,
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
-    /// Runs a JavaScript composition through the stock caller. The interpreter
-    /// receives no executor or host authority; each inner call is admitted again.
-    fn is_code_mode(&self) -> bool {
-        false
+    /// Selects the workspace before authorization and original start publication.
+    /// Adapters retain their underlying executor's binding; model-visible names
+    /// do not choose execution placement or grant another capability.
+    fn workspace_binding(&self) -> Option<WorkspaceBinding> {
+        None
     }
+
+    /// Projects pinned skill source and its JSON input into this executor's
+    /// admitted target shell. This executes nothing: the returned ordinary
+    /// shell invocation still needs its original approval, journal and custody.
+    fn prepare_shell_script(
+        &self,
+        _source: &str,
+        _input: &serde_json::Value,
+        _context: Option<&crate::runtime::ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<crate::tools::ShellInput> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "target shell projection is not bound; recovery: bind the original admitted workspace executor",
+            });
+        }
+        let _ = work;
+        Err(Error::Unsupported(
+            "target shell projection is not bound; recovery: bind the original admitted workspace executor".into(),
+        ))
+    }
+
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.
@@ -86,6 +120,7 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
+        _work: crate::NativeWork<'a>,
     ) -> Option<BoxFuture<'a, Result<()>>> {
         None
     }

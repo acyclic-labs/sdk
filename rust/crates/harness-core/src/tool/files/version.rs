@@ -2,11 +2,7 @@ use super::*;
 
 const AUTHORED: &str = "authored-file-v1:";
 
-pub(super) fn is_authored(version: &str) -> bool {
-    version.starts_with(AUTHORED)
-}
-
-pub(super) fn decode_tool_version(
+pub(crate) fn decode_tool_version(
     context: Option<&ToolContext>,
     path: &str,
     version: &str,
@@ -23,7 +19,7 @@ pub(super) fn decode_tool_version(
     let io = owned_io.as_ref();
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let io = None;
-    let (volume, relative) = context.tool_path_selection(path, io)?;
+    let (volume, relative) = context.tool_read_path_selection(path, io)?;
     let (file, custody) = decode_version(&relative, version, work)?;
     if file.volume() != volume {
         return Err(super::executor::rejection(
@@ -37,7 +33,7 @@ pub(super) fn decode_tool_version(
 // A token transports the original reference; it is never an authority or an
 // index into mutable process state. Its decoded reference goes through the
 // same grant and immutable-content checks as every other content read.
-pub(super) fn decode_version(
+pub(crate) fn decode_version(
     path: &str,
     version: &str,
     work: crate::NativeWork<'_>,
@@ -90,7 +86,7 @@ pub(super) fn decode_version(
     Ok((file, None))
 }
 
-pub(super) fn encode_version(
+pub(crate) fn encode_version(
     file: &FileRef,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {

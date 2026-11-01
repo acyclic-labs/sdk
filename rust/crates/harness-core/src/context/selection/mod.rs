@@ -1,7 +1,6 @@
 //! Pinned sources and bounded context rendering.
 use super::{
-    Context, ContextMessages, ContextPlacement, append_context_messages, copy_context,
-    validate_projected_context,
+    Context, ContextPlacement, append_context_messages, copy_context, validate_projected_context,
 };
 use crate::{
     Error, Result,

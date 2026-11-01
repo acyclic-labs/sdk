@@ -37,7 +37,8 @@ impl ToolRegistry {
                     "manifest repeats a tool name",
                 ));
             }
-            for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
+            let data = Arc::make_mut(&mut self.data);
+            for (name, selection) in &mut data.selected {
                 let replacement = match selected
                     .binary_search_by(|(candidate, _)| candidate.cmp(&name.as_str()))
                 {
@@ -45,13 +46,33 @@ impl ToolRegistry {
                         selected[index].1,
                         io,
                     )?),
-                    Err(_) => ModelSelection::Hidden,
+                    Err(_) => match selection {
+                        ModelSelection::Revision(revision)
+                        | ModelSelection::CallableRevision(revision)
+                            if lookup::get(&data.versions, name, revision)
+                                .is_some_and(|tool| tool.skill_source.is_some()) =>
+                        {
+                            ModelSelection::CallableRevision(crate::executor::stock_string_copy(
+                                revision, io,
+                            )?)
+                        }
+                        _ => ModelSelection::Hidden,
+                    },
                 };
                 #[cfg(feature = "filesystem")]
                 let old_bytes = match selection {
-                    ModelSelection::Revision(revision) => revision.capacity(),
+                    ModelSelection::Revision(revision)
+                    | ModelSelection::CallableRevision(revision) => revision.capacity(),
                     _ => 0,
                 };
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    data.retained_bytes = data
+                        .retained_bytes
+                        .checked_sub(selection.retained_bytes())
+                        .and_then(|bytes| bytes.checked_add(replacement.retained_bytes()))
+                        .ok_or(OWNERSHIP_OVERFLOW)?;
+                }
                 *selection = replacement;
                 #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
@@ -64,17 +85,24 @@ impl ToolRegistry {
 
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
-        if !self
-            .data
-            .versions
-            .contains_key(&(name.to_owned(), revision.to_owned()))
-        {
+        if lookup::get(&self.data.versions, name, revision).is_none() {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
         }
-        Arc::make_mut(&mut self.data).selected.insert(
-            name.to_owned(),
-            ModelSelection::Revision(revision.to_owned()),
-        );
+        let replacement = ModelSelection::Revision(revision.to_owned());
+        let data = Arc::make_mut(&mut self.data);
+        let selection = data
+            .selected
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_sub(selection.retained_bytes())
+                .and_then(|bytes| bytes.checked_add(replacement.retained_bytes()))
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
+        *selection = replacement;
         Ok(())
     }
 
@@ -90,18 +118,38 @@ impl ToolRegistry {
                 "dynamic catalog installation changed".into(),
             ));
         }
-        Arc::make_mut(&mut self.data)
-            .catalog_revisions
-            .insert(namespace.into(), revision);
+        let data = Arc::make_mut(&mut self.data);
+        if let Some(selected) = data.catalog_revisions.get_mut(namespace) {
+            *selected = revision;
+        } else {
+            let name: String = namespace.into();
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                data.retained_bytes = data
+                    .retained_bytes
+                    .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
+                    .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
+                    .ok_or(OWNERSHIP_OVERFLOW)?;
+            }
+            data.catalog_revisions.insert(name, revision);
+        }
         Ok(())
     }
 
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
-        let selection = Arc::make_mut(&mut self.data)
+        let data = Arc::make_mut(&mut self.data);
+        let selection = data
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            data.retained_bytes = data
+                .retained_bytes
+                .checked_sub(selection.retained_bytes())
+                .ok_or(OWNERSHIP_OVERFLOW)?;
+        }
         *selection = ModelSelection::Hidden;
         Ok(())
     }
@@ -139,6 +187,19 @@ impl ToolRegistry {
         revision: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
+        self.get_shared(name, revision, io)
+            .map(|tool| tool.map(Arc::as_ref))
+    }
+
+    /// Borrows the original immutable registration, including its executor and
+    /// projection. Thin variants retain this Arc rather than cloning a contract
+    /// or constructing another execution implementation.
+    pub fn get_shared(
+        &self,
+        name: &str,
+        revision: Option<&str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Arc<Tool>>> {
         #[cfg(feature = "filesystem")]
         if revision.is_none()
             && let Some(io) = io
@@ -162,7 +223,30 @@ impl ToolRegistry {
             if let Some(work) = work.as_deref_mut() {
                 work.check_cancellation()?;
             }
-            Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref))
+            Ok(lookup::get(&self.data.versions, name, revision))
+        })
+    }
+
+    /// Resolves only the currently selected callable skill in this snapshot.
+    /// Explicit historical revisions cannot bypass a hidden or replaced selection.
+    pub(crate) fn get_callable_skill(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Tool>> {
+        crate::executor::with_history_io(io, |work| {
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
+            }
+            let revision = match self.data.selected.get(name) {
+                Some(
+                    ModelSelection::Revision(revision) | ModelSelection::CallableRevision(revision),
+                ) => revision,
+                _ => return Ok(None),
+            };
+            Ok(lookup::get(&self.data.versions, name, revision)
+                .filter(|tool| tool.skill_source.is_some())
+                .map(Arc::as_ref))
         })
     }
 
@@ -181,9 +265,16 @@ impl ToolRegistry {
     ) -> Result<Vec<ToolDefinition>> {
         self.definitions_for_names(
             || {
-                grants
-                    .iter()
-                    .filter_map(|grant| grant.strip_prefix("tool:call:"))
+                self.data.selected.iter().filter_map(|(name, selection)| {
+                    let capability = match selection {
+                        ModelSelection::Revision(revision) => {
+                            lookup::get(&self.data.versions, name, revision)
+                                .map_or(name.as_str(), |tool| tool.definition.capability())
+                        }
+                        _ => name.as_str(),
+                    };
+                    grants.allows_tool(capability).then_some(name.as_str())
+                })
             },
             io,
         )
@@ -205,7 +296,9 @@ impl ToolRegistry {
                 }
                 match self.data.selected.get(name) {
                     Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
-                    Some(ModelSelection::Hidden) | None => None,
+                    Some(ModelSelection::Hidden | ModelSelection::CallableRevision(_)) | None => {
+                        None
+                    }
                     Some(ModelSelection::Ambiguous) => Some(Err(crate::executor::stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,

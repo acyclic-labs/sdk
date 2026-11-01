@@ -1,4 +1,18 @@
+use super::variants::FileVariant;
 use crate::{Result, runtime::RuntimeScope, tool::ToolRegistry};
+
+// Trained argument variants retain the original volume executor.
+const TRAINED_FILES: [FileVariant; 3] = [
+    FileVariant::Replace,
+    FileVariant::WriteFile,
+    FileVariant::TextEditor,
+];
+
+const PATCH: &str = "apply_patch";
+#[cfg(feature = "filesystem")]
+const PROFILE_FUNCTIONS: [&str; 1] = ["call"];
+#[cfg(not(feature = "filesystem"))]
+const PROFILE_FUNCTIONS: [&str; 0] = [];
 
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
@@ -9,17 +23,20 @@ pub fn defaults() -> Result<ToolRegistry> {
     Ok(registry)
 }
 
-/// Names of every standard tool: the catalog's, in order, then the agent tools.
+/// Names of standard coding functions followed by the agent tools.
 #[must_use]
 pub fn names() -> Vec<String> {
     super::catalog()
         .map(|spec| spec.name)
+        .chain(TRAINED_FILES.into_iter().map(FileVariant::name))
+        .chain([PATCH])
+        .chain(PROFILE_FUNCTIONS)
         .chain(super::AGENT_TOOLS)
         .map(str::to_owned)
         .collect()
 }
 
-/// Binds the catalog tools `names` selects that the task's resources can
+/// Binds the standard functions `names` selects that the task's resources can
 /// back. Agent tool names are bound per turn by [`super::bind_agent_tools`];
 /// any other name is refused.
 #[doc(hidden)]
@@ -33,6 +50,11 @@ pub fn bind_defaults(
 ) -> Result<()> {
     if let Some(unknown) = names.iter().find(|name| {
         !super::catalog().any(|spec| spec.name == name.as_str())
+            && !TRAINED_FILES
+                .iter()
+                .any(|variant| variant.name() == name.as_str())
+            && name.as_str() != PATCH
+            && !PROFILE_FUNCTIONS.contains(&name.as_str())
             && !super::AGENT_TOOLS.contains(&name.as_str())
     }) {
         return Err(crate::Error::Invalid(format!("unknown tool {unknown}")));
@@ -54,6 +76,40 @@ pub fn bind_defaults(
             continue;
         }
         registry.register((spec.bind()?, None), &mut None, None)?;
+        if bound.is_none() && !grants.contains(&capability) {
+            grants.push(capability);
+        }
+    }
+    if volume {
+        for variant in TRAINED_FILES {
+            if !names.iter().any(|name| name == variant.name()) {
+                continue;
+            }
+            let capability = crate::contract::capability::tool_call(variant.capability());
+            if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
+                continue;
+            }
+            registry.register((variant.bind()?, None), &mut None, None)?;
+            if bound.is_none() && !grants.contains(&capability) {
+                grants.push(capability);
+            }
+        }
+    }
+    for name in [PATCH].into_iter().chain(PROFILE_FUNCTIONS) {
+        if !names.iter().any(|selected| selected == name) || (name == PATCH && !volume) {
+            continue;
+        }
+        let tool = match name {
+            PATCH => super::variants::apply_patch()?,
+            #[cfg(feature = "filesystem")]
+            "call" => crate::executor::call_tool()?,
+            _ => unreachable!("only declared profile functions are iterated"),
+        };
+        let capability = crate::contract::capability::tool_call(tool.definition.capability());
+        if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
+            continue;
+        }
+        registry.register((tool, None), &mut None, None)?;
         if bound.is_none() && !grants.contains(&capability) {
             grants.push(capability);
         }

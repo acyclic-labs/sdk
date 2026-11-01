@@ -217,6 +217,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
         Arc::new(Owner::default()),
         &IntentId::try_from("machine-results")?,
         RootRequest {
+            profile: None,
             agent: id,
             fresh,
             retained: Vec::new(),

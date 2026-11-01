@@ -6,25 +6,16 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "filesystem")]
 pub(crate) const AGENT_PROMPT: &str = "You are a coding agent working in the user's checkout.
 Read relevant code with rg before editing. Persist until the task is done; ask only when blocked. Run the covering tests or build, then report the result, checks and anything unfinished.
-Run independent tool calls in parallel. Delegate independent work with spawn, giving each child a self-contained brief and explicit ownership. Children inherit settled conversation in their forks: use send for updates, wait for their reports, inspect their diffs and merge accepted branches with fs and rerun the covering tests. For a large change, give a reviewer the task, diff and test output.
+Run independent tool calls in parallel. Delegate with spawn {name, task, role}, giving each child explicit ownership. Workers fork your conversation; advisors and reviewers see only their self-contained brief and sent files. A brief or plan says what was tried and learned. Use send for updates, wait when the next step depends on a report, inspect the diff and explicitly fs merge accepted worker branches. Give a fresh reviewer the task, diff and actual check output. At consequential decisions, send an advisor an immutable versioned plan; it returns a revision based on that version, never edits or merges into your tree.
 Plans and notes go in .volumes/scratch/plans/ and .volumes/scratch/memory.md; GOAL.md is used only when looping on a goal. Scratch at .volumes/scratch is private retained storage for large tool output and working files, never merged into the project.
 Follow the stated approval policy. A refused action is a tool failure: report it or choose an allowed action; never treat it as executed.";
 
-/// Host-backed tools and approvals. Instructions and execution capacity have
-/// one shared source rather than per-preset overrides.
+/// Owner approvals. Instructions, tools and execution profiles have one shared
+/// source rather than per-preset overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct Preset {
-    /// Standard tools enabled, by name (see [`crate::tools::catalog`]); a
-    /// name outside the catalog is refused when the harness opens.
-    pub tools: Vec<String>,
-    /// Whether credential-free web retrieval is enabled; search also needs a
-    /// configured provider.
-    pub web_tools: bool,
-    /// Open children each agent may have at once; `None` is unbounded.
-    #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
-    pub max_children: Option<u32>,
     /// Ordered approval chain bound to every enabled tool.
     pub approval_policy: ApprovalPolicy,
 }
@@ -35,9 +26,6 @@ impl Preset {
     #[must_use]
     pub fn graphcoder() -> Self {
         Self {
-            tools: crate::tools::default_names(),
-            web_tools: true,
-            max_children: None,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }

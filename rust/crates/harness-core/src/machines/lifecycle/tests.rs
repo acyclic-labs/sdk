@@ -127,6 +127,7 @@ impl TurnDriver for DelayedTurn {
 
 fn adopted(byte: u8) -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent: AgentId::from_bytes([byte; 16]),
         parent: None,
         forked_at: 0,

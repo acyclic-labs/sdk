@@ -49,25 +49,6 @@ pub(in crate::context) fn place_snapshot(
     compose_context(context, snapshot, placement, marker, limits, io)
 }
 
-struct JoinedMetadata<'a>(
-    &'a std::collections::BTreeMap<String, FileRef>,
-    &'a std::collections::BTreeMap<String, FileRef>,
-);
-
-impl Serialize for JoinedMetadata<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap as _;
-        let mut map = serializer.serialize_map(None)?;
-        for (name, file) in self.0.iter().chain(self.1) {
-            map.serialize_entry(name, file)?;
-        }
-        map.end()
-    }
-}
-
 fn preflight_context_composition(
     context: &Context,
     contribution: &Context,
@@ -153,28 +134,7 @@ fn preflight_context_composition(
             contribution.messages.as_slice(),
         ),
     };
-    #[derive(Serialize)]
-    struct JoinedContext<'a> {
-        messages: ContextMessages<'a>,
-        metadata: JoinedMetadata<'a>,
-        current_input_index: Option<u32>,
-    }
-    let bytes = crate::executor::with_history_io(io, |work| {
-        crate::executor::json::json_byte_length(
-            &JoinedContext {
-                messages: ContextMessages {
-                    first,
-                    user: None,
-                    second,
-                },
-                metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
-                current_input_index,
-            },
-            limits.render_bytes,
-            work,
-        )
-    })?;
-    let mut remaining = limits.render_bytes - bytes;
+    let mut remaining = limits.render_bytes;
     crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
     crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)

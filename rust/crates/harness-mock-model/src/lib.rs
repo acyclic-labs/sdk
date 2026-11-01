@@ -122,6 +122,9 @@ pub struct Step {
     pub tools: Vec<Tool>,
     /// Responses freeform calls, emitted after function calls.
     pub custom_tools: Vec<CustomTool>,
+    /// Gemini-native parts, emitted together to exercise parallel calls and
+    /// original thought-signature boundaries. Other protocols reject this field.
+    pub gemini: Option<Gemini>,
     /// An explicit HTTP status; absent means 200.
     pub status: Option<u16>,
     /// Return ordinary JSON instead of SSE (search/MCP/error fixtures).
@@ -133,6 +136,19 @@ pub struct Step {
     pub json: Option<Value>,
     /// Leave the stream open after the chunks, for cancellation/crash cases.
     pub hold: bool,
+}
+
+/// Native Gemini content and token categories. Parts are ordinary script data;
+/// no signature is synthesized by the server.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Gemini {
+    /// Original provider-shaped parts, including thoughtSignature when supplied.
+    pub parts: Vec<Value>,
+    /// Cached prompt tokens, already included in the request's input count.
+    pub cached_tokens: u64,
+    /// Thought tokens, separate from the two visible output tokens.
+    pub thought_tokens: u64,
 }
 
 fn json_reply<'de, D: serde::Deserializer<'de>>(

@@ -24,6 +24,9 @@ pub struct ToolDefinition {
     #[heap_layout(as = serde_json::Value)]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
+    /// The harness may replace a validated oversized projection with its common
+    /// lossless `output_spill` envelope, naming a versioned ordinary file and a
+    /// bounded preview. Replay accepts that intrinsic envelope for every tool.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     #[serde(deserialize_with = "crate::deserialize_json_value")]
     #[heap_layout(as = serde_json::Value)]
@@ -31,6 +34,14 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
+    /// Stable policy and grant identity, independent of a model-visible lab
+    /// variant. The pinned schema owns this binding with its executor revision.
+    pub fn capability(&self) -> &str {
+        self.input_schema
+            .get("x-harness-capability")
+            .and_then(Value::as_str)
+            .unwrap_or(&self.name)
+    }
     /// Borrows this exact declaration through the sole model schema projection.
     /// The name comes from the provider's canonical alias binder; no schema or
     /// description is copied. Execution continues through the original registry.
@@ -38,6 +49,13 @@ impl ToolDefinition {
         &'a self,
         name: std::borrow::Cow<'a, str>,
     ) -> acyclic_model_render::ToolDeclaration<'a, super::schema::ModelInput<'a>> {
+        if let Some(format) = self.input_schema.get("x-harness-freeform") {
+            return acyclic_model_render::ToolDeclaration::Freeform {
+                name,
+                description: &self.description,
+                format: super::schema::model_input(format),
+            };
+        }
         acyclic_model_render::ToolDeclaration::Function {
             name,
             description: &self.description,
@@ -135,6 +153,52 @@ impl ToolDefinition {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
         check: &impl Fn() -> Result<()>,
     ) -> Result<()> {
+        if let Some(capability) = self.input_schema.get("x-harness-capability")
+            && !capability
+                .as_str()
+                .is_some_and(crate::contract::is_valid_component_label)
+        {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "tool capability is invalid",
+            ));
+        }
+        if let Some(format) = self.input_schema.get("x-harness-freeform") {
+            let format_valid =
+                format
+                    .as_object()
+                    .is_some_and(|fields| match format["type"].as_str() {
+                        Some("text") => fields.len() == 1,
+                        Some("grammar") => {
+                            fields.len() == 3
+                                && matches!(format["syntax"].as_str(), Some("lark" | "regex"))
+                                && format["definition"]
+                                    .as_str()
+                                    .is_some_and(|text| !text.is_empty())
+                        }
+                        _ => false,
+                    });
+            // Custom input has exactly one canonical representation. Its raw
+            // text is moved into this field by the shared stream decoder.
+            if !format_valid
+                || self.input_schema["type"] != "object"
+                || self.input_schema["properties"]
+                    .as_object()
+                    .is_none_or(|fields| fields.len() != 1)
+                || self.input_schema["properties"]["input"]["type"] != "string"
+                || self.input_schema["required"]
+                    .as_array()
+                    .is_none_or(|fields| fields.len() != 1 || fields[0] != "input")
+                || self.input_schema["additionalProperties"] != false
+            {
+                return Err(crate::store::guarded_boundary(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "freeform tool contract is invalid",
+                ));
+            }
+        }
         for schema in [
             &self.input_schema,
             &self.output_schema,
@@ -205,14 +269,7 @@ impl ToolDefinition {
         return self.check_scoped_projection(value, limits, io);
         #[cfg(not(feature = "filesystem"))]
         {
-            if let Err(violation) = crate::executor::with_history_io(io, |work| {
-                crate::executor::check_json_schema_value(
-                    &self.projection_schema,
-                    value,
-                    "tool projection",
-                    work,
-                )
-            })? {
+            if let Err(violation) = self.check_projection_schema(value, io)? {
                 return Ok(Err(violation));
             }
             let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
@@ -221,6 +278,32 @@ impl ToolDefinition {
             crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
             Ok(Ok(content))
         }
+    }
+
+    pub(super) fn check_projection_schema(
+        &self,
+        value: &Value,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Result<()>> {
+        let authored = crate::executor::with_history_io(io, |work| {
+            crate::executor::check_json_schema_value(
+                &self.projection_schema,
+                value,
+                "tool projection",
+                work,
+            )
+        })?;
+        if authored.is_ok() || !super::output::is_spill(value) {
+            return Ok(authored);
+        }
+        let schema = super::output::schema()?;
+        let checked = crate::executor::with_history_io(io, |work| {
+            crate::executor::check_json_schema_value(&schema, value, "tool output spill", work)
+        })?;
+        if checked.is_ok() {
+            super::output::check_preview(value, io)?;
+        }
+        Ok(checked)
     }
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {

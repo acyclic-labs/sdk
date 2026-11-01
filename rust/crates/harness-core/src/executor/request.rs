@@ -256,7 +256,7 @@ impl StockExecution<'_> {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
             tools: if tools_required {
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
+                self.tool_definitions(self.io)?
             } else {
                 Vec::new()
             },
@@ -296,7 +296,7 @@ impl StockExecution<'_> {
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
         let tools = if self.request_tools_required(&request.messages)? {
-            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
+            self.tool_definitions(io)?
         } else {
             Vec::new()
         };

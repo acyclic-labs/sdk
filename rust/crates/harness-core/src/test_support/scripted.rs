@@ -273,6 +273,7 @@ pub async fn read_request_files(
             if !matches!(
                 policy,
                 crate::model::FileProjectionPolicy::BoundedFull
+                    | crate::model::FileProjectionPolicy::TurnOutput
                     | crate::model::FileProjectionPolicy::ProjectInstructions(_)
             ) {
                 continue;
@@ -280,7 +281,10 @@ pub async fn read_request_files(
             let (reader, maximum) = reader.ok_or_else(|| {
                 Error::Unauthorized("scripted provider has no content reader".into())
             })?;
-            reader.read(file, maximum, None, None)?.await?;
+            let bytes = reader.read(file, maximum, None, None)?.await?;
+            if matches!(policy, crate::model::FileProjectionPolicy::TurnOutput) {
+                crate::executor::TurnOutput::project_text(&bytes, None)?;
+            }
         }
     }
     Ok(())

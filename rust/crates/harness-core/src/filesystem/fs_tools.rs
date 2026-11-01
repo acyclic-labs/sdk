@@ -281,6 +281,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
+        _work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         Some(Box::pin(async move {
             let context = context.ok_or_else(|| {

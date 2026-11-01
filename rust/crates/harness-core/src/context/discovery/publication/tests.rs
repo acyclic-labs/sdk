@@ -234,6 +234,73 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         panic!("one original skill expected")
     };
     assert_eq!(metadata.description, "Original header");
+    // A real pinned prefix succeeds above. Native funding must refuse before
+    // reading it while the YAML parser has no allocation-admission interface.
+    let native_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(4_000_000, 4_000_000),
+        &cancel,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let native_io = PreparationIo::from_native_work(&native_work)?;
+    let before_native = native_io.receipt();
+    let mut direct = VolumeDiscovery {
+        reader: reader.as_ref(),
+        root: &metadata.source.root,
+        io: Some(&native_io),
+    };
+    // Bypassing ContextRoot must reach the same refusal before constructing a
+    // future, capturing a pin or invoking the authorized prefix reader.
+    let refused = acyclic_test_support::measure(|| {
+        assert!(matches!(
+            direct.skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768,),
+            Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill discovery requires native YAML allocation admission",
+            })
+        ));
+    });
+    assert_eq!(refused.count_total, 0);
+    assert_eq!(refused.bytes_total, 0);
+    assert!(matches!(
+        metadata
+            .source
+            .root
+            .skill_metadata_parsed_at(
+                reader.as_ref(),
+                &metadata.source.path,
+                &metadata.source.generation,
+                "SKILL.md",
+                ContextDiscoveryLimits::default(),
+                Some(&native_io),
+            )
+            .await,
+        Err(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "skill discovery requires native YAML allocation admission",
+        })
+    ));
+    assert_eq!(
+        native_io.receipt().object_bytes_read,
+        before_native.object_bytes_read
+    );
+    assert!(
+        metadata
+            .source
+            .root
+            .skill_metadata_parsed_at(
+                reader.as_ref(),
+                "skills/check/notes.md",
+                &metadata.source.generation,
+                "SKILL.md",
+                ContextDiscoveryLimits::default(),
+                Some(&native_io),
+            )
+            .await?
+            .is_none(),
+        "unrelated paths must remain filtered without YAML admission"
+    );
+    drop(native_io);
+    drop(native_work);
     // A selected prefix must use the same supplied finite owner. The original
     // reader and pinned generation succeed above; only allocation credit differs.
     let blocked = PreparationIo::from_budget(
@@ -506,8 +573,8 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         .await?
         .ok_or("durable conversation observation missing")?;
     assert_eq!(epoch_record.commit_id, observation.commit_id);
-    let restored_epoch = Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0)?;
-    assert_eq!(restored_epoch, epoch);
+    let restored_epoch = Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0, &session)?;
+    assert_eq!(*restored_epoch, epoch);
     let observations = journal.replay(operation, 0, 3, Some(&session))?.await?;
     assert_eq!(observations.len(), 2, "retry appended another observation");
     let ExecutionEvent::ConversationItem { envelope, .. } = &observations[1].event else {
@@ -608,7 +675,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             .ok_or("repaired durable epoch missing")?;
     assert_eq!(
         epoch,
-        Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0)?
+        *Snapshot::decode(&epoch_record, &epoch.epoch().key.source, 0, &session)?
     );
     let [SkillPublicationChange::Skill(retained)] = admitted.changes() else {
         panic!("admission lost original metadata custody");

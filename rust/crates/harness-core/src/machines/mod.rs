@@ -27,8 +27,12 @@ mod lifecycle;
 pub use lifecycle::{
     AgentMachines, MACHINE_BINDING_VERSION, MachineBinding, MachineExecutors, ProvisionedTarget,
 };
+#[cfg(feature = "filesystem")]
+mod output;
 mod workspace;
 use identity::{machines_key, map_error, parse_uuid};
+#[cfg(feature = "filesystem")]
+pub use output::capture_shell_output;
 pub use workspace::MachinesWorkspace;
 #[cfg(test)]
 mod tests;

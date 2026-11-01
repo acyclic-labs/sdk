@@ -124,6 +124,303 @@ fn with_parts(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
+    fn immutable_turn_outputs_resolve_once_without_changing_visible_history(
+        characters in prop::collection::vec(any::<char>(), 0..96),
+        private in prop::collection::vec(any::<u64>(), 0..32),
+    ) {
+        futures::executor::block_on(async {
+            let text: String = std::iter::once('\0')
+                .chain("\n\"\\🦀".chars())
+                .chain(characters)
+                .collect();
+            let output = acyclic_harness_core::executor::TurnOutput {
+                text: text.clone(), attachments: vec![],
+                metadata: json!({"private": private}), steps: 1,
+            };
+            let bytes = serde_json::to_vec(&output).unwrap();
+            let original = file(&bytes, "application/json").unwrap();
+            let limits = Limits {
+                render_bytes: text.len().max("current input".len()) as u64,
+                ..Limits::default()
+            };
+            // The former descriptor/render comparison refuses every generated
+            // result even though its visible text fits the admitted bound.
+            assert!(original.descriptor().byte_length() > limits.render_bytes);
+            for (adapter, _) in fixtures() {
+                let (mut provider, _) = provider(adapter, 200);
+                let reader = Arc::new(Reader {data:bytes.clone(), reads:AtomicUsize::new(0)});
+                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
+                let source = ModelRequest {
+                    model: provider.model().clone(),
+                    messages: vec![
+                        ModelMessage {role:ModelRole::User, content:ModelContent::Text("earlier input".into())},
+                        ModelMessage {role:ModelRole::Assistant, content:ModelContent::Part(ModelContentPart::File {
+                            file:original.clone(),policy:FileProjectionPolicy::TurnOutput,
+                        })},
+                        ModelMessage {role:ModelRole::User, content:ModelContent::Text("current input".into())},
+                    ],
+                    tools:vec![], max_output_tokens:Some(64),
+                };
+                let request = PreparedModelRequest::prepare(source.clone(), limits, None).unwrap();
+                let prepared = crate::prepared::PreparedInput::new(&provider, request.clone()).await.unwrap();
+                let mut visible = source.clone();
+                visible.messages[1].content = ModelContent::Text(text.clone());
+                let visible = PreparedModelRequest::prepare(visible, limits, None).unwrap();
+                let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+                let expected = crate::dispatch::encode(&provider, &visible,
+                    &crate::tool_names::Names::new(visible.request()), None, &origin).await.unwrap();
+                assert_eq!(prepared.generation.as_ref(), expected.as_slice());
+                let count = prepared.count(&provider).await.unwrap();
+                assert_eq!(count.input_tokens, provider.count_tokens(&visible).await.unwrap().input_tokens);
+                assert!(count.validate(&request, &mut None).is_ok());
+                assert!(count.validate(&visible, &mut None).is_err());
+                assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+                assert_eq!(request.request().messages[1].content.file_refs().collect::<Vec<_>>(), vec![&original]);
+                let storage_limit = Limits {file_bytes:bytes.len() as u64 - 1, ..limits};
+                assert!(PreparedModelRequest::prepare(source.clone(), storage_limit, None).is_err());
+                // Separating storage from text must not admit an oversized
+                // projection through either the count or generation adapter.
+                let oversized = serde_json::to_vec(&acyclic_harness_core::executor::TurnOutput {
+                    text:"x".repeat(limits.render_bytes as usize + 1),
+                    attachments:vec![], metadata:Value::Null, steps:1,
+                }).unwrap();
+                let mut oversized_source = source.clone();
+                oversized_source.messages[1].content = ModelContent::Part(ModelContentPart::File {
+                    file:file(&oversized, "application/json").unwrap(), policy:FileProjectionPolicy::TurnOutput,
+                });
+                let oversized_source = PreparedModelRequest::prepare(oversized_source, limits, None).unwrap();
+                let oversized_reader = Arc::new(Reader {data:oversized, reads:AtomicUsize::new(0)});
+                provider.files.reader = Some(oversized_reader.clone());
+                assert!(crate::prepared::PreparedInput::new(&provider, oversized_source.clone()).await.is_err());
+                assert!(crate::dispatch::encode(&provider, &oversized_source,
+                    &crate::tool_names::Names::new(oversized_source.request()), None, &origin).await.is_err());
+                assert_eq!(oversized_reader.reads.load(Ordering::SeqCst), 2);
+                provider.files.reader = Some(reader.clone());
+                // A generic JSON projection exposes result metadata
+                // and changes the already rendered assistant prefix.
+                let mut generic = source.clone();
+                if let ModelContent::Part(ModelContentPart::File {policy, ..}) = &mut generic.messages[1].content {
+                    *policy = FileProjectionPolicy::BoundedFull;
+                }
+                let generic = PreparedModelRequest::prepare(generic, Limits::default(), None).unwrap();
+                let mut generic_files = crate::files::FileText(vec![String::from_utf8(bytes.clone()).unwrap().into()].into_iter());
+                let former = projection::body_with_files(&provider, generic.request(), &mut generic_files).unwrap();
+                assert_ne!(prepared.generation.as_ref(), serde_json::to_vec(&former).unwrap().as_slice());
+                // Preflight rejects a foreign media policy before any read;
+                // an authenticated but malformed result refuses after one read.
+                let mut foreign = source.clone();
+                foreign.messages[1].content = ModelContent::Part(ModelContentPart::File {
+                    file:file(&bytes, "text/plain").unwrap(), policy:FileProjectionPolicy::TurnOutput,
+                });
+                assert!(PreparedModelRequest::prepare(foreign, Limits::default(), None).is_err());
+                assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+                let malformed = b"{\"text\":\"wrong result\"}";
+                let mut bad = source;
+                bad.messages[1].content = ModelContent::Part(ModelContentPart::File {
+                    file:file(malformed, "application/json").unwrap(), policy:FileProjectionPolicy::TurnOutput,
+                });
+                let bad = PreparedModelRequest::prepare(bad, Limits::default(), None).unwrap();
+                let bad_reader = Arc::new(Reader {data:malformed.to_vec(),reads:AtomicUsize::new(0)});
+                provider.files.reader = Some(bad_reader.clone());
+                let failure = crate::prepared::PreparedInput::new(&provider, bad).await.err().expect("malformed result admitted");
+                assert_eq!(failure.code(), acyclic_harness_core::wire::ErrorCode::Storage);
+                assert_eq!(bad_reader.reads.load(Ordering::SeqCst), 1);
+            }
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
+            ).unwrap();
+            let baseline = work.live_allocation_bytes();
+            let io = acyclic_harness_core::filesystem::PreparationIo::from_native_work(&work).unwrap();
+            let projected = acyclic_harness_core::executor::TurnOutput::project_text(&bytes, Some(&io)).unwrap();
+            assert_eq!(projected, text);
+            drop(projected);
+            drop(io);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        });
+    }
+}
+
+#[tokio::test]
+async fn retained_answers_use_request_credit_without_spending_attachment_allowance() -> Result<()> {
+    let output = acyclic_harness_core::executor::TurnOutput {
+        text: "a".repeat(600 * 1024),
+        attachments: vec![],
+        metadata: Value::Null,
+        steps: 1,
+    };
+    let bytes = serde_json::to_vec(&output).unwrap();
+    let first = file(&bytes, "application/json")?;
+    let second = FileRef::new(
+        first.volume().clone(),
+        "second.json".into(),
+        "2".into(),
+        first.descriptor().clone(),
+        "second.json".into(),
+        &mut None,
+    )?;
+    let (mut provider, _) = provider(Adapter::Responses, 200);
+    let reader = Arc::new(Reader {
+        data: bytes,
+        reads: AtomicUsize::new(0),
+    });
+    provider.files = crate::files::Files {
+        reader: Some(reader.clone()),
+        maximum_bytes: 1024 * 1024,
+    };
+    let source = ModelRequest {
+        model: provider.model().clone(),
+        tools: vec![],
+        max_output_tokens: Some(64),
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file: first.clone(),
+                    policy: FileProjectionPolicy::TurnOutput,
+                }),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("continue".into()),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file: second,
+                    policy: FileProjectionPolicy::TurnOutput,
+                }),
+            },
+        ],
+    };
+    let request = PreparedModelRequest::prepare(source.clone(), Limits::default(), None)?;
+    let prepared = crate::prepared::PreparedInput::new(&provider, request.clone()).await?;
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    let body: Value = serde_json::from_slice(&prepared.generation).unwrap();
+    assert_eq!(body["input"][0]["content"][0]["text"], output.text);
+    assert_eq!(body["input"][2]["content"][0]["text"], output.text);
+    // Original attachment policies still share their explicit aggregate allowance.
+    let mut attachments = source;
+    for message in &mut attachments.messages {
+        if let ModelContent::Part(ModelContentPart::File { policy, .. }) = &mut message.content {
+            *policy = FileProjectionPolicy::BoundedFull;
+        }
+    }
+    let attachments = PreparedModelRequest::prepare(attachments, Limits::default(), None)?;
+    assert!(
+        crate::files::resolve(&provider.files, &attachments, None)
+            .await
+            .is_err()
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    // The native preparation's original reservation covers BOTH history bodies
+    // before reading either; removing the attachment ceiling grants no credit.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 64 * 1024),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let refused = crate::counting::count(&provider, &request, Some(&work)).await;
+    assert!(refused.is_err(), "history bypassed original request credit");
+    drop(refused);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    // The former aggregate-history rule refuses before reaching counting.
+    assert!(first.descriptor().byte_length() * 2 > provider.files.maximum_bytes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        let (mut provider, _) = provider(adapter, 200);
+        let original = file(b"child result", "text/plain")?;
+        let notice = ModelContentPart::Notices {
+            notices: vec![acyclic_harness_core::conversation::wire::Notice {
+                source: "child".into(),
+                kind: "child.finished".into(),
+                body: json!({"result": original}),
+                wake: true,
+                coalesce_key: None,
+            }],
+        };
+        let attachment = ModelContentPart::File {
+            file: original.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        };
+        let prepared = with_parts(&provider, vec![notice.clone(), attachment.clone()])?;
+        assert_eq!(
+            prepared.request().messages[0]
+                .content
+                .file_refs()
+                .collect::<Vec<_>>(),
+            vec![&original]
+        );
+        let mut split = prepared.request().clone();
+        split.messages = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(notice.clone()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(attachment),
+            },
+        ];
+        let split = PreparedModelRequest::prepare(split, Limits::default(), None)?;
+        let reader = Arc::new(Reader {
+            data: b"child result".to_vec(),
+            reads: AtomicUsize::new(0),
+        });
+        provider.files = crate::files::Files {
+            reader: Some(reader.clone()),
+            maximum_bytes: 4096,
+        };
+        let mut files = crate::files::resolve(&provider.files, &prepared, None).await?;
+        let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
+        assert!(
+            files.0.next().is_none(),
+            "the original file is consumed once"
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        let mut expected_files =
+            crate::files::FileText(vec![String::from("child result").into()].into_iter());
+        assert_eq!(
+            actual,
+            projection::body_with_files(&provider, split.request(), &mut expected_files)?
+        );
+        // Event metadata cannot turn arbitrary text into an admitted event
+        // attachment. JSON references alone retain no file read authority.
+        assert!(
+            with_parts(
+                &provider,
+                vec![
+                    notice.clone(),
+                    ModelContentPart::Text {
+                        text: "synthetic user message".into(),
+                    }
+                ]
+            )
+            .is_err()
+        );
+        let metadata_only = with_parts(&provider, vec![notice])?;
+        assert_eq!(
+            metadata_only.request().messages[0]
+                .content
+                .file_refs()
+                .count(),
+            0
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
     fn fix_live_composition_reader_resolves_exact_file_bytes(chars in prop::collection::vec(any::<char>(), 0..64)) {
         futures::executor::block_on(async {
             let text: String = chars.into_iter().collect();
@@ -518,7 +815,7 @@ async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<St
             reader: Some(reader.clone()),
             maximum_bytes: 4096,
         },
-        request.request(),
+        &request,
         None,
     )
     .await?;

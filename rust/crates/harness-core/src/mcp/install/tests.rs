@@ -78,6 +78,7 @@ async fn installation_is_additive_filtered_and_uses_the_retained_connection() ->
     tools.register(
         (
             Tool {
+                skill_source: None,
                 hook_names: &[],
                 definition: ToolDefinition {
                     name: "shell".into(),

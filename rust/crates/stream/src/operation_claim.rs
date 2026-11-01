@@ -5,6 +5,7 @@ mod termination;
 pub use termination::{OperationObservation, OperationTermination};
 
 use acyclic_collections::{FixedIndex, IndexWork};
+use std::borrow::Borrow;
 
 type Storage = Box<dyn Send + Sync>;
 
@@ -40,8 +41,12 @@ impl Default for OperationClaims {
 }
 
 /// Exclusive ownership of one exact operation until physical guard retirement.
-pub struct OperationClaim<'a> {
-    claims: &'a OperationClaims,
+pub type OperationClaim<'a> = RetainedOperationClaim<&'a OperationClaims>;
+
+/// Original operation custody retained by its borrowed or owned provider handle.
+/// The handle must borrow the same registry throughout this guard's lifetime.
+pub struct RetainedOperationClaim<O: Borrow<OperationClaims>> {
+    claims: O,
     key: [u8; 48],
     observation: Option<OperationObservation>,
 }
@@ -174,7 +179,26 @@ impl OperationClaims {
     }
 }
 
-impl OperationClaim<'_> {
+impl<'a> OperationClaim<'a> {
+    /// Moves the exact live claim into an already retained provider owner.
+    /// No acquisition, allocation or event replacement occurs. A foreign owner
+    /// returns both original values, leaving exclusion and its event unchanged.
+    pub fn retain<O: Borrow<OperationClaims>>(
+        mut self,
+        owner: O,
+    ) -> Result<RetainedOperationClaim<O>, (Self, O)> {
+        if !std::ptr::eq(self.claims, owner.borrow()) {
+            return Err((self, owner));
+        }
+        Ok(RetainedOperationClaim {
+            claims: owner,
+            key: self.key,
+            observation: self.observation.take(),
+        })
+    }
+}
+
+impl<O: Borrow<OperationClaims>> RetainedOperationClaim<O> {
     /// Pins this producer's exact-generation termination event before handoff.
     pub fn observe(&self) -> OperationObservation {
         self.observation
@@ -194,6 +218,7 @@ impl OperationClaim<'_> {
         };
         let removed = self
             .claims
+            .borrow()
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -201,7 +226,7 @@ impl OperationClaim<'_> {
                 registration.observation.same_generation(&observation)
             });
         // Destroy the detached node before releasing its original funding.
-        // The guard's borrow excludes destruction of the provider owner.
+        // The guard's retained handle excludes destruction of the provider owner.
         let (_, mut registration, storage) = removed
             .expect("live operation claim disappeared")
             .into_parts();
@@ -212,7 +237,7 @@ impl OperationClaim<'_> {
     }
 }
 
-impl Drop for OperationClaim<'_> {
+impl<O: Borrow<OperationClaims>> Drop for RetainedOperationClaim<O> {
     fn drop(&mut self) {
         self.retire(OperationTermination::ProducerDropped);
     }
@@ -222,6 +247,85 @@ impl Drop for OperationClaim<'_> {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[tokio::test]
+    async fn retained_claim_keeps_exact_owner_and_unpolled_termination() {
+        use std::sync::Arc;
+
+        let claims = Arc::new(OperationClaims::default());
+        let weak = Arc::downgrade(&claims);
+        let admitted = Cell::new(0);
+        let claim = claims
+            .claim(
+                [9; 48],
+                || Ok::<_, ()>(()),
+                |_, _| {
+                    admitted.set(admitted.get() + 1);
+                    Ok(())
+                },
+            )
+            .unwrap()
+            .into_owner()
+            .unwrap();
+        let observed = claim.observe();
+        let before = admitted.get();
+        // A foreign retained owner must not disarm the original registration.
+        let (claim, foreign) = claim
+            .retain(Arc::new(OperationClaims::default()))
+            .err()
+            .expect("foreign owner refused");
+        assert!(matches!(
+            claims
+                .claim(
+                    [9; 48],
+                    || Ok::<_, ()>(()),
+                    |_, _| -> Result<(), ()> { panic!("occupied claim allocated") }
+                )
+                .unwrap(),
+            OperationAttempt::Observed(_)
+        ));
+        drop(foreign);
+        let retained = claim
+            .retain(Arc::clone(&claims))
+            .unwrap_or_else(|_| panic!("original owner refused"));
+        assert_eq!(admitted.get(), before);
+        drop(claims);
+        assert!(weak.upgrade().is_some());
+        let unpolled = async move {
+            let _original = retained;
+            std::future::pending::<()>().await;
+        };
+        drop(unpolled);
+        assert_eq!(
+            observed.terminated().await,
+            OperationTermination::ProducerDropped
+        );
+        assert!(weak.upgrade().is_none());
+
+        let claims = Arc::new(OperationClaims::default());
+        let claim = claims
+            .claim([9; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
+            .unwrap()
+            .into_owner()
+            .unwrap();
+        let first = claim.observe();
+        claim
+            .retain(Arc::clone(&claims))
+            .unwrap_or_else(|_| panic!("original owner refused"))
+            .release();
+        let successor = claims
+            .claim([9; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
+            .unwrap()
+            .into_owner()
+            .unwrap();
+        let next = successor.observe();
+        drop(successor);
+        assert_eq!(first.terminated().await, OperationTermination::Released);
+        assert_eq!(
+            next.terminated().await,
+            OperationTermination::ProducerDropped
+        );
+    }
 
     #[test]
     fn duplicate_claim_work_is_bounded_by_key_width_and_never_allocates() {

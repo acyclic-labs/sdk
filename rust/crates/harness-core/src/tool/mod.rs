@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub mod edit;
 pub mod files;
+pub(crate) mod output;
 pub mod patch;
 pub mod schema;
 pub mod text;
@@ -23,13 +24,15 @@ pub use invocation::{ToolInvocation, ToolResult};
 mod recorded_invocation;
 pub(crate) use recorded_invocation::{RecordedInvocation, validate_model_call_recorded};
 mod executor;
-pub use executor::{Dispatch, ToolExecutor};
+pub use executor::{Dispatch, ToolExecutor, WorkspaceBinding};
 mod projection;
 pub use projection::*;
 mod approval;
 pub use approval::ToolApprovalVerifier;
 mod registry;
 pub use registry::{Tool, ToolRegistry};
+mod skill_source;
+pub use skill_source::{SkillRuntime, SkillSource};
 mod codec;
 #[cfg(feature = "filesystem")]
 pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;

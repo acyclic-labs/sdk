@@ -1,8 +1,62 @@
 //! Deterministic swap reducer. Storage serializes each accepted transition by
 //! conditional commit; a refused transition has no effects to publish.
 
-/// Content address of a summary, shared by every consumer of its source prefix.
+/// Identity of one summary attempt, shared by consumers of that preparation.
 pub type SummaryId = [u8; 32];
+
+/// Input headroom after the selected model's output reservation. The soft
+/// watermark is harness policy, never an independently configurable limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Budget {
+    hard: u64,
+}
+
+/// A verified request either keeps its existing epoch, prepares in the
+/// background, or must resolve the pending producer before dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pressure {
+    /// No preparation is needed yet.
+    Below,
+    /// Prepare once; continue with the unchanged request prefix.
+    Soft,
+    /// Resolve the exact pending preparation before admitting this request.
+    Hard,
+}
+
+impl Budget {
+    /// A reservation at or beyond the context capacity leaves no input budget.
+    #[must_use]
+    pub const fn new(capacity: u64, output: u64) -> Option<Self> {
+        match capacity.checked_sub(output) {
+            Some(hard) if hard > 0 => Some(Self { hard }),
+            _ => None,
+        }
+    }
+
+    /// Maximum admitted input, independently of retained history length.
+    #[must_use]
+    pub const fn hard(self) -> u64 {
+        self.hard
+    }
+
+    /// Sixty percent, rounded up, without overflowing at maximum capacity.
+    #[must_use]
+    pub const fn soft(self) -> u64 {
+        self.hard / 5 * 3 + (self.hard % 5 * 3).div_ceil(5)
+    }
+
+    /// Equality at the hard boundary resolves preparation before dispatch.
+    #[must_use]
+    pub const fn pressure(self, verified_input: u64) -> Pressure {
+        if verified_input >= self.hard {
+            Pressure::Hard
+        } else if verified_input >= self.soft() {
+            Pressure::Soft
+        } else {
+            Pressure::Below
+        }
+    }
+}
 
 /// Durable terminal outcome of the one summary producer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,6 +200,35 @@ impl State {
             return Err(Refusal::Contradiction);
         }
         pending.completion = Some(completion);
+        Ok(())
+    }
+
+    /// Replaces only a durably failed attempt. A live or successful producer
+    /// cannot be displaced by foreground demand. The caller conditionally
+    /// publishes this transition before starting the replacement producer.
+    pub fn retry_failed(
+        &mut self,
+        failed: SummaryId,
+        replacement: SummaryId,
+        through: u64,
+        head: u64,
+    ) -> Result<(), Refusal> {
+        let pending = self.pending.ok_or(Refusal::Stale)?;
+        if pending.summary != failed || replacement == failed {
+            return Err(Refusal::Stale);
+        }
+        if pending.completion != Some(Completion::Failed) {
+            return Err(Refusal::Busy);
+        }
+        if through < pending.through || through <= self.cursor || through > head {
+            return Err(Refusal::Range);
+        }
+        self.pending = Some(Pending {
+            summary: replacement,
+            through,
+            completion: None,
+            ..pending
+        });
         Ok(())
     }
 

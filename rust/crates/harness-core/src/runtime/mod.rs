@@ -23,15 +23,15 @@ pub use scope::*;
 mod bindings;
 pub use bindings::*;
 mod targets;
+pub(crate) use targets::call_target;
 pub use targets::{InProcessTargets, Target, TargetResolver};
-pub(crate) use targets::{call_target, is_workspace_call};
 mod tools;
 pub use tools::*;
 mod task_context;
 pub use task_context::*;
 mod content_read;
 mod content_write;
-pub(crate) use content_write::{PrivateSummaries, SummaryDestination};
+pub(crate) use content_write::{PrivateContent, SummaryDestination};
 mod model_context;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

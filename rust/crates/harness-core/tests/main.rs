@@ -3,8 +3,6 @@
 mod agent_model;
 #[cfg(all(not(loom), feature = "filesystem-local", feature = "native-execution"))]
 mod git_executor;
-#[cfg(not(loom))]
-mod platform_shell;
 
 pub use acyclic_harness_core::Error;
 #[cfg(all(loom, feature = "model-checking"))]

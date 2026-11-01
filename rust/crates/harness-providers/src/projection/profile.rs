@@ -102,11 +102,6 @@ pub(super) fn project(
         }
         _ => {}
     }
-    if adapter == Adapter::Gemini {
-        if let Some(Value::Object(config)) = fields.get_mut("generationConfig") {
-            config.insert("temperature".into(), json!(1.0));
-        }
-    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -172,6 +167,101 @@ mod tests {
     }
 
     #[test]
+    fn gemini_levels_follow_the_exact_retained_catalog_member() -> Result<()> {
+        use crate::{Credentials, Registry};
+        use std::collections::BTreeMap;
+
+        let (_, transport) = crate::tests::provider(Adapter::Gemini, 200);
+        let mut registry = Registry::with_transport(
+            Credentials::explicit(BTreeMap::from([("gemini".into(), "fixture".into())])),
+            transport.clone(),
+        );
+        let mut catalog = registry.catalog()["gemini"].as_ref().clone();
+        // Alias support is a catalog fact, rather than a model-name heuristic.
+        let advertised = catalog.models["gemini-4-argon"];
+        catalog.models.insert("opaque-alias".into(), advertised);
+        let mut unknown = serde_json::to_value(advertised).unwrap();
+        unknown.as_object_mut().unwrap().remove("thinking_levels");
+        catalog.models.insert(
+            "gemini-future".into(),
+            serde_json::from_value(unknown).unwrap(),
+        );
+        registry.register("gemini".into(), catalog.clone())?;
+        let project = ProjectLayer::parse("---\nversion: 1\n---\n")?;
+        let approvals = ApprovalPolicy::default().bind()?;
+        let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
+        for (name, levels) in [
+            ("gemini-2.5-pro", false),
+            ("gemini-2.5-flash", false),
+            ("gemini-4-argon", true),
+            ("opaque-alias", true),
+            ("gemini-future", false),
+        ] {
+            let key = format!("gemini/{name}");
+            let role = RoleFile::parse(&format!(
+                "---\nversion: 1\nname: worker\nmodel: {key}\ncontext: fork\nmay_spawn: []\nmax_output_tokens: 64\n---\n"
+            ))?;
+            if let Ok((family, source)) = acyclic_harness_core::profile::models::sources(&key) {
+                let selected = registry.resolve(&key)?;
+                let model = ModelProfile::parse(family, source, selected.capacity, "renderer-v1")?;
+                let profile = resolve(&model, &role, &project, &agent)?;
+                let provider = selected.with_profile(&profile)?;
+                let (request, _) = crate::tests::request(&provider)?;
+                assert!(
+                    crate::projection::body(&provider, request.request())?
+                        .pointer("/generationConfig/thinkingConfig")
+                        .is_none()
+                );
+            }
+            for effort in [None, Some("low"), Some("medium"), Some("high")] {
+                let reasoning = effort.map_or_else(
+                    || "{mode: disabled}".into(),
+                    |effort| format!("{{mode: level, effort: {effort}}}"),
+                );
+                let model = ModelProfile::parse(
+                    &format!(
+                        "---\nversion: 1\ntools: []\nreasoning: {reasoning}\ncache: automatic\nbudget_tokens: 4096\n---\n"
+                    ),
+                    &format!("---\nversion: 1\nkey: {key}\n---\n"),
+                    advertised.capacity,
+                    "renderer-v1",
+                )?;
+                let profile = resolve(&model, &role, &project, &agent)?;
+                let selected = registry.resolve(&key)?;
+                let original = selected.model().clone();
+                let provider = selected.with_profile(&profile);
+                if !levels && effort.is_some() {
+                    assert!(matches!(
+                        provider,
+                        Err(acyclic_harness_core::Error::Invalid(_))
+                    ));
+                    continue;
+                }
+                let provider = provider?;
+                let (request, _) = crate::tests::request(&provider)?;
+                let body = crate::projection::body(&provider, request.request())?;
+                assert_eq!(
+                    body.pointer("/generationConfig/thinkingConfig"),
+                    effort
+                        .map(|effort| json!({"thinkingLevel":effort,"includeThoughts":true}))
+                        .as_ref()
+                );
+                if name == "opaque-alias" && effort == Some("high") {
+                    // Changing future admission cannot rewrite a retained member.
+                    catalog.models.get_mut(name).unwrap().thinking_levels = false;
+                    registry.register("gemini".into(), catalog.clone())?;
+                    let next = registry.resolve(&key)?;
+                    assert_ne!(next.model(), &original);
+                    assert!(next.with_profile(&profile).is_err());
+                    assert_eq!(crate::projection::body(&provider, request.request())?, body);
+                }
+            }
+        }
+        assert!(transport.sent.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn parsed_profiles_bind_original_selection_capacity_and_protocol_controls() -> Result<()> {
         for fragments in [
             vec![],
@@ -228,7 +318,7 @@ mod tests {
             let (provider, _) = crate::tests::provider(adapter, 200);
             let original = provider.model().clone();
             let family = format!(
-                "---\nversion: 1\ntools: []\nreasoning: {{mode: {reasoning}, effort: high}}\ncache: automatic\nbudget_tokens: 4096\nwatermark_tokens: 2000\n---\n"
+                "---\nversion: 1\ntools: []\nreasoning: {{mode: {reasoning}, effort: high}}\ncache: automatic\nbudget_tokens: 4096\n---\n"
             );
             let model = ModelProfile::parse(
                 &family,

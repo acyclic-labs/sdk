@@ -8,7 +8,6 @@ tools:
   - {capability: edit, variant: apply_patch, revision: v1}
 reasoning: {mode: effort, effort: medium}
 cache: automatic
-watermark_tokens: 700
 ---
 Model family instruction.
 ";
@@ -20,19 +19,21 @@ const REVIEWER: &str = include_str!("roles/reviewer.md");
 const ADVISOR: &str = include_str!("roles/advisor.md");
 
 #[test]
-fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Result<()> {
-    use crate::{
-        model::{Model, ModelRequest},
-        tool::ToolRegistry,
-    };
+fn executable_bindings_borrow_original_revisions_without_allocation() -> Result<()> {
+    use crate::tool::ToolRegistry;
     let mut registry = ToolRegistry::default();
-    for name in ["first", "second"] {
-        let mut tool = crate::tool::files::read()?;
+    for (name, mut tool) in [
+        ("first", crate::tool::files::edit()?),
+        ("third", crate::tool::files::edit()?),
+        ("second", crate::tool::files::read()?),
+    ] {
+        let capability = tool.definition.capability().to_owned();
         tool.definition.name = name.into();
         tool.definition.revision = "v1".into();
+        tool.definition.input_schema["x-harness-capability"] = capability.into();
         registry.register((tool, None), &mut None, None)?;
     }
-    let family = "---\nversion: 1\ntools:\n  - {capability: read, variant: second, revision: v1}\n  - {capability: edit, variant: first, revision: v1}\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 700\n---\n";
+    let family = "---\nversion: 1\ntools:\n  - {capability: read, variant: second, revision: v1}\n  - {capability: edit, variant: first, revision: v1}\nreasoning: {mode: disabled}\ncache: automatic\n---\n";
     let model = profile(family, Some(200))?;
     let project = ProjectLayer::parse(EMPTY)?;
     let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
@@ -41,8 +42,9 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
         "---\nversion: 1\nname: worker\nmodel: test/model\ncontext: fork\nmay_spawn: []\nallowed_tools: [read]\n---\n",
     )?;
     let resolved = resolve(&model, &role, &project, &agent)?;
-    let bound = resolved.bind_tools(&registry, None)?;
-    let declarations = bound.declarations();
+    let declarations = resolved
+        .bind_tools(&registry, None)
+        .collect::<Result<Vec<_>>>()?;
     assert!(std::ptr::eq(
         declarations[0].tool(),
         registry.get("second", Some("v1"), None)?.unwrap()
@@ -50,34 +52,115 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
     assert_eq!(declarations[1].tool().definition.name, "first");
     assert!(declarations[0].available());
     assert!(!declarations[1].available());
-    let mut request = ModelRequest {
-        model: Model {
-            provider: "test".into(),
-            name: "model".into(),
-            revision: "v1".into(),
-        },
-        messages: Vec::new(),
-        tools: declarations
-            .iter()
-            .map(|binding| binding.tool().definition.clone())
-            .collect(),
-        max_output_tokens: None,
-    };
-    bound.validate_request(&request)?;
-    request.tools.swap(0, 1);
-    assert!(bound.validate_request(&request).is_err());
-    request.tools.swap(0, 1);
-    request.tools[0].revision = "stale".into();
-    assert!(bound.validate_request(&request).is_err());
-    request.tools[0].revision = "v1".into();
-    request.model.name = "another-model".into();
-    assert!(bound.validate_request(&request).is_err());
     let missing = profile(
         &family.replace("revision: v1", "revision: missing"),
         Some(200),
     )?;
     let missing = resolve(&missing, &role, &project, &agent)?;
-    assert!(missing.bind_tools(&registry, None).is_err());
+    assert!(missing.bind_tools(&registry, None).next().unwrap().is_err());
+    // Distinct model-visible shapes share their original capability grant.
+    let shared_family = family.replace(
+        "reasoning:",
+        "  - {capability: edit, variant: third, revision: v1}\nreasoning:",
+    );
+    let shared_model = profile(&shared_family, Some(200))?;
+    let edit_role = RoleFile::parse(
+        "---\nversion: 1\nname: worker\nmodel: test/model\ncontext: fork\nmay_spawn: []\nallowed_tools: [edit]\n---\n",
+    )?;
+    let shared = resolve(&shared_model, &edit_role, &project, &agent)?;
+    let shared_bindings = shared
+        .bind_tools(&registry, None)
+        .collect::<Result<Vec<_>>>()?;
+    assert!(!shared_bindings[0].available());
+    for binding in &shared_bindings[1..] {
+        assert!(binding.available());
+        assert_eq!(binding.capability(), "edit");
+        assert!(std::ptr::eq(
+            binding.tool(),
+            registry
+                .get(&binding.tool().definition.name, Some("v1"), None)?
+                .unwrap()
+        ));
+    }
+    assert!(
+        profile(
+            &family.replace("variant: first", "variant: second"),
+            Some(200)
+        )
+        .is_err(),
+        "different capabilities cannot claim the same model-visible name"
+    );
+    let forged_family = family.replace("capability: edit", "capability: write");
+    let forged = profile(&forged_family, Some(200))?;
+    let forged = resolve(&forged, &role, &project, &agent)?;
+    let mut bindings = forged.bind_tools(&registry, None);
+    assert!(bindings.next().unwrap()?.available());
+    assert!(bindings.next().unwrap().is_err());
+    for (family, allowed, available) in [(family, "edit", true), (&forged_family, "write", false)] {
+        let role = RoleFile::parse(&format!(
+            "---\nversion: 1\nname: worker\nmodel: test/model\ncontext: fork\nmay_spawn: []\nallowed_tools: [{allowed}]\n---\n"
+        ))?;
+        let profiles = Profiles::new(
+            [profile(family, Some(200))?],
+            [role],
+            ProjectLayer::parse(EMPTY)?,
+            EMPTY,
+            crate::approvals::ApprovalPolicy::default().bind()?,
+        )?;
+        let pin = profiles.role_pin("worker")?;
+        let original = registry.get("first", Some("v1"), None)?.unwrap();
+        assert_eq!(
+            profiles.tool_available(&pin, "test/model", &original.definition)?,
+            available,
+            "availability must use the original executable capability"
+        );
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            allocation_operations: 1,
+            ..acyclic_fs::performance::work_budget(1_000, 65_536)
+        };
+        let work = NativeMaterializationWork::new(budget, &cancellation)
+            .expect("finite binding work without allocation credit");
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        let before = io.remaining()?;
+        assert_eq!(
+            before.allocation_operations, 0,
+            "original ledger owns the only allocation"
+        );
+        for binding in resolved.bind_tools(&registry, Some(&io)) {
+            binding?;
+        }
+        let after = io.remaining()?;
+        assert_eq!(after.allocation_operations, before.allocation_operations);
+        assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+        assert_eq!(after.items_examined + 2, before.items_examined);
+        assert!(matches!(
+            missing.bind_tools(&registry, Some(&io)).next().unwrap(),
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::NotFound,
+                ..
+            })
+        ));
+        assert!(matches!(
+            forged.bind_tools(&registry, Some(&io)).nth(1).unwrap(),
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            })
+        ));
+        cancellation.cancel();
+        assert!(
+            resolved
+                .bind_tools(&registry, Some(&io))
+                .next()
+                .unwrap()
+                .is_err()
+        );
+    }
     Ok(())
 }
 
@@ -91,6 +174,62 @@ fn profile(family: &str, output_tokens: Option<u32>) -> Result<ModelProfile> {
         },
         "renderer-v1",
     )
+}
+
+#[test]
+fn catalog_native_tools_preserve_coordination_and_role_independent_pins() -> Result<()> {
+    let family = include_str!("models/openai/_family.md");
+    let capacity = ModelContextCapacity {
+        context_tokens: 1_000,
+        output_tokens: Some(200),
+    };
+    let original = ModelProfile::parse(family, MODEL, capacity, "renderer-v1")?;
+    let project = ProjectLayer::parse(EMPTY)?;
+    let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
+    let agent = AgentOverride::parse(EMPTY, &approvals)?;
+    let worker = RoleFile::parse(WORKER)?;
+    let reviewer = RoleFile::parse(REVIEWER)?;
+    let old = resolve(&original, &worker, &project, &agent)?;
+    for native in [
+        NativeToolProfile::Anthropic,
+        NativeToolProfile::Openai,
+        NativeToolProfile::Google,
+    ] {
+        // The selected catalog member, rather than the profile's directory or
+        // a provider wire protocol, determines these native declarations.
+        let model = ModelFiles::parse(family, MODEL)?
+            .bind_native_tools(Some(native))?
+            .admit(capacity, "renderer-v1")?;
+        let selected = resolve(&model, &worker, &project, &agent)?;
+        let review = resolve(&model, &reviewer, &project, &agent)?;
+        assert_eq!(selected.prefix.tools, review.prefix.tools);
+        assert_eq!(selected.prefix_digest(), review.prefix_digest());
+        assert_ne!(selected.prefix_digest(), old.prefix_digest());
+        for original in old
+            .prefix
+            .tools
+            .iter()
+            .filter(|tool| !["shell", "edit"].contains(&tool.capability.as_str()))
+        {
+            assert!(selected.prefix.tools.contains(original));
+        }
+        for declaration in native.tools()? {
+            assert!(selected.prefix.tools.contains(&declaration));
+        }
+        assert!(
+            selected.prefix.tools.iter().all(|tool| {
+                !["openai-shell-1", "openai-v4a-1"].contains(&tool.revision.as_str())
+            })
+        );
+    }
+    let custom = ModelFiles::parse(family, MODEL)?
+        .bind_native_tools(None)?
+        .admit(capacity, "renderer-v1")?;
+    assert_eq!(
+        resolve(&custom, &worker, &project, &agent)?.prefix_digest(),
+        old.prefix_digest(),
+    );
+    Ok(())
 }
 
 #[test]
@@ -143,6 +282,8 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
     assert_eq!(orchestrator.admit_child(&worker)?, SpawnContext::Fork);
     assert_eq!(worker.admit_child(&reviewer)?, SpawnContext::Fresh);
     assert_eq!(worker.admit_child(&advisor)?, SpawnContext::Fresh);
+    assert_eq!(advisor.admit_child(&worker)?, SpawnContext::Fork);
+    assert_eq!(advisor.admit_child(&advisor)?, SpawnContext::Fresh);
     assert!(
         advisor.admit_child(&reviewer).is_err(),
         "role-file spawn policy"
@@ -178,6 +319,13 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
         other_policy.digest, base.digest,
         "pin the actual owner's approval policy"
     );
+    // A role's smaller output reservation must not invalidate the shared prefix.
+    let smaller_output =
+        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 100", 1))?;
+    let original = resolve(&model, &worker, &project, &agent)?;
+    let smaller = resolve(&model, &smaller_output, &project, &agent)?;
+    assert_eq!(original.prefix_digest(), smaller.prefix_digest());
+    assert_ne!(original.digest(), smaller.digest());
     Ok(())
 }
 
@@ -185,10 +333,9 @@ proptest! {
     #[test]
     fn profile_capacity_is_bounded_by_the_original_advertisement(context in 8u32..2_000_000, seed in any::<u32>()) {
         let budget = context / 2 + 2;
-        let watermark = budget / 2;
         let output = 1 + seed % (budget / 4);
-        let family = format!("---\nversion: 1\ntools: []\nreasoning: {{mode: adaptive, effort: medium}}\ncache: automatic\nwatermark_tokens: {watermark}\n---\n");
-        let model = ModelProfile::parse(&family, MODEL,
+        let family = "---\nversion: 1\ntools: []\nreasoning: {mode: adaptive, effort: medium}\ncache: automatic\n---\n";
+        let model = ModelProfile::parse(family, MODEL,
             ModelContextCapacity { context_tokens: context, output_tokens: Some(output) }, "renderer-v1").unwrap();
         let project = ProjectLayer::parse(EMPTY).unwrap();
         let role = RoleFile::parse(WORKER).unwrap();
@@ -197,12 +344,21 @@ proptest! {
         let agent = AgentOverride::parse(&override_source, &approvals).unwrap();
         let selected = resolve(&model, &role, &project, &agent).unwrap();
         prop_assert_eq!(selected.prefix.capacity.budget_tokens, budget);
-        prop_assert_eq!(selected.prefix.capacity.watermark_tokens, watermark);
         prop_assert_eq!(selected.overlay.max_output_tokens, None);
+        prop_assert_eq!(selected.bind_model(&crate::model::Model::new("test".into(), "model".into(), "1".into()).unwrap(), model.capacity).unwrap().capacity().output_reservation(None).unwrap(), output);
+        let unknown_output = ModelProfile::parse(family, MODEL,
+            ModelContextCapacity { context_tokens: context, output_tokens: None }, "renderer-v1").unwrap();
+        let explicit_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {output}"), 1)).unwrap();
+        prop_assert_eq!(resolve(&unknown_output, &explicit_role, &project, &agent).unwrap().overlay.max_output_tokens, Some(output));
+        prop_assert!(resolve(&unknown_output, &role, &project, &agent).is_err());
         let overflow = AgentOverride::parse(&format!("---\nversion: 1\nbudget_tokens: {}\n---\n", u64::from(context)+1), &approvals);
         prop_assert!(overflow.is_err() || resolve(&model, &role, &project, &overflow.unwrap()).is_err());
-        let no_watermark = AgentOverride::parse("---\nversion: 1\nwatermark_tokens: 0\n---\n", &approvals).unwrap();
-        prop_assert!(resolve(&model, &role, &project, &no_watermark).is_err());
+        let retired = "---\nversion: 1\nwatermark_tokens: 1\n---\n";
+        prop_assert!(AgentOverride::parse(retired, &approvals).is_err());
+        prop_assert!(ProjectLayer::parse(retired).is_err());
+        prop_assert!(ModelFiles::parse(retired, MODEL).is_err());
+        let retired_model = format!("---\nversion: 1\nkey: test/model\nwatermark_tokens: {budget}\n---\n");
+        prop_assert!(ModelFiles::parse(family, &retired_model).is_err());
         let oversized_role = RoleFile::parse(&WORKER.replacen("version: 1", &format!("version: 1\nmax_output_tokens: {}", output+1), 1)).unwrap();
         prop_assert!(resolve(&model, &oversized_role, &project, &agent).is_err());
     }
@@ -227,14 +383,14 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
         resolve(&unknown, &role, &project, &agent).is_err(),
         "no guessed output reserve"
     );
-    let exhausted = profile(FAMILY, Some(500))?;
+    let exhausted = profile(FAMILY, Some(1_000))?;
     assert!(
         resolve(&exhausted, &role, &project, &agent).is_err(),
         "prepare before the output reservation exhausts input capacity"
     );
     let exhausted_role =
-        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 400", 1))?;
-    let larger = profile(FAMILY, Some(500))?;
+        RoleFile::parse(&WORKER.replacen("version: 1", "version: 1\nmax_output_tokens: 1000", 1))?;
+    let larger = profile(FAMILY, Some(1_000))?;
     assert!(resolve(&larger, &exhausted_role, &project, &agent).is_err());
     assert!(
         AgentOverride::parse("---\nversion: 1\noptions: {tools: []}\n---\n", &approvals).is_err()
@@ -251,7 +407,7 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
     assert!(RoleFile::parse(&WORKER.replace("version: 1", "version: 2")).is_err());
     assert!(
         profile(
-            &FAMILY.replace("capability: edit", "capability: shell"),
+            &FAMILY.replace("variant: apply_patch", "variant: shell"),
             Some(200)
         )
         .is_err()

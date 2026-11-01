@@ -195,6 +195,7 @@ fn composition(
         (
             IntentId::try_from("root")?,
             RootRequest {
+                profile: None,
                 agent: root,
                 fresh: vec![VolumeBinding {
                     name: PRIVATE_VOLUME.into(),

@@ -26,7 +26,6 @@ impl Default for ThresholdCompaction {
 
 impl ThresholdCompaction {
     /// Reserves the selected output capacity before splitting remaining input.
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     #[doc(hidden)]
     pub fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
@@ -44,6 +43,22 @@ impl ThresholdCompaction {
         policy.recent_tokens = policy.recent_tokens.min(usable / 2);
         policy.validate(capacity, None)?;
         Ok(policy)
+    }
+
+    /// Plans retained input around the exact admitted output reservation.
+    pub(crate) fn for_reservation(
+        capacity: ModelContextCapacity,
+        fixed_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<Self> {
+        let output_tokens = capacity.output_reservation(Some(output_tokens))?;
+        Self::for_capacity(
+            ModelContextCapacity {
+                output_tokens: Some(output_tokens),
+                ..capacity
+            },
+            fixed_tokens,
+        )
     }
 
     /// Validates the defaults or replacement against the actual selected capacity.

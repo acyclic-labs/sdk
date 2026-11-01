@@ -1,6 +1,99 @@
 use super::*;
 use serde::Serialize;
 
+mod borrowed_records {
+    use super::*;
+    use proptest::prelude::*;
+    use serde::Deserialize;
+    use std::borrow::Cow;
+
+    #[derive(Deserialize, crate::HeapLayout)]
+    struct Record<'a> {
+        #[serde(borrow)]
+        label: Cow<'a, str>,
+        #[serde(borrow)]
+        raw: &'a serde_json::value::RawValue,
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn borrowed_subtrees_cover_physical_decode_without_owning_each_element(
+            strings in prop::collection::vec(".{0,64}", 1..128),
+            label in ".{0,64}",
+        ) {
+            let raw = serde_json::json!({"cells": strings, "extension": {"keep": true}});
+            let source = serde_json::to_vec(&serde_json::json!({"label":label,"raw":raw})).unwrap();
+            let reserved = layout_reservation::<Record<'_>>(&source).unwrap();
+            let mut decoded = None;
+            let measured = acyclic_test_support::measure(|| {
+                decoded = Some(serde_json::from_slice::<Record<'_>>(&source).unwrap());
+            });
+            prop_assert!(measured.bytes_max as u64 <= reserved);
+            let decoded = decoded.unwrap();
+            prop_assert_eq!(decoded.label, label);
+            let start = decoded.raw.get().as_ptr() as usize - source.as_ptr() as usize;
+            prop_assert_eq!(&source[start..start + decoded.raw.get().len()], decoded.raw.get().as_bytes());
+            prop_assert_eq!(serde_json::from_str::<Value>(decoded.raw.get()).unwrap(), raw);
+
+            // The owned form is a negative control: a layout that charges each
+            // raw element would grow with this array despite lending its span.
+            let owned = layout_reservation::<Value>(&source).unwrap();
+            prop_assert!(owned > reserved);
+        }
+
+        #[test]
+        fn borrowed_nested_containers_admit_the_skip_stack(depth in 2usize..128) {
+            let source = format!("{}null{}", "[".repeat(depth), "]".repeat(depth));
+            let reserved = layout_reservation::<&serde_json::value::RawValue>(source.as_bytes()).unwrap();
+            let mut decoded = None;
+            let measured = acyclic_test_support::measure(|| {
+                decoded = Some(serde_json::from_str::<&serde_json::value::RawValue>(&source).unwrap());
+            });
+            prop_assert!(measured.bytes_max as u64 <= reserved);
+            prop_assert_eq!(decoded.unwrap().get(), source.as_str());
+            // A raw span owns no subtree, but zero scratch would underfund
+            // serde's iterative skip stack even without a single string.
+            prop_assert!(measured.bytes_max > 0);
+        }
+
+        #[test]
+        fn borrowed_admission_scratch_depends_on_tokens_instead_of_document_length(
+            count in 128usize..512,
+            token in "[a-z]{16,64}",
+        ) {
+            let source = serde_json::to_vec(&vec![token; count]).unwrap();
+            let mut live = 0u64;
+            let mut peak = 0u64;
+            let mut decoded = None;
+            let measured = acyclic_test_support::measure(|| {
+                decoded = Some(json_from_slice_bounded(
+                    std::marker::PhantomData::<&serde_json::value::RawValue>,
+                    &source,
+                    BOUNDS,
+                    None,
+                    Some(JsonValueSchema::None),
+                    &mut |charge| {
+                        match charge {
+                            JsonCodecCharge::Retain { bytes } => live += bytes,
+                            JsonCodecCharge::Release { bytes } => live -= bytes,
+                            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => live += maximum_owned_bytes,
+                            _ => {},
+                        }
+                        peak = peak.max(live);
+                        Ok(())
+                    },
+                ).unwrap());
+            });
+            prop_assert_eq!(decoded.unwrap().get().as_bytes(), source.as_slice());
+            prop_assert!(measured.bytes_max as u64 <= peak);
+            // Negative control: the former four-times-source reservation
+            // fails this bound as the array grows, although no token grows.
+            prop_assert!(peak < 2 * source.len() as u64);
+        }
+    }
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod digest_properties {
     use super::*;

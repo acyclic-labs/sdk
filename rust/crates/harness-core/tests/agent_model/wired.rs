@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, Tasks, TurnLimits},
     filesystem::{TurnAdmission, TurnExecutors},
-    model::{Model, ModelContent, ModelRequest, ModelRole},
+    model::{Model, ModelContent, ModelContentPart, ModelRequest, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
@@ -76,41 +76,44 @@ fn executors_with_targets(
     matching_limits: bool,
     targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
 ) -> Result<Arc<dyn TurnExecutors>> {
+    executors_with_render_bytes(model, matching_limits, targets, None)
+}
+
+fn executors_with_render_bytes(
+    model: Arc<ScriptedModelProvider>,
+    matching_limits: bool,
+    targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
+    render_bytes: Option<u64>,
+) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
-    preset.tools.clear();
-    let base = acyclic_harness_core::conversation::Limits {
+    let mut base = acyclic_harness_core::conversation::Limits {
         model_steps: 1,
         ..Default::default()
+    };
+    if let Some(render_bytes) = render_bytes {
+        base.render_bytes = render_bytes;
+    }
+    let admitted = acyclic_harness_core::conversation::Limits {
+        model_steps: usize::try_from(LIMITS.max_steps)?,
+        ..base
     };
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
-            if matching_limits {
-                acyclic_harness_core::conversation::Limits {
-                    model_steps: usize::try_from(LIMITS.max_steps)?,
-                    ..base
-                }
-            } else {
-                base
-            },
+            if matching_limits { admitted } else { base },
         )?,
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (
-            acyclic_harness_core::conversation::Limits {
-                model_steps: usize::try_from(LIMITS.max_steps)?,
-                ..base
-            },
-            CompactionPolicy::Disabled,
+    Ok(Arc::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (selection, model),
+            ToolRegistry::default(),
+            (admitted, CompactionPolicy::Disabled),
+            Arc::new(Tasks(bindings)),
         ),
-        Arc::new(Tasks(bindings)),
-    )))
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -249,6 +252,243 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
+async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
+    use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
+
+    use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct EventClock(AtomicU64);
+    impl Clock for EventClock {
+        fn now_unix_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+        fn sleep_until(&self, _: u64) -> BoxProviderFuture<'static, ()> {
+            panic!("finite actor drain must not start a timer")
+        }
+    }
+    let path = AgentPath::root(&id(217));
+    let stream = Arc::new(MemoryStream::default());
+    let model = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Text("first".into()),
+        ScriptedTurn::Text("second".into()),
+    ]));
+    let (filesystem, binding) = private(&path).await?;
+    let clock = Arc::new(EventClock(AtomicU64::new(0)));
+    let reopen = || -> Result<_> {
+        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+            stream.clone(),
+            filesystem.clone(),
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors_with_render_bytes(model.clone(), true, None, Some(4096))?,
+            LIMITS,
+            Default::default(),
+        ));
+        Ok(AgentHost::new(
+            stream.clone(),
+            driver,
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            clock.clone(),
+        )?)
+    };
+    let host = reopen()?;
+    let mut adoption = adopted(path.id());
+    adoption.volumes = vec![binding];
+    assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
+    host.drain(&path).await?;
+    let event = |name: &str, wake| InboxRecord::Notice {
+        id: intent(name),
+        notice: Notice {
+            source: "filesystem".into(),
+            kind: "files.changed".into(),
+            body: serde_json::json!({"paths": [name], "revision": name}),
+            wake,
+            coalesce_key: Some("workspace".into()),
+        },
+    };
+    for name in ["wide-first", "wide-second"] {
+        let wide = InboxRecord::Notice {
+            id: intent(name),
+            notice: Notice {
+                source: "filesystem".into(),
+                kind: "files.changed".into(),
+                body: serde_json::json!({"name": name, "details": "x".repeat(2300)}),
+                wake: false,
+                coalesce_key: None,
+            },
+        };
+        host.send(&path, &super::user(), &wide).await?;
+        host.drain(&path).await?;
+    }
+    for name in ["alpha", "beta"] {
+        host.send(&path, &super::user(), &event(name, false))
+            .await?;
+        host.drain(&path).await?;
+    }
+    assert!(model.requests().is_empty());
+    let waking = event("run", true);
+    host.send(&path, &super::user(), &waking).await?;
+    host.drain(&path).await?;
+    let frozen = host.state(&path).await?;
+    assert!(
+        model.requests().is_empty(),
+        "freeze must precede request admission"
+    );
+    let selected = turn_notices(&frozen)?.ok_or("no frozen range")?;
+    assert_eq!(selected.range, 1..6);
+    // An exact delivered-intent replay cannot extend or replace the frozen range.
+    host.send(&path, &super::user(), &waking).await?;
+    host.drain(&path).await?;
+    assert_eq!(host.state(&path).await?.turn, frozen.turn);
+    host.send(&path, &super::user(), &event("gamma", false))
+        .await?;
+    host.drain(&path).await?;
+    assert_eq!(
+        turn_notices(&host.state(&path).await?)?,
+        Some(selected.clone())
+    );
+    assert!(model.requests().is_empty());
+    // Restore the actual actor checkpoint, including the original due alarm.
+    drop(host);
+    let host = reopen()?;
+    clock.0.store(CONTINUE_NOW, Ordering::SeqCst);
+    host.drain(&path).await?;
+    let settled = host.state(&path).await?;
+    assert_eq!(
+        settled.phase,
+        Phase::Idle,
+        "restored turn: {settled:?}; requests: {:?}",
+        model.requests()
+    );
+    assert_eq!(
+        settled.pending_notices,
+        Some(selected.range.end..inbox_tail(&*stream, &path).await?)
+    );
+    let mut entries = stream
+        .read(ReadRequest {
+            key: None,
+            path: path.conversation()?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let entry = ConversationEntry::decode(
+        &futures::TryStreamExt::try_next(&mut entries)
+            .await?
+            .ok_or("no committed conversation")?
+            .value,
+    )?;
+    assert_eq!(entry.notices, Some(selected.clone()));
+    host.send(&path, &super::user(), &event("again", true))
+        .await?;
+    host.drain(&path).await?;
+    let tail = inbox_tail(&*stream, &path).await?;
+    assert_eq!(
+        host.state(&path).await?.pending_notices,
+        Some(tail - 1..tail)
+    );
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let batches = |request: &ModelRequest| -> Vec<Vec<Notice>> {
+        request
+            .messages
+            .iter()
+            .filter_map(|message| match &message.content {
+                ModelContent::Part(ModelContentPart::Notices { notices }) => Some(notices.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .find(|message| matches!(
+                message.content,
+                ModelContent::Part(ModelContentPart::Notices { .. })
+            ))
+            .ok_or("missing notice block")?
+            .content
+            .validate_user_input(&mut None)
+            .is_err(),
+        "event admission must not widen human command input"
+    );
+    let first = batches(&requests[0]);
+    let second = batches(&requests[1]);
+    assert_eq!(first.len(), 2, "parts share the original finite allowance");
+    let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
+    let limits = acyclic_harness_core::conversation::Limits {
+        render_bytes: 4096,
+        ..Default::default()
+    };
+    assert!(
+        ModelContent::Part(ModelContentPart::Notices {
+            notices: flattened.clone()
+        })
+        .validate_limits(limits, &mut None)
+        .is_err(),
+        "the former whole-range block exceeds the same admitted credit"
+    );
+    for block in &first {
+        ModelContent::Part(ModelContentPart::Notices {
+            notices: block.clone(),
+        })
+        .validate_limits(limits, &mut None)?;
+    }
+    assert_eq!(
+        flattened.len(),
+        5,
+        "no notice is omitted at a part boundary"
+    );
+    assert_eq!(first[0][0].kind, "agent.started");
+    assert!(!first[0][0].wake);
+    assert_eq!(first[0][0].coalesce_key, None);
+    assert_eq!(
+        flattened[3].body,
+        serde_json::json!({"paths": ["alpha", "beta"], "revision": "beta"})
+    );
+    assert_eq!(second.len(), 3);
+    assert_eq!(
+        &second[..2],
+        first.as_slice(),
+        "rendered history is immutable"
+    );
+    assert_eq!(second[2][0].body["paths"], serde_json::json!(["gamma"]));
+    assert_eq!(second[2][1].kind, "agent.settled");
+    assert!(!second[2][1].wake);
+    assert_eq!(
+        &requests[1].messages[..requests[0].messages.len()],
+        requests[0].messages.as_slice()
+    );
+    // The former latest-batch substitution changes the already admitted prefix.
+    let mut rewritten = requests[0].messages.clone();
+    rewritten[1].content = ModelContent::Part(ModelContentPart::Notices {
+        notices: second[2].clone(),
+    });
+    assert_ne!(rewritten, requests[1].messages[..rewritten.len()]);
+    selected.validate(&path.child(&id(218))?)?;
+    assert!(selected.validate(&AgentPath::root(&id(219))).is_err());
+    assert!(
+        NoticeSelection {
+            range: 3..3,
+            ..selected
+        }
+        .validate(&path)
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else() -> Result {
     let path = AgentPath::root(&id(3));
     let stream = Arc::new(MemoryStream::default());
@@ -310,6 +550,15 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         })
         .await?;
     assert_eq!(first.state.conversation_tail, 1);
+    let settled = first
+        .outs
+        .iter()
+        .find_map(|out| match out {
+            Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+            _ => None,
+        })
+        .ok_or("no settled conversation")??
+        .output;
     step(
         &driver,
         &path,
@@ -340,7 +589,13 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         .iter()
         .find(|message| message.role == ModelRole::Assistant)
         .ok_or("no assistant history")?;
-    assert_eq!(assistant.content, ModelContent::Text("one".into()));
+    assert_eq!(
+        assistant.content,
+        ModelContent::Part(ModelContentPart::File {
+            file: settled,
+            policy: acyclic_harness_core::model::FileProjectionPolicy::TurnOutput,
+        })
+    );
     // Shared instructions remain the same prefix after a turn settles.
     for request in &requests {
         let first = request.messages.first().ok_or("empty request")?;
@@ -547,6 +802,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             _ => None,
         })
         .collect();
+    let inherited = ConversationEntry::decode(entry.first().ok_or("no inherited output")?)?.output;
     // The parent's settled turn, and the child's conversation as the spawn
     // fork leaves it: the same entry, inherited at the cut.
     for path in [parent.conversation()?, child.conversation()?] {
@@ -563,6 +819,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .await?;
     }
     let forked = ForkAdopted {
+        profile: None,
         agent: id(6),
         parent: Some(parent.clone()),
         forked_at: 0,
@@ -592,7 +849,11 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .messages
             .iter()
             .any(|message| message.role == ModelRole::Assistant
-                && message.content == ModelContent::Text("parent answer".into())),
+                && message.content
+                    == ModelContent::Part(ModelContentPart::File {
+                        file: inherited.clone(),
+                        policy: acyclic_harness_core::model::FileProjectionPolicy::TurnOutput,
+                    })),
         "the child's first request lacks its parent's settled turn: {:?}",
         requests[1].messages
     );
@@ -799,6 +1060,30 @@ async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first(
                 .any(|message| message.content.file_refs().any(|file| *file == result)),
             "{arrival:?}: the root's context lacks its child's result"
         );
+        let child = AgentPath::root(&id(base)).child(&id(base + 1))?;
+        let notices: Vec<_> = requests[2]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::Notices { notices } => Some(notices),
+                _ => None,
+            })
+            .flatten()
+            .filter(|notice| notice.kind == "child.finished")
+            .collect();
+        assert_eq!(notices.len(), 1, "{arrival:?}: one original completion");
+        assert_eq!(notices[0].source, child.as_str());
+        assert_eq!(
+            notices[0].body,
+            serde_json::to_value(ChildDone {
+                child,
+                outcome: AgentOutcome::Succeeded {
+                    result: Some(Box::new(result.clone())),
+                },
+            })?
+        );
+        assert!(notices[0].wake);
     }
     Ok(())
 }
@@ -1156,131 +1441,6 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
         let calls = run(issued, given, agent, grant).await?;
         assert_eq!(calls, 0, "{case}: refused before any stream IO");
     }
-    Ok(())
-}
-
-/// Effects recorded in memory, once per call.
-#[derive(Default)]
-struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
-
-impl TurnEffects for Recorded {
-    fn record<'a>(
-        &'a self,
-        call: &'a str,
-        effect: &'a TurnEffect,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
-        let mut recorded = self.0.lock().expect("effects");
-        let first = recorded
-            .entry(call.to_owned())
-            .or_insert_with(|| effect.clone());
-        let first = first.clone();
-        Box::pin(async move { Ok(first) })
-    }
-
-    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
-        let recorded = self.0.lock().expect("effects").values().cloned().collect();
-        Box::pin(async move { Ok(recorded) })
-    }
-
-    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-}
-
-/// A writer that names the agent's private volume and stages every brief as
-/// one fixed file.
-struct Writer(VolumeRef);
-
-impl acyclic_harness_core::conversation::ContentPublisher for Writer {
-    fn volume(&self) -> &VolumeRef {
-        &self.0
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: &'a [u8],
-        _: &'a str,
-        _: &'a str,
-        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
-    ) -> acyclic_harness_core::Result<
-        acyclic_harness_core::conversation::BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        let file = super::driver::file("brief.md")?;
-        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
-            Ok((file, None))
-        })
-    }
-}
-
-#[tokio::test]
-async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
-    let path = AgentPath::root(&id(9));
-    let (_, binding) = private(&path).await?;
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
-    // Each spawn call in order, under `limit`: which ones the tool refused.
-    let refused = |state: AgentState, limit: Option<u32>| {
-        let volume = binding.volume.clone();
-        async move {
-            let effects = Arc::new(Recorded::default());
-            let mut tools = ToolRegistry::default();
-            acyclic_harness_core::tools::bind_agent_tools(
-                &mut tools,
-                &state,
-                (effects.clone() as Arc<dyn TurnEffects>, None),
-                Arc::new(Writer(volume)),
-                1024,
-                (&acyclic_harness_core::tools::default_names(), limit),
-            )?;
-            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
-            let mut refused = Vec::new();
-            for (call, name) in [(1, "b"), (2, "b"), (3, "c")] {
-                let result = spawn
-                    .executor
-                    .execute(
-                        acyclic_harness_core::tool::ToolInvocation {
-                            operation_id: OperationId::from_bytes([call; 16]),
-                            call_id: format!("call-{call}"),
-                            name: "spawn".into(),
-                            arguments: serde_json::json!({"task": "work", "name": name}),
-                        },
-                        None,
-                    )
-                    .await?;
-                refused.push(result.value.get("error").is_some());
-            }
-            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
-        }
-    };
-    // One open child and a limit of two: `b` fits (twice, as one child), `c` does not.
-    assert_eq!(
-        refused(state.clone(), Some(2)).await?,
-        (vec![false, false, true], 2)
-    );
-    // Control: without a configured limit every spawn is recorded.
-    assert_eq!(
-        refused(state.clone(), None).await?,
-        (vec![false, false, false], 3)
-    );
-    // Without one the agent's hard limit still holds: one below it, `b` fits
-    // and `c` is refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
     Ok(())
 }
 

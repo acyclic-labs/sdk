@@ -74,6 +74,8 @@ pub struct AgentState {
     pub path: AgentPath,
     /// Spawning agent.
     pub parent: Option<AgentPath>,
+    /// Profile selected at adoption, pinned through subsequent turns.
+    pub profile: Option<super::AgentProfilePin>,
     /// Owned volumes.
     pub volumes: Vec<VolumeBinding>,
     /// Approval policy file.
@@ -85,6 +87,11 @@ pub struct AgentState {
     pub brief: Option<[u8; 32]>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
+    /// Exclusive inbox range containing notices not yet frozen into a request.
+    /// Payloads remain in the original inbox; checkpoint size is independent
+    /// of the number of pending events. This is not a conversation-item cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_notices: Option<std::ops::Range<u64>>,
     /// Cancelled inputs before this sequence, including goal continuations.
     #[serde(default)]
     pub dropped_before: u64,
@@ -179,10 +186,12 @@ impl AgentState {
         Ok(Self {
             path,
             parent: adopted.parent.clone(),
+            profile: adopted.profile.clone(),
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             brief,
             conversation_tail: adopted.conversation_tail,
+            pending_notices: None,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
@@ -334,6 +343,8 @@ pub enum Out {
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
     Roster([u8; 32]),
+    /// Consume a frozen Notice prefix with its original conversation append.
+    Notices(super::NoticeSelection),
     /// Complete this goal run with the preceding conversation entry.
     GoalCompleted {
         /// Original turn identity, preserved across self-continuations.
@@ -363,6 +374,8 @@ pub enum Out {
         /// Task brief, staged on the spawning agent's private volume; the
         /// child's adoption names it.
         brief: Option<FileRef>,
+        /// Child profile resolved before the spawn effect was recorded.
+        profile: Option<super::AgentProfilePin>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -514,7 +527,17 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<PreparedStep, Error> {
     let mut outs = Vec::new();
+    let adopting = state.is_none();
     let alarm_wake = matches!(wake, Wake::Alarm);
+    // Consuming a non-waking stream event never advances the model driver,
+    // including when another turn is currently paused or executing.
+    let quiet_notice = matches!(
+        &wake,
+        Wake::Inbox {
+            record: InboxRecord::Notice { notice, .. },
+            ..
+        } if !notice.wake
+    );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
     // Pending turn work continues at once on the next step (the kernel's
@@ -562,6 +585,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             },
         ) => {
             outs.push(Out::Spawn {
+                profile: None,
                 intent: requested_intent(sequence)?,
                 brief: Some(*spawn.brief),
                 volumes: Vec::new(),
@@ -574,10 +598,11 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
     };
     let applied = outs.len();
+    let mut ran = false;
     if state.closed {
         cascade(&mut state, &mut outs)?;
-    } else if !spawn_wake {
-        run(
+    } else if !spawn_wake && !quiet_notice {
+        ran = run(
             driver,
             &mut state,
             cursor,
@@ -586,11 +611,45 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             cancellation,
         )
         .await?;
+        if ran
+            && matches!(
+                previous,
+                Phase::WaitingApproval { .. }
+                    | Phase::WaitingHost { .. }
+                    | Phase::WaitingChildren { .. }
+                    | Phase::WaitingAlarm { .. }
+            )
+        {
+            outs.push(super::notices::lifecycle(
+                &state,
+                "agent.resumed",
+                cursor,
+                serde_json::json!({"from": previous, "cursor": cursor}),
+            )?);
+        }
+    }
+    if adopting {
+        outs.push(super::notices::lifecycle(
+            &state,
+            if state.parent.is_some() {
+                "agent.forked"
+            } else {
+                "agent.started"
+            },
+            cursor,
+            serde_json::json!({"parent": state.parent, "cursor": cursor}),
+        )?);
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
     let tails = (state.conversation_tail, state.status_tail);
-    let completion = (state.awaited, state.checkpoint, state.roster, outs.len());
-    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+    let completion = (
+        state.awaited,
+        state.checkpoint,
+        state.roster,
+        outs.len(),
+        state.pending_notices.clone(),
+    );
+    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake, ran)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
     // Only a state that must shed its growing input is encoded again.
@@ -605,9 +664,10 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.awaited = completion.0;
         state.checkpoint = completion.1;
         state.roster = completion.2;
+        state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
-        step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+        step = finalize_step(state, outs, &previous, cursor, inbox_wake, ran)?;
         bytes = checkpoint::encode(&step.state)?;
     }
     Ok(PreparedStep {
@@ -622,6 +682,7 @@ fn finalize_step(
     previous: &Phase,
     cursor: u64,
     inbox_wake: bool,
+    ran: bool,
 ) -> Result<Step, Error> {
     let alarm = match kernel::alarm(
         control(&state),
@@ -642,6 +703,16 @@ fn finalize_step(
     // record an idle agent consumes publishes its cursor too, so `Idle` at a
     // cursor proves every record before it settled (see [`super::settled`]).
     let phase = published(&state);
+    if matches!(phase, Phase::Idle | Phase::Done { .. })
+        && (ran || &phase != previous || appended > 0)
+    {
+        outs.push(super::notices::lifecycle(
+            &state,
+            "agent.settled",
+            cursor,
+            serde_json::json!({"phase": phase, "cursor": cursor}),
+        )?);
+    }
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.
     if state.awaited && matches!(phase, Phase::Idle | Phase::Done { .. }) {
@@ -668,6 +739,7 @@ fn finalize_step(
                 state.roster = None;
             }
             Out::Roster(digest) => state.roster = Some(*digest),
+            Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -747,6 +819,16 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = admitted.control.closed;
+    if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wake) {
+        let end = sequence
+            .checked_add(1)
+            .ok_or(Error::Record("notice inbox cursor overflow"))?;
+        match &mut state.pending_notices {
+            Some(range) if range.end <= sequence => range.end = end,
+            Some(_) => return Err(Error::Record("notice inbox cursor moved backwards")),
+            None => state.pending_notices = Some(sequence..end),
+        }
+    }
     if let InboxRecord::ChildDone(done) = &record {
         if state.open_children.remove(&done.child) && state.turn.is_some() {
             // The paused journal may already contain a replayed spawn of this
@@ -806,7 +888,11 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } | Out::Checkpoint | Out::Roster(_) | Out::GoalCompleted { .. } => true,
+        Out::Archive { .. }
+        | Out::Checkpoint
+        | Out::Roster(_)
+        | Out::Notices(_)
+        | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }
@@ -827,7 +913,7 @@ async fn run<T: TurnDriver + ?Sized>(
     alarm_wake: bool,
     outs: &mut Vec<Out>,
     cancellation: acyclic_actors::guest::CancellationToken,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let approval = approval_position(state);
     let input = match kernel::pick(
         control(state),
@@ -835,7 +921,7 @@ async fn run<T: TurnDriver + ?Sized>(
         !state.queued.is_empty(),
         approval.is_some(),
     ) {
-        Pick::Nothing => return Ok(()),
+        Pick::Nothing => return Ok(false),
         Pick::Resume => None,
         Pick::Front => state.queued.pop_front(),
         Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
@@ -953,7 +1039,7 @@ async fn run<T: TurnDriver + ?Sized>(
         }
         _ => Phase::Idle,
     };
-    Ok(())
+    Ok(true)
 }
 
 /// `outcome`, or a failure naming it oversized: the parent's `ChildDone`

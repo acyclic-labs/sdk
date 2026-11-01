@@ -128,20 +128,26 @@ impl TurnContext for Grants {
 /// the tools with the turn's agent tools bound to its effects, the limits and
 /// compaction, then the host's [`TurnContext`].
 pub struct StockExecutors {
+    #[cfg(not(target_arch = "wasm32"))]
+    session: super::session::SessionBinding,
     model: Model,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
-    max_children: Option<u32>,
+    profiles: Option<Arc<dyn crate::agent::SpawnProfiles>>,
+    profile_models: Option<(
+        Arc<crate::profile::Profiles>,
+        Arc<dyn crate::profile::ProfileModels>,
+    )>,
     context: Arc<dyn TurnContext>,
 }
 
 impl Preset {
-    /// This preset's stock turns over `model` served by `provider`, with
-    /// `tools` (the host's registry of this preset's tools) under `limits`,
-    /// `compaction` and `context`. The preset's agent tools apply; `limits`
+    /// Stock turns over `model` served by `provider`, with
+    /// the host's registry under `limits`, `compaction` and `context`.
+    /// The shared agent tools apply; `limits`
     /// bounds execution capacity. The turn admission is the host's: pass the
     /// result to the turn host that carries it.
     #[must_use]
@@ -153,13 +159,11 @@ impl Preset {
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
         StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools, self.max_children)
+            .with_agent_tools(&crate::tools::default_names())
     }
 
-    /// This preset's tools, the one construction every host takes them from:
-    /// the catalog tools it selects that the host can back (the volume tools
-    /// and filesystem commands always; each workspace tool only when
-    /// `workspace` admits its name),
+    /// The shared defaults, backed by the host (the volume tools
+    /// always; each workspace tool only when `workspace` admits its name),
     /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
     ///
@@ -175,7 +179,7 @@ impl Preset {
             &mut registry,
             &mut Vec::new(),
             None,
-            &self.tools,
+            &crate::tools::default_names(),
             true,
             workspace,
         )?;
@@ -191,15 +195,15 @@ impl Preset {
     /// # Errors
     /// When a definition of `tools` cannot be produced.
     pub fn tool_grants(&self, tools: &ToolRegistry) -> Result<Vec<String>> {
-        let agent_tools = self
-            .tools
+        let names = crate::tools::default_names();
+        let agent_tools = names
             .iter()
             .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
             .cloned();
         Ok(tools
             .definitions(None)?
             .into_iter()
-            .map(|definition| definition.name)
+            .map(|definition| definition.capability().to_owned())
             .chain(agent_tools)
             .map(|name| crate::contract::capability::tool_call(&name))
             .collect())
@@ -217,32 +221,62 @@ impl StockExecutors {
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            session: super::session::SessionBinding::default(),
             model,
             provider,
             tools,
             limits,
             compaction,
             agent_tools: Vec::new(),
-            max_children: None,
+            profiles: None,
+            profile_models: None,
             context,
         }
     }
 
-    /// Binds the agent tools among `names` to each turn's effects, with at
-    /// most `max_children` open children per agent.
+    /// Binds the agent tools among `names` to each turn's effects.
     #[must_use]
-    pub fn with_agent_tools(mut self, names: &[String], max_children: Option<u32>) -> Self {
+    pub fn with_agent_tools(mut self, names: &[String]) -> Self {
         self.agent_tools = names
             .iter()
             .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
             .cloned()
             .collect();
-        self.max_children = max_children;
+        self
+    }
+
+    /// Binds the original configured profile loader to child admission.
+    #[must_use]
+    pub fn with_profiles(mut self, profiles: Arc<dyn crate::agent::SpawnProfiles>) -> Self {
+        self.profiles = Some(profiles);
+        self
+    }
+
+    /// Selects each actor's admitted role model at the original durable turn
+    /// identity. All execution still uses this stock composition.
+    #[must_use]
+    pub fn with_profile_models(
+        mut self,
+        profiles: Arc<crate::profile::Profiles>,
+        models: Arc<dyn crate::profile::ProfileModels>,
+    ) -> Self {
+        self.profiles = Some(profiles.clone());
+        self.profile_models = Some((profiles, models));
         self
     }
 }
 
 impl TurnExecutors for StockExecutors {
+    fn render_bytes(&self) -> Option<u64> {
+        Some(self.limits.render_bytes)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        self.session.admit(session)
+    }
+
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
         self.context.roster(agent)
     }
@@ -255,10 +289,19 @@ impl TurnExecutors for StockExecutors {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            let provider = self
-                .provider
+            let (model, original_provider) = match &self.profile_models {
+                Some((profiles, models)) => {
+                    let pin = agent.profile.as_ref().ok_or_else(|| {
+                        Error::Invalid("configured actor has no profile pin".into())
+                    })?;
+                    profiles.pinned(pin)?;
+                    models.select(pin, turn, agent.conversation_tail)?
+                }
+                None => (self.model.clone(), self.provider.clone()),
+            };
+            let provider = original_provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
-                .unwrap_or_else(|| Arc::clone(&self.provider));
+                .unwrap_or(original_provider);
             // The agent tools act for this turn: their effects commit with it.
             let mut tools = self.tools.clone();
             if let Some(effects) = &authority.effects
@@ -275,21 +318,28 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, self.max_children),
+                    (&self.agent_tools, self.profiles.clone()),
                 )?;
             }
-            let executor = StockExecutor::new(
-                self.model.clone(),
-                provider,
-                ContextPipeline::default(),
-                tools,
-            )
-            .with_limits(self.limits)
-            .with_compaction_policy(self.compaction.clone());
+            let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
+                .with_limits(self.limits)
+                .with_compaction_policy(self.compaction.clone());
+            #[cfg(not(target_arch = "wasm32"))]
+            let executor = executor.with_session(self.session.get()?);
             let executor = self
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
+            let executor = if let Some((profiles, _)) = &self.profile_models {
+                executor.with_profile(
+                    profiles.clone(),
+                    agent.profile.clone().ok_or_else(|| {
+                        Error::Invalid("configured actor has no profile pin".into())
+                    })?,
+                )?
+            } else {
+                executor
+            };
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }

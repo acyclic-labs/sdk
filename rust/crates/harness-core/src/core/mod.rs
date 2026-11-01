@@ -58,3 +58,6 @@ pub use extension_types::{
 pub use registry::SchemaRegistry;
 
 pub(crate) use extension_types::validate_extension_name;
+
+#[cfg(feature = "filesystem")]
+pub(crate) use ownership::admit_tree_storage;

@@ -510,6 +510,19 @@ impl SkillReader for VolumeDiscovery<'_> {
             (acyclic_stream::OwnedBytes, PinnedContextPath),
         >,
     > {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = self.io
+            && io.original_native_work().is_some()
+        {
+            io.check_cancellation()?;
+            // Every volume metadata entry uses this boundary, including direct
+            // SkillReader callers. A funded prefix does not admit the YAML
+            // dependency's allocations before its Serde visitor.
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "skill discovery requires native YAML allocation admission",
+            });
+        }
         #[cfg(feature = "filesystem")]
         let content_io = self.io;
         #[cfg(not(feature = "filesystem"))]

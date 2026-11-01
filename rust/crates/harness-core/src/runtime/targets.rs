@@ -127,7 +127,7 @@ impl InProcessTargets {
             owner: owner.to_owned(),
             class,
             os: os.to_owned(),
-            shell: shell.language.to_owned(),
+            shell: shell.language.as_str().to_owned(),
             path_style: crate::agent::PathStyle::of(shell),
             device_kind,
             state: crate::agent::TargetState::Online,
@@ -166,34 +166,22 @@ fn agent_error(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
 
-/// The target a workspace tool call runs on: the one a `shell` call names,
-/// its home when omitted; `fs` always runs on the home target. `None` for a
-/// call of any other tool.
+/// Resolves the selected executor's immutable workspace binding. The model's
+/// tool name cannot change placement; the original start retains this target.
 ///
 /// # Errors
 /// [`Error::Target`] when the named target cannot take the call.
 pub(crate) fn call_target(
     targets: &dyn TargetResolver,
     invocation: &crate::tool::ToolInvocation,
+    binding: Option<crate::tool::WorkspaceBinding>,
 ) -> Option<Result<Arc<Target>>> {
-    if !is_workspace_call(invocation) {
-        return None;
-    }
-    let named = (invocation.name == crate::tools::shell::PLATFORM.name)
+    let binding = binding?;
+    let named = (binding == crate::tool::WorkspaceBinding::Named)
         .then(|| invocation.arguments.get("target"))
         .flatten()
         .and_then(serde_json::Value::as_str);
     Some(targets.resolve(named))
-}
-
-pub(crate) fn is_workspace_call(invocation: &crate::tool::ToolInvocation) -> bool {
-    crate::tools::catalog().any(|spec| {
-        spec.name == invocation.name
-            && matches!(
-                spec.binding,
-                crate::tools::ToolBinding::Workspace | crate::tools::ToolBinding::Filesystem
-            )
-    })
 }
 
 #[cfg(test)]

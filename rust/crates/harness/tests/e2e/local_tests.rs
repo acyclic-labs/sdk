@@ -35,7 +35,7 @@ proptest::proptest! {
     ) {
         use acyclic_harness::{model::{ModelEvent, ToolCall}, test_support::{ScriptedEvent, ScriptedTurn}};
         use serde_json::json;
-        let name = if pinned { "read@portable-7" } else { "read" };
+        let name = if pinned { "read@portable-8" } else { "read" };
         let script = vec![ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::ToolCall(
             ToolCall::new("call".into(), name.into(), json!({"path":"seed","version":"seed","range":{"start":2,"end":4},"text":text})),
         ))]), ScriptedTurn::Text(text.clone())];

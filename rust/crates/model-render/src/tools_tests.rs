@@ -38,6 +38,10 @@ fn order(family: Family, wire: &Value) -> Vec<String> {
             || tool["type"] == "web_search_20250305"
         {
             names.push("web_search".into());
+        } else if tool["type"] == "shell" {
+            assert_eq!(tool["environment"]["type"], "local");
+            assert_eq!(tool.as_object().unwrap().len(), 2);
+            names.push("shell".into());
         } else {
             names.push(
                 match family {
@@ -59,6 +63,7 @@ proptest! {
     fn declarations_preserve_order_and_visit_each_borrowed_schema_once(
         texts in prop::collection::vec(".{0,32}", 0..16),
         search_at in prop::option::of(0usize..17),
+        shell_at in prop::option::of(0usize..17),
     ) {
         let schemas: Vec<_> = texts.iter().map(|text| json!({"const":text})).collect();
         let names: Vec<_> = (0..texts.len()).map(|index| format!("tool_{index}")).collect();
@@ -74,9 +79,13 @@ proptest! {
                 if let Some(index) = search_at {
                     declarations.insert(index.min(declarations.len()), ToolDeclaration::WebSearch);
                 }
+                if let Some(index) = shell_at {
+                    declarations.insert(index.min(declarations.len()), ToolDeclaration::Shell);
+                }
                 ToolDeclarations::new(family, declarations)
             };
-            if family == Family::Chat && search_at.is_some() {
+            if (family == Family::Chat && search_at.is_some())
+                || (family != Family::Responses && shell_at.is_some()) {
                 prop_assert!(build(false).is_err());
                 prop_assert_eq!(visits.get(), 0);
                 continue;
@@ -87,6 +96,9 @@ proptest! {
             let mut expected = names.clone();
             if let Some(index) = search_at {
                 expected.insert(index.min(expected.len()), "web_search".into());
+            }
+            if let Some(index) = shell_at {
+                expected.insert(index.min(expected.len()), "shell".into());
             }
             let actual = order(family, &wire);
             prop_assert_eq!(&actual, &expected);
@@ -119,6 +131,36 @@ proptest! {
             }
         }
     }
+
+    #[test]
+    fn freeform_grammar_uses_the_original_borrowed_format_once(grammar in ".{0,128}") {
+        let format = json!({"type":"grammar","syntax":"lark","definition":grammar});
+        let visits = Cell::new(0);
+        for family in [Family::Responses, Family::Chat, Family::Anthropic, Family::Gemini] {
+            for refuse in [false, true] {
+                let declaration = ToolDeclaration::Freeform {
+                    name:"apply_patch".into(), description:"native guidance",
+                    format:Schema {value:&format, visited:&visits, refuse},
+                };
+                let result = ToolDeclarations::new(family, vec![declaration]);
+                if family != Family::Responses {
+                    prop_assert!(result.is_err());
+                    prop_assert_eq!(visits.replace(0), 0, "unsupported families refuse before touching the format");
+                    continue;
+                }
+                let wire = serde_json::to_value(result.unwrap());
+                prop_assert_eq!(visits.replace(0), 1);
+                if refuse {
+                    prop_assert!(wire.is_err());
+                } else {
+                    let wire = wire.unwrap();
+                    prop_assert_eq!(&wire[0]["format"], &format);
+                    prop_assert_eq!(&wire[0]["type"], &json!("custom"));
+                    prop_assert!(wire[0].get("parameters").is_none());
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -146,6 +188,8 @@ fn duplicate_server_declarations_refuse_without_schema_visits() {
         ];
         assert!(ToolDeclarations::new(family, declarations).is_err());
         assert_eq!(visits.get(), 0);
+        let declarations = vec![ToolDeclaration::<Schema<'_>>::Shell, ToolDeclaration::Shell];
+        assert!(ToolDeclarations::new(family, declarations).is_err());
     }
     for search_first in [false, true] {
         let function = || ToolDeclaration::Function {
@@ -166,5 +210,37 @@ fn duplicate_server_declarations_refuse_without_schema_visits() {
         let ordinary = ToolDeclarations::new(Family::Anthropic, vec![function()]).unwrap();
         assert!(serde_json::to_value(ordinary).is_ok());
         assert_eq!(visits.replace(0), 1);
+    }
+    for shell_first in [false, true] {
+        let function = ToolDeclaration::Function {
+            name: "shell".into(),
+            description: "original",
+            parameters: Schema {
+                value: &value,
+                visited: &visits,
+                refuse: false,
+            },
+        };
+        let mut declarations = vec![function, ToolDeclaration::Shell];
+        if shell_first {
+            declarations.reverse();
+        }
+        assert!(ToolDeclarations::new(Family::Responses, declarations).is_err());
+        assert_eq!(visits.get(), 0);
+        let custom = ToolDeclaration::Freeform {
+            name: "shell".into(),
+            description: "original",
+            format: Schema {
+                value: &value,
+                visited: &visits,
+                refuse: false,
+            },
+        };
+        let mut declarations = vec![custom, ToolDeclaration::Shell];
+        if shell_first {
+            declarations.reverse();
+        }
+        assert!(ToolDeclarations::new(Family::Responses, declarations).is_err());
+        assert_eq!(visits.get(), 0);
     }
 }

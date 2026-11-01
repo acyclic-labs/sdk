@@ -12,6 +12,8 @@ pub struct ContextRoot {
     pub directory: String,
 }
 
+crate::core::ownership::owned_struct!(ContextRoot { volume, directory });
+
 impl ContextRoot {
     #[doc(hidden)]
     pub fn validate(
@@ -248,7 +250,25 @@ pub struct PinnedContextPath {
     pub path: String,
 }
 
+crate::core::ownership::owned_struct!(PinnedContextPath {
+    root,
+    generation,
+    path,
+});
+
 impl PinnedContextPath {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        use crate::core::ownership::OwnedBytes as _;
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let source =
+                crate::core::copy(self, &mut quota, |source, _| source.owned_heap_bytes())?;
+            quota.transfer();
+            Ok(source)
+        })
+    }
+
     /// Captures the exact lazy identity on the caller's original allocation owner.
     /// Additions and removals use the same boundary; neither opens a body.
     pub(crate) fn capture(

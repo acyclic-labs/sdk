@@ -16,6 +16,38 @@ pub(crate) struct NativeDemandReadMeter(
     // A standalone handoff retains its original shared-ledger allocation.
     pub(crate) Option<crate::kernel::allocation::retained::StandaloneLease>,
 );
+
+// A waker may execute arbitrary caller code. Retained-credit transitions select
+// one under the original leaf, then invoke it only after that leaf is unlocked.
+pub(crate) struct NativeDemandGuard<'a> {
+    guard: Option<crate::lock_order::MutexGuard<'a, DemandWork>>,
+}
+impl std::ops::Deref for NativeDemandGuard<'_> {
+    type Target = DemandWork;
+    fn deref(&self) -> &Self::Target {
+        self.guard.as_deref().expect("live original leaf")
+    }
+}
+impl std::ops::DerefMut for NativeDemandGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.guard.as_deref_mut().expect("live original leaf")
+    }
+}
+impl Drop for NativeDemandGuard<'_> {
+    fn drop(&mut self) {
+        let mut guard = self.guard.take().expect("live original leaf");
+        let wake = guard.retained_claims.take_wake();
+        drop(guard);
+        if let Some(wake) = wake {
+            #[cfg(all(test, not(loom)))]
+            if !crate::materializer::RetainedClaims::wake_enabled() {
+                drop(wake);
+                return;
+            }
+            wake.wake();
+        }
+    }
+}
 impl std::fmt::Debug for NativeDemandReadMeter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeDemandReadMeter")
@@ -40,16 +72,16 @@ impl NativeDemandReadMeter {
         &self.1
     }
     #[track_caller]
-    pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+    pub(crate) fn lock(&self) -> NativeDemandGuard<'_> {
         #[cfg(all(test, not(loom)))]
         lock_probe::visit(self);
-        crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
-            |poisoned| {
+        let guard = crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0)
+            .unwrap_or_else(|poisoned| {
                 let mut state = poisoned.into_inner();
                 state.poison_native_original_work();
                 state
-            },
-        )
+            });
+        NativeDemandGuard { guard: Some(guard) }
     }
     #[cfg(test)]
     #[cfg(not(loom))]

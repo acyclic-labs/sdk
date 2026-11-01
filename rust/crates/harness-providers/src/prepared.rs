@@ -22,7 +22,7 @@ impl PreparedInput {
         )
         .await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let mut files = crate::files::resolve(&provider.files, request.request(), None).await?;
+        let mut files = crate::files::resolve(&provider.files, &request, None).await?;
         let body =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let generation = serde_json::to_vec(&body)

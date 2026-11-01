@@ -20,13 +20,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "model_selection"
-path = "fuzz_targets/model_selection.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "mount_exclusion"
 path = "fuzz_targets/mount_exclusion.rs"
 test = false

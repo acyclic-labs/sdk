@@ -138,14 +138,6 @@ impl StockExecution<'_> {
                     .await?
                 }
             };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(tool) = self.stock.tools.get(&invocation.name, None, self.io)?
-                && tool.executor.is_code_mode()
-                && let RecordedCall::Completed { result, .. } = call
-            {
-                let result = load_json::<ToolResult>(journal, result, self.io).await?;
-                self.restore_js_context(&result.0.value, &mut hook_context)?;
-            }
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let feedback = if !completed {
                 crate::hooks::HookOutput::default()

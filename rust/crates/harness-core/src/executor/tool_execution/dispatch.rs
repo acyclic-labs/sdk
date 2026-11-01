@@ -53,51 +53,27 @@ impl StockExecution<'_> {
             ))
             .await?
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let composed = if tool.executor.is_code_mode() {
-            match self
-                .run_js(journal, identity, invocation, _hook_context)
-                .await
-            {
-                Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),
-                Ok(ExecutionProgress::Pending(operation)) => {
-                    return Ok(ToolInvocationOutcome::Pending(operation));
-                }
-                Ok(ExecutionProgress::Failed(reason)) => {
-                    self.reject_tool_call(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        reason,
-                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
-                    )
-                    .await?;
-                    return Ok(ToolInvocationOutcome::Interrupted);
-                }
-                Ok(ExecutionProgress::PreDispatchFailed(failure)) => {
-                    return Err(failure.into_error());
-                }
-                Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
-                    self.reject_tool_call(
-                        journal,
-                        operation_id,
-                        step,
-                        &invocation.call_id,
-                        ToolFailureKind::Interrupted,
-                        error,
-                    )
-                    .await?;
-                    return Ok(ToolInvocationOutcome::Interrupted);
-                }
-                Err(error) => return Err(error),
+        #[cfg(feature = "filesystem")]
+        let profile = self
+            .profile_dispatch(journal, invocation, tool, context.as_ref())
+            .await;
+        #[cfg(feature = "filesystem")]
+        let mut _profile_credit = None;
+        #[cfg(feature = "filesystem")]
+        let handled = match profile {
+            Ok(Some(crate::executor::code_mode::ProfileDispatch::Progress(progress))) => {
+                return Ok(ToolInvocationOutcome::Progress(progress));
             }
-        } else {
-            None
+            Ok(Some(crate::executor::code_mode::ProfileDispatch::Settled(result, credit))) => {
+                _profile_credit = credit;
+                Some(Ok(Some(result)))
+            }
+            Err(error) => Some(Err(error)),
+            Ok(None) => None,
         };
-        #[cfg(target_arch = "wasm32")]
-        let composed: Option<Result<Option<ToolResult>>> = None;
-        let execution = if let Some(result) = composed {
+        #[cfg(not(feature = "filesystem"))]
+        let handled = None;
+        let execution = if let Some(result) = handled {
             result
         } else {
             self.observe_tool_cancellation(
@@ -430,37 +406,45 @@ impl StockExecution<'_> {
                 .await
                 .map(Err);
         }
-        let (projection, content) =
-            match stock_project_tool(tool, invocation, result, self.stock.limits, self.io) {
-                Ok(Ok(projected)) => projected,
-                // A projection outside its pinned schema is the tool's mistake on either path.
-                Ok(Err(violation)) => {
-                    return self
-                        .settle_tool_failure(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ProjectionRejected,
-                            violation,
-                        )
-                        .await
-                        .map(Err);
-                }
-                Err(error) => {
-                    return self
-                        .reject_tool_call(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation.call_id,
-                            ToolFailureKind::ProjectionRejected,
-                            error,
-                        )
-                        .await
-                        .map(Err);
-                }
-            };
+        let (projection, content) = match stock_project_tool(
+            tool,
+            invocation,
+            result,
+            self.stock.limits,
+            self.io,
+            self.original_context(),
+        )
+        .await
+        {
+            Ok(Ok(projected)) => projected,
+            // A projection outside its pinned schema is the tool's mistake on either path.
+            Ok(Err(violation)) => {
+                return self
+                    .settle_tool_failure(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::ProjectionRejected,
+                        violation,
+                    )
+                    .await
+                    .map(Err);
+            }
+            Err(error) => {
+                return self
+                    .reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::ProjectionRejected,
+                        error,
+                    )
+                    .await
+                    .map(Err);
+            }
+        };
         Ok(Ok((projection, content)))
     }
 
@@ -570,10 +554,6 @@ impl StockExecution<'_> {
         let content =
             tool.definition
                 .validate_projection(&projection.0, self.stock.limits, self.io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if tool.executor.is_code_mode() {
-            self.restore_js_context(&result.0.value, _hook_context)?;
-        }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let feedback = self

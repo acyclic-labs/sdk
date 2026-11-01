@@ -53,6 +53,24 @@ impl FileProjectionPolicy {
 impl ModelContentPart {
     fn payload_bytes(&self) -> Result<u64> {
         match self {
+            Self::Notices { notices } => notices.iter().try_fold(
+                slots(
+                    notices.capacity(),
+                    size_of::<crate::conversation::wire::Notice>(),
+                )?,
+                |bytes, notice| {
+                    let text = crate::core::owned_sum([
+                        notice.source.capacity() as u64,
+                        notice.kind.capacity() as u64,
+                        notice
+                            .coalesce_key
+                            .as_ref()
+                            .map_or(0, |key| key.capacity() as u64),
+                        crate::executor::json::json_value_logical_owned_bytes(&notice.body)?,
+                    ])?;
+                    add(bytes, text)
+                },
+            ),
             Self::Configuration { .. } => Ok(0),
             Self::Text { text } => Ok(text.capacity() as u64),
             Self::File { file, policy } => {

@@ -95,6 +95,59 @@ fn invocation(root: &Path) -> Invocation {
     }
 }
 
+#[tokio::test]
+async fn literal_arguments_use_the_original_capture_without_shell_expansion() -> Result<()> {
+    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let root = temp
+        .path()
+        .canonicalize()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mounts = table(root.clone())?;
+    let literal = "$(printf expanded); \"quoted\" 'single' 🦀\n";
+    let input = ShellInput {
+        command: crate::tools::shell::ShellCommand::Argv(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf '%s' \"$1\"".into(),
+            "argument".into(),
+            literal.into(),
+        ]),
+        cwd: None,
+        timeout_ms: None,
+        output_lines: None,
+        target: None,
+    };
+    // The real process output is the evidence; there is no provider or OS
+    // transcript fixture. Both forms enter this same capture producer.
+    let output = run(input, &mounts, invocation(&root), 1, None, || Ok(()))
+        .await?
+        .ok_or_else(|| Error::Storage("literal process capture was indeterminate".into()))?;
+    assert!(output.success);
+    assert_eq!(output.stdout, literal.as_bytes());
+    let interpreted = run(
+        ShellInput {
+            command: "printf '%s' $(printf expanded)".into(),
+            cwd: None,
+            timeout_ms: None,
+            output_lines: None,
+            target: None,
+        },
+        &mounts,
+        invocation(&root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .ok_or_else(|| Error::Storage("source process capture was indeterminate".into()))?;
+    assert_eq!(interpreted.stdout, b"expanded");
+    assert_ne!(
+        output.stdout, interpreted.stdout,
+        "routing argv through source would interpret the argument"
+    );
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // A declared native binding may leave the primary root, but resolving a
@@ -119,7 +172,7 @@ proptest::proptest! {
         }
         let suffix = if escape { ".escape" } else { &component };
         let result = prepare(ShellInput {
-            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout_ms: None, target: None,
+            command: "pwd".into(), cwd: Some(format!(".volumes/data/{suffix}")), timeout_ms: None, output_lines: None, target: None,
         }, &mounts, invocation(&mounts.root), 1);
         if escape {
             prop_assert!(matches!(result, Err(Error::Invalid(_))));
@@ -212,7 +265,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let input = ShellInput {
         command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
-        timeout_ms: Some(5000), target: None,
+        timeout_ms: Some(5000), output_lines: None, target: None,
     };
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
@@ -331,7 +384,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), target: None, },
+    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), output_lines: None, target: None, },
         &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
@@ -372,6 +425,7 @@ async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
             command: "printf escaped > should-not-exist".into(),
             cwd: Some("escape".into()),
             timeout_ms: None,
+            output_lines: None,
             target: None,
         },
         &mounts,

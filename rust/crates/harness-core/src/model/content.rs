@@ -50,6 +50,11 @@ pub enum ModelContent {
 )]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
+    /// A frozen batch of primitive event notices; never a human message.
+    Notices {
+        /// Original events selected at the request's immutable boundary.
+        notices: Vec<crate::conversation::wire::Notice>,
+    },
     /// Host-admitted fixed effort change at its original conversation position.
     /// Direct user inputs cannot introduce configuration changes.
     Configuration {
@@ -156,6 +161,24 @@ impl ModelContent {
             Self::Parts(parts) => parts,
         }
     }
+    /// One original event block and its typed immutable file attachments.
+    /// Attachments remain ordinary file parts, so event metadata cannot
+    /// manufacture file authority by naming a reference in its JSON body.
+    #[must_use]
+    pub fn notice_parts(
+        &self,
+    ) -> Option<(&[crate::conversation::wire::Notice], &[ModelContentPart])> {
+        match self.parts().split_first()? {
+            (ModelContentPart::Notices { notices }, files)
+                if files
+                    .iter()
+                    .all(|part| matches!(part, ModelContentPart::File { .. })) =>
+            {
+                Some((notices, files))
+            }
+            _ => None,
+        }
+    }
     /// Validates direct input and projected history against the same limits.
     pub fn validate_limits(
         &self,
@@ -185,6 +208,19 @@ impl ModelContent {
                 }
             }
             match part {
+                ModelContentPart::Notices { notices } => {
+                    crate::executor::json::json_byte_length_at_depth(
+                        part,
+                        limits.render_bytes,
+                        256,
+                        work,
+                    )?;
+                    for notice in notices {
+                        notice
+                            .validate()
+                            .map_err(|_| invalid(work, "invalid notice"))?;
+                    }
+                }
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
                     return Err(invalid(work, "model text exceeds render limit"));
                 }
@@ -224,6 +260,24 @@ impl ModelContent {
             ));
         }
         Ok(())
+    }
+    /// Agent turns also admit one frozen event block with original files. Human command
+    /// inputs keep their narrower validation at the public command boundary.
+    pub(crate) fn validate_turn_input(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+        if let Some((notices, files)) = self.notice_parts() {
+            history_step(work, 1)?;
+            if notices.is_empty() {
+                return Err(invalid(work, "turn notice block is empty"));
+            }
+            for file in files {
+                history_step(work, 1)?;
+                if let ModelContentPart::File { file, .. } = file {
+                    file.validate(work)?;
+                }
+            }
+            return Ok(());
+        }
+        self.validate_user_input(work)
     }
     /// Rejects empty or tool content in a human input.
     pub fn validate_user_input(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {

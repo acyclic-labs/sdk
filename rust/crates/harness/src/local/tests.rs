@@ -157,6 +157,7 @@ impl ToolExecutor for Echo {
 }
 fn tool(name: &str) -> Tool {
     Tool {
+        skill_source: None,
         hook_names: &[],
         definition: ToolDefinition {
             name: name.into(),

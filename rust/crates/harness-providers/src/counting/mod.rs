@@ -129,7 +129,7 @@ pub(crate) async fn count(
         // Retain table custody until after its projected generation is encoded.
         let _name_custody;
         let mut files =
-            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
+            crate::files::resolve(&provider.files, request, content_io.as_ref()).await?;
         let names = {
             let (names, custody) = crate::tool_names::Names::funded(request.request(), work)?;
             _name_custody = custody;

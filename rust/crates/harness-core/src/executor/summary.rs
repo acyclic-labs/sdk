@@ -1,5 +1,134 @@
 use super::*;
 
+/// The original summary producer or an observation pinned under its claim lock.
+/// An observation never grants another model dispatch.
+pub enum SummaryProduction<'a> {
+    /// Drive this future on the original admitted execution/session owner.
+    Owned {
+        /// The single stock request/replay/publication producer.
+        producer: crate::conversation::BoundedContentFuture<'a, crate::context::ContextSummary>,
+        /// Hard-budget demand waits for this exact generation. Dropping the
+        /// producer, even before its first poll, reports `ProducerDropped`.
+        observation: acyclic_fs::OperationObservation,
+    },
+    /// An existing producer must be observed, never replaced while live.
+    Observed(acyclic_fs::OperationObservation),
+}
+
+impl<'a> SummaryProduction<'a> {
+    pub(super) fn into_producer(
+        self,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::ContextSummary>> {
+        match self {
+            Self::Owned { producer, .. } => Ok(producer),
+            Self::Observed(_) => Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "summary operation already has a live producer",
+            )),
+        }
+    }
+}
+
+fn prepare_production<'a, F>(
+    journal: &'a dyn ExecutionJournal,
+    operation: OperationId,
+    purpose: ModelPurpose,
+    io: Option<&'a PreparationIo>,
+    build: impl FnOnce() -> F + acyclic_stream::ProviderTask + 'a,
+) -> Result<SummaryProduction<'a>>
+where
+    F: std::future::Future<Output = Result<crate::context::ContextSummary>>
+        + acyclic_stream::ProviderTask
+        + 'a,
+{
+    let claim = match journal.acquire_model_execution(operation, purpose, io)? {
+        ExecutionAttempt::Owned(claim) => claim,
+        ExecutionAttempt::Observed(observation) => {
+            return Ok(SummaryProduction::Observed(observation));
+        }
+    };
+    let observation = claim.observe();
+    let producer = crate::conversation::BoundedContentFuture::new(io, || async move {
+        let summary = build().await?;
+        // Output and provenance have both committed. A failed future retains
+        // ProducerDropped; physical retirement alone does not establish Ready.
+        claim.release();
+        Ok(summary)
+    })?;
+    Ok(SummaryProduction::Owned {
+        producer,
+        observation,
+    })
+}
+
+impl StockExecutor {
+    /// Admits one summary producer on the caller's original session work.
+    /// The caller conditionally publishes the epoch preparation first, then
+    /// attaches the returned future to that same session. Restoring uses the
+    /// original operation and source; ordinary model replay reconciles it.
+    /// An observed generation must never be launched again.
+    pub fn summary_production<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        operation: OperationId,
+        source: crate::context::Context,
+        instruction: ModelContent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<SummaryProduction<'a>> {
+        prepare_production(
+            journal,
+            operation,
+            ModelPurpose::Response,
+            io,
+            move || async move {
+                let mut execution = StockExecution::ordinary(self);
+                execution.io = io;
+                let mut phase = DispatchPhase::new();
+                let (summary, text) = execution
+                    .summarize(
+                        journal,
+                        None,
+                        operation,
+                        0,
+                        (source, instruction),
+                        &mut phase,
+                    )
+                    .await?;
+                execution.retire_step_text(text)?;
+                Ok(summary)
+            },
+        )
+    }
+}
+
+impl StockExecution<'_> {
+    /// Both background preparation and foreground demand drive this same
+    /// producer. Custody and its event precede future construction.
+    pub(super) fn summary_production<'s>(
+        &'s self,
+        journal: &'s dyn ExecutionJournal,
+        parent: Option<&'s TurnInput>,
+        operation: OperationId,
+        step: u32,
+        material: (crate::context::Context, ModelContent),
+        phase: &'s mut DispatchPhase,
+    ) -> Result<SummaryProduction<'s>> {
+        let purpose = match parent {
+            None => ModelPurpose::Response,
+            Some(_) => ModelPurpose::Summary,
+        };
+        prepare_production(journal, operation, purpose, self.io, move || async move {
+            let (summary, text) = self
+                .summarize(journal, parent, operation, step, material, phase)
+                .await?;
+            self.retire_step_text(text)?;
+            Ok(summary)
+        })
+    }
+}
+
 impl StockExecution<'_> {
     pub(super) async fn summarize(
         &self,
@@ -187,7 +316,7 @@ impl StockExecution<'_> {
         &self,
         destination: Option<(
             &crate::runtime::TaskContext,
-            crate::runtime::PrivateSummaries<'_>,
+            crate::runtime::PrivateContent<'_>,
         )>,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
@@ -206,8 +335,15 @@ impl StockExecution<'_> {
             // A turn may compact more than once. Its file receipt must not alias
             // another step or any of the task's tool publications.
             let publication = summary_publication(operation_id, step, self.io)?;
-            let output = context
-                .stage_private_file_once(summaries, publication, &path, text.as_bytes(), self.io)
+            let (output, _) = context
+                .stage_private_file_once(
+                    summaries,
+                    publication,
+                    &path,
+                    text.as_bytes(),
+                    ("text/plain", "summary.txt"),
+                    self.io,
+                )
                 .await?;
             output
         } else {

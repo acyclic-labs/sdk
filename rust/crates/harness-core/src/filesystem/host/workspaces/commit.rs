@@ -123,7 +123,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Self::publish_mutations(&mut transaction, mutations, io).await?;
         Self::commit_publication(transaction, io, publication).await
     }
-    async fn publish_mutations(
+    pub(in crate::filesystem) async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
         io: &PreparationIo,
@@ -168,7 +168,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await
     }
 
-    async fn commit_publication(
+    pub(in crate::filesystem) async fn commit_publication(
         transaction: acyclic_fs::Transaction<A, O>,
         io: &PreparationIo,
         publication: FilePublication<'_>,

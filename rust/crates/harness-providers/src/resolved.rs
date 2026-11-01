@@ -8,6 +8,7 @@ use acyclic_stream::BoxProviderStream;
 use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
+#[derive(Clone)]
 pub struct ResolvedModel {
     pub(crate) files: crate::files::Files,
     /// Calibration shared by every reader-bound copy of this selection.
@@ -18,6 +19,11 @@ pub struct ResolvedModel {
     pub(crate) profile: Option<acyclic_harness_core::model::ModelProfileBinding>,
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
+    /// An alloy reservation narrows selection without changing physical capacity.
+    pub(crate) selection_capacity: Option<ModelContextCapacity>,
+    pub(crate) tool_profile: Option<acyclic_harness_core::model::NativeToolProfile>,
+    /// Retained from the same catalog member as capacity at original selection.
+    pub(crate) thinking_levels: bool,
     pub(crate) key: Option<Arc<str>>,
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
@@ -29,6 +35,11 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// The original selected catalog member's tool family, including under
+    /// alloy. Profile admission consumes this value without a naming heuristic.
+    pub fn native_tool_profile(&self) -> Option<acyclic_harness_core::model::NativeToolProfile> {
+        self.tool_profile
+    }
     /// Joins the original registry selection to its admitted epoch profile.
     /// Credentials, endpoint and token counting retain their original owners.
     #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
@@ -43,6 +54,17 @@ impl ResolvedModel {
         }
         let binding = profile.bind_model(&self.model, self.capacity)?;
         crate::projection::validate_profile(self.config.adapter, &binding)?;
+        if self.config.adapter == crate::Adapter::Gemini
+            && matches!(
+                binding.reasoning(),
+                acyclic_model_render::Reasoning::Level(_)
+            )
+            && !self.thinking_levels
+        {
+            return Err(invalid(
+                "Gemini profile admission failed: thinking levels are not advertised by the selected model; recovery: select its provider-default reasoning profile",
+            ));
+        }
         let mut revision = blake3::Hasher::new();
         revision.update(b"acyclic.model-profile-binding.v1\0");
         revision.update(&(self.model.revision.len() as u64).to_be_bytes());
@@ -117,9 +139,22 @@ impl ResolvedModel {
     }
 
     pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
-        self.profile
+        let mut capacity = self
+            .profile
             .as_ref()
-            .map_or(self.capacity, |profile| profile.capacity())
+            .map_or(self.capacity, |profile| profile.capacity());
+        if let Some(selection) = self.selection_capacity {
+            capacity.context_tokens = capacity.context_tokens.min(selection.context_tokens);
+            capacity.output_tokens = capacity
+                .output_tokens
+                .into_iter()
+                .chain(selection.output_tokens)
+                .min();
+            capacity.output_tokens = capacity
+                .output_tokens
+                .map(|output| output.min(capacity.context_tokens));
+        }
+        capacity
     }
     pub(crate) fn validate(&self, model: &Model) -> Result<()> {
         if model != &self.model {
@@ -145,6 +180,9 @@ impl ModelProvider for ResolvedModel {
             profile: self.profile,
             config: self.config.clone(),
             capacity: self.capacity,
+            selection_capacity: self.selection_capacity,
+            tool_profile: self.tool_profile,
+            thinking_levels: self.thinking_levels,
             key: self.key.clone(),
             credential_scope: self.credential_scope,
             transport: self.transport.clone(),

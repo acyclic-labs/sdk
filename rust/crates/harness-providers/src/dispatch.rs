@@ -131,7 +131,7 @@ pub(crate) async fn encode(
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
     origin: &acyclic_harness_core::model::ReasoningOrigin,
 ) -> Result<Vec<u8>> {
-    let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
+    let mut files = crate::files::resolve(&provider.files, request, io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
     serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
 }

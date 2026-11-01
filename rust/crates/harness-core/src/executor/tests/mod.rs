@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(not(target_arch = "wasm32"))]
-mod code_mode;
 mod pre_dispatch;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -293,6 +291,10 @@ impl ToolExecutor for ContextOnlyTool {
             assert_eq!(context_identity(context.task()), self.admission.as_ref());
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
+            assert_eq!(
+                context.admitted_capability(),
+                Some(crate::contract::capability::tool_call(&invocation.name).as_str()),
+            );
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err((self.lost_response)())
         })
@@ -310,6 +312,10 @@ impl ToolExecutor for ContextOnlyTool {
             assert_eq!(context_identity(context.task()), self.admission.as_ref());
             assert_eq!(context.operation_id(), invocation.operation_id);
             assert_eq!(context.call_id(), invocation.call_id);
+            assert_eq!(
+                context.admitted_capability(),
+                Some(crate::contract::capability::tool_call(&invocation.name).as_str()),
+            );
             self.reconciles.fetch_add(1, Ordering::SeqCst);
             Ok(Some(ToolResult {
                 value: json!({"value":"hello"}),
@@ -810,6 +816,7 @@ fn echo_tools(
     tools.register(
         (
             crate::tool::Tool {
+                skill_source: None,
                 hook_names: &[],
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),

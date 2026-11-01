@@ -57,7 +57,20 @@ where
         operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.acquire_model_execution(operation, crate::executor::ModelPurpose::Response, io)
+    }
+
+    fn acquire_model_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        purpose: crate::executor::ModelPurpose,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.require_operation(operation, io)?;
+        let attempt = match purpose {
+            crate::executor::ModelPurpose::Response => operation,
+            crate::executor::ModelPurpose::Summary => purpose.attempt_operation(operation, io)?,
+        };
         let namespace = crate::executor::with_history_io(io, |work| {
             self.volume
                 .identity_digest(super::MAXIMUM_PAYLOAD_BYTES, work)
@@ -65,13 +78,13 @@ where
         crate::executor::execution_claim::acquire(
             self.host.filesystem.operation_claims(),
             namespace,
-            operation,
+            attempt,
             io,
         )
     }
 
-    fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
-        Box::pin(self.follow_cancellation())
+    fn model_stop(&self) -> Option<&acyclic_actors::guest::CancellationToken> {
+        self.stop.as_ref()
     }
 
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {

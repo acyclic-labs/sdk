@@ -50,7 +50,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         read()?
             .executor
             .authorize(Some(&narrow), None, &invocation, None),
-        Err(Error::Invalid(_))
+        Err(Error::Unauthorized(_))
     ));
     Ok(())
 }

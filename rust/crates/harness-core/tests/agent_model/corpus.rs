@@ -9,6 +9,32 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
     let mut seeds = BTreeMap::new();
     for (name, record) in [
         (
+            "notice-quiet",
+            InboxRecord::Notice {
+                id: IntentId::try_from("changed-1")?,
+                notice: acyclic_harness_core::conversation::wire::Notice {
+                    source: "filesystem".into(),
+                    kind: "files.changed".into(),
+                    body: serde_json::json!({"paths": ["plans/work.md"]}),
+                    wake: false,
+                    coalesce_key: Some("workspace".into()),
+                },
+            },
+        ),
+        (
+            "notice-waking",
+            InboxRecord::Notice {
+                id: IntentId::try_from("finished-1")?,
+                notice: acyclic_harness_core::conversation::wire::Notice {
+                    source: "child".into(),
+                    kind: "child.finished".into(),
+                    body: serde_json::json!({"status": "completed"}),
+                    wake: true,
+                    coalesce_key: None,
+                },
+            },
+        ),
+        (
             "approval",
             InboxRecord::Approval(Approval {
                 id: IntentId::try_from("q1")?,
@@ -56,6 +82,7 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         (
             "fork-adopted",
             InboxRecord::ForkAdopted(Box::new(ForkAdopted {
+                profile: None,
                 agent: child_id,
                 parent: Some(root),
                 forked_at: 1,

@@ -60,6 +60,64 @@ mod proofs {
     }
 
     #[kani::proof]
+    fn watermark_arithmetic_keeps_all_output_headroom() {
+        let capacity: u64 = kani::any();
+        let output: u64 = kani::any();
+        let input: u64 = kani::any();
+        let budget = protocol::Budget::new(capacity, output);
+        assert_eq!(budget.is_some(), output < capacity);
+        if let Some(budget) = budget {
+            let hard = u128::from(capacity) - u128::from(output);
+            assert_eq!(u128::from(budget.hard()), hard);
+            assert_eq!(u128::from(budget.soft()), (hard * 3).div_ceil(5));
+            assert!(budget.soft() > 0 && budget.soft() <= budget.hard());
+            if budget.pressure(input) != protocol::Pressure::Hard {
+                assert!(kernel::fits(input, output, capacity));
+            }
+            kani::cover!(budget.pressure(input) == protocol::Pressure::Soft);
+            kani::cover!(budget.pressure(input) == protocol::Pressure::Hard);
+        }
+    }
+
+    #[kani::proof]
+    fn foreground_replacement_cannot_displace_a_live_or_successful_producer() {
+        let end: u64 = kani::any();
+        kani::assume(end > 0);
+        let completion: u8 = kani::any();
+        kani::assume(completion < 3);
+        let mut state = protocol::State::default();
+        state.prepare([0; 32], end, end).unwrap();
+        if completion > 0 {
+            state
+                .complete(
+                    [0; 32],
+                    if completion == 1 {
+                        protocol::Completion::Ready
+                    } else {
+                        protocol::Completion::Failed
+                    },
+                )
+                .unwrap();
+        }
+        let before = state;
+        let accepted = state.retry_failed([0; 32], [1; 32], end, end).is_ok();
+        assert_eq!(accepted, completion == 2);
+        if accepted {
+            assert_eq!(state.demand(), protocol::Demand::Await([1; 32]));
+            assert_eq!(state.cursor(), before.cursor());
+            assert_eq!(state.generation(), before.generation());
+            assert_eq!(
+                state.complete([0; 32], protocol::Completion::Ready),
+                Err(protocol::Refusal::Stale)
+            );
+        } else {
+            assert_eq!(state, before);
+        }
+        kani::cover!(accepted);
+        kani::cover!(!accepted);
+    }
+
+    #[kani::proof]
     fn failed_summary_never_swaps_or_changes_its_outcome() {
         let cursor: u64 = kani::any();
         let end: u64 = kani::any();

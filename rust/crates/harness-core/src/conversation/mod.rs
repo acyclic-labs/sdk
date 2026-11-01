@@ -129,14 +129,55 @@ impl Limits {
         file: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate(work)?;
-        file.validate(work)?;
-        if file.path().len() > self.path_bytes || file.descriptor().byte_length() > self.file_bytes
-        {
+        self.validate_file_metadata(file, work)?;
+        if file.descriptor().byte_length() > self.file_bytes {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "file exceeds harness limits",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks a reference without materializing its body. Metadata admission
+    /// does not spend the byte credit of a later selected range.
+    pub fn validate_file_metadata(
+        &self,
+        file: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate(work)?;
+        file.validate(work)?;
+        if file.path().len() > self.path_bytes {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "file path exceeds harness limits",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Admits one exact window of an arbitrarily large immutable source.
+    /// The selected bytes, rather than the source length, consume file credit.
+    pub fn validate_file_range(
+        &self,
+        file: &FileRef,
+        range: acyclic_fs::ByteRange,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate_file_metadata(file, work)?;
+        if range.length > self.file_bytes
+            || range
+                .offset
+                .checked_add(range.length)
+                .is_none_or(|end| end > file.descriptor().byte_length())
+        {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "file range exceeds source or harness limits",
             ));
         }
         Ok(())
@@ -209,6 +250,8 @@ mod history;
 mod message;
 mod outcome;
 mod selection;
+#[cfg(feature = "filesystem")]
+mod source;
 mod state;
 mod volumes;
 pub use attachments::{
@@ -221,8 +264,9 @@ pub(crate) use content::content_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use content::require_owner_reader;
 pub use content::{
-    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentHold, ContentIo,
-    ContentMountResolver, ContentPublisher, ContentResidencyVerifier,
+    BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentChange,
+    ContentChangeResult, ContentChanges, ContentHold, ContentIo, ContentMountResolver,
+    ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
@@ -234,6 +278,8 @@ pub use files::{FileDescriptor, FileRef};
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};
 pub use outcome::TaskOutcomeRecord;
+#[cfg(feature = "filesystem")]
+pub use source::{ContentSource, ContentSourceAdapter};
 pub use volumes::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 #[doc(hidden)]
 pub use volumes::{
@@ -541,6 +587,7 @@ pub fn validate_content_path(
 
 mod identity;
 pub use identity::assistant_message_id;
+pub(crate) use identity::derived_operation_id;
 
 /// Immutable model wire items shared with the pure request renderer.
 pub mod wire;

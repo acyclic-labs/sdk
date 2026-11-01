@@ -1,0 +1,151 @@
+use super::*;
+use proptest::prelude::*;
+
+fn discover(source: &str, offset: u64, limit: Option<u64>, chunk: usize) -> Result<Selection> {
+    let mut cursor = JsonSpans::default();
+    let mut selected = Selection::new(offset, limit, u64::MAX);
+    let bounds = JsonBounds {
+        maximum_bytes: source.len() as u64,
+        maximum_items: u64::MAX,
+        maximum_depth: 128,
+    };
+    for bytes in source.as_bytes().chunks(chunk) {
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            let count = cursor.feed(
+                &bytes[consumed..],
+                bounds,
+                None,
+                &mut |_| Ok(()),
+                &mut |event| selected.event(event, None),
+            )?;
+            assert!(count > 0);
+            consumed += count;
+            if let Some((start, end, key)) = selected.pending() {
+                selected.supply(&source.as_bytes()[start as usize..end as usize], key, None)?;
+            }
+        }
+    }
+    cursor.finish(None, &mut |event| selected.event(event, None))?;
+    Ok(selected)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn cell_spans_survive_arbitrary_chunks_and_escaped_root_fields(
+        sources in prop::collection::vec(".{0,100}", 0..20),
+        offset in 0u64..25, limit in prop::option::of(0u64..25), chunk in 1usize..100,
+    ) {
+        let cells: Vec<_> = sources.into_iter().enumerate().map(|(index, source)| json!({
+            "id":format!("cell-{index}"), "cell_type":"code", "source":[source],
+            "outputs":[{"output_type":"stream", "text":"untouched"}], "metadata":{},
+        })).collect();
+        let original = json!({"cells":cells, "metadata":{"nested":{"cells":[]}}, "nbformat":4});
+        let source = serde_json::to_string_pretty(&original).unwrap()
+            .replace("\"cells\"", "\"ce\\u006cls\"").replace("\"nbformat\"", "\"nbf\\u006frmat\"");
+        let selected = discover(&source, offset, limit, chunk).unwrap();
+        prop_assert_eq!(selected.count, cells.len() as u64);
+        prop_assert_eq!(selected.format, Some(4));
+        prop_assert!(selected.seen_cells);
+        let expected: Vec<_> = cells.iter().skip(offset as usize).take(limit.unwrap_or(u64::MAX) as usize).cloned().collect();
+        let expected_count = expected.len() as u64;
+        if let Some((start, end)) = selected.interval {
+            let text = format!("[{}]", &source[start as usize..end as usize]);
+            prop_assert_eq!(serde_json::from_str::<Vec<Value>>(&text).unwrap(), expected);
+        } else {
+            prop_assert!(expected.is_empty());
+        }
+        prop_assert_eq!(selected.next_cell, offset + expected_count);
+        let document = Document { origin:selected.array_origin.unwrap(),end:selected.array_end.unwrap(),count:selected.count };
+        let mut encoded = document.encode(source.len() as u64);
+        prop_assert!(Document::decode(&encoded, source.len() as u64 + 1, None).is_err());
+        encoded[0] ^= 1;
+        prop_assert!(Document::decode(&encoded, source.len() as u64, None).is_err());
+        if offset <= cells.len() as u64 {
+            let origin = selected.array_origin.unwrap();
+            let end = selected.array_end.unwrap();
+            let start = selected.empty.unwrap_or(end);
+            let mut cursor = JsonSpans::array_at(start, origin - 1);
+            let mut warm = Selection::new(offset, limit, u64::MAX);
+            warm.warm = true;
+            warm.cells = true;
+            warm.count = offset;
+            warm.element_depth = 1;
+            warm.total = Some(cells.len() as u64);
+            warm.array_end = Some(end);
+            let bounds = JsonBounds { maximum_bytes:source.len() as u64,maximum_items:u64::MAX,maximum_depth:128 };
+            for bytes in source.as_bytes()[start as usize..].chunks(chunk) {
+                let mut consumed = 0;
+                while consumed < bytes.len() && !warm.done {
+                    let count = cursor.feed(&bytes[consumed..], bounds, None, &mut |_| Ok(()), &mut |event| warm.event(event,None)).unwrap();
+                    prop_assert!(count > 0);
+                    consumed += count;
+                    if let Some((start, end, key)) = warm.pending() {
+                        warm.supply(&source.as_bytes()[start as usize..end as usize], key, None).unwrap();
+                    }
+                }
+                if warm.done { break; }
+            }
+            prop_assert!(warm.done);
+            prop_assert_eq!(warm.interval, selected.interval);
+            prop_assert_eq!(warm.next_cell, selected.next_cell);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn native_payloads_keep_cell_output_and_source_spans(
+        data in prop::collection::vec(any::<u8>(), 0..500),
+        offset in 0u64..4, count in 0u64..4, chunk in 1usize..100,
+    ) {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(&data);
+        let pieces: Vec<_> = encoded.as_bytes().chunks(7)
+            .map(|bytes| std::str::from_utf8(bytes).unwrap()).collect();
+        let cells: Vec<_> = (0..4).map(|_| json!({"outputs":[
+            {"data":{"image/png":encoded,"text/plain":"untouched"}},
+            {"data":{"application/pdf":pieces}},
+        ],"metadata":{"outputs":[{"data":{"image/jpeg":"ignored"}}]}})).collect();
+        let source = serde_json::to_string_pretty(&json!({"cells":cells,"nbformat":4})).unwrap()
+            .replace("\"outputs\"", "\"outp\\u0075ts\"")
+            .replace("\"data\"", "\"d\\u0061ta\"")
+            .replace("\"image/png\"", "\"image\\u002fpng\"");
+        let selection = discover(&source, offset, Some(count), chunk).unwrap();
+        let expected = (4 - offset).min(count);
+        prop_assert_eq!(selection.outputs.payloads.len() as u64, expected * 2);
+        for (index, payload) in selection.outputs.payloads.iter().enumerate() {
+            prop_assert_eq!(payload.cell, offset + index as u64 / 2);
+            prop_assert_eq!(payload.output, index as u64 % 2);
+            let value: Value = serde_json::from_str(&source[payload.start as usize..payload.end as usize]).unwrap();
+            if payload.output == 0 {
+                prop_assert_eq!(value, json!(encoded));
+                prop_assert_eq!(payload.media, super::super::notebook_outputs::Media::Png);
+            } else {
+                prop_assert_eq!(value, json!(pieces));
+                prop_assert_eq!(payload.media, super::super::notebook_outputs::Media::Pdf);
+            }
+        }
+        // Removing the selected native MIME key keeps all text/cells readable,
+        // while the same cursor produces no native output references.
+        let plain = source.replace("image\\u002fpng", "other/plain").replace("application/pdf", "other/binary");
+        prop_assert!(discover(&plain, offset, Some(count), chunk).unwrap().outputs.payloads.is_empty());
+    }
+}
+
+#[test]
+fn duplicate_or_mistyped_notebook_fields_fail_on_the_same_scan() {
+    for source in [
+        r#"{"cells":[],"cells":[],"nbformat":4}"#,
+        r#"{"cells":[],"nbformat":4,"nbf\u006frmat":4}"#,
+        r#"{"cells":[null],"nbformat":4}"#,
+        r#"{"cells":{},"nbformat":4}"#,
+        r#"{"cells":[],"nbformat":"4"}"#,
+        r#"{"cells":[{"outputs":[],"outputs":[]}],"nbformat":4}"#,
+        r#"{"cells":[{"outputs":[{"data":{"image/png":"","image/png":""}}]}],"nbformat":4}"#,
+    ] {
+        assert!(discover(source, 0, None, 1).is_err(), "accepted {source}");
+    }
+}

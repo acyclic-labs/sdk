@@ -99,6 +99,7 @@ mod operation_claim;
 mod replicated;
 pub use operation_claim::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
+    RetainedOperationClaim,
 };
 mod follow_filter;
 mod follow_index;

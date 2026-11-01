@@ -262,6 +262,7 @@ pub struct ProtocolIdentity {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Capabilities(pub(crate) BTreeSet<String>);
+mod grant_key;
 crate::core::ownership::owned_tuple!(Capabilities, (values));
 
 impl Capabilities {
@@ -315,6 +316,12 @@ impl Capabilities {
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
         self.0.contains(value)
+    }
+
+    /// Looks up a tool capability without constructing a temporary grant string.
+    #[must_use]
+    pub fn allows_tool(&self, capability: &str) -> bool {
+        grant_key::contains(&self.0, "tool:call:", capability)
     }
 
     /// Returns whether this set attenuates an ancestor set.

@@ -11,8 +11,11 @@ type Storage = Option<crate::filesystem::PreparationCustody>;
 type Storage = ();
 
 /// Owns a live attempt until its execution future has finished or is dropped.
-pub struct ExecutionClaim<'a> {
-    _claim: acyclic_fs::OperationClaim<'a>,
+pub type ExecutionClaim<'a> = RetainedExecutionClaim<&'a acyclic_fs::OperationClaims>;
+
+/// Original execution custody held through the same borrowed or owned provider.
+pub struct RetainedExecutionClaim<O: std::borrow::Borrow<acyclic_fs::OperationClaims>> {
+    _claim: acyclic_fs::RetainedOperationClaim<O>,
 }
 
 /// Original producer custody, or its exact-generation terminal observation.
@@ -39,6 +42,20 @@ impl<'a> ExecutionAttempt<'a> {
 }
 
 impl ExecutionClaim<'_> {
+    /// Retains the exact acquired guard without another claim or allocation.
+    /// A foreign registry returns the original guard and proposed owner.
+    pub fn retain<O: std::borrow::Borrow<acyclic_fs::OperationClaims>>(
+        self,
+        owner: O,
+    ) -> std::result::Result<RetainedExecutionClaim<O>, (Self, O)> {
+        self._claim
+            .retain(owner)
+            .map(|_claim| RetainedExecutionClaim { _claim })
+            .map_err(|(_claim, owner)| (Self { _claim }, owner))
+    }
+}
+
+impl<O: std::borrow::Borrow<acyclic_fs::OperationClaims>> RetainedExecutionClaim<O> {
     /// Pins the shared operation event before handing custody to model work.
     pub fn observe(&self) -> acyclic_fs::OperationObservation {
         self._claim.observe()

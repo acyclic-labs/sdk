@@ -16,6 +16,16 @@ impl ExecutionJournal for ReplayOnly<'_> {
     ) -> Result<crate::executor::ExecutionAttempt<'a>> {
         self.0.acquire_execution(operation, io)
     }
+
+    fn acquire_model_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        purpose: ModelPurpose,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.0.acquire_model_execution(operation, purpose, io)
+    }
+
     fn replay<'a>(
         &'a self,
         operation: OperationId,

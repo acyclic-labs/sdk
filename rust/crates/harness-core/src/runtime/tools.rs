@@ -1,5 +1,38 @@
 use super::*;
 
+impl TaskContext {
+    /// Retains complete tool output through the existing volume publisher.
+    pub(crate) async fn spill_tool_output(
+        &self,
+        operation: OperationId,
+        bytes: &[u8],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, String, u64)> {
+        let operation =
+            crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
+        let path = crate::executor::with_history_io(io, |history| {
+            crate::executor::preparation_format(
+                format_args!(".volumes/scratch/tool-output/{operation}.json"),
+                history,
+            )
+        })?;
+        let file = self
+            .stage_bound_file(
+                self.tool_content(None),
+                operation,
+                &path,
+                bytes,
+                "application/json",
+                "tool-output.json",
+                super::content_write::ContentPublication::OperationBound,
+                self.scope(),
+                io,
+            )
+            .await?;
+        Ok((file.0, path, file.1))
+    }
+}
+
 /// An admission decision for one exact, schema-valid tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {
@@ -147,7 +180,7 @@ pub fn tool_approval_request(
     let (prompt, custody) = paid;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut custody = custody;
-    let subject = copy_approval_subject(invocation, work, route, target)?;
+    let subject = copy_approval_subject(invocation, definition.capability(), work, route, target)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut subject = subject;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -171,6 +204,7 @@ pub fn tool_approval_request(
 
 fn copy_approval_subject(
     invocation: &ToolInvocation,
+    capability: &str,
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
     target: Option<&crate::agent::TargetRecord>,
@@ -182,7 +216,7 @@ fn copy_approval_subject(
         let mut io = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );
-        let tool = io.clone_text(&invocation.name)?;
+        let tool = io.clone_text(capability)?;
         let call_id = io.clone_text(&invocation.call_id)?;
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
@@ -216,7 +250,7 @@ fn copy_approval_subject(
     Ok((
         ApprovalSubject::Tool {
             route,
-            tool: invocation.name.clone(),
+            tool: capability.to_owned(),
             call_id: invocation.call_id.clone(),
             arguments: invocation.arguments.clone(),
             target: target.map(|target| crate::interaction::ApprovalTarget {
@@ -303,6 +337,7 @@ pub struct ToolContext {
     #[doc(hidden)]
     pub model_turn: (OperationId, u32),
     pub(crate) execution_target: Option<Arc<Target>>,
+    pub(crate) admitted_capability: Option<String>,
 }
 
 impl ToolContext {
@@ -319,6 +354,7 @@ impl ToolContext {
             // binds model-issued calls to their enclosing execution and step.
             model_turn: (operation_id, 0),
             execution_target: None,
+            admitted_capability: None,
         })
     }
 
@@ -332,6 +368,14 @@ impl ToolContext {
     #[must_use]
     pub fn effective_scope(&self) -> &RuntimeScope {
         self.task().scope()
+    }
+
+    /// Original registry capability checked by stock admission. A thin adapter
+    /// may change the physical command spelling without acquiring another grant.
+    /// Direct contexts have no admitted capability and retain ordinary checks.
+    #[must_use]
+    pub fn admitted_capability(&self) -> Option<&str> {
+        self.admitted_capability.as_deref()
     }
 
     /// The operation of the model turn this call belongs to; outside a
@@ -375,10 +419,12 @@ impl std::ops::Deref for ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
-    /// Checks effective READ and limits before replay or content IO.
-    pub fn authorize_file_read_with_native_work(
+    /// Checks effective READ and the selected byte credit before content IO.
+    /// `None` admits the complete body; an empty range admits metadata only.
+    pub fn authorize_file_selection_with_native_work(
         &self,
         file: &FileRef,
+        range: Option<acyclic_fs::ByteRange>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.task()
@@ -386,6 +432,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
+                range,
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
@@ -398,9 +445,8 @@ impl ToolContext {
         source: Option<&FileRef>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        task.authorize_content_publication(path, source, self.effective_scope(), Some(&io))
+        self.authorize_tool_path_publication(path, source, Some(&io))
     }
 }
 
@@ -510,6 +556,202 @@ impl ToolContext {
         .await
     }
 
+    /// Publishes one conditional batch on the original selected writer. Every
+    /// source is checked against this invocation's grants before publication.
+    pub(crate) async fn stage_tool_changes(
+        &self,
+        operation: OperationId,
+        volume: &VolumeRef,
+        changes: &[crate::conversation::ContentChange<'_>],
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(crate::conversation::ContentChanges, u64)> {
+        use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult};
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
+        for change in changes {
+            crate::executor::with_history_io(io, |work| {
+                crate::conversation::validate_content_path(change.path(), work)?;
+                if change.path().len() > self.effective_scope().limits().path_bytes
+                    || crate::conversation::is_internal_path(change.path())
+                {
+                    return Err(Error::tool_rejected(
+                        "conditional path exceeds original task admission",
+                    ));
+                }
+                Ok(())
+            })?;
+            if let Some(source) = change.source() {
+                self.task().authorize_file_read(
+                    source,
+                    self.effective_scope(),
+                    self.effective_scope().grants(),
+                    None,
+                    io,
+                )?;
+                if source.volume() != volume {
+                    return Err(Error::Unauthorized(
+                        "conditional source differs from writer".into(),
+                    ));
+                }
+            }
+            let bytes = match change {
+                ContentChange::CreateAbsent { bytes, .. }
+                | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
+                ContentChange::DeleteExpected { .. } => 0,
+            };
+            if bytes > self.effective_scope().limits().file_bytes {
+                return Err(Error::tool_rejected(
+                    "conditional file exceeds original task capacity",
+                ));
+            }
+        }
+        writer.supports_stage(io)?;
+        let (files, hold) = writer
+            .stage_changes(
+                volume,
+                operation,
+                changes,
+                ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
+            .await?;
+        if files.members.len() != changes.len() {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "conditional publisher returned another member count",
+            ));
+        }
+        for (change, member) in changes.iter().zip(&files.members) {
+            if member.path() != change.path() {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "conditional publisher returned another destination",
+                ));
+            }
+            let file = match (change, member) {
+                (ContentChange::CreateAbsent { .. }, ContentChangeResult::Created(file))
+                | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
+                    file
+                }
+                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                _ => {
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "conditional publisher returned another action",
+                    ));
+                }
+            };
+            let (bytes, media, display) = match change {
+                ContentChange::CreateAbsent {
+                    bytes,
+                    media_type,
+                    display_name,
+                    ..
+                } => (*bytes, *media_type, *display_name),
+                ContentChange::UpdateExpected { source, bytes } => (
+                    *bytes,
+                    source.descriptor().media_type(),
+                    source.display_name(),
+                ),
+                ContentChange::DeleteExpected { .. } => continue,
+            };
+            if file.volume() != volume
+                || file.path() != change.path()
+                || file.descriptor().media_type() != media
+                || file.display_name() != display
+            {
+                return Err(Error::Storage(
+                    "conditional publisher returned another file identity".into(),
+                ));
+            }
+            crate::executor::with_history_io(io, |work| {
+                self.effective_scope().limits().validate_file(file, work)?;
+                file.descriptor().verify(bytes, work)
+            })?;
+            content
+                .reader
+                .verify_publication(file, file.descriptor().byte_length(), io)?
+                .await?;
+        }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok((files, retained))
+    }
+
+    /// Recovers the original batch receipt after the original journal has
+    /// authenticated the complete invocation; never reconstructs it from HEAD.
+    pub(crate) async fn observe_tool_changes(
+        &self,
+        operation: OperationId,
+        volume: &VolumeRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<crate::conversation::ContentChanges>, u64)> {
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("conditional content writer is not bound".into()))?;
+        let writer = super::content_write::content_writer(Some(content), io)?;
+        super::content_write::authorize_volume_write(volume, self.effective_scope(), io)?;
+        #[cfg(feature = "filesystem")]
+        let maximum = io
+            .map(|io| io.remaining().map(|work| work.bytes_encoded))
+            .transpose()?
+            .unwrap_or(u64::MAX);
+        #[cfg(not(feature = "filesystem"))]
+        let maximum = u64::MAX;
+        let (files, hold) = writer
+            .observe_changes(
+                volume,
+                operation,
+                maximum,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(self.effective_scope().grants()),
+                    io,
+                },
+            )?
+            .await?;
+        if let Some(files) = &files {
+            for file in files.files() {
+                crate::executor::with_history_io(io, |work| {
+                    self.effective_scope().limits().validate_file(file, work)
+                })?;
+                if file.volume() != volume {
+                    return Err(Error::Storage(
+                        "conditional receipt differs from selected volume".into(),
+                    ));
+                }
+                content
+                    .reader
+                    .verify_publication(file, file.descriptor().byte_length(), io)?
+                    .await?;
+            }
+        }
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(not(feature = "filesystem"))]
+        let retained = 0;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok((files, retained))
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "one publication carries its binding, identity, bytes, metadata and IO"
@@ -563,7 +805,7 @@ impl ToolContext {
     }
 
     /// Resolves one public path through the exact workspace's read policy.
-    pub(crate) fn tool_path_selection<'a>(
+    pub(crate) fn tool_read_path_selection<'a>(
         &'a self,
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
@@ -589,6 +831,11 @@ impl ToolContext {
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
         }
+        if path == ".volumes" || path.starts_with(".volumes/") {
+            return Err(Error::tool_rejected(
+                "mounted reads require the original workspace resolver",
+            ));
+        }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
@@ -601,7 +848,7 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        let (volume, relative) = self.tool_path_selection(path, io)?;
+        let (volume, relative) = self.tool_read_path_selection(path, io)?;
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(&relative, history)
                 .map_err(Error::tool_input)?;
@@ -634,7 +881,10 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
-        let content = self.task().tool_read_content();
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         self.task()
             .read_bound_path(
                 content,
@@ -711,6 +961,96 @@ impl ToolContext {
             0
         };
         Ok((selected, bytes, retained))
+    }
+
+    /// Resolves a write destination through the original admitted publisher.
+    /// Read routing remains independent of writer presence and write policy.
+    pub(crate) fn tool_path_selection<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (_, volume, relative) = super::content_write::publication_destination(
+            self.task().tool_content(None),
+            self.effective_scope(),
+            None,
+            path,
+            io,
+        )?;
+        Ok((volume, relative))
+    }
+
+    /// Checks the exact mounted destination using the executing binding and
+    /// original write grant, before the original publisher can have effects.
+    pub(crate) fn authorize_tool_path_publication(
+        &self,
+        path: &str,
+        source: Option<&FileRef>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let (selected, relative) = self.tool_path_selection(path, io)?;
+        if let Some(source) = source {
+            self.task().authorize_file_read(
+                source,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                None,
+                io,
+            )?;
+            if source.volume() != selected || source.path() != relative.as_ref() {
+                return Err(Error::tool_rejected(
+                    "source differs from selected destination",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves one versioned model-visible path through the same original
+    /// grants and immutable descriptor checks used by read/edit and send.
+    pub(crate) async fn read_tool_source(
+        &self,
+        path: &str,
+        version: Option<&str>,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, crate::NativeCustody)> {
+        let selected = if let Some(version) = version {
+            let (source, custody) =
+                crate::tool::files::decode_tool_version(Some(self), path, version, work)?;
+            match source {
+                crate::tool::files::FileReadSource::Content(file) => {
+                    let bytes = self.read_file(&file, io).await?;
+                    return Ok((file, bytes, custody));
+                }
+                crate::tool::files::FileReadSource::Authored(selected) => Some((selected, custody)),
+            }
+        } else {
+            None
+        };
+        let (file, bytes, retained) = self
+            .read_tool_path(
+                path,
+                selected.as_ref().map(|(source, _)| &source.generation),
+                io,
+            )
+            .await?;
+        if selected
+            .as_ref()
+            .is_some_and(|(source, _)| file.descriptor().byte_length() != source.byte_length)
+        {
+            return Err(Error::tool_rejected(
+                "file version length differs from its selection",
+            ));
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = (work, retained);
+            None
+        };
+        Ok((file, bytes, custody))
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.

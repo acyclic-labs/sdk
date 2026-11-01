@@ -85,7 +85,14 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             )
             .await?;
         let edited = host
-            .edit_text(&source, &read, &write, &replacement, 64, &key)
+            .edit_text(
+                &source,
+                &read,
+                &write,
+                std::slice::from_ref(&replacement),
+                64,
+                &key,
+            )
             .await?;
         let user = host
             .put_content(
@@ -111,8 +118,15 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     let head = host.resolve(&workspace, None).await?.generation;
     for maximum_bytes in [0, u64::MAX] {
         assert!(matches!(
-            host.edit_text(&source, &read, &write, &replacement, maximum_bytes, &key)
-                .await,
+            host.edit_text(
+                &source,
+                &read,
+                &write,
+                std::slice::from_ref(&replacement),
+                maximum_bytes,
+                &key
+            )
+            .await,
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
@@ -133,8 +147,15 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         ));
     }
     assert_eq!(
-        host.edit_text(&source, &read, &write, &replacement, 64, &key)
-            .await?,
+        host.edit_text(
+            &source,
+            &read,
+            &write,
+            std::slice::from_ref(&replacement),
+            64,
+            &key
+        )
+        .await?,
         edited
     );
     assert_eq!(host.resolve(&workspace, None).await?.generation, head);
@@ -151,7 +172,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             &source,
             &read,
             &write,
-            &replacement,
+            std::slice::from_ref(&replacement),
             64,
             &IdempotencyKey::new("new-stale-edit")?
         )

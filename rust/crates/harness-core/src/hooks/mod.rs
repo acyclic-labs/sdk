@@ -163,11 +163,7 @@ impl Hooks {
             .filter(move |binding| {
                 binding.event == event
                     && binding.matcher.as_ref().is_none_or(|matcher| {
-                        matcher.matches(subject)
-                            || tool.is_some_and(|tool| {
-                                matcher.matches(&tool.definition.name)
-                                    || tool.hook_names.iter().any(|name| matcher.matches(name))
-                            })
+                        matcher.matches(tool.map_or(subject, |tool| tool.definition.capability()))
                     })
             })
             .flat_map(|binding| &binding.commands))

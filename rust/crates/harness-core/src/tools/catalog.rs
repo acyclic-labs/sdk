@@ -75,6 +75,7 @@ impl ToolSpec {
 
     pub(crate) fn bind_with_projection(&self, mode: ProjectionMode) -> Result<Tool> {
         Ok(Tool {
+            skill_source: None,
             definition: self.definition_with_projection(mode)?,
             hook_names: self.hook_names,
             executor: (self.executor)(self.name),
@@ -85,34 +86,13 @@ impl ToolSpec {
 
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &RUN_JS];
-    #[cfg(target_arch = "wasm32")]
     let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT];
     specs.into_iter()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-static RUN_JS: ToolSpec = ToolSpec {
-    name: "run_js",
-    revision: "1",
-    description: "Run JavaScript for multi-step reads, filters and loops over tools. Use await tools[name](arguments), with each tool's existing JSON input schema; tool functions also expose input_schema. The final expression is returned with a compact call log. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain their normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
-    hook_names: &[],
-    binding: ToolBinding::Volume,
-    input: || {
-        Ok(
-            json!({"type":"object", "properties":{"code":{"type":"string"}}, "required":["code"], "additionalProperties":false}),
-        )
-    },
-    output: object,
-    projection_schema: command_projection,
-    executor: |_| Arc::new(super::code_mode::CodeMode),
-    projection: |_| Arc::new(super::code_mode::CodeMode),
-};
-
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,
-    revision: "2",
+    revision: "3",
     description: super::shell::DESCRIPTION,
     hook_names: &[],
     binding: ToolBinding::Workspace,
@@ -144,13 +124,13 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-8",
-    description: "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
+    revision: "portable-10",
+    description: "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
     output: schema::output::<ReadFileResult>,
-    projection_schema: |mode| FileProjection::Read(mode).schema(),
+    projection_schema: FileProjection::read_schema,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };
@@ -170,8 +150,8 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-6",
-    description: "Replace one exact UTF-8 match in a project path. Reuse a prior read's opaque version to reject an edit against a changed source",
+    revision: "portable-8",
+    description: "Replace one exact UTF-8 match, all non-overlapping matches when replace_all is true, or edit a notebook cell. Reuse a read's opaque version to reject edits against a changed source",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,
     input: schema::input::<EditFileInput>,

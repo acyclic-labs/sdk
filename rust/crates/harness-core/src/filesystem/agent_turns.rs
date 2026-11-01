@@ -120,23 +120,45 @@ impl TurnAdmission {
         issuer: &RuntimeAuthority,
         path: &AgentPath,
     ) -> Result<RuntimeAuthority> {
-        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
-        match self {
-            Self::LocalRoot => issuer.with_audience(Authority {
-                kind: AggregateKind::Conversation,
-                id: path.id().as_str().to_owned(),
-            }),
+        self.verify_with_io(issuer, path, None)
+    }
+
+    fn verify_with_io(
+        &self,
+        issuer: &RuntimeAuthority,
+        path: &AgentPath,
+        io: Option<&super::PreparationIo>,
+    ) -> Result<RuntimeAuthority> {
+        let owner = crate::AgentId::from_bytes(path.identity_bytes());
+        crate::executor::with_history_io(io, |work| match self {
+            Self::LocalRoot => {
+                let id =
+                    crate::executor::preparation_format(format_args!("{}", path.id_text()), work)?;
+                issuer.with_audience_with_work(
+                    Authority {
+                        kind: AggregateKind::Conversation,
+                        id,
+                    },
+                    work,
+                )
+            }
             Self::Admitted { audience, scope } => {
                 if scope.agent().is_some_and(|agent| agent != owner) {
-                    return Err(Error::Unauthorized(
-                        "admitted scope belongs to another agent".into(),
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "admitted scope belongs to another agent",
                     ));
                 }
-                let issuer = issuer.with_audience(audience.clone())?;
-                issuer.verifier(&mut None)?.verify(scope, &mut None)?;
+                let audience = match work.as_deref_mut() {
+                    Some(work) => work.clone_authority(audience)?,
+                    None => audience.clone(),
+                };
+                let issuer = issuer.with_audience_with_work(audience, work)?;
+                issuer.verifier(work)?.verify(scope, work)?;
                 Ok(issuer)
             }
-        }
+        })
     }
 }
 
@@ -163,35 +185,55 @@ impl<'v> AdmittedAgent<'v> {
         path: &AgentPath,
         volumes: &'v [VolumeBinding],
     ) -> Result<Self> {
-        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
+        Self::verify_with_io(issuer, admission, path, volumes, None)
+    }
+
+    fn verify_with_io(
+        issuer: &RuntimeAuthority,
+        admission: &'v TurnAdmission,
+        path: &AgentPath,
+        volumes: &'v [VolumeBinding],
+        io: Option<&super::PreparationIo>,
+    ) -> Result<Self> {
+        let owner = crate::AgentId::from_bytes(path.identity_bytes());
         let private = volumes
             .iter()
             .find(|binding| binding.name == PRIVATE_VOLUME)
-            .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "agent has no private volume",
+                )
+            })?;
         if private.volume.class() != VolumeClass::AgentPrivate
             || *private.volume.owner() != VolumeOwner::Agent(owner)
         {
-            return Err(Error::Unauthorized(
-                "private volume belongs to another agent".into(),
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "private volume belongs to another agent",
             ));
         }
-        let issuer = admission.verify(issuer, path)?;
+        let issuer = admission.verify_with_io(issuer, path, io)?;
         let parent = match admission {
             TurnAdmission::LocalRoot => None,
             TurnAdmission::Admitted { scope, .. } => Some(scope),
         };
         if let Some(scope) = parent {
             // File authority always names the committed private binding.
-            crate::conversation::ContentGrant::authorize_agent_volume(
-                &issuer.verifier(&mut None)?,
-                scope,
-                owner,
-                &private.volume,
-                VolumeOperation::Write,
-                u64::MAX,
-                &mut None,
-            )?;
-            require_structured_write(scope, owner, &private.volume)?;
+            crate::executor::with_history_io(io, |work| {
+                crate::conversation::ContentGrant::authorize_agent_volume(
+                    &issuer.verifier(work)?,
+                    scope,
+                    owner,
+                    &private.volume,
+                    VolumeOperation::Write,
+                    u64::MAX,
+                    work,
+                )
+            })?;
+            require_structured_write_with_io(scope, owner, &private.volume, io)?;
         }
         Ok(Self {
             issuer,
@@ -207,6 +249,14 @@ impl<'v> AdmittedAgent<'v> {
     /// result from another agent) is granted alone, by its exact version; an
     /// admitted agent reads what its admission grants.
     pub(super) async fn authority(self, external: &[FileRef]) -> Result<AgentAuthority<'v>> {
+        self.authority_with_io(external, None).await
+    }
+
+    async fn authority_with_io(
+        self,
+        external: &[FileRef],
+        io: Option<&super::PreparationIo>,
+    ) -> Result<AgentAuthority<'v>> {
         let Self {
             issuer,
             owner,
@@ -214,20 +264,45 @@ impl<'v> AdmittedAgent<'v> {
             private,
             parent,
         } = self;
-        let (grants, scope) = match parent {
-            Some(parent) => {
-                let scope = issuer
-                    .issue(Some(parent), "agent", parent.capabilities(), Some(owner))
-                    .await?;
-                (scope.capabilities().clone(), scope)
-            }
+        let grants = match parent {
+            Some(parent) => crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let grants = crate::core::copy(parent.capabilities(), &mut quota, |value, _| {
+                    value.logical_owned_bytes()
+                })?;
+                quota.transfer();
+                Ok::<_, Error>(grants)
+            })?,
             None => {
-                let grants = Capabilities::new(root_grants(volumes, external)?);
-                let scope = issuer.issue(None, "agent", &grants, Some(owner)).await?;
-                (grants, scope)
+                let labels = root_grants_with_io(volumes, external, io)?;
+                match io {
+                    Some(io) => {
+                        let bytes = io.encode(&labels, u64::MAX, true)?;
+                        super::retain_decoded(io.decode(
+                            std::marker::PhantomData::<Capabilities>,
+                            &bytes,
+                            crate::wire::ErrorCode::Storage,
+                        )?)?
+                    }
+                    None => Capabilities::new(labels),
+                }
             }
         };
-        let verifier = issuer.verifier(&mut None)?;
+        let scope = match io {
+            Some(io) => {
+                issuer
+                    .issue_with_work(
+                        parent,
+                        "agent",
+                        &grants,
+                        Some(owner),
+                        &mut Some(&mut io.history_io()),
+                    )
+                    .await?
+            }
+            None => issuer.issue(parent, "agent", &grants, Some(owner)).await?,
+        };
+        let verifier = crate::executor::with_history_io(io, |work| issuer.verifier(work))?;
         Ok(AgentAuthority {
             issuer,
             scope,
@@ -266,23 +341,57 @@ pub(super) fn require_structured_write(
     owner: crate::AgentId,
     volume: &crate::conversation::VolumeRef,
 ) -> Result<()> {
+    require_structured_write_with_io(scope, owner, volume, None)
+}
+
+fn require_structured_write_with_io(
+    scope: &Scope,
+    owner: crate::AgentId,
+    volume: &VolumeRef,
+    io: Option<&super::PreparationIo>,
+) -> Result<()> {
     use acyclic_fs::access::{
         Action, Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind,
         Resource,
     };
-    let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
+    let Some(label) = crate::executor::with_history_io(io, |work| {
+        crate::core::filesystem_scope_label(scope.capabilities(), work)
+    })?
+    else {
         return Ok(());
     };
-    let denied = || Error::Unauthorized("admission does not grant writing the volume".into());
-    let capability = Capability::from_scope_label(label)
-        .ok()
-        .flatten()
-        .ok_or_else(denied)?;
-    let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
-        .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?;
+    let denied = || {
+        crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unauthorized,
+            "admission does not grant writing the volume",
+        )
+    };
+    let capability: Capability = match io {
+        Some(io) => super::retain_decoded(io.decode(
+            std::marker::PhantomData,
+            super::access::capability_payload(Some(label), VolumeOperation::Write, io)?,
+            crate::wire::ErrorCode::Unauthorized,
+        )?)?,
+        None => Capability::from_scope_label(label)
+            .ok()
+            .flatten()
+            .ok_or_else(denied)?,
+    };
+    let policy: Policy = match io {
+        Some(io) => super::retain_decoded(io.decode(
+            std::marker::PhantomData,
+            INITIAL_POLICY,
+            crate::wire::ErrorCode::Storage,
+        )?)?,
+        None => serde_json::from_slice(INITIAL_POLICY)
+            .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?,
+    };
     let principal = Principal {
         kind: PrincipalKind::Agent,
-        id: owner.to_string(),
+        id: crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{owner}"), work)
+        })?,
         lineage: Vec::new(),
         groups: Default::default(),
         roles: Default::default(),
@@ -290,7 +399,16 @@ pub(super) fn require_structured_write(
         attributes: Default::default(),
     };
     let now = super::access::access_now()?;
-    let view = PathTrie::compile(
+    let initial = io
+        .map(|io| {
+            io.remaining()
+                .map(|remaining| usize::try_from(remaining.items_examined).unwrap_or(usize::MAX))
+        })
+        .transpose()?
+        .unwrap_or(usize::MAX);
+    let mut remaining = initial;
+    let mut refusal = None;
+    let view = PathTrie::compile_with_work(
         &policy,
         &principal,
         Resource {
@@ -303,8 +421,33 @@ pub(super) fn require_structured_write(
         },
         Context { now, approvals: 0 },
         &capability,
-    )
-    .map_err(|_| denied())?;
+        &mut remaining,
+        |bytes| {
+            if let Some(io) = io {
+                if let Err(error) = io
+                    .retain_owned(bytes as u64)
+                    .map_err(Error::from)
+                    .and_then(|()| io.allocation_attempt(bytes as u64))
+                {
+                    refusal = Some(error);
+                    return Err(acyclic_fs::access::InvalidPolicy(
+                        "original agent admission work exhausted",
+                    ));
+                }
+            }
+            Ok(())
+        },
+    );
+    if let Some(error) = refusal {
+        return Err(error);
+    }
+    if let Some(io) = io {
+        io.charge(acyclic_fs::WorkCounters {
+            items_examined: (initial - remaining) as u64,
+            ..Default::default()
+        })?;
+    }
+    let view = view.map_err(|_| denied())?;
     if view.allows_every_path(&[Action::Create, Action::Write], now) {
         Ok(())
     } else {
@@ -314,38 +457,70 @@ pub(super) fn require_structured_write(
 
 /// A local root agent's grants: routing, its agent tools, read and write of
 /// every bound volume, and each `external` file by its exact version.
-fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
-    let mut grants = Vec::with_capacity(2 * volumes.len() + 1);
-    grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
+fn root_grants_with_io(
+    volumes: &[VolumeBinding],
+    external: &[FileRef],
+    io: Option<&super::PreparationIo>,
+) -> Result<Vec<String>> {
+    let count = volumes
+        .len()
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(1 + crate::tools::AGENT_TOOLS.len()))
+        .and_then(|count| {
+            external
+                .len()
+                .checked_mul(2)
+                .and_then(|extra| count.checked_add(extra))
+        })
+        .ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "agent grant size overflows address space",
+            )
+        })?;
+    let mut grants = crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let grants = crate::core::reserve_copy_vector(count, &mut quota)?;
+        quota.transfer();
+        Ok::<_, Error>(grants)
+    })?;
+    grants.push(crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(
+            format_args!("{}", crate::contract::capability::INTERACTION_ROUTE),
+            work,
+        )
+    })?);
     // Every agent may spawn, message and archive within its own subtree.
-    grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
+    for tool in crate::tools::AGENT_TOOLS {
+        grants.push(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("tool:call:{tool}"), work)
+        })?);
+    }
     for binding in volumes {
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Read, &mut None)?,
-        );
-        grants.push(
-            binding
-                .volume
-                .capability(VolumeOperation::Write, &mut None)?,
-        );
+        grants.push(crate::executor::with_history_io(io, |work| {
+            binding.volume.capability(VolumeOperation::Read, work)
+        })?);
+        grants.push(crate::executor::with_history_io(io, |work| {
+            binding.volume.capability(VolumeOperation::Write, work)
+        })?);
     }
     for file in external {
         if !volumes
             .iter()
             .any(|binding| binding.volume == *file.volume())
         {
-            grants.push(file.read_capability(&mut None)?);
+            grants.push(crate::executor::with_history_io(io, |work| {
+                file.read_capability(work)
+            })?);
             // An attachment manifest's files are copies in its own directory,
             // so one grant reaches them however many it lists.
             if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
                 && let Some((directory, _)) = file.path().rsplit_once('/')
             {
-                grants.push(
-                    file.volume()
-                        .directory_read_capability(directory, &mut None)?,
-                );
+                grants.push(crate::executor::with_history_io(io, |work| {
+                    file.volume().directory_read_capability(directory, work)
+                })?);
             }
         }
     }
@@ -367,10 +542,37 @@ pub async fn agent_authority<'v>(
         .await
 }
 
+async fn agent_authority_with_io<'v>(
+    issuer: &RuntimeAuthority,
+    admission: &'v TurnAdmission,
+    path: &AgentPath,
+    volumes: &'v [VolumeBinding],
+    external: &[FileRef],
+    io: &super::PreparationIo,
+) -> Result<AgentAuthority<'v>> {
+    AdmittedAgent::verify_with_io(issuer, admission, path, volumes, Some(io))?
+        .authority_with_io(external, Some(io))
+        .await
+}
+
 /// Builds the executor of one agent turn: its tools, context, policy, limits
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// The executor's existing per-part render allowance, if finite. Selection
+    /// chunks pending events under this same allowance before request admission.
+    fn render_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    /// Attaches the original serving lifetime before any delivery can run.
+    /// Implementations without retained work need no session attachment.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        let _ = session;
+        Ok(())
+    }
+
     /// Executor for `agent`'s turn `turn` on `input`.
     fn executor<'a>(
         &'a self,
@@ -458,6 +660,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Attaches the serving task's original admission before actor dispatch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        self.executors.admit_session(session)
+    }
+
     /// Host signing each agent's authority with `issuer`'s custody, derived
     /// from `admission`. Every turn runs under one approval policy, resolved
     /// once: the agent's own policy file, chosen explicitly when it was
@@ -794,32 +1002,37 @@ where
     async fn entries(
         &self,
         agent: &AgentState,
-        from: u64,
+        mut from: u64,
         count: u64,
     ) -> Result<Vec<ConversationEntry>> {
         if count == 0 {
             return Ok(Vec::new());
         }
+        let end = from
+            .checked_add(count)
+            .ok_or_else(|| Error::Invalid("conversation range overflows".into()))?;
         let path = agent.path.conversation().map_err(agent_error)?;
-        let records = match self
-            .stream
-            .read(ReadRequest {
-                key: None,
-                path,
-                from,
-                limit: u32::try_from(count).unwrap_or(u32::MAX),
-                at_least: Default::default(),
-            })
-            .await
-        {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        records
-            .iter()
-            .map(|record| ConversationEntry::decode(&record.value).map_err(agent_error))
-            .collect()
+        let mut entries = Vec::new();
+        while from < end {
+            let limit = u32::try_from(end - from).unwrap_or(u32::MAX);
+            let through = from + u64::from(limit);
+            let records = self
+                .stream
+                .read(ReadRequest {
+                    key: None,
+                    path: path.clone(),
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let mut records = acyclic_stream::pages::ExactRange::new(records, from..through)?;
+            while let Some(record) = records.try_next().await? {
+                entries.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+            }
+            from = through;
+        }
+        Ok(entries)
     }
 }
 
@@ -846,6 +1059,156 @@ fn roster_id(turn: OperationId) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+fn notice_id(turn: OperationId, block: usize) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.notices.v1");
+    hasher.update(&turn.into_bytes());
+    hasher.update(&(block as u64).to_le_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
+/// Read only the frozen original interval. A quiet event delivered during a
+/// paused turn is beyond this cut and cannot change an admitted request.
+async fn selected_notices<P: StreamProvider + ?Sized>(
+    stream: &P,
+    agent: &AgentPath,
+    selected: Option<&crate::agent::NoticeSelection>,
+    input: ModelContent,
+    maximum: Option<u64>,
+) -> Result<(Vec<ModelContent>, Option<ModelContent>)> {
+    use crate::model::ModelContentPart;
+    let mut pending = NoticeBlocks::new(maximum);
+    if let Some(selected) = selected {
+        selected.validate(agent).map_err(agent_error)?;
+        let mut from = selected.range.start;
+        while from < selected.range.end {
+            let limit = u32::try_from(selected.range.end - from).unwrap_or(u32::MAX);
+            let records = stream
+                .read(ReadRequest {
+                    key: None,
+                    path: selected.source.inbox().map_err(agent_error)?,
+                    from,
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let end = from + u64::from(limit);
+            let mut records = acyclic_stream::pages::ExactRange::new(records, from..end)?;
+            while let Some(record) = records.try_next().await? {
+                if let crate::agent::InboxRecord::Notice { notice, .. } =
+                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
+                    && !notice.wake
+                {
+                    pending.push(notice)?;
+                }
+            }
+            from = end;
+        }
+    }
+    let input = match input {
+        ModelContent::Part(ModelContentPart::Notices { notices }) => {
+            for notice in notices {
+                pending.push(notice)?;
+            }
+            None
+        }
+        ModelContent::Parts(mut parts)
+            if matches!(parts.first(), Some(ModelContentPart::Notices { .. })) =>
+        {
+            // Move the original attachment vector; do not clone its files or
+            // derive authority from references mentioned in notice JSON.
+            parts.rotate_left(1);
+            let Some(ModelContentPart::Notices { notices }) = parts.pop() else {
+                return Err(Error::Invalid("notice input lost its event block".into()));
+            };
+            for notice in notices {
+                pending.push(notice)?;
+            }
+            match parts.len() {
+                0 => None,
+                1 => parts.pop().map(ModelContent::Part),
+                _ => Some(ModelContent::Parts(parts)),
+            }
+        }
+        other => Some(other),
+    };
+    Ok((pending.finish(), input))
+}
+
+/// Partition before coalescing: individually admitted notices cannot grow one
+/// unbounded coalesced paths array. Each block retains the original event order;
+/// coalescing is restricted to that unsent block and can only reduce its size.
+struct NoticeBlocks {
+    pending: acyclic_model_render::PendingNotices,
+    blocks: Vec<ModelContent>,
+    maximum: Option<u64>,
+    envelope: u64,
+    bytes: u64,
+    count: usize,
+}
+
+impl NoticeBlocks {
+    fn new(maximum: Option<u64>) -> Self {
+        Self {
+            pending: Default::default(),
+            blocks: Vec::new(),
+            maximum,
+            envelope: 0,
+            bytes: 0,
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, notice: crate::conversation::wire::Notice) -> Result<()> {
+        if let Some(maximum) = self.maximum {
+            if self.envelope == 0 {
+                self.envelope = crate::executor::json::json_byte_length(
+                    &crate::model::ModelContentPart::Notices {
+                        notices: Vec::new(),
+                    },
+                    maximum,
+                    &mut None,
+                )?;
+                self.bytes = self.envelope;
+            }
+            // Count the original event once, without a temporary JSON buffer.
+            let bytes = crate::executor::json::json_byte_length_at_depth(
+                &notice,
+                maximum - self.envelope,
+                256,
+                &mut None,
+            )?;
+            let separator = u64::from(self.count != 0);
+            if bytes + separator > maximum - self.bytes {
+                self.flush();
+            }
+            self.bytes += bytes + u64::from(self.count != 0);
+        }
+        self.pending
+            .push(notice)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        self.count += 1;
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        if self.count != 0 {
+            let notices = std::mem::take(&mut self.pending).finish();
+            self.blocks.push(ModelContent::Part(
+                crate::model::ModelContentPart::Notices { notices },
+            ));
+            self.bytes = self.envelope;
+            self.count = 0;
+        }
+    }
+
+    fn finish(mut self) -> Vec<ModelContent> {
+        self.flush();
+        self.blocks
+    }
+}
+
 /// Stable, domain-separated identity of a directive.
 fn directive_id(domain: &str, text: &str) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key(domain);
@@ -866,12 +1229,19 @@ struct TurnContext<'a> {
     checkpoint: Option<(OperationId, FileRef)>,
     /// Each settled turn: its id, the roster it announced, its input and
     /// its staged output.
-    settled: Vec<(OperationId, Option<FileRef>, ModelContent, FileRef)>,
+    settled: Vec<(
+        OperationId,
+        Option<FileRef>,
+        ModelContent,
+        FileRef,
+        Option<crate::agent::NoticeSelection>,
+    )>,
     /// Latest roster message in `settled`, indexed while selecting history.
     roster_at: Option<usize>,
     turn: OperationId,
     input: ModelContent,
     policy: Option<&'a FileRef>,
+    notices: Option<crate::agent::NoticeSelection>,
 }
 
 impl<'a> TurnContext<'a> {
@@ -914,6 +1284,7 @@ impl<'a> TurnContext<'a> {
                     entry.targets,
                     crate::agent::model_input(&entry.input).map_err(agent_error)?,
                     entry.output,
+                    entry.notices,
                 ))
             })
             .collect::<Result<_>>()?;
@@ -926,13 +1297,14 @@ impl<'a> TurnContext<'a> {
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume.
             policy: agent.policy.as_ref(),
+            notices: crate::agent::turn_notices(agent).map_err(agent_error)?,
         })
     }
 
     /// Decode each selected input once, retaining its ordered exact references
     /// for both grant derivation and the eventual model selection.
     async fn expand_inputs(&mut self, reader: &dyn ContentResidencyVerifier) -> Result<()> {
-        for (_, _, input, _) in &mut self.settled {
+        for (_, _, input, _, _) in &mut self.settled {
             let original = std::mem::replace(input, ModelContent::Text(String::new()));
             *input = crate::agent::expand_attachments(original, reader).await?;
         }
@@ -958,33 +1330,41 @@ impl<'a> TurnContext<'a> {
         self.checkpoint
             .iter()
             .map(|(_, summary)| summary)
-            .chain(self.settled.iter().flat_map(|(_, roster, input, output)| {
-                roster
+            .chain(
+                self.settled
                     .iter()
-                    .chain(input.file_refs())
-                    .chain(std::iter::once(output))
-            }))
+                    .flat_map(|(_, roster, input, output, _)| {
+                        roster
+                            .iter()
+                            .chain(input.file_refs())
+                            .chain(std::iter::once(output))
+                    }),
+            )
             .chain(self.input.file_refs())
             .chain(self.policy)
     }
 
     /// The selection: the checkpoint's summary as one assistant message
     /// (none when it is empty), then one user and one assistant message per
-    /// settled turn, assistant text read from its staged output through
+    /// settled turn. Assistant outputs retain their original immutable result
+    /// references; the shared file projection resolves selected text through
     /// `reader`, which holds [`Self::files`]. Shared instructions open every
     /// selection. Target rosters remain separate user messages before each
     /// turn input and retain their original publication identity.
-    async fn select(
+    async fn select<P: StreamProvider + ?Sized>(
         self,
+        stream: &P,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
         roster: Option<&FileRef>,
+        render_bytes: Option<u64>,
     ) -> Result<SelectedModelContext> {
         let Self {
             checkpoint,
             settled,
             turn,
+            notices: current_notices,
             ..
         } = self;
         let summary = match checkpoint {
@@ -1038,30 +1418,61 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(roster_id(turn));
         };
-        for (settled, announced, content, output) in settled {
+        for (settled, announced, content, output, notices) in settled {
             if let Some(announced) = &announced {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
-            let text = staged_text(reader, &output).await?;
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content,
-            });
-            message_ids.push(message_id(settled, ModelRole::User));
+            let (notices, content) =
+                selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
+                    .await?;
+            for (block, notices) in notices.into_iter().enumerate() {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content: notices,
+                });
+                message_ids.push(notice_id(settled, block));
+            }
+            if let Some(content) = content {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                });
+                message_ids.push(message_id(settled, ModelRole::User));
+            }
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text(text),
+                content: ModelContent::Part(crate::model::ModelContentPart::File {
+                    file: output,
+                    policy: crate::model::FileProjectionPolicy::TurnOutput,
+                }),
             });
             message_ids.push(message_id(settled, ModelRole::Assistant));
         }
         if let Some(roster) = roster {
             announce(&mut messages, &mut message_ids, turn, roster);
         }
-        messages.push(ModelMessage {
-            role: ModelRole::User,
-            content: input.clone(),
-        });
-        message_ids.push(message_id(turn, ModelRole::User));
+        let (notices, input) = selected_notices(
+            stream,
+            &agent.path,
+            current_notices.as_ref(),
+            input.clone(),
+            render_bytes,
+        )
+        .await?;
+        for (block, notices) in notices.into_iter().enumerate() {
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: notices,
+            });
+            message_ids.push(notice_id(turn, block));
+        }
+        if let Some(input) = input {
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: input,
+            });
+            message_ids.push(message_id(turn, ModelRole::User));
+        }
         Ok(SelectedModelContext {
             selection: ModelContextSelection {
                 conversation_revision: agent.conversation_tail + 1,
@@ -1079,9 +1490,7 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
     let bytes = reader
         .read(output, output.descriptor().byte_length(), None, None)?
         .await?;
-    serde_json::from_slice::<TurnOutput>(&bytes)
-        .map(|output| output.text)
-        .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
+    TurnOutput::project_text(&bytes, None)
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
@@ -1183,12 +1592,23 @@ where
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = context
                 .select(
+                    &*self.stream,
                     agent,
                     &*bindings.content.reader,
                     input,
                     roster.as_ref().map(|(file, _)| file),
+                    self.executors.render_bytes(),
                 )
                 .await?;
+            // The original selection validator requires the current input to
+            // equal its final message. A waking Notice carries the whole frozen
+            // event block after coalescing, not just the event that woke it.
+            let input = selected
+                .messages
+                .last()
+                .ok_or_else(|| Error::Invalid("selected turn has no current input".into()))?
+                .content
+                .clone();
             let journal = journal.with_bound_selection(selected.clone());
             let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
             let mut authority = TurnAuthority {
@@ -1208,7 +1628,7 @@ where
             Ok(OpenTurn {
                 executor: self
                     .executors
-                    .executor(agent, turn, input, &authority)
+                    .executor(agent, turn, &input, &authority)
                     .await?,
                 journal,
                 max_steps: self.limits.max_steps,
@@ -1219,7 +1639,7 @@ where
                 effects: Some(effects),
                 goal,
                 outputs,
-                input: Some(input.clone()),
+                input: Some(input),
                 roster,
             })
         })
@@ -1244,6 +1664,60 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn settled_with_io<'a>(
+        &'a self,
+        child: &'a AgentPath,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<crate::agent::Phase>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            match io {
+                Some(io) => crate::agent::settled_with_io(&self.stream, child, io).await,
+                None => self.settled(child).await,
+            }
+        })
+    }
+
+    fn answer_with_io<'a>(
+        &'a self,
+        child: &'a AgentPath,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<String>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(io) = io else {
+                return self.answer(child).await;
+            };
+            let Some(entry) = crate::agent::answer_with_io(&self.stream, child, io).await? else {
+                return Ok(None);
+            };
+            let external = [entry.output];
+            let authority = agent_authority_with_io(
+                &self.issuer,
+                &self.admission,
+                &self.agent,
+                &self.volumes,
+                &external,
+                io,
+            )
+            .await?;
+            let reader = FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &authority.verifier,
+                &authority.scope,
+                self.maximum_bytes,
+                Some(io),
+            )?;
+            let bytes = reader
+                .read(&external[0], self.maximum_bytes, None, Some(io))?
+                .await?;
+            let output: TurnOutput = super::retain_decoded(io.decode(
+                std::marker::PhantomData,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            )?)?;
+            Ok(Some(output.text))
+        })
+    }
+
     fn agent(&self) -> &AgentPath {
         &self.agent
     }
@@ -1290,9 +1764,7 @@ where
             let bytes = reader
                 .read(&external[0], self.maximum_bytes, None, None)?
                 .await?;
-            let output: TurnOutput = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-            Ok(Some(output.text))
+            Ok(Some(TurnOutput::project_text(&bytes, None)?))
         })
     }
 }

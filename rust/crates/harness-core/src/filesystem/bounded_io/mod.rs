@@ -215,7 +215,9 @@ impl PreparationIo {
         }
         Ok(custody)
     }
-    pub(crate) fn original_native_work(&self) -> crate::NativeWork<'_> {
+    /// Borrows the original native ledger without creating allocation authority.
+    #[doc(hidden)]
+    pub fn original_native_work(&self) -> crate::NativeWork<'_> {
         match self {
             Self::Owned { .. } => None,
             #[cfg(not(target_arch = "wasm32"))]

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_fs::kernel::AsyncBlobSource as _;
 use acyclic_stream::OwnedBytes;
 
 // Slice callers need an owned mutation payload. Encoded journal bytes already
@@ -32,6 +33,145 @@ impl ContentInput for OwnedBytes {
         // Ordinary Bytes can allocate a sharing header on their first clone.
         // Retain the existing funded copy outside original native custody.
         bounded_io::clone_bytes(self.as_ref(), io)
+    }
+}
+
+pub(super) enum PublicationInput<'a, B: ContentInput + ?Sized> {
+    Bytes(&'a B),
+    Source(std::pin::Pin<&'a mut dyn crate::conversation::ContentSource>),
+}
+
+impl<B: ContentInput + ?Sized> PublicationInput<'_, B> {
+    pub(super) fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(input) => Some(input.as_ref()),
+            Self::Source(_) => None,
+        }
+    }
+}
+
+/// Hashes each accepted source interval once while forwarding its original
+/// ownership. This projection owns no payload buffer or publication identity.
+pub(super) struct DescribedSource<'a> {
+    source: crate::conversation::ContentSourceAdapter<'a>,
+    io: &'a PreparationIo,
+    digest: sha2::Sha256,
+    length: u64,
+}
+
+impl<'a> DescribedSource<'a> {
+    pub(super) fn new(
+        source: std::pin::Pin<&'a mut dyn crate::conversation::ContentSource>,
+        io: &'a PreparationIo,
+    ) -> Self {
+        use sha2::Digest as _;
+        Self {
+            source: crate::conversation::ContentSourceAdapter::new(source),
+            io,
+            digest: sha2::Sha256::new(),
+            length: 0,
+        }
+    }
+
+    fn accept(&mut self, bytes: &[u8]) -> std::result::Result<(), acyclic_fs::FsError> {
+        use sha2::Digest as _;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let length = self
+            .length
+            .checked_add(bytes.len() as u64)
+            .ok_or(acyclic_fs::WorkError::Overflow)?;
+        let work = WorkCounters {
+            bytes_hashed: bytes.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        self.io.preflight(work)?;
+        self.digest.update(bytes);
+        self.io.charge(work)?;
+        self.length = length;
+        Ok(())
+    }
+
+    pub(super) fn descriptor(self, media_type: &str) -> Result<FileDescriptor> {
+        use sha2::Digest as _;
+        FileDescriptor::new(
+            self.digest.finalize().into(),
+            self.length,
+            stock_string_copy(media_type, Some(self.io))?,
+        )
+    }
+}
+
+impl acyclic_fs::kernel::AsyncBlobSource for DescribedSource<'_> {
+    async fn read<'a>(
+        &'a mut self,
+        destination: &'a mut [u8],
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> std::io::Result<usize> {
+        let read = self.source.read(destination, budget, cancellation).await?;
+        let bytes = destination
+            .get(..read)
+            .ok_or_else(|| std::io::Error::other("source exceeded its read destination"))?;
+        self.accept(bytes).map_err(std::io::Error::other)?;
+        Ok(read)
+    }
+
+    async fn read_owned(
+        &mut self,
+        maximum: usize,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::io::Result<Option<acyclic_fs::kernel::OwnedSourceChunk>> {
+        let chunk = self
+            .source
+            .read_owned(maximum, budget, cancellation)
+            .await?;
+        if let Some(chunk) = &chunk {
+            self.accept(&chunk.bytes).map_err(std::io::Error::other)?;
+        }
+        Ok(chunk)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_with_native_work<'a>(
+        &'a mut self,
+        destination: &'a mut [u8],
+        original: &'a acyclic_fs::NativeMaterializationWork,
+        cancellation: &'a acyclic_fs::CancellationToken,
+    ) -> std::result::Result<usize, acyclic_fs::FsError> {
+        let read = self
+            .source
+            .read_with_native_work(destination, original, cancellation)
+            .await?;
+        let bytes = destination
+            .get(..read)
+            .ok_or(acyclic_fs::kernel::BlobBuildError::TooLarge)?;
+        self.accept(bytes)?;
+        Ok(read)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn read_owned_with_native_work(
+        &mut self,
+        maximum: usize,
+        original: &acyclic_fs::NativeMaterializationWork,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> std::result::Result<Option<acyclic_fs::kernel::OwnedSourceChunk>, acyclic_fs::FsError>
+    {
+        let chunk = self
+            .source
+            .read_owned_with_native_work(maximum, original, cancellation)
+            .await?;
+        if let Some(chunk) = &chunk {
+            self.accept(&chunk.bytes)?;
+        }
+        Ok(chunk)
+    }
+
+    fn take_work(&mut self) -> Option<WorkCounters> {
+        self.source.take_work()
     }
 }
 

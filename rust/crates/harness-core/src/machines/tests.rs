@@ -243,7 +243,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
             Err(Error::Unauthorized(_))
         ));
     }
-    let grants = crate::Capabilities::new([read, write, shell]);
+    let grants = crate::Capabilities::new([read.clone(), write.clone(), shell]);
     let scope = issuer.bootstrap_scope("full", &grants, None, &mut None)?;
     let workspace = MachinesWorkspace::new(
         host,
@@ -253,6 +253,66 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
         scope.clone(),
         issuer.verifier(&mut None)?,
     )?;
+    // A pinned query adapter uses the same physical shell without acquiring a
+    // general shell grant. Only original stock admission can retain this field.
+    let query = crate::contract::capability::tool_call("search");
+    for allowed in [false, true] {
+        let grants = crate::Capabilities::new(
+            [
+                Some(read.clone()),
+                Some(write.clone()),
+                allowed.then(|| query.clone()),
+            ]
+            .into_iter()
+            .flatten(),
+        );
+        assert!(!grants.contains("tool:call:shell"));
+        let task = Arc::new(crate::runtime::test_context::agent_context(
+            crate::runtime::RuntimeScope::new(grants, crate::conversation::Limits::default())?,
+            None,
+        )?);
+        let operation = OperationId::new();
+        let mut context = crate::runtime::ToolContext::new(task, operation, "query")?;
+        let mut invocation = crate::tool::ToolInvocation {
+            operation_id: operation,
+            call_id: "query".into(),
+            name: "shell".into(),
+            arguments: serde_json::json!({"command":"rg pattern"}),
+        };
+        assert!(matches!(
+            crate::tool::ToolExecutor::authorize(
+                &workspace,
+                None,
+                Some(&context),
+                &invocation,
+                None
+            ),
+            Err(Error::Unauthorized(_)),
+        ));
+        context.admitted_capability = Some(query.clone());
+        assert_eq!(
+            crate::tool::ToolExecutor::authorize(
+                &workspace,
+                None,
+                Some(&context),
+                &invocation,
+                None
+            )
+            .is_ok(),
+            allowed,
+        );
+        invocation.operation_id = OperationId::new();
+        assert!(matches!(
+            crate::tool::ToolExecutor::authorize(
+                &workspace,
+                None,
+                Some(&context),
+                &invocation,
+                None
+            ),
+            Err(Error::Unauthorized(_)),
+        ));
+    }
     issuer.revoke_workload(&scope)?;
     assert!(matches!(
         workspace
@@ -261,6 +321,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                     command: "true".into(),
                     cwd: None,
                     timeout_ms: None,
+                    output_lines: None,
                     target: None
                 },
                 1024

@@ -23,6 +23,7 @@ name = "main"
 path = "tests/main.rs"
 
 [features]
+code-mode = ["filesystem", "dep:rquickjs-sys"]
 conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
@@ -104,8 +105,9 @@ prost-build.workspace = true
 protoc-bin-vendored.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures", "parallel"] }
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
+rquickjs-sys = { version = "=0.9.0", default-features = false, optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }

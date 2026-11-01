@@ -72,15 +72,23 @@ pub(super) async fn review_model(
         crate::executor::preparation_format(format_args!("{}:{principal}", request.id()), work)
     })?;
     let identity = blake3::derive_key("acyclic.approver-model/v1", binding.as_bytes());
-    let operation = OperationId::from_bytes(
-        *identity
-            .first_chunk::<16>()
-            .ok_or_else(|| Error::Invalid("approver identity is incomplete".into()))?,
-    );
+    let operation = OperationId::from_bytes(*identity.first_chunk::<16>().ok_or_else(|| {
+        super::super::io::error(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "approver identity is incomplete",
+        )
+    })?);
     let input = TurnInput {
         operation_id: operation,
         input: ModelContent::Text(crate::executor::stock_string_copy(
-            std::str::from_utf8(request.bytes()).map_err(storage)?,
+            std::str::from_utf8(request.bytes()).map_err(|_| {
+                super::super::io::error(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "approval request is not UTF-8",
+                )
+            })?,
             io,
         )?),
         selected_context: None,
@@ -106,7 +114,7 @@ pub(super) async fn review_model(
 mod tests {
     use super::*;
     use crate::{
-        AgentId,
+        AgentId, Error,
         context::{ModelContextCapacity, ModelTokenCount},
         filesystem::MemoryHarnessStorage,
         model::{ModelEvent, ToolCall},

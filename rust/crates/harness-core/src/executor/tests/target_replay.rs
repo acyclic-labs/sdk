@@ -595,6 +595,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             tools.register(
                 (
                     crate::tool::Tool {
+                        skill_source: None,
                         hook_names: &[],
                         definition: crate::tool::ToolDefinition {
                             name: name.into(),
@@ -640,20 +641,22 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 .clone()
                 .with_task_context(&bind(vec![old.clone(), new.clone()])?, operation)?;
             let mut messages = vec![call_message(&invocation)];
-            assert!(matches!(
-                StockExecution::ordinary(&first)
-                    .settle_tool_call(
-                        &journal,
-                        operation,
-                        0,
-                        invocation.clone(),
-                        0,
-                        &mut messages,
-                        &mut Vec::new(),
-                    )
-                    .await,
-                Err(Error::Indeterminate(_))
-            ));
+            let first_result = StockExecution::ordinary(&first)
+                .settle_tool_call(
+                    &journal,
+                    operation,
+                    0,
+                    invocation.clone(),
+                    0,
+                    &mut messages,
+                    &mut Vec::new(),
+                )
+                .await;
+            assert!(
+                matches!(&first_result, Err(Error::Storage(reason)) if reason == "device reply lost after effect"),
+                "original device response: {:?}",
+                first_result.err(),
+            );
             let (_, records) = StockExecution::ordinary(&first)
                 .tool_records(&journal, operation, 0, "command")
                 .await?;

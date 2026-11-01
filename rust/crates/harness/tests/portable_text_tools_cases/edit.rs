@@ -98,10 +98,16 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         Err(Error::Unsupported(_))
     ));
     assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);
-    let replacement = ExactTextReplacement {
-        old_text: "two".into(),
-        new_text: "three".into(),
-    };
+    let replacement = [
+        ExactTextReplacement {
+            old_text: "two".into(),
+            new_text: "intermediate".into(),
+        },
+        ExactTextReplacement {
+            old_text: "intermediate".into(),
+            new_text: "three".into(),
+        },
+    ];
     assert!(matches!(
         host.edit_text(
             &source,
@@ -114,6 +120,43 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         .await,
         Err(Error::Unauthorized(_))
     ));
+    let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
+    let before = host.resolve(&workspace, None).await?.generation;
+    let invalid = [
+        ExactTextReplacement {
+            old_text: "two".into(),
+            new_text: "partial".into(),
+        },
+        ExactTextReplacement {
+            old_text: "missing".into(),
+            new_text: "unreachable".into(),
+        },
+    ];
+    assert!(matches!(
+        host.edit_text(
+            &source,
+            &read,
+            &write,
+            &invalid,
+            64,
+            &IdempotencyKey::new("invalid-sequence")?
+        )
+        .await,
+        Err(Error::ExactEdit(_))
+    ));
+    assert!(matches!(
+        host.edit_text(
+            &source,
+            &read,
+            &write,
+            &[],
+            64,
+            &IdempotencyKey::new("empty-sequence")?
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(host.resolve(&workspace, None).await?.generation, before);
     let key = IdempotencyKey::new("edit")?;
     let edited = host
         .edit_text(&source, &read, &write, &replacement, 64, &key)
@@ -126,7 +169,6 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one\r\ntwo\n"
     );
-    let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace, None).await?.generation;
     let user = host
         .put_content(
@@ -169,8 +211,15 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         new_text: "different".into(),
     };
     assert!(matches!(
-        host.edit_text(&source, &read, &write, &changed, 64, &key)
-            .await,
+        host.edit_text(
+            &source,
+            &read,
+            &write,
+            std::slice::from_ref(&changed),
+            64,
+            &key
+        )
+        .await,
         Err(Error::Conflict(_))
     ));
     assert!(matches!(

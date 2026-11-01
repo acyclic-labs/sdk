@@ -10,10 +10,10 @@ refusals and deterministic replay. The assertions accept any `ModelProvider` and
 contain no provider-specific branches. Each complete fixture family has all eight
 cases; missing real captures fail qualification.
 
-Run on Linux from the checkout:
+Run the shared conformance suite:
 
-```powershell
-cargo test -p acyclic-conformance --features inference
+```sh
+cargo test --locked -p acyclic-conformance --features inference
 ```
 
 `inference-qualify PATH/manifest.json [...]` checks unmodified captured HTTP bodies,
@@ -23,7 +23,7 @@ result from the output under test. The llama.cpp fixture is real; cloud provider
 qualification requires separate captured-real families.
 
 A manifest records the provider ID, original `ProviderSpec` without credentials,
-model/options, UTC capture time, origin, the actual overflowing `context_input`,
+model identity, UTC capture time, origin, the actual overflowing `context_input`,
 and all six real response bodies (`text`,
 `tool`, `result`, `rate`, `context`, `auth`). Each body has its original HTTP status
 and SHA-256 digest. Optional request URL and JSON-pointer assertions bind the
@@ -45,18 +45,21 @@ context admission/compaction still refuses without a verified token counter.
 
 Model selection is a public harness component. A host composes a `Registry` with
 its protected credential source and `HttpTransport`, registers `ProviderSpec`
-values, then calls `resolve_with_options("provider/model", options)`. The returned
+values, then calls `resolve("provider/model")`. The returned
 `ResolvedModel` implements the canonical `ModelProvider`; its `model()` supplies
 the immutable model identity used in prepared requests. Register model names
 exactly, including any slashes in routed model names. Resolution performs no
 network I/O. Hosts must supply already authorized content and credential access;
 selecting a model does not confer filesystem or turn authority.
 
-GraphCoder's `--catalog`, `--model` and settings select these same public
-components. A catalog can set `default_model`; the GraphCoder preset supplies
-defaults and the CLI renders events. Managed Swarm can compose the registry
-directly instead of retaining a private gateway, request interpreter or transport.
-This configuration path does not qualify an untested cloud route.
+Local hosts call `Registry::configure(workspace, approval_policy)` to resolve the
+shared GraphCoder preset. Versioned `.harness/roles/*.md` files select each role's
+model, context and permitted child roles; `.harness/models` and
+`.harness/profile.md` supply model and project layers. The CLI uses this same
+composition rather than assembling its own model or catalog. An automatically
+loaded `.harness/providers.json` cannot redirect credentials to an origin that the
+host registry did not admit; anonymous endpoints never observe credentials.
+Selecting these files does not qualify an untested cloud route.
 
 For a client driving a remote harness, resolve the connection through
 `acyclic_harness_client::ConnectionOptions::from_env` (or
@@ -68,9 +71,7 @@ and `Credentials`. These provider inputs do not read the managed connection
 variables. A remote client supplies its account credential to the harness
 connection; the host supplies provider credentials to its shared model pipeline.
 
-Provider presets are configuration only: `endpoints.rs` has 74 physical lines
-including comments and whitespace, shared by all four added routes. The existing
-wire decoders are Chat 53, Anthropic 112, Responses 138 and Gemini 97 lines.
+Provider presets are configuration only and share the existing wire decoders.
 Request projection, retries, deadlines, authentication selection, protocol budgets,
 usage and cancellation remain in the shared provider core. No backend adds its
 own retry, timer, token cache or authentication policy.

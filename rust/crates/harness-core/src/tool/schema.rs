@@ -53,8 +53,10 @@ impl Serialize for ModelInput<'_> {
                 for (key, value) in values {
                     let schema = matches!(self.position, Position::Root | Position::Schema);
                     if schema
-                        && (matches!(key.as_str(), "$schema" | "title")
-                            || (matches!(self.position, Position::Root) && key == "description"))
+                        && (matches!(
+                            key.as_str(),
+                            "$schema" | "title" | "x-harness-capability" | "x-harness-freeform"
+                        ) || (matches!(self.position, Position::Root) && key == "description"))
                     {
                         continue;
                     }

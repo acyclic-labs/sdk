@@ -42,6 +42,9 @@ scalars!(
 impl HeapLayout for str {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Scalar;
 }
+impl HeapLayout for serde_json::value::RawValue {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::BorrowedRaw;
+}
 #[cfg(not(target_arch = "wasm32"))]
 impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
     const LAYOUT: &'static JsonLayout = <[u8; 32]>::LAYOUT;
@@ -87,6 +90,16 @@ impl HeapLayout for serde_json::Map<String, Value> {
 impl<T: HeapLayout> HeapLayout for Option<T> {
     const LAYOUT: &'static JsonLayout = T::LAYOUT;
 }
+impl<T: HeapLayout> HeapLayout for std::ops::Range<T> {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
+        seq: Some(Alloc::INLINE),
+        map: Some(Alloc::INLINE),
+        tagged: false,
+        fields: &[("start", T::LAYOUT), ("end", T::LAYOUT)],
+        elements: &[T::LAYOUT, T::LAYOUT],
+        flatten: &[],
+    };
+}
 impl<T: HeapLayout> HeapLayout for Box<T> {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Boxed {
         bytes: size_of::<T>() as u64,
@@ -111,6 +124,14 @@ impl HeapLayout for Arc<str> {
             times: 2,
             inner: &JsonLayout::Scalar,
         },
+    };
+}
+// StreamPath's visitor borrows the decoded text and constructs Arc<str>
+// directly. Tagged serde buffers, when present, are counted by their owner.
+impl HeapLayout for acyclic_stream::StreamPath {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::Boxed {
+        bytes: (2 * size_of::<usize>() + align_of::<usize>() - 1) as u64,
+        inner: &JsonLayout::Scalar,
     };
 }
 /// A boxed slice decodes as a vector and shrinks in place.
@@ -162,7 +183,7 @@ impl<K: HeapLayout, V: HeapLayout> HeapLayout for BTreeMap<K, V> {
 /// Whether a key decoded with `layout` allocates nothing beyond its string.
 const fn keeps_only_its_string(layout: &JsonLayout) -> bool {
     match layout {
-        JsonLayout::Scalar | JsonLayout::Node { .. } => true,
+        JsonLayout::BorrowedRaw | JsonLayout::Scalar | JsonLayout::Node { .. } => true,
         JsonLayout::Boxed { .. } | JsonLayout::Scaled { .. } => false,
         JsonLayout::Any { of, .. } => all_keep_only_their_strings(of),
     }

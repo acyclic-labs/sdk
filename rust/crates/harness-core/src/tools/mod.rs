@@ -1,24 +1,24 @@
 //! Standard coding tools and shared host executors.
 mod agents;
-pub(crate) use agents::awaited;
+pub(crate) use agents::awaited_with_io;
 pub use agents::{
-    AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
-    SpawnAgentInput, WaitAgentInput, WaitMode, bind_agent_tools,
+    AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentFile,
+    SendAgentInput, SpawnAgentInput, WaitAgentInput, WaitMode, bind_agent_tools,
     definitions as agent_tool_definitions, spawned_child,
 };
 pub mod shell;
+pub mod variants;
 pub use shell::ShellInput;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod code_mode;
 mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
-mod bounds;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use bounds::prefix as json_string_prefix;
+pub(crate) mod bounds;
 mod command;
 mod fs_command;
+/// Pinned native declarations and thin adapters over registered capabilities.
+#[cfg(feature = "filesystem")]
+pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
 #[cfg(feature = "filesystem")]
