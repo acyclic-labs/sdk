@@ -419,6 +419,16 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                 assert!(work.items - items <= bound.examined_items);
             }
             let original = index.clone();
+            let bound = index.insertion_bound(1).unwrap();
+            let claimed = work.claimed_bytes;
+            let items = work.items;
+            work.maximum_items = Some(items + bound.examined_items);
+            index = index.insert(zero, 0, 8888, &mut work)?;
+            assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
+            assert!(work.items - items <= bound.examined_items);
+            work.maximum_items = None;
+            assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &8888)));
+            assert_eq!(original.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
             index = index.cap(1).insert(zero, 1, 9999, &mut work)?;
             let items = work.items;
             assert_eq!(index.seek(zero, 1, 2, &mut work)?, Some((1, &9999)));

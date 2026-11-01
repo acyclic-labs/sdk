@@ -85,7 +85,10 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
             .checked_mul(8)?
             .min((self.keys.depth() as u64).checked_add(insertions)?)
             .checked_add(1)?
-            .checked_mul(width.checked_mul(6)?.checked_add(3)?)?
+            // Each predecessor branch observes two visible bodies (N + 1
+            // each), compares the current minimum (2N), and selects a child
+            // (3N). The final leaf costs less than this same per-level bound.
+            .checked_mul(width.checked_mul(7)?.checked_add(2)?)?
             .checked_mul(insertions)?;
         Some(IndexInsertionBound {
             allocation_bytes: outer.allocation_bytes.checked_add(inner.allocation_bytes)?,
