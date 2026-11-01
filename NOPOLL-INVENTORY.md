@@ -9,8 +9,12 @@ Package completion sites at `134933adbb`:
 | `scripts/check-machines-package.test.mjs:66` | Implicit 60-second shell-fixture deadline | Await the same finite shell child's exit. Keep original checkout identity, command log and changed-source refusal in both fixture cases. |
 
 These delete three deadline configurations without adding a process, channel,
-allocation, copy, syscall or durability barrier. Qualification of these latest
-deletions is pending; no isolated filesystem package execution is claimed.
+allocation, copy, syscall or durability barrier. Linux x86_64: the original
+Machines source-identity control passed 1/1 at `bc19eb8bd3`, 0.139 seconds total
+execution, retaining both successful packaging and changed-source refusal.
+Its earlier run at `70762abd95` exposed a stale expected package dependency;
+the corrected expectation retains the original proto-build dependency. No
+isolated filesystem package execution is claimed.
 
 Installer source closure: the published deletion `138ca708d0` is composed at
 `fa976a4cac`. At predecessor `13faa3a5cb`, `plugin/bin/install.js:22` defined
