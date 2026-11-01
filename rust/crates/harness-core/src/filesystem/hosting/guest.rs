@@ -152,7 +152,7 @@ impl GuestAuthorityLifetime {
             )?;
             let alarm = acyclic_native_runtime::WallAlarm::register(
                 expires_at.saturating_mul(1000),
-                Arc::new(move || {
+                Arc::new(move |_outcome| {
                     let _held = &alarm_custody;
                     stop.cancel();
                 }),

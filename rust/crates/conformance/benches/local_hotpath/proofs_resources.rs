@@ -68,7 +68,7 @@ pub(super) async fn native_timers(recovery: &str) -> Result {
             };
             registrations.push(WallAlarm::register(
                 deadline,
-                Arc::new(move || producer.fire()),
+                Arc::new(move |_outcome| producer.fire()),
             )?);
             retired.push(receiver);
         }

@@ -42,7 +42,7 @@ impl ProcessControl {
             .map(|expiry| {
                 WallAlarm::register(expiry, {
                     let wake = wake.clone();
-                    Arc::new(move || {
+                    Arc::new(move |_outcome| {
                         let _ = wake.stop();
                     })
                 })

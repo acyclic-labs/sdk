@@ -179,8 +179,12 @@ impl ResourceAuthorization {
         crate::FollowFilter::new(wire)
     }
     /// Waits on the runtime clock without polling, independently of data credit.
-    pub async fn expires_at(&self, unix_seconds: u64) {
-        self.authority.state.expires_at(unix_seconds).await;
+    pub async fn expires_at(&self, unix_seconds: u64) -> Result<(), StreamError> {
+        self.authority
+            .state
+            .expires_at(unix_seconds)
+            .await
+            .map_err(|_| StreamError::Unavailable)
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
         let mut current = self

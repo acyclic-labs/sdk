@@ -26,7 +26,7 @@ impl AuthorityState for State {
     fn changes(&self) -> &dyn ChangeSource {
         self
     }
-    fn expires_at(&self, _: u64) -> crate::BoxProviderFuture<'_, ()> {
+    fn expires_at(&self, _: u64) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>> {
         Box::pin(future::pending())
     }
 }

@@ -29,7 +29,7 @@ impl GuestDeadline {
         let wake = expiry.map(|_| Arc::new(tokio::sync::Notify::new()));
         let alarm = wake.as_ref().zip(expiry).map(|(wake, expiry)| {
             let notify = wake.clone();
-            acyclic_native_runtime::WallAlarm::register(expiry, Arc::new(move || notify.notify_one()))
+            acyclic_native_runtime::WallAlarm::register(expiry, Arc::new(move |_outcome| notify.notify_one()))
                 .map_err(|error| ProviderError::Rejected(format!("guest expiry alarm failed: {error}; recovery: restore the wall-clock alarm before dispatch")))
         }).transpose()?;
         Ok(Self {
