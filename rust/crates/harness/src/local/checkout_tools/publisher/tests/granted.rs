@@ -9,7 +9,14 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     let foreign = root.path().join("foreign");
     std::fs::create_dir(&directory).map_err(storage)?;
     std::fs::create_dir(&foreign).map_err(storage)?;
-    let (fixture, _publisher) = open_fixture(&directory, temporary_directory()?).await?;
+    let state = temporary_directory()?;
+    let model = Model::new("scripted".into(), "execution-grants".into(), "1".into())?;
+    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
+    let fixture = LocalHarness::open(
+        crate::test_support::local_harness_config(&directory, (model, provider))?
+            .state_directory(state.path()),
+    )
+    .await?;
     let workspace = fixture.workspace.as_ref().expect("checkout");
     let private = workspace
         .mounts
@@ -19,21 +26,9 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
         .volume
         .clone();
     let maximum = 65_536;
-    let grants = Capabilities::new(
-        fixture
-            .signed
-            .capabilities()
-            .iter()
-            .chain(["tool:call:shell"]),
-    );
-    let signed = fixture._runtime.bootstrap_scope(
-        "publisher",
-        &grants,
-        Some(crate::AgentId::from_bytes([1; 16])),
-        &mut None,
-    )?;
+    let signed = &fixture.signed;
     let task = crate::runtime::Bindings {
-        scope: RuntimeScope::new(grants, Default::default())?,
+        scope: RuntimeScope::new(signed.capabilities().clone(), Default::default())?,
         ..crate::runtime::Bindings::local()
     }
     .build()?
@@ -44,7 +39,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
             reader: crate::filesystem::FilesystemContentVerifier::new(
                 fixture.files.clone(),
                 &fixture.verifier,
-                &signed,
+                signed,
                 maximum,
                 None,
             )?,
@@ -52,7 +47,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 fixture.files.clone(),
                 &private,
                 &fixture.verifier,
-                &signed,
+                signed,
                 maximum,
                 None,
             )?),
@@ -113,7 +108,7 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 .executor(
                     (&fixture.project, &fixture.files, maximum),
                     Arc::new(acyclic_stream::SystemUnixMillisClock),
-                    &signed,
+                    signed,
                     &fixture.verifier,
                     grant,
                 )
