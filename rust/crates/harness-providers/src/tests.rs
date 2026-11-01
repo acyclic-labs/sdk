@@ -225,7 +225,7 @@ async fn portable_chat_arguments_are_emitted_unchanged() {
 pub(super) struct Script {
     adapter: Adapter,
     status: u16,
-    sent: Mutex<Vec<HttpRequest>>,
+    pub(crate) sent: Mutex<Vec<HttpRequest>>,
 }
 
 impl HttpTransport for Script {
@@ -733,7 +733,7 @@ async fn dropping_model_stream_cancels_the_owned_http_body() -> Result<()> {
     Ok(())
 }
 
-fn parser_dispatch() -> ModelDispatch {
+pub(crate) fn parser_dispatch() -> ModelDispatch {
     ModelDispatch {
         operation_id: acyclic_harness_core::OperationId::new(),
         step: 0,

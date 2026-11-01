@@ -439,7 +439,7 @@ fn project_message<'a>(
                             block.outcome
                                 == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
                         )? {
-                            ordered.push(part);
+                            ordered.push(Item::Native(part));
                         }
                     }
                     ProjectedReasoning::Native { continuity, .. } => {

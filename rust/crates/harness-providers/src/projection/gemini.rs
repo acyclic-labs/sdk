@@ -1,4 +1,3 @@
-use super::wire::Item;
 use acyclic_harness_core::model::ModelRole;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
@@ -29,7 +28,7 @@ mod tests {
 // The final assistant answer also contains their streamed text. Consume that
 // duplicate prefix across text chunks and tool steps, without merging parts.
 #[derive(Default)]
-pub(super) struct Replay<'a> {
+pub(crate) struct Replay<'a> {
     call: Option<(&'a RawValue, crate::protocol::gemini::Function<'a>)>,
     visible: VecDeque<Cow<'a, str>>,
     offset: usize,
@@ -58,7 +57,7 @@ impl<'a> Replay<'a> {
         &mut self,
         bytes: &'a [u8],
         suppress_display: bool,
-    ) -> acyclic_harness_core::Result<Option<Item<'a>>> {
+    ) -> acyclic_harness_core::Result<Option<&'a RawValue>> {
         // One original part must be consumed by its immediately following
         // canonical call. Never overwrite, drop or reorder signed calls.
         self.finish()?;
@@ -87,7 +86,7 @@ impl<'a> Replay<'a> {
                 }
             }
         }
-        Ok(Some(Item::Native(raw)))
+        Ok(Some(raw))
     }
 
     /// Binds the executable call to its exact original signed part. Validation
