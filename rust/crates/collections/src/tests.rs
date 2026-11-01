@@ -411,7 +411,12 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                 let mut bytes = [0; 1024];
                 bytes[bit / 8] = 0x80 >> (bit % 8);
                 let key = binary_key::<1032, _>(&bytes, &mut work).unwrap();
+                let bound = index.insertion_bound(1).unwrap();
+                let claimed = work.claimed_bytes;
+                let items = work.items;
                 index = index.insert(key, 9, bit + 1, &mut work)?;
+                assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
+                assert!(work.items - items <= bound.examined_items);
             }
             let original = index.clone();
             index = index.cap(1).insert(zero, 1, 9999, &mut work)?;

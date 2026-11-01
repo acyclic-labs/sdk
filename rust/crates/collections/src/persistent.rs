@@ -11,8 +11,8 @@ pub type PersistentIndex<V, A, const N: usize = 8> = Tree<V, A, N, std::convert:
 
 pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64>;
 
-/// Worst-case original funding for one immutable insertion, independent of
-/// population. Actual claims and examinations still occur on `IndexWork`.
+/// Worst-case original funding for immutable insertions, bounded by key width.
+/// Actual claims and examinations still occur on `IndexWork`.
 #[derive(Clone, Copy, Debug)]
 pub struct IndexInsertionBound {
     /// Sum of physical node backing claims, including copied path nodes.
@@ -179,9 +179,9 @@ impl<V, A, const N: usize, C> Default for Tree<V, A, N, C> {
 }
 
 impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
-    /// Computes the original funding required to admit an insertion before its
-    /// key arrives. Returns `None` if the selected type's bound overflows.
-    /// No allocation, admission or tree traversal is performed.
+    /// Computes original funding for `insertions` before their keys arrive.
+    /// Uses the pinned root's depth plus possible new branches, capped by key
+    /// width. Returns `None` on overflow; allocates and traverses nothing.
     pub fn insertion_bound(&self, insertions: u64) -> Option<IndexInsertionBound> {
         Self::insertion_bound_at_depth(self.depth() as u64, insertions)
     }
