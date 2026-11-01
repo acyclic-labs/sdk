@@ -301,7 +301,24 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 "cancelled" => b"cancel!",
                 _ => b"outside",
             };
-            let pending = staged_write(&source.checkout, left, bytes, &pending_work).await?;
+            let mut pending_carrier = NativeDemandCarrier::Native(&pending_work);
+            let mut pending = source
+                .checkout
+                .file_candidate(left, &mut pending_carrier, &stop, None)
+                .await?;
+            pending
+                .checkout
+                .change_content(
+                    left,
+                    ContentChange::Write {
+                        offset: 0,
+                        bytes: OwnedBytes::from_static(bytes),
+                    },
+                    ContentTimes::Preserve,
+                    &pending_work,
+                    &stop,
+                )
+                .await?;
             let seed = match exit {
                 "superseded" => b"seed-b",
                 "abandoned" => b"seed-c",
@@ -325,6 +342,22 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
             assert!(
                 source.checkout.state.try_write().is_ok(),
                 "rebase I/O retains no shared checkout guard"
+            );
+            let mut successor_carrier = NativeDemandCarrier::Native(&work);
+            let mut successor = Box::pin(source.checkout.file_candidate(
+                left,
+                &mut successor_carrier,
+                work.cancellation(),
+                None,
+            ));
+            assert!(
+                futures::poll!(successor.as_mut()).is_pending(),
+                "same-file successor waits for the original mutation lease"
+            );
+            assert_eq!(
+                objects.entered.load(Ordering::Acquire),
+                reads + 1,
+                "same-file successor cannot reach provider I/O during rebase"
             );
             match exit {
                 "superseded" => {
@@ -368,6 +401,21 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                     rebase.await?;
                 }
             }
+            match futures::poll!(successor.as_mut()) {
+                Poll::Ready(result) => drop(result?),
+                Poll::Pending => panic!("same-file successor remains blocked after {exit}"),
+            }
+            drop(successor);
+            assert!(
+                source
+                    .checkout
+                    .file_mutations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entries
+                    .is_empty(),
+                "the original mutation lease retires after {exit}"
+            );
             assert!(source.checkout.state.try_write().is_ok());
             assert!(source.checkout.publication_fence.try_write().is_ok());
             Ok(())
