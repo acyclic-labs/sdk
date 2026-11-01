@@ -27,6 +27,13 @@ real-process replay and erased-entropy negative passed alongside release-produce
 withdrawal. The separate scoped process-provider control compiled but was not
 executed in this run. No Windows or macOS execution is claimed.
 
+At `37411a0508`, review tightened that same withdrawal oracle: the driver must
+observe the actual registration before any completion error is propagated, and
+the original process I/O error must retain the canceled receiver's exact
+`channel closed` message. An unrelated early I/O failure cannot satisfy either
+requirement. The same named Linux x86_64 control passed 1/1, 0.00 seconds
+execution. This adds assertions only, with no new event, timer or runtime work.
+
 MCP reader successor, location on `f4e34ab9f9`:
 
 | Source | Kind | Replacement and terminal | Status |
