@@ -16,10 +16,7 @@ pub(crate) type PublicationClosure<A, O> =
 pub(crate) enum GenerationClosure<A: 'static, O: 'static> {
     Publication(PublicationClosure<A, O>),
     Published(crate::kernel::closure::PublishedProof),
-    Observed {
-        published: Option<crate::kernel::closure::PublishedProof>,
-        hold: crate::kernel::allocation::retained::RetainedArc<crate::collection::Hold>,
-    },
+    Observed(crate::kernel::allocation::retained::RetainedArc<crate::collection::Hold>),
 }
 
 impl<A, O> Clone for GenerationClosure<A, O> {
@@ -27,10 +24,7 @@ impl<A, O> Clone for GenerationClosure<A, O> {
         match self {
             Self::Publication(original) => Self::Publication(original.clone()),
             Self::Published(original) => Self::Published(original.clone()),
-            Self::Observed { published, hold } => Self::Observed {
-                published: published.clone(),
-                hold: hold.clone(),
-            },
+            Self::Observed(hold) => Self::Observed(hold.clone()),
         }
     }
 }
@@ -44,7 +38,7 @@ impl<A, O> GenerationClosure<A, O> {
                 .published
                 .clone(),
             Self::Published(original) => Some(original.clone()),
-            Self::Observed { published, .. } => published.clone(),
+            Self::Observed(_) => None,
         }
     }
 
@@ -55,7 +49,7 @@ impl<A, O> GenerationClosure<A, O> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .pin
                 .take(),
-            Self::Published(_) | Self::Observed { .. } => None,
+            Self::Published(_) | Self::Observed(_) => None,
         }
     }
 }

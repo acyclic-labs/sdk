@@ -330,7 +330,7 @@ mod sweep;
 pub(crate) use buffers::{clone_generation_root, clone_generation_root_with_accounting};
 use buffers::{held_owned_bytes, root_parent_bytes};
 pub(crate) use epoch::{CollectionEpoch, Epochs};
-pub(crate) use holds::Hold;
+pub(crate) use holds::{GenerationHold, Hold};
 use holds::{Holds, Slot};
 pub(crate) use roots::CheckoutRoots;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

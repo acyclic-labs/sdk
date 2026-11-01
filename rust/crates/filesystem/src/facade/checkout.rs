@@ -108,18 +108,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         mut self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<GenerationClosure<A, O>>, FsError> {
-        let published = self.volume.fs.observed_generation_closure(
+        let hold = self.root.take_generation_hold(accounting)?;
+        self.volume.fs.observed_generation_closure(
             &self.volume,
             self.generation_id(),
+            hold,
             accounting,
-        )?;
-        match self.root.hold.take() {
-            Some(hold) => Ok(Some(GenerationClosure::Observed {
-                published,
-                hold: crate::kernel::allocation::retained::RetainedArc::new(hold, accounting)?,
-            })),
-            None => Ok(published.map(GenerationClosure::Published)),
-        }
+        )
     }
 }
 

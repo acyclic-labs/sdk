@@ -11,6 +11,16 @@ pub(crate) struct CheckoutRoots {
 }
 
 impl CheckoutRoots {
+    pub(crate) fn take_generation_hold(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<GenerationHold>, crate::FsError> {
+        self.hold
+            .take()
+            .map(|hold| GenerationHold::new(hold, self.base, self.config, accounting))
+            .transpose()
+    }
+
     pub(crate) fn new(
         collection: Option<&Arc<Collection>>,
         config: crate::model::VolumeConfig,

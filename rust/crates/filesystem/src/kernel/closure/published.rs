@@ -1,8 +1,8 @@
-//! The last published proof of one volume, reusable only inside the epoch it was proven in.
+//! Published proofs, reused inside their epoch or under their original live root hold.
 //!
 //! A proof becomes reusable by consuming its [`Unpublished`] ticket with the
-//! durable append outcome; a failed append drops the ticket instead. A
-//! reused proof must also have begun after the latest collection began, so
+//! durable append outcome; a failed append drops the ticket instead. An
+//! unheld proof must also have begun after the latest collection began, so
 //! each object it vouches for was admitted to that collection or never at
 //! risk: [`ProofSlot::current`] reads the store's epoch itself.
 
@@ -50,6 +50,7 @@ impl<P: Clone> ProofSlot<P> {
             .map(|(began, _, proof)| Published {
                 began: *began,
                 proof: proof.clone(),
+                retained: None,
             })
     }
 
@@ -72,15 +73,30 @@ pub(crate) struct Unpublished<P, S = Arc<ProofSlot<P>>> {
 }
 
 /// The original proof of one durable generation, independent of the latest slot.
+/// A registered observation keeps that same root live through later collections.
 #[derive(Clone)]
 pub(crate) struct Published<P> {
     began: CollectionEpoch,
     proof: P,
+    // Last: the proof's payload retires before its original root registration.
+    retained: Option<crate::kernel::allocation::retained::RetainedArc<crate::collection::Hold>>,
 }
 
 impl<P: Clone> Published<P> {
     pub(crate) fn current(&self, epochs: Option<&Epochs>) -> Option<P> {
-        (self.began == CollectionEpoch::read(epochs)).then(|| self.proof.clone())
+        let current = match &self.retained {
+            Some(hold) => hold.belongs_to(epochs),
+            None => self.began == CollectionEpoch::read(epochs),
+        };
+        current.then(|| self.proof.clone())
+    }
+
+    /// Only the current-proof lookup may bind the hold it already owned before lookup.
+    pub(super) fn retain(
+        &mut self,
+        hold: crate::kernel::allocation::retained::RetainedArc<crate::collection::Hold>,
+    ) {
+        self.retained = Some(hold);
     }
 }
 
@@ -100,6 +116,7 @@ impl<P, S: Deref<Target = ProofSlot<P>>> Unpublished<P, S> {
                 let published = Published {
                     began: self.began,
                     proof: self.proof.clone(),
+                    retained: None,
                 };
                 self.install::<true, true>(commit.sequence);
                 Some(published)
