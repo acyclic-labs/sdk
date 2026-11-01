@@ -131,20 +131,14 @@ impl FuseProjection {
         tests::write_gate::pause(&self.core.source);
         let length = u32::try_from(data.len()).map_err(|_| libc::EOVERFLOW)?;
         let bytes = fuse_source_chunk(data, work)?;
-        self.source_write(work, || {
+        let result = self.source_write(work, || {
             Ok(open_file
                 .file()
-                .write_range_with_meter(offset, bytes, work)?)
+                .write_range_with_meter(offset, bytes, true, work)?)
         })?;
-        let (stamp, refreshed) = match super::super::observation::observe_facts(
-            || self.core.source.view_stamp_with_meter(work),
-            || open_file.file().lookup_with_meter(work),
-        ) {
-            Ok(observation) => observation,
-            // A create-only handle can save its own bytes without disclosing
-            // metadata. Its successful write must not become a failed lookup.
-            Err(MountSourceError::AccessDenied) => return Ok(length),
-            Err(error) => return Err(error.into()),
+        let Some(facts) = result.facts else {
+            // A create-only handle may save bytes without disclosing metadata.
+            return Ok(length);
         };
         let mut state = self.core.state()?;
         if state.files.get(&handle).is_some_and(|file| {
@@ -152,7 +146,7 @@ impl FuseProjection {
                 && Arc::ptr_eq(&file.operation, &operation)
                 && file.open_file.same_file(&open_file)
         }) {
-            state.apply_handle_facts(inode, refreshed, stamp);
+            state.apply_handle_facts(inode, facts.lookup, Some(facts.stamp));
         }
         Ok(length)
     }

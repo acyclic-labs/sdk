@@ -667,6 +667,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             OwnedBytes::from_static(b"native publication prefix"),
             0,
         ),
+        false,
         &job,
     )?;
     let before = root.receipt();

@@ -126,6 +126,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, MountSourceError> {
         Ok(self.view_is_stable_with_meter(work)?
+            && self.source_observed()
             && self.reported(file_id)
             && self
                 .authored
@@ -253,6 +254,7 @@ where
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
         self.source_view.is_stable()
+            && self.source_observed()
             && self.reported(file_id)
             && self.authored.node_unchanged_since(file_id, stamp)
     }

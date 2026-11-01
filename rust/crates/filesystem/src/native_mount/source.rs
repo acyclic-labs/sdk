@@ -77,6 +77,26 @@ pub struct MountLookup {
     pub metadata: FileMetadata,
 }
 
+/// Facts selected from the same candidate that completed a write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountWriteFacts {
+    /// Exact adopted node and metadata, disclosed only with List permission.
+    pub lookup: MountLookup,
+    /// Original invalidation position, recorded before adoption and fact selection.
+    pub stamp: super::ViewStamp,
+}
+
+/// Completion of an entire admitted write, including optional authorized facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountWriteResult {
+    /// Original open-file identity, including for an unlinked handle.
+    pub file_id: FileId,
+    /// Number of bytes accepted from the original write.
+    pub written: u64,
+    /// Absent when unrequested or metadata disclosure is not authorized.
+    pub facts: Option<MountWriteFacts>,
+}
+
 /// Receives content one piece at a time: the piece's logical offset and its canonical owned bytes.
 pub type ContentSink<'a> =
     dyn FnMut(u64, acyclic_stream::OwnedBytes) -> Result<(), MountSourceError> + 'a;
@@ -229,20 +249,25 @@ pub trait MountOpenFile: std::any::Any + Send + Sync + 'static {
         target: MountSeekTarget,
         work: &NativeMaterializationWork,
     ) -> Result<Option<u64>, MountSourceError>;
-    /// Consumes the caller's exact already-admitted owned payload.
+    /// Consumes the caller's exact already-admitted owned payload in full.
+    /// `facts` requests the final adopted node and metadata when List permits
+    /// disclosure; refusal of List does not refuse an authorized write.
     fn write_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError>;
     /// Writes only when `offset` is still EOF in the same mutation transaction.
+    /// Optional facts obey the same disclosure contract as `write_range_with_meter`.
     fn append_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError>;
     /// Changes length through the same operative source invocation.
     fn resize_with_meter(
         &self,

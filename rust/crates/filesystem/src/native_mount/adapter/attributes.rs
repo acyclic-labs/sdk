@@ -79,6 +79,7 @@ where
                 .install_change(
                     candidate,
                     ViewChange::Node(lookup.node.file_id),
+                    None,
                     work,
                     &self.cancellation,
                     self.native_callback_guard.clone(),

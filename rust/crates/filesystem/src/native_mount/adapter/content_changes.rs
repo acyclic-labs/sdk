@@ -1,5 +1,6 @@
 struct ContentChangeContext<'a> {
     deadline: Option<u64>,
+    facts: bool,
     work: &'a crate::NativeMaterializationWork,
     lifetime: &'a CancellationToken,
     clock: &'a super::clock::Clock,
@@ -13,9 +14,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         change: ContentChange<F>,
         append_only: bool,
         context: ContentChangeContext<'_>,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<super::MountWriteResult, MountSourceError> {
         let ContentChangeContext {
             work,
+            facts,
             deadline,
             lifetime,
             clock,
@@ -74,6 +76,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 return Err(MountSourceError::AccessDenied);
             }
         }
+        let written = match &change {
+            ContentChange::Write { bytes, .. } => bytes.len() as u64,
+            _ => 0,
+        };
         candidate
             .checkout
             .change_content(
@@ -84,7 +90,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 cancellation,
             )
             .await?;
-        self.install_change(candidate, ViewChange::Node(file_id), work, lifetime, guard)
-            .await
+        let facts = self
+            .install_change(
+                candidate,
+                ViewChange::Node(file_id),
+                facts.then_some(file_id),
+                work,
+                lifetime,
+                guard,
+            )
+            .await?;
+        Ok(super::MountWriteResult {
+            file_id,
+            written,
+            facts,
+        })
     }
 }

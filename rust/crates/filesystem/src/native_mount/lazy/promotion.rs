@@ -93,7 +93,7 @@ where
     let installed = authored
         .shared_checkout()
         .install_candidate(
-            (candidate, None),
+            (candidate, None, None),
             carrier,
             cancellation,
             Some(authored.cancellation()),
@@ -119,7 +119,9 @@ where
             },
         )
         .await?;
-    if installed == Some(super::super::MountPublication::PerMutation) {
+    if installed
+        .is_some_and(|(publication, _)| publication == super::super::MountPublication::PerMutation)
+    {
         return authored
             .shared_checkout()
             .publish(

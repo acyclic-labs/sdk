@@ -1,13 +1,3 @@
-/// A stamp may conservatively precede newer facts. Sampling it after facts
-/// could label stale facts with a concurrent mutation's current stamp.
-pub(crate) fn observe_facts<S, T, E>(
-    stamp: impl FnOnce() -> Result<S, E>,
-    facts: impl FnOnce() -> Result<T, E>,
-) -> Result<(S, T), E> {
-    let stamp = stamp()?;
-    Ok((stamp, facts()?))
-}
-
 #[cfg(all(test, loom))]
 mod tests {
     fn model(broken: bool) {
@@ -20,11 +10,10 @@ mod tests {
                 move || *state.lock().unwrap() = (1, 17)
             });
             let early = broken.then(|| state.lock().unwrap().1);
-            let (stamp, size) = super::observe_facts(
-                || Ok::<_, ()>(state.lock().unwrap().0),
-                || Ok(early.unwrap_or_else(|| state.lock().unwrap().1)),
-            )
-            .unwrap();
+            // Invalidation precedes fact selection; a later stamp could label
+            // facts from an earlier candidate as current.
+            let stamp = state.lock().unwrap().0;
+            let size = early.unwrap_or_else(|| state.lock().unwrap().1);
             writer.join().unwrap();
             let current = state.lock().unwrap();
             if stamp == current.0 {

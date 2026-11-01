@@ -101,6 +101,32 @@ impl AuthorizedFile {
             self.require(Action::Write, work)
         }
     }
+
+    fn write_facts(
+        &self,
+        requested: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError> {
+        if !requested {
+            return Ok(false);
+        }
+        match self.require(Action::List, work) {
+            Ok(()) => Ok(true),
+            Err(MountSourceError::AccessDenied) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn written(
+        &self,
+        mut result: super::MountWriteResult,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<super::MountWriteResult, MountSourceError> {
+        if result.facts.is_some() && !self.write_facts(true, work)? {
+            result.facts = None;
+        }
+        Ok(result)
+    }
 }
 
 macro_rules! checked {
@@ -180,26 +206,38 @@ impl MountOpenFile for AuthorizedFile {
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        if self.writable(work)? {
-            self.file.write_range_with_meter(offset, bytes, work)
-        } else {
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
+        let writable = self.writable(work)?;
+        if !writable {
             self.require(Action::Append, work)?;
-            self.file.append_range_with_meter(offset, bytes, work)
         }
+        let facts = self.write_facts(facts, work)?;
+        let result = if writable {
+            self.file.write_range_with_meter(offset, bytes, facts, work)
+        } else {
+            self.file
+                .append_range_with_meter(offset, bytes, facts, work)
+        }?;
+        self.written(result, work)
     }
 
     fn append_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
         if !self.writable(work)? {
             self.require(Action::Append, work)?;
         }
-        self.file.append_range_with_meter(offset, bytes, work)
+        let facts = self.write_facts(facts, work)?;
+        let result = self
+            .file
+            .append_range_with_meter(offset, bytes, facts, work)?;
+        self.written(result, work)
     }
 
     fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {

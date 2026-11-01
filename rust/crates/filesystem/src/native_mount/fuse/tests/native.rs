@@ -487,7 +487,7 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
     let failure = crate::native_mount::run_native_mount_handler(budget, &cancellation, |work| {
         let bytes = crate::native_mount::fuse::fuse_source_chunk(b"replacement", work)?;
         opened
-            .write_range_with_meter(0, bytes, work)
+            .write_range_with_meter(0, bytes, false, work)
             .map_err(crate::NativeMountError::Source)
     })
     .expect_err("zero copied-byte authority must refuse the packet before source mutation");

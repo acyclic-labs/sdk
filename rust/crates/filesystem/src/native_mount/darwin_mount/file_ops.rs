@@ -145,7 +145,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_write(
         context.mutate_file(
             &*mount_path(path, work)?,
             handle,
-            |file| file.write_range_with_meter(offset, bytes, work),
+            |file| file.write_range_with_meter(offset, bytes, false, work),
             work,
         )?;
         c_int::try_from(length).map_err(|_| driver_errno(libc::EOVERFLOW))

@@ -601,17 +601,23 @@ fn queued_expiry(kind: usize, omitted: bool) -> Result<(), Box<dyn std::error::E
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     match kind {
         0 => file.write_range(0, Bytes::from_static(b"changed"))?,
-        1 => file.write_range_with_meter(
-            0,
-            crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
-            &work,
-        )?,
+        1 => file
+            .write_range_with_meter(
+                0,
+                crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
+                false,
+                &work,
+            )
+            .map(drop)?,
         2 => file.append_range(PAYLOAD_BYTES as u64, Bytes::from_static(b"changed"))?,
-        3 => file.append_range_with_meter(
-            PAYLOAD_BYTES as u64,
-            crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
-            &work,
-        )?,
+        3 => file
+            .append_range_with_meter(
+                PAYLOAD_BYTES as u64,
+                crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::from_static(b"changed"), 0),
+                false,
+                &work,
+            )
+            .map(drop)?,
         4 => file.resize(1)?,
         5 => file.resize_with_meter(1, &work)?,
         6 => file.allocate_range(0, 1, MountRangeAllocation::ZeroRange { extend: false })?,

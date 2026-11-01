@@ -43,16 +43,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let publication = self
             .checkout
             .install_candidate(
-                (candidate, None),
+                (candidate, None, None),
                 &mut carrier,
                 cancellation,
                 Some(&self.cancellation),
                 |carrier, _| {
-                    let (recorded, notify) = self
+                    let (stamp, recorded, notify) = self
                         .checkout
                         .ledger
                         .record_deferred(&ViewChange::Bound(&path), carrier)?;
-                    Ok((recorded, move || {
+                    Ok((stamp, recorded, move || {
                         self.with_capture_observer_dispatch(notify)
                     }))
                 },
@@ -77,7 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             )
             .await?
             .ok_or(MountSourceError::Stale)?;
-        if publication == MountPublication::PerMutation {
+        if publication.0 == MountPublication::PerMutation {
             self.checkout
                 .publish(
                     crate::PublicationPermit::Unrestricted,

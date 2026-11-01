@@ -28,6 +28,7 @@ fn capture_install_uses_exact_candidate_conflicts_instead_of_global_cache_stamps
             .install_change(
                 first_candidate,
                 ViewChange::Node(first.node.file_id),
+                None,
                 &work,
                 source.cancellation(),
                 None,
@@ -58,6 +59,7 @@ fn capture_install_uses_exact_candidate_conflicts_instead_of_global_cache_stamps
             .install_change(
                 winner,
                 ViewChange::Node(second.node.file_id),
+                None,
                 &work,
                 source.cancellation(),
                 None,
@@ -187,6 +189,7 @@ fn native_candidates_merge_disjoint_changes_and_cancel_without_blocking_successo
         let waiting = source.checkout.install_change(
             abandoned,
             ViewChange::Node(first.node.file_id),
+            None,
             &waiting_work,
             &cancelled,
             None,
@@ -204,6 +207,7 @@ fn native_candidates_merge_disjoint_changes_and_cancel_without_blocking_successo
             .install_change(
                 first_candidate,
                 ViewChange::Node(first.node.file_id),
+                None,
                 &work,
                 source.cancellation(),
                 None,
@@ -214,6 +218,7 @@ fn native_candidates_merge_disjoint_changes_and_cancel_without_blocking_successo
             .install_change(
                 successor,
                 ViewChange::Node(second.node.file_id),
+                None,
                 &work,
                 source.cancellation(),
                 None,
@@ -243,6 +248,7 @@ fn native_publication_waits_for_in_flight_candidate() -> Result<(), Box<dyn std:
             .install_change(
                 candidate,
                 ViewChange::Node(created.node.file_id),
+                None,
                 &work,
                 source.cancellation(),
                 None,
@@ -289,6 +295,7 @@ fn deleting_a_file_conflicts_with_its_staged_write() -> Result<(), Box<dyn std::
                 .install_change(
                     write,
                     ViewChange::Node(file),
+                    None,
                     &work,
                     source.cancellation(),
                     None
@@ -341,6 +348,7 @@ fn native_create_adoption_compares_exact_names_without_coalescing_identities()
                 .install_change(
                     first,
                     ViewChange::Bound(&names[0]),
+                    None,
                     &work,
                     source.cancellation(),
                     None,
@@ -351,6 +359,7 @@ fn native_create_adoption_compares_exact_names_without_coalescing_identities()
                 .install_change(
                     second,
                     ViewChange::Bound(&names[1]),
+                    None,
                     &work,
                     source.cancellation(),
                     None,

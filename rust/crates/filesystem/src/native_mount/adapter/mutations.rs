@@ -12,11 +12,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .install_change(
                 candidate,
                 effect,
+                None,
                 work,
                 &self.cancellation,
                 self.native_callback_guard.clone(),
             )
             .await
+            .map(drop)
     }
 }
 
