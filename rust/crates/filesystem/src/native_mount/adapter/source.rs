@@ -574,32 +574,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let mut checkout = self.checkout.lock().await;
-        checkout.ensure_publication_resolved()?;
-        let base = checkout
-            .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::standalone(
-                    BOUNDARY_BUDGET,
-                    &self.cancellation,
-                ),
-                &self.cancellation,
-            )
-            .map_err(MountSourceError::from)?;
-        let decision = checkout
-            .rebase_head(
-                self.config.limits.maximum_checkout_dependencies,
-                WorkBudget::UNBOUNDED,
-                &self.cancellation,
-            )
-            .await
-            .map_err(engine_error)?;
-        match decision.value {
-            RebaseDecision::Safe { .. } => {
-                self.record_advance(&mut checkout, &base).await?;
-                Ok(())
-            }
-            RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
-        }
+        self.advance_checkout(true).await
     }
 
     /// Adopts the workspace head after this checkout's mutations were
@@ -608,51 +583,121 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let mut checkout = self.checkout.lock().await;
-        checkout.ensure_publication_resolved()?;
-        let base = checkout
-            .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::standalone(
-                    BOUNDARY_BUDGET,
-                    &self.cancellation,
-                ),
-                &self.cancellation,
-            )
-            .map_err(MountSourceError::from)?;
-        checkout
-            .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
-            .await
-            .map_err(engine_error)?;
-        self.record_advance(&mut checkout, &base).await
+        self.advance_checkout(false).await
     }
 
-    async fn record_advance(
-        &self,
-        checkout: &mut SharedCheckoutGuard<'_, A, O>,
-        base: &Checkout<A, O>,
-    ) -> Result<(), MountSourceError>
+    async fn advance_checkout(&self, rebase: bool) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        if checkout.root().file_table == base.root().file_table {
-            return Ok(());
-        }
-        let root = NamespacePath::new(Vec::new(), self.config.limits)
-            .map_err(MountSourceError::NamespacePath)?;
-        let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
-        let (installed, _allocation) = installed_changes(
-            base,
-            checkout,
-            InstallScope::Subtree(&root),
-            &mut NativeDemandCarrier::Native(&work),
-            &self.cancellation,
+        let work = match &self.native_original {
+            Some(work) => work.clone(),
+            None => capture_meter(WorkBudget::UNBOUNDED, &self.cancellation)?,
+        };
+        let cancellation = &self.cancellation;
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        let publication = await_lock(
+            self.checkout.publication_fence.read(),
+            &mut carrier,
+            cancellation,
+            Some(&self.cancellation),
         )
         .await?;
-        self.checkout.view_gate.begin_transition();
-        checkout.record(&ViewChange::Effect(&installed))?;
-        self.checkout.view_gate.finish_transition();
-        Ok(())
+        let (base, mut candidate, epoch) = {
+            let checkout = await_lock(
+                self.checkout.lock(),
+                &mut carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
+            checkout.ensure_publication_resolved()?;
+            let mut accounting =
+                crate::kernel::allocation::KernelAccounting::native(&work, cancellation);
+            let base = checkout.private_candidate(&mut accounting, cancellation)?;
+            let candidate = base.private_candidate(&mut accounting, cancellation)?;
+            (base, candidate, self.checkout.view_gate.generation())
+        };
+        if rebase {
+            let (decision, _allocation) = candidate
+                .rebase_head(
+                    self.config.limits.maximum_checkout_dependencies,
+                    &work,
+                    cancellation,
+                )
+                .await?;
+            if matches!(decision, RebaseDecision::Conflicted { .. }) {
+                return Err(MountSourceError::Stale);
+            }
+        } else {
+            candidate.refresh_head(&work, cancellation).await?;
+        }
+        let changed = candidate.root().file_table != base.root().file_table;
+        let effect = if changed {
+            let root = NamespacePath::new(Vec::new(), self.config.limits)
+                .map_err(MountSourceError::NamespacePath)?;
+            Some(
+                installed_changes(
+                    &base,
+                    &candidate,
+                    InstallScope::Subtree(&root),
+                    &mut carrier,
+                    cancellation,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut checkout = await_lock(
+            self.checkout.lock(),
+            &mut carrier,
+            cancellation,
+            Some(&self.cancellation),
+        )
+        .await?;
+        checkout.ensure_publication_resolved()?;
+        if self.checkout.view_gate.generation() != epoch {
+            return Err(MountSourceError::Stale);
+        }
+        let (recorded, notify) = match &effect {
+            Some((effect, _allocation)) => {
+                let (_, recorded, notify) = self
+                    .checkout
+                    .ledger
+                    .record_deferred(&ViewChange::Effect(effect), &mut carrier)?;
+                (recorded, Some(notify))
+            }
+            None => (Ok(()), None),
+        };
+        let result = recorded.and_then(|()| {
+            work.cancellation()
+                .commit_if_both_live(cancellation, || {
+                    if !checkout
+                        .checkout
+                        .adopt_refreshed_candidate(&base, candidate, || {
+                            if changed {
+                                self.checkout.view_gate.begin_transition();
+                            }
+                        })
+                    {
+                        return Err(MountSourceError::Stale);
+                    }
+                    checkout.recorded_view = checkout.checkout.root().file_table;
+                    if changed {
+                        self.checkout.view_gate.finish_transition();
+                    }
+                    Ok(())
+                })
+                .map_err(|_| MountSourceError::Cancelled)?
+        });
+        drop(checkout);
+        drop(publication);
+        if let Some(notify) = notify {
+            notify();
+        }
+        result
     }
 }
 

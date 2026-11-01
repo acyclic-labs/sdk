@@ -31,6 +31,28 @@ pub(crate) enum NativeCandidateRebasePlan<A: 'static, O: 'static> {
 }
 
 impl<A, O> Checkout<A, O> {
+    /// Replaces a refresh pin only while its original root and proof still match.
+    #[cfg(feature = "native-mount")]
+    pub(crate) fn adopt_refreshed_candidate(
+        &mut self,
+        base: &Self,
+        candidate: Self,
+        before_install: impl FnOnce(),
+    ) -> bool {
+        if !self.candidate_base_unchanged(base)
+            || !self
+                .dependencies
+                .proof()
+                .dependencies
+                .same_capture(&base.dependencies.proof().dependencies)
+        {
+            return false;
+        }
+        before_install();
+        *self = candidate;
+        true
+    }
+
     #[cfg(feature = "native-mount")]
     pub(crate) fn prepare_candidate_adoption(
         &self,

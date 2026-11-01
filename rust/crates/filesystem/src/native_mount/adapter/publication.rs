@@ -44,17 +44,4 @@ impl<A: 'static, O: 'static> SharedCheckoutState<A, O> {
             self.publication_evidence = None;
         }
     }
-
-    pub(super) fn record(&mut self, change: &ViewChange<'_>) -> Result<(), MountSourceError> {
-        record_view_change(
-            &self.ledger,
-            change,
-            &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )),
-        )?;
-        self.recorded_view = self.checkout.root().file_table;
-        Ok(())
-    }
 }
