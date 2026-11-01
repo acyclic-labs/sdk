@@ -40,18 +40,16 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// `GraphCoder` on argv, its server (`graphcoder serve`) through the seams
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
-pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
+/// Enabled diagnostics require caller-owned text buffers or an explicit paired
+/// CLI reservation. Logging off constructs no text delivery or storage pool.
+pub fn main_with(
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    diagnostic_storage: Option<Vec<Box<[u8]>>>,
+) -> ExitCode {
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
-    }
-    let report = acyclic_native_runtime::obs::WaitReport::default();
-    if let Err(error) =
-        lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok()).try_init()
-    {
-        eprintln!("graphcoder: diagnostics initialization failed: {error}");
-        return ExitCode::FAILURE;
     }
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
     let result = acyclic_native_runtime::coordination_runtime()
@@ -59,11 +57,72 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
             let result = runtime.block_on(phase(|| async {
-                let shutdown = lifecycle::shutdown();
-                let port = acyclic_native_runtime::obs::ReportPort::from_environment();
-                let operation = phase(|| run(args, seams, shutdown.clone()));
-                let (result, _) =
-                    lifecycle::observe(&report, port, shutdown, graceful, operation).await;
+                let mut writer = None;
+                let mut admitted = false;
+                let mut diagnostic_failure = None;
+                let result: Result<u8, Box<dyn std::error::Error>> = async {
+                    let report = acyclic_native_runtime::obs::WaitReport::default();
+                    let (subscriber, receiver) = lifecycle::subscriber(
+                        &report,
+                        std::env::var("GRAPHCODER_LOG").ok(),
+                        || {
+                            lifecycle::storage(
+                                diagnostic_storage,
+                                args.diagnostic_records,
+                                args.diagnostic_record_bytes,
+                            )
+                        },
+                    )?;
+                    subscriber.try_init()?;
+                    if receiver.is_some() {
+                        admitted = true;
+                        writer = Some(acyclic_native_runtime::InheritedOutput::stderr()?);
+                    }
+                    let shutdown = lifecycle::shutdown();
+                    let port = acyclic_native_runtime::obs::ReportPort::from_environment();
+                    let operation = phase(|| run(args, seams, shutdown.clone()));
+                    let original = lifecycle::observe(&report, port, shutdown, graceful, operation);
+                    let ((result, _report_result), failure) = if let Some(receiver) = receiver {
+                        receiver
+                            .observe_with(original, async |record| {
+                                let output = writer
+                                    .take()
+                                    .expect("one original diagnostic write at a time");
+                                let (output, record) = record
+                                    .write_owned(
+                                        output,
+                                        acyclic_native_runtime::InheritedOutput::write_owned,
+                                    )
+                                    .await?;
+                                writer = Some(output);
+                                drop(record);
+                                Ok(())
+                            })
+                            .await
+                    } else {
+                        (original.await, None)
+                    };
+                    diagnostic_failure = failure;
+                    result
+                }
+                .await;
+                // Best-effort text never changes the original operation result.
+                // A consumed sink cannot be reopened to replay an unknown prefix.
+                let message = match (&result, diagnostic_failure) {
+                    (Err(error), _) => Some(format!("graphcoder: {error}\n")),
+                    (Ok(_), Some(error)) => Some(format!(
+                        "graphcoder: diagnostic output incomplete: {error}\n"
+                    )),
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    if !admitted {
+                        writer = acyclic_native_runtime::InheritedOutput::stderr().ok();
+                    }
+                    if let Some(output) = writer.take() {
+                        let _ = output.write_owned(message.into_bytes()).await;
+                    }
+                }
                 result
             }));
             runtime.shutdown_background();
@@ -71,10 +130,7 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
         });
     match result {
         Ok(code) => ExitCode::from(code),
-        Err(error) => {
-            eprintln!("graphcoder: {error}");
-            ExitCode::FAILURE
-        }
+        Err(_) => ExitCode::FAILURE,
     }
 }
 

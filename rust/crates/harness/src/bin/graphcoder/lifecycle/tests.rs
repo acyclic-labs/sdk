@@ -16,7 +16,11 @@ fn request() -> ReportRequest {
 fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (owner, child) = tokio::io::duplex(4096);
@@ -75,7 +79,11 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
 fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (producer, completion) = tokio::sync::oneshot::channel::<()>();
@@ -156,7 +164,11 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
 fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (owner, child) = tokio::io::duplex(256);
