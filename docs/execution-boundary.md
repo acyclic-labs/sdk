@@ -1,8 +1,9 @@
 # Native execution capabilities
 
-Execution capabilities are being implemented at the native process launch owner.
-This document describes the draft contract, including work still required
-before it can be advertised as the stock harness execution boundary.
+The native process launch owner accepts explicit execution capabilities.
+This milestone provides the Linux launch core and typed refusals on unsupported
+platforms. Stock harness tool admission is separate follow-up work; existing
+shell calls do not acquire confinement merely by using this library.
 
 The authenticated host decides an `ExecutionGrant` after Auth and the existing
 approval chain. A grant binds one workspace, read-only roots, workspace write
@@ -149,13 +150,14 @@ a confined process. A path-based Seatbelt profile alone does not establish the
 object-bound grant or fence inherited descriptors. No partial macOS adapter is
 exposed as an enforced boundary.
 
-Outstanding acceptance work: Windows AppContainer integration at the native
+Follow-up work: Windows AppContainer integration at the native
 launch seam; macOS/Windows inherited-handle and root-identity race fencing;
 authenticated approval/role grants at all shell, executable-tool and process
-entry points; the shared OS-backed conformance suite; remote compilation of
-all affected targets. The current Windows adapter refuses confined execution.
-The stock shell is not yet wired to this draft API. No cross-platform
-confinement or performance qualification is claimed by this draft.
+entry points; complete active-resource accounting; the shared OS-backed
+conformance suite and qualification of all affected targets. The current Windows
+adapter refuses confined execution. The stock shell is not yet wired to this
+API. No cross-platform confinement or runtime performance qualification is
+claimed by this milestone.
 
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;
