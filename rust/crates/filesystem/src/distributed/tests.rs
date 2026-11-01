@@ -258,6 +258,53 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
     drop(retained);
     assert_eq!(work.allocations.live_bytes(), before_retirement - 73);
     work.release(29)?;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Quotations build real provider requests but return no request backing.
+        // Preserve earlier raw capacity and independently retained output while
+        // retiring each quotation's native capacity on success and refusal.
+        let (stream, reservation) = reserved().await?;
+        let store = StreamAuthorityStore::new(stream);
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut work = AuthorityWork::native(&original, &cancellation);
+        let earlier = work.vec::<u8>(29)?;
+        let retained = work.vec_owned::<u8>(73)?;
+        let request = append(reservation, permit(reservation));
+        let mut baseline = None;
+        for _ in 0..32 {
+            for growth in [0, usize::MAX] {
+                let quote = store
+                    .quote_group_append(&request, growth, &mut work)
+                    .await?;
+                assert_eq!(quote.is_some(), growth == 0);
+                assert_eq!(
+                    work.request_allocation.as_ref().unwrap().bytes(),
+                    earlier.capacity() as u64,
+                    "quotation leaked native request credit"
+                );
+                let live = original.live_allocation_bytes();
+                assert_eq!(*baseline.get_or_insert(live), live);
+            }
+        }
+        let before = original.live_allocation_bytes();
+        drop(retained);
+        assert_eq!(original.live_allocation_bytes(), before - 73);
+        drop(earlier);
+        work.release_request()?;
+        // Withdrawal after real preparation must also retire temporary request
+        // capacity without consulting the now-cancelled admission.
+        let before = original.live_allocation_bytes();
+        {
+            let mut scope = work.scope()?;
+            let values = scope.vec::<u8>(31)?;
+            cancellation.cancel();
+            drop(values);
+        }
+        assert_eq!(original.live_allocation_bytes(), before);
+    }
     Ok(())
 }
 
