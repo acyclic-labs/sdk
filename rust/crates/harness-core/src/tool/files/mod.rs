@@ -50,8 +50,8 @@ mod inputs;
 mod source;
 pub(crate) use inputs::FileView;
 pub use inputs::{
-    EditFileInput, FileResult, NotebookEdit, NotebookOutput, PatchFileInput, ReadFileInput,
-    ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
+    EditFileInput, FileResult, NotebookCell, NotebookEdit, NotebookOutput, PatchFileInput,
+    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;

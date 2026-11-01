@@ -176,42 +176,219 @@ fn encoded<T: Serialize>(
     ))
 }
 
+type Substitutions<'a> = [Option<(usize, usize, &'a str)>; 6];
+
+/// Type conversion uses the codec's existing lexical cursor to retain field
+/// boundaries. No cell values or unselected outputs become an owned JSON graph.
+fn convert_cell(
+    source: &str,
+    raw: &RawValue,
+    cell: &Cell<'_>,
+    kind: &str,
+    substitutions: &mut Substitutions<'_>,
+    work: crate::NativeWork<'_>,
+) -> Result<()> {
+    use crate::executor::json::{JsonBounds, JsonCodecCharge, JsonSpans, SpanEvent};
+    let encoded_kind = match kind {
+        "code" => "\"code\"",
+        "markdown" => "\"markdown\"",
+        "raw" => "\"raw\"",
+        _ => return Err(executor::rejection(work, "invalid notebook cell type")),
+    };
+    if cell.cell_type == kind {
+        return Ok(());
+    }
+    let _hold = edit::allocation(work, std::mem::size_of::<JsonSpans>())?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let owned_io = work
+        .map(crate::executor::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let io = owned_io.as_ref();
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let io = None;
+    let origin = span(source, raw).0;
+    let mut fields = [None; 4];
+    let mut key = None;
+    let mut cursor = JsonSpans::default();
+    let mut event = |event| -> Result<bool> {
+        match event {
+            SpanEvent::Key {
+                depth: 1,
+                start,
+                end,
+            } => {
+                let label = decode(
+                    std::marker::PhantomData::<crate::executor::json::BorrowedText<'_>>,
+                    &raw.get()[start as usize..end as usize],
+                    work,
+                )?;
+                let field = match label.0.as_ref() {
+                    "cell_type" => Some(0),
+                    "outputs" => Some(1),
+                    "execution_count" => Some(2),
+                    "attachments" => Some(3),
+                    _ => None,
+                };
+                key = field.map(|field| (field, origin + start as usize));
+            }
+            SpanEvent::End {
+                depth: 1,
+                start,
+                end,
+                ..
+            } => {
+                if let Some((field, key)) = key.take() {
+                    if fields[field].is_some() {
+                        return Err(executor::rejection(work, "duplicate notebook cell field"));
+                    }
+                    fields[field] = Some((key, origin + start as usize, origin + end as usize));
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    };
+    crate::executor::with_history_io(io, |history| -> Result<()> {
+        if let Some(history) = history.as_deref_mut() {
+            history.codec_charge(JsonCodecCharge::Read {
+                bytes: raw.get().len() as u64,
+            })?;
+        }
+        cursor.feed(
+            raw.get().as_bytes(),
+            JsonBounds {
+                maximum_bytes: raw.get().len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            Some(crate::wire::ErrorCode::Invalid),
+            &mut |charge| {
+                if let Some(history) = history.as_deref_mut() {
+                    history.codec_charge(charge)?;
+                }
+                Ok(())
+            },
+            &mut event,
+        )?;
+        cursor.finish(Some(crate::wire::ErrorCode::Invalid), &mut event)
+    })?;
+    let (_, start, end) =
+        fields[0].ok_or_else(|| executor::rejection(work, "notebook cell type is missing"))?;
+    substitutions[3] = Some((start, end, encoded_kind));
+    let remove = |(key, _, end): (usize, usize, usize)| {
+        let following = source.as_bytes()[end..]
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .map(|offset| end + offset);
+        if following.is_some_and(|at| source.as_bytes()[at] == b',') {
+            (key, following.unwrap() + 1, "")
+        } else {
+            let preceding = source.as_bytes()[..key]
+                .iter()
+                .rposition(|byte| !byte.is_ascii_whitespace());
+            let start = preceding
+                .filter(|at| source.as_bytes()[*at] == b',')
+                .unwrap_or(key);
+            (start, end, "")
+        }
+    };
+    if kind == "code" {
+        for (slot, field, replacement) in [(1, fields[1], "[]"), (2, fields[2], "null")] {
+            if let Some((_, start, end)) = field {
+                substitutions[slot] = Some((start, end, replacement));
+            }
+        }
+        let missing = match (fields[1].is_none(), fields[2].is_none()) {
+            (true, true) => ",\"outputs\":[],\"execution_count\":null",
+            (true, false) => ",\"outputs\":[]",
+            (false, true) => ",\"execution_count\":null",
+            (false, false) => "",
+        };
+        if !missing.is_empty() {
+            let end = span(source, raw).1 - 1;
+            substitutions[5] = Some((end, end, missing));
+        }
+        substitutions[4] = fields[3].map(remove);
+    } else {
+        substitutions[1] = fields[1].map(remove);
+        substitutions[2] = fields[2].map(remove);
+    }
+    Ok(())
+}
+
 pub(super) fn edit(
     source: &str,
     operation: &NotebookEdit,
     work: crate::NativeWork<'_>,
 ) -> Result<(String, crate::NativeCustody)> {
     let notebook = notebook(source, work)?;
-    let (index, expected_id) = match operation {
-        NotebookEdit::Replace { index, id, .. } | NotebookEdit::Delete { index, id } => {
-            (*index, id.as_deref())
-        }
-        NotebookEdit::Insert { index, .. } => (*index, None),
+    let (target, after) = match operation {
+        NotebookEdit::Replace { cell, .. } | NotebookEdit::Delete { cell } => (cell, false),
+        NotebookEdit::Insert { cell, after, .. } => (cell, *after),
     };
+    let mut index = None;
     let mut selected = None;
     let mut previous = None;
     let mut next = None;
+    let mut previous_end = None;
     let mut duplicate = false;
     let mut cell_error = None;
     let count = each(
         &notebook,
         |position, raw| {
-            if position == index {
-                selected = Some(raw);
+            if cell_error.is_some() {
+                return;
             }
-            if position.checked_add(1) == Some(index) {
-                previous = Some(span(source, raw).1);
-            }
-            if position == index.saturating_add(1) {
-                next = Some(span(source, raw).0);
-            }
-            if let NotebookEdit::Insert { id, .. } = operation {
-                if cell_error.is_none() {
-                    match decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work) {
-                        Ok(cell) => duplicate |= cell.id.as_deref() == Some(id.as_str()),
-                        Err(error) => cell_error = Some(error),
+            let cell = if matches!(target, NotebookCell::Id { .. })
+                || matches!(operation, NotebookEdit::Insert { .. })
+                || matches!(target, NotebookCell::Index { index, id: Some(_) } if *index == position)
+            {
+                match decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work) {
+                    Ok(cell) => Some(cell),
+                    Err(error) => {
+                        cell_error = Some(error);
+                        return;
                     }
                 }
+            } else {
+                None
+            };
+            let matches = match target {
+                NotebookCell::Index { index, id } if *index == position => {
+                    if id.as_deref().is_some_and(|id| {
+                        cell.as_ref().and_then(|cell| cell.id.as_deref()) != Some(id)
+                    }) {
+                        cell_error = Some(executor::rejection(
+                            work,
+                            "cell ID differs from the selected cell",
+                        ));
+                        return;
+                    }
+                    true
+                }
+                NotebookCell::Id { id } => {
+                    cell.as_ref().and_then(|cell| cell.id.as_deref()) == Some(id.as_str())
+                }
+                _ => false,
+            };
+            if matches {
+                if index.is_some() {
+                    cell_error = Some(executor::rejection(work, "cell ID is ambiguous"));
+                    return;
+                }
+                index = position.checked_add(u64::from(after));
+            }
+            if Some(position) == index {
+                selected = Some(raw);
+                previous = previous_end;
+            }
+            if index.and_then(|index| index.checked_add(1)) == Some(position) {
+                next = Some(span(source, raw).0);
+            }
+            previous_end = Some(span(source, raw).1);
+            if let NotebookEdit::Insert { id, .. } = operation {
+                duplicate |= cell.as_ref().and_then(|cell| cell.id.as_deref()) == Some(id.as_str());
             }
         },
         work,
@@ -219,24 +396,29 @@ pub(super) fn edit(
     if let Some(error) = cell_error {
         return Err(error);
     }
-    if index > count || (index == count && !matches!(operation, NotebookEdit::Insert { .. })) {
-        return Err(executor::rejection(work, "cell index exceeds notebook"));
-    }
-    let mut substitutions: [Option<(usize, usize, &str)>; 3] = [None; 3];
+    let index = index
+        .or_else(|| match target {
+            NotebookCell::Index { index, id: None }
+                if *index == count
+                    && !after
+                    && matches!(operation, NotebookEdit::Insert { .. }) =>
+            {
+                Some(count)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| executor::rejection(work, "cell selection is absent from notebook"))?;
+    let mut substitutions: Substitutions<'_> = [None; 6];
     let _replacement_hold;
     let replacement;
     match operation {
         NotebookEdit::Replace {
-            source: new_source, ..
+            source: new_source,
+            cell_type,
+            ..
         } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
             let cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
-            if expected_id.is_some_and(|id| cell.id.as_deref() != Some(id)) {
-                return Err(executor::rejection(
-                    work,
-                    "cell ID differs from the selected cell",
-                ));
-            }
             (replacement, _replacement_hold) = encoded(new_source, work)?;
             let (start, end) = span(source, cell.source);
             substitutions[0] = Some((start, end, &replacement));
@@ -249,6 +431,9 @@ pub(super) fn edit(
                     let (start, end) = span(source, execution);
                     substitutions[2] = Some((start, end, "null"));
                 }
+            }
+            if let Some(kind) = cell_type {
+                convert_cell(source, raw, &cell, kind, &mut substitutions, work)?;
             }
         }
         NotebookEdit::Insert {
@@ -301,13 +486,7 @@ pub(super) fn edit(
         }
         NotebookEdit::Delete { .. } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
-            if expected_id.is_some_and(|id| cell.id.as_deref() != Some(id)) {
-                return Err(executor::rejection(
-                    work,
-                    "cell ID differs from the selected cell",
-                ));
-            }
+            let _cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
             let (start, end) = span(source, raw);
             substitutions[0] = Some(if let Some(previous) = previous {
                 (previous, end, "")
@@ -338,6 +517,11 @@ pub(super) fn edit(
     edit::charge(&hold, (source.len() + extra) as u64, 1)?;
     let mut cursor = 0;
     for (start, end, replacement) in substitutions.into_iter().flatten() {
+        if start < cursor && replacement.is_empty() {
+            // Adjacent removed fields can share the comma between them.
+            cursor = cursor.max(end);
+            continue;
+        }
         text.push_str(
             source
                 .get(cursor..start)
