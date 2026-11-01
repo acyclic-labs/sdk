@@ -72,7 +72,7 @@ impl State {
     /// This state as its durable record.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        match self.encode_with(|len| {
+        match self.encode_with(|len, _| {
             Ok::<_, std::convert::Infallible>(EncodingBuffer {
                 record: Vec::with_capacity(len),
                 custody: (),
@@ -93,23 +93,7 @@ impl State {
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<acyclic_stream::NativeStreamOutput<Vec<u8>>> {
         use acyclic_native_runtime::{NativeCodecReservation, NativeCodecWork, ReadAllocation};
-        let copied = STATE_FORMAT_V1.len()
-            + self.checkpoint.as_ref().map_or(0, |checkpoint| {
-                checkpoint.codec.name.len()
-                    + checkpoint.codec.version.len()
-                    + checkpoint.bytes.len()
-            })
-            + self
-                .subscriptions
-                .iter()
-                .map(|(id, subscription)| id.len() + subscription.path.as_str().len())
-                .sum::<usize>()
-            + self
-                .metadata
-                .iter()
-                .map(|(key, value)| key.len() + value.len())
-                .sum::<usize>();
-        let mut encoded = self.encode_with(|len| {
+        let mut encoded = self.encode_with(|len, copied| {
             let actual = NativeCodecWork {
                 encoded: len as u64,
                 copied: copied as u64,
@@ -136,7 +120,7 @@ impl State {
 
     fn encode_with<C, E>(
         &self,
-        allocate: impl FnOnce(usize) -> Result<EncodingBuffer<C>, E>,
+        allocate: impl FnOnce(usize, usize) -> Result<EncodingBuffer<C>, E>,
     ) -> Result<EncodingBuffer<C>, E> {
         // The generated scalar writer has no owned variable fields. Encode
         // checkpoint and subscriptions below from their original backing.
@@ -152,14 +136,35 @@ impl State {
             journal_tail: 0,
         };
         let checkpoint_len = self.checkpoint.as_ref().map(checkpoint_len);
-        let subscriptions_len = self
-            .subscriptions
-            .iter()
-            .map(|(id, subscription)| framed_len(3, subscription_entry_len(id, subscription)))
-            .sum::<usize>();
+        let (subscriptions_len, subscription_copies) =
+            self.subscriptions
+                .iter()
+                .fold((0, 0), |(encoded, copied), (id, subscription)| {
+                    (
+                        encoded + framed_len(3, subscription_entry_len(id, subscription)),
+                        copied + id.len() + subscription.path.as_str().len(),
+                    )
+                });
+        // The original length walk also counts the bytes each primitive will
+        // copy. Map defaults are elided by the same protobuf implementation.
+        let copied = std::cell::Cell::new(
+            STATE_FORMAT_V1.len()
+                + subscription_copies
+                + self.checkpoint.as_ref().map_or(0, |checkpoint| {
+                    checkpoint.codec.name.len()
+                        + checkpoint.codec.version.len()
+                        + checkpoint.bytes.len()
+                }),
+        );
         let metadata_len = btree_map::encoded_len(
-            string::encoded_len,
-            wire_bytes::encoded_len,
+            |tag, key: &String| {
+                copied.set(copied.get() + key.len());
+                string::encoded_len(tag, key)
+            },
+            |tag, value: &bytes::Bytes| {
+                copied.set(copied.get() + value.len());
+                wire_bytes::encoded_len(tag, value)
+            },
             8,
             &self.metadata,
         );
@@ -176,6 +181,7 @@ impl State {
                 + payload.encoded_len()
                 + metadata_len
                 + journal_len,
+            copied.get(),
         )?;
         let mut record = &mut encoded.record;
         record.extend_from_slice(STATE_FORMAT_V1);
