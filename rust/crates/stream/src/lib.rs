@@ -221,7 +221,9 @@ pub use changes::{
     ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_encoded_len,
     decode_changes, is_changes,
 };
-pub use record_headers::{MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders};
+pub use record_headers::{
+    MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders,
+};
 
 include!("lib/provider_context.rs");
 include!("lib/provider.rs");
