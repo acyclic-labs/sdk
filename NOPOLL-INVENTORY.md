@@ -1,5 +1,39 @@
 # Polling and timed-wait inventory
 
+Capture control successor, location on `47ad15fec8`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:470` | Three-millisecond synthetic Pending ownership check | The exact oneshot receiver registers its worker waker before publishing its sole release sender to the seeded driver. Driver withdrawal returns `BrokenPipe` through the original capture result. | Qualified at `97a0f627d4` |
+
+The existing real-process replay, output custody and erased-entropy negative
+remain. The same oracle now requires the actual Pending registration event;
+substituting a timer without that event cannot satisfy it. The same named
+control also drops the sole release producer and requires the original process
+I/O error. The driver consumes one registration and releases or withdraws it
+once; it never checks elapsed time or retries an observation. Registration work
+is fixed per capture, independent of history or agent count. One driver channel
+and one oneshot replace one timer; no new task, thread, process, file, payload
+copy or durability barrier. Exact channel allocation/syscall counts remain
+unmeasured, and no production operation changes.
+
+
+Linux x86_64: at `97a0f627d4`, `cargo test --locked -p
+acyclic-harness-core --lib --no-default-features --features
+native-execution,test-support
+filesystem::native_process::capture::tests::simulation::capture_retains_seeded_worker_sources_and_custody
+-- --exact --nocapture` passed 1/1, 0.01 seconds execution. The original
+real-process replay and erased-entropy negative passed alongside release-producer
+withdrawal. The separate scoped process-provider control compiled but was not
+executed in this run. No Windows or macOS execution is claimed.
+
+At `37411a0508`, review tightened that same withdrawal oracle: the driver must
+observe the actual registration before any completion error is propagated, and
+the original process I/O error must retain the canceled receiver's exact
+`channel closed` message. An unrelated early I/O failure cannot satisfy either
+requirement. The same named Linux x86_64 control passed 1/1, 0.00 seconds
+execution. This adds assertions only, with no new event, timer or runtime work.
+
 MCP reader successor, location on `f4e34ab9f9`:
 
 | Source | Kind | Replacement and terminal | Status |
