@@ -33,6 +33,7 @@ pub(super) async fn connect(
                 Connection::Stdio(
                     super::super::stdio::StdioMcpTransport::spawn(
                         child,
+                        None,
                         limits.catalog_bytes,
                         server.startup_timeout_ms,
                     )

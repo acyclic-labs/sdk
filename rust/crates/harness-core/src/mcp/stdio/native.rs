@@ -70,9 +70,15 @@ impl StdioMcpTransport {
     }
 
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
-    /// Arguments, environment and workspace are supplied through `command`.
+    /// Arguments, environment, workspace and stderr are supplied through `command`.
+    /// A grant must come from authenticated host approval, never server configuration
+    /// or tool arguments. `None` retains ordinary native execution. A supplied grant
+    /// is enforced by the original process launch owner, with no unrestricted retry.
+    /// Confined commands require an explicit environment and workspace cwd; stderr
+    /// must also satisfy that owner's descriptor policy (for example, null or a pipe).
     pub async fn spawn(
         mut command: ProcessCommand,
+        grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
         maximum_bytes: u32,
         timeout_ms: u32,
     ) -> Result<Self> {
@@ -85,9 +91,12 @@ impl StdioMcpTransport {
                 move || {
                     command
                         .stdin(ProcessStdio::piped())
-                        .stdout(ProcessStdio::piped())
-                        .stderr(ProcessStdio::inherit());
-                    ProcessTree::spawn(&mut command).map(|tree| ProcessOwner {
+                        .stdout(ProcessStdio::piped());
+                    let tree = match grant {
+                        Some(grant) => ProcessTree::spawn_granted(command, &grant, None),
+                        None => ProcessTree::spawn(&mut command),
+                    };
+                    tree.map(|tree| ProcessOwner {
                         tree: std::sync::Mutex::new(Some(tree)),
                         runtime,
                     })

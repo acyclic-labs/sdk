@@ -1,5 +1,7 @@
 use super::*;
 mod fixture;
+#[cfg(target_os = "linux")]
+mod granted;
 use crate::{
     mcp::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure},
     tool::{JsonToolProjection, ToolInvocation, ToolProjection, ToolRegistry},
@@ -107,7 +109,7 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
         Some("sh"),
     )
     .map_err(Error::process_io)?;
-    let mut future = Box::pin(StdioMcpTransport::spawn(command, 4096, 5000));
+    let mut future = Box::pin(StdioMcpTransport::spawn(command, None, 4096, 5000));
     let (mut stream, _) = tokio::select! {
         accepted = listener.accept() => accepted.map_err(Error::process_io)?,
         _ = &mut future => return Err(invalid("MCP child exited before initialization handshake")),
@@ -447,7 +449,7 @@ async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -
     }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
     let command = fixture::command(directory.path())?;
-    let transport = StdioMcpTransport::spawn(command, 4096, 5_000).await?;
+    let transport = StdioMcpTransport::spawn(command, None, 4096, 5_000).await?;
     let tools = transport
         .rpc(
             OperationId::from_bytes([4; 16]),
@@ -466,15 +468,30 @@ async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -
 async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
     for (bytes, timeout) in [(0, 1), (1, 0)] {
         assert!(matches!(
-            StdioMcpTransport::spawn(ProcessCommand::new("not-used"), bytes, timeout).await,
+            StdioMcpTransport::spawn(ProcessCommand::new("not-used"), None, bytes, timeout).await,
             Err(Error::Invalid(_))
         ));
     }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
     let command = ProcessCommand::new(directory.path().join("nonexistent-mcp-server"));
     assert!(matches!(
-        StdioMcpTransport::spawn(command, 4096, 5_000).await,
+        StdioMcpTransport::spawn(command, None, 4096, 5_000).await,
         Err(Error::Process(crate::ProcessError::NotFound { .. }))
+    ));
+    let grant = acyclic_native_runtime::execution::ExecutionGrant::new(
+        directory.path(),
+        acyclic_native_runtime::execution::ExecutionAccess::ReadOnly,
+        [],
+        acyclic_native_runtime::execution::ExecutionNetwork::Off,
+    )
+    .map_err(Error::process_io)?;
+    // Ordinary MCP permits inherited environment. Supplying a grant must
+    // preserve its definitive admission refusal, even on unsupported platforms.
+    let command = fixture::command(directory.path())?;
+    assert!(matches!(
+        StdioMcpTransport::spawn(command, Some(grant), 4096, 5_000).await,
+        Err(Error::Unauthorized(reason))
+            if reason == "confined execution requires an explicit environment"
     ));
     Ok(())
 }
