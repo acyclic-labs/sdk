@@ -1,5 +1,7 @@
 //! Immutable prefix views over the shared fixed-width branch coordinates.
-use super::{Bit, IndexReadWork, IndexWork, arc_allocation_bytes, difference, high};
+use super::{
+    Bit, IndexInsertionBound, IndexReadWork, IndexWork, arc_allocation_bytes, difference, high,
+};
 use std::sync::Arc;
 
 /// A caller-funded immutable ordered index. Cloning or taking a prefix shares
@@ -221,7 +223,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         kind: Kind<V, A, N, C>,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let allocation = work.claim(arc_allocation_bytes::<Body<V, A, N, C>>() as u64)?;
+        let allocation = work.claim(Self::node_bytes() as u64)?;
         Ok(Self {
             root: Some(Node(Some(Arc::new(Body {
                 minimum,
@@ -231,6 +233,36 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
             before: None,
             value_before: None,
         })
+    }
+
+    fn node_bytes() -> usize {
+        arc_allocation_bytes::<Body<V, A, N, C>>()
+    }
+
+    pub(crate) fn insertion_bound() -> Option<IndexInsertionBound> {
+        let width = u64::try_from(N).ok()?;
+        let branches = width.checked_mul(8)?;
+        let nodes = branches.checked_add(1)?;
+        // The first descent charges each bit and one full leaf comparison.
+        // The copy descent charges its visible body, two key comparisons and
+        // its sibling. The terminal branch checks at most two child bodies.
+        let items = branches
+            .checked_mul(width.checked_mul(4)?.checked_add(3)?)?
+            .checked_add(width.checked_mul(5)?)?
+            .checked_add(4)?;
+        Some(IndexInsertionBound {
+            nodes,
+            bytes: nodes.checked_mul(u64::try_from(Self::node_bytes()).ok()?)?,
+            items,
+        })
+    }
+
+    pub(crate) fn predecessor_items_bound() -> Option<u64> {
+        let width = u64::try_from(N).ok()?;
+        width
+            .checked_mul(8)?
+            .checked_add(1)?
+            .checked_mul(width.checked_mul(7)?.checked_add(2)?)
     }
 
     fn branch<W: IndexWork<Allocation = A>>(

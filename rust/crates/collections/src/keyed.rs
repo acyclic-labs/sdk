@@ -2,6 +2,20 @@
 use super::persistent::QualifiedIndex;
 use super::{IndexReadWork, IndexWork, PersistentIndex};
 
+/// Worst-case backing and examined work for a prepared number of insertions.
+/// These are bounds for the selected value, funding-token and key layouts;
+/// they neither issue credit nor include separately owned value payloads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexInsertionBound {
+    /// Maximum calls to `IndexWork::claim`, each funding one physical node.
+    pub nodes: u64,
+    /// Sum of the exact physical backing bytes requested by those claims.
+    pub bytes: u64,
+    /// Maximum sum passed to `IndexWork::charge_items`. Any issuing owner's
+    /// additional work inside `claim` is separate from this examined work.
+    pub items: u64,
+}
+
 /// An original admission failure or an exact binary-key encoding refusal.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BinaryKeyError<E> {
@@ -73,6 +87,42 @@ impl<V, A, const N: usize> Clone for KeyedIndex<V, A, N> {
 }
 
 impl<V, A, const N: usize> KeyedIndex<V, A, N> {
+    /// Bounds insertion before the original keys or sequence positions arrive.
+    /// Uses the same private node layout and bounded paths as `insert`, including
+    /// replacement and inherited cuts. Arithmetic is O(1), allocates nothing,
+    /// and returns `None` on overflow. Zero insertions require zero backing/work.
+    ///
+    /// The original preparation owner must reserve this backing and later split
+    /// that SAME retained funding in `IndexWork::claim`, before each allocation.
+    /// Unused reservation belongs to that original owner. This bound grants no
+    /// validity, cancellation or work admission and excludes `binary_key` work.
+    pub fn insertion_bound(insertions: u64) -> Option<IndexInsertionBound> {
+        if insertions == 0 {
+            return Some(IndexInsertionBound {
+                nodes: 0,
+                bytes: 0,
+                items: 0,
+            });
+        }
+        let outer = QualifiedIndex::<PersistentIndex<V, A>, A, N>::insertion_bound()?;
+        let inner = PersistentIndex::<V, A>::insertion_bound()?;
+        let items = QualifiedIndex::<PersistentIndex<V, A>, A, N>::predecessor_items_bound()?
+            .checked_add(u64::try_from(N).ok()?)?
+            .checked_add(outer.items)?
+            .checked_add(inner.items)?;
+        Some(IndexInsertionBound {
+            nodes: outer
+                .nodes
+                .checked_add(inner.nodes)?
+                .checked_mul(insertions)?,
+            bytes: outer
+                .bytes
+                .checked_add(inner.bytes)?
+                .checked_mul(insertions)?,
+            items: items.checked_mul(insertions)?,
+        })
+    }
+
     /// Retains all original positions strictly before this global sequence cut.
     /// Cloning and repeated capping allocate nothing and retain the earlier cut.
     pub fn cap(&self, before: u64) -> Self {

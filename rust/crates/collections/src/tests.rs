@@ -179,10 +179,13 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                         original.clone()
                     };
                     prop_assert_eq!(work.claims, claims);
+                    let items = work.items;
+                    let bound = KeyedIndex::<usize, Allocation, 8>::insertion_bound(1).unwrap();
                     let next = view
                         .insert(key.to_be_bytes(), sequence, value, &mut work)
                         .map_err(TestCaseError::fail)?;
-                    prop_assert!(work.claims - claims <= 130);
+                    prop_assert!(work.claims - claims <= bound.nodes);
+                    prop_assert!(work.items - items <= bound.items);
                     expected.insert((key, sequence), value);
                     histories.push((next, expected));
                     for (history, expected) in &histories {
@@ -426,6 +429,74 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
     assert_eq!(work.live.get(), 0);
     assert_eq!(measured.bytes_current, 0);
     assert!(!work.early_refund.get());
+
+    // Both paths contain every coordinate. Replacement consumes the complete
+    // published bound from ONE original prepaid guard. One byte less must fail
+    // before the last physical allocation, preserving the original root.
+    for short in [true, false] {
+        let mut work = Work {
+            observe_retirement: true,
+            ..Work::default()
+        };
+        let measured = acyclic_test_support::measure(|| {
+            let mut index = KeyedIndex::<usize, Allocation, 1>::default()
+                .insert([0], 0, 0, &mut work)
+                .unwrap();
+            for bit in 0..8 {
+                index = index.insert([1 << bit], 0, 1, &mut work).unwrap();
+            }
+            for bit in 0..64 {
+                index = index.insert([0], 1 << bit, 1, &mut work).unwrap();
+            }
+            let bound = KeyedIndex::<usize, Allocation, 1>::insertion_bound(1).unwrap();
+            let funding = work.claim(bound.bytes - u64::from(short)).unwrap();
+            let claims = work.claims;
+            work.maximum_items = Some(work.items + bound.items);
+            let before = acyclic_test_support::current_allocations().unwrap();
+            let mut prepaid = Prepaid {
+                work: &mut work,
+                funding,
+                nodes: 0,
+            };
+            let next = index.insert([0], 0, 2, &mut prepaid);
+            if short {
+                assert!(matches!(next, Err("prepaid backing exhausted")));
+            } else {
+                let next = next.unwrap();
+                let after = acyclic_test_support::current_allocations().unwrap();
+                assert_eq!(after.bytes_total - before.bytes_total, bound.bytes);
+                assert_eq!(after.count_total - before.count_total, bound.nodes);
+                assert_eq!(prepaid.nodes, bound.nodes);
+                assert_eq!(prepaid.funding.bytes, 0);
+                drop(next);
+            }
+            assert_eq!(
+                prepaid.work.claims, claims,
+                "insertion recharged prepaid backing"
+            );
+            drop(prepaid);
+            work.maximum_items = None;
+            assert_eq!(index.seek([0], 0, 1, &mut work).unwrap(), Some((0, &0)));
+            let funding = work.claim(bound.bytes).unwrap();
+            work.cancelled = true;
+            let mut prepaid = Prepaid {
+                work: &mut work,
+                funding,
+                nodes: 0,
+            };
+            assert!(matches!(
+                index.insert([0], 0, 3, &mut prepaid),
+                Err("cancelled")
+            ));
+            assert_eq!(prepaid.nodes, 0);
+            drop(prepaid);
+            drop(index);
+        });
+        assert_eq!(work.live.get(), 0);
+        assert_eq!(measured.bytes_current, 0);
+        assert!(!work.early_refund.get());
+    }
+    assert!(KeyedIndex::<usize, Allocation, 1032>::insertion_bound(u64::MAX).is_none());
     Ok(())
 }
 
@@ -469,6 +540,44 @@ struct Allocation {
     live: Rc<Cell<u64>>,
     observe_retirement: bool,
     early_refund: Rc<Cell<bool>>,
+}
+
+// The original owner prepays once, then splits that same retained token before
+// each physical node allocation. Examined work still uses the original frame.
+struct Prepaid<'a> {
+    work: &'a mut Work,
+    funding: Allocation,
+    nodes: u64,
+}
+
+impl IndexWork for Prepaid<'_> {
+    type Error = &'static str;
+    type Allocation = Allocation;
+
+    fn check(&mut self) -> Result<(), Self::Error> {
+        self.work.check()
+    }
+
+    fn charge_items(&mut self, items: u64) -> Result<(), Self::Error> {
+        self.work.charge_items(items)
+    }
+
+    fn claim(&mut self, bytes: u64) -> Result<Allocation, Self::Error> {
+        self.work.check()?;
+        let remaining = self
+            .funding
+            .bytes
+            .checked_sub(bytes)
+            .ok_or("prepaid backing exhausted")?;
+        self.funding.bytes = remaining;
+        self.nodes += 1;
+        Ok(Allocation {
+            bytes,
+            live: Rc::clone(&self.funding.live),
+            observe_retirement: self.funding.observe_retirement,
+            early_refund: Rc::clone(&self.funding.early_refund),
+        })
+    }
 }
 
 impl Drop for Allocation {
