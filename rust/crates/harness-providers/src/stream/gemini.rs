@@ -4,7 +4,7 @@ use crate::protocol::present;
 #[derive(serde::Deserialize)]
 struct Envelope<'a> {
     #[serde(borrow)]
-    candidates: Vec<Candidate<'a>>,
+    candidates: [Candidate<'a>; 1],
 }
 #[derive(serde::Deserialize)]
 struct Candidate<'a> {
