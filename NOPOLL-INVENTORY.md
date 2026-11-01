@@ -4208,3 +4208,20 @@ Per claim, the existing Handles Arc allocation gains one release mutex/condition
 | `rust/crates/filesystem/src/collection/tests.rs:418-424` | Yield once then assert non-completion | Drive the original Collection::begin future to its actual retired-generation gate while the original publication hold remains live, then release that hold and await the same future. | Actioned |
 
 Pre-edit source: `93f7bf8a89`. The former yield is a readiness guess even though it occurs once. The primitive has no intermediate I/O: its pending point is the original retired generation's write lock. Releasing the original publication hold produces the write-lock event. Restoring a collection that skips this gate returns Ready at the deterministic held-admission poll and fails immediately. One test task, one Arc clone and one readiness yield are deleted; no timer, worker, allocation, syscall, copy or barrier is added. The original collection's hash/set work and generation drain remain unchanged and are not asserted to be whole-operation constant time. Source formatting/diff checks pass; named execution and restored-source negative are unrun.
+
+## Reviewed surviving transport backoff and finite scheduling
+
+Coordinates below refer to source `5c2e290bd0`. This is a reviewed subset, not a complete survivor list or a helper/platform exemption. Unreviewed timer users elsewhere in this inventory remain pending.
+
+| Site | Kind | Exact condition and original event | Disposition |
+| --- | --- | --- | --- |
+| `rust/crates/stream/src/grpc/mod.rs:396` | Transient transport backoff | retryable traverses the actual Status cause and admits captured HTTP/2 cancellation or transient I/O failure; application-level Cancelled/Unavailable alone is refused. Same original attempt identity and captured real closed-transport controls remain. | Allowed exception |
+| `rust/crates/stream/src/session/client/link.rs:76` | Transient transport backoff | Only the original failed connect/handshake Unavailable result schedules 100 ms; dropping the final interest drops the dial/backoff. | Allowed exception |
+| `rust/crates/stream/src/session/client/link.rs:361` | Transient transport backoff after EOF | reconnect is reached only from original transport EOF or Unavailable; an unopened live resumable registration backs off before the next physical RPC. Its original explicit-clock/withdrawal Loom control remains. | Allowed exception |
+| `rust/crates/objects/src/grpc.rs:651` | Explicit caller deadline | The original call's grpc-timeout metadata is the sole duration source; absent metadata creates no timer. | Allowed exception |
+| `typescript/packages/objects/src/v1.ts:91` | Explicit caller opening deadline | The original optional timeoutMs comes from this caller's request; omitted policy creates no timer. | Allowed exception |
+| `rust/crates/objects/src/tests.rs:3057` | Finite round-trip scheduling stimulus | One Latent medium operation yields once and accounts its actual in-flight count, then invokes the original memory medium. A slow operation takes its fixed number of trips; no readiness is sampled. | Non-wait |
+| `rust/crates/stream/src/session/client/tests/tenk.rs:166` | Finite completion scheduling stimulus | Each original agent future completes once through FuturesUnordered before one yield; the loop consumes a finished future each turn and checks its fixed workload count. No readiness retry occurs. | Non-wait |
+| `rust/crates/stream/src/runtime.rs:14-30` | One host scheduler turn | One self-wake on native or one MessageChannel delivery in the browser resolves the future. Each caller still needs its own finite-work or event disposition; a readiness recheck using this helper remains rejected. | Event primitive |
+
+The transport survivors keep their original delay values and physical RPC controls. The added comment at the unary HTTP/2 backoff names its original failure predicate; no behavior, retry count, timeout, scheduling task, allocation, I/O, copy or durability barrier changes. This source classification is not a new execution or network qualification.

@@ -392,6 +392,7 @@ impl Client {
                 rpc.code = error.code() as u64,
                 "stream rpc retried"
             );
+            // Backoff follows retryable's captured transient HTTP/2 or I/O failure.
             tokio::time::sleep(RETRY_DELAY).await;
         }
     }
