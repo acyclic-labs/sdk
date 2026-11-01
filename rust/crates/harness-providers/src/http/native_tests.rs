@@ -14,6 +14,7 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
     let baseline = work.live_allocation_bytes();
     let bytes = Bytes::from(input);
     let expected = bytes.clone();
+    let mut eof = false;
     let source =
         futures::stream::iter(std::iter::once(Ok(bytes)).chain((terminal == 1).then(|| {
             Err(acyclic_harness_core::Error::Invalid(
@@ -22,6 +23,8 @@ fn check_retention(input: Vec<u8>, broken: bool, terminal: u8) {
         })))
         .chain(futures::stream::poll_fn(move |_| {
             assert_eq!(terminal, 0, "body polled its source after termination");
+            assert!(!eof, "body polled its source after EOF");
+            eof = true;
             Poll::Ready(None)
         }));
     let mut body = body(source, (!broken).then_some(&work)).unwrap();
