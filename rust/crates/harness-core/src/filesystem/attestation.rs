@@ -177,7 +177,8 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
                 acyclic_stream::WriteRequest::Fork(request) => {
                     acyclic_stream::request::fork_digest(request)
                 }
-                acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+                acyclic_stream::WriteRequest::Commit(request)
+                | acyclic_stream::WriteRequest::CommitAccepted(request) => commit_digest(request),
             })
             .await?
             .write(request)
@@ -258,7 +259,10 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
                     acyclic_stream::WriteRequest::Fork(request) => {
                         acyclic_stream::request::fork_digest(request)
                     }
-                    acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+                    acyclic_stream::WriteRequest::Commit(request)
+                    | acyclic_stream::WriteRequest::CommitAccepted(request) => {
+                        commit_digest(request)
+                    }
                 })
                 .await;
             match target {
