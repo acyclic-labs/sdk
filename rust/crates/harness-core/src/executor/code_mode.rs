@@ -94,7 +94,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&definitions, u64::MAX, false))
+                .map(|io| io.encode(&definitions, None, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
@@ -178,7 +178,7 @@ impl StockExecution<'_> {
                         struct Reply<'a> { ok: bool, value: &'a Value }
                         let reply = Reply { ok, value: &value };
                         #[cfg(feature = "filesystem")]
-                        let funded = self.io.map(|io| io.encode(&reply, u64::MAX, false)).transpose()?;
+                        let funded = self.io.map(|io| io.encode(&reply, None, false)).transpose()?;
                         #[cfg(not(feature = "filesystem"))]
                         let funded: Option<acyclic_stream::OwnedBytes> = None;
                         let reply = match funded {
