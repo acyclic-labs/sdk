@@ -407,9 +407,9 @@ where
             // sequence names, so name order is staging order.
             let head = self.head().await?;
             let turn = format!("/{}/{turn}", super::TOOL_OUTPUT);
-            let cancellation = CancellationToken::new();
             for dispatch in Self::list_at(&head, &turn).await?.iter().rev() {
                 let reply = format!("{turn}/{dispatch}/reply");
+                let cancellation = CancellationToken::new();
                 let mut chunks = InternalDirectory::new(&head, Cow::Borrowed(&reply));
                 let mut text = Vec::new();
                 let mut found = false;
