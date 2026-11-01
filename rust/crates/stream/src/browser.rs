@@ -347,10 +347,11 @@ impl StreamProvider for BrowserStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        if !request.at_least.is_empty() {
-            self.wait_revision(&request.at_least).await?;
+        let request = request.validate()?;
+        if !request.request().at_least.is_empty() {
+            self.wait_revision(&request.request().at_least).await?;
         }
-        self.with_provider(async move |provider| provider.read(request).await)
+        self.with_provider(async move |provider| provider.read_inner(request).await)
             .await
     }
 

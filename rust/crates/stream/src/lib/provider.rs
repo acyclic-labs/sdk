@@ -90,6 +90,7 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         request: WriteRequest,
     ) -> BoxProviderFuture<'_, std::result::Result<WriteOutcome, StreamError>>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
+    /// Invalid limits or keys return LimitExceeded before revision waits or IO.
     /// Opening a missing path returns NotFound; a start beyond that snapshot's
     /// tail returns OutOfRange. Neither refusal is deferred to the first item.
     async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError>;
