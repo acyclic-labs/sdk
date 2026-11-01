@@ -4,6 +4,55 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn rooted_directory_buffer_uses_the_original_allocation_and_operation_credits() {
+    use std::sync::atomic::Ordering;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("nested")).unwrap();
+    let parent = File::open(root.path()).unwrap();
+    let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    denied.deny_allocations.store(true, Ordering::Release);
+    let error = open_beneath_with_flags(
+        &parent,
+        Path::new("nested"),
+        libc::O_DIRECTORY,
+        Some(&denied),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(denied.used_operations.load(Ordering::Acquire), 0);
+    assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+    assert_eq!(denied.used_allocations.load(Ordering::Acquire), 0);
+    assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+
+    // The identical rooted native open without the allocation ceiling is the
+    // negative control. This exercises real kernel resolution, not a mock.
+    match open_beneath(&parent, Path::new("nested")) {
+        Ok(file) => assert!(file.metadata().unwrap().is_dir()),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("rooted directory negative control failed: {error}"),
+    }
+    for (limit, failure, name, succeeds) in [
+        (0, None, "nested", false),
+        (1, Some(1), "nested", false),
+        (1, None, "missing", false),
+        (1, None, "nested", true),
+    ] {
+        let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+        meter.fail_recorded_operation = failure;
+        let output =
+            open_beneath_with_flags(&parent, Path::new(name), libc::O_DIRECTORY, Some(&meter));
+        assert_eq!(output.is_ok(), succeeds, "{output:?}");
+        if let Ok(file) = output {
+            assert!(file.metadata().unwrap().is_dir());
+        }
+        let attempted = u64::from(limit != 0);
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), attempted);
+        assert_eq!(meter.used_allocations.load(Ordering::Acquire), attempted);
+        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    }
+}
+
+#[test]
 fn computation_devices_bind_objects_and_refuse_name_substitution() {
     let root = tempfile::tempdir().unwrap();
     let alias = root.path().join("device");

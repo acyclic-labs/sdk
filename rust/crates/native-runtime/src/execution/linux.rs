@@ -17,7 +17,6 @@ use crate::{
     meter::native_control_attempt,
 };
 use std::{
-    ffi::CString,
     fs::File,
     io,
     os::{
@@ -48,18 +47,47 @@ const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
 
 pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
-    open_beneath_with_flags(root, relative, 0)
+    open_beneath_with_flags(root, relative, 0, None)
 }
 
-fn open_beneath_with_flags(root: &File, relative: &Path, flags: i32) -> io::Result<File> {
+fn open_beneath_with_flags(
+    root: &File,
+    relative: &Path,
+    flags: i32,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<File> {
     #[repr(C)]
     struct OpenHow {
         flags: u64,
         mode: u64,
         resolve: u64,
     }
-    let path = CString::new(relative.as_os_str().as_bytes())
-        .map_err(|_| refused("invalid relative grant path"))?;
+    let bytes = relative.as_os_str().as_bytes();
+    if bytes.contains(&0) {
+        return Err(refused("invalid relative grant path"));
+    }
+    let count = bytes
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| refused("relative grant path length overflow"))?;
+    let mut operation = meter
+        .map(|meter| crate::NativeOperationReservation::new(meter, Read, 1))
+        .transpose()?;
+    // Declare credit before storage: the buffer is physically freed before
+    // its original ledger releases capacity, including every error return.
+    let mut allocation = meter
+        .map(|meter| crate::ReadAllocation::borrowed(meter, count))
+        .transpose()?;
+    let mut path = Vec::new();
+    path.try_reserve_exact(count).map_err(|error| match meter {
+        Some(meter) => meter.allocation_failed(error),
+        None => io::Error::new(io::ErrorKind::OutOfMemory, error),
+    })?;
+    if let Some(allocation) = &mut allocation {
+        allocation.reconcile_capacity(path.capacity())?;
+    }
+    path.extend_from_slice(bytes);
+    path.push(0);
     let how = OpenHow {
         flags: (libc::O_PATH | libc::O_CLOEXEC | flags) as u64,
         mode: 0,
@@ -67,28 +95,36 @@ fn open_beneath_with_flags(root: &File, relative: &Path, flags: i32) -> io::Resu
         // even when an ancestor is renamed or replaced during the syscall.
         resolve: 0x08 | 0x04,
     };
-    // SAFETY: the borrowed root, terminated path and complete zero-reserved
-    // open_how remain live for the kernel's checked relative resolution.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            root.as_raw_fd(),
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
+    let open = || {
+        // SAFETY: the borrowed root, terminated path and complete zero-reserved
+        // open_how remain live for the kernel's checked relative resolution.
+        let descriptor = unsafe {
+            libc::syscall(
+                libc::SYS_openat2,
+                root.as_raw_fd(),
+                path.as_ptr(),
+                &raw const how,
+                std::mem::size_of::<OpenHow>(),
+            )
+        };
+        if descriptor < 0 {
+            let error = io::Error::last_os_error();
+            return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
+                unavailable("rooted execution path resolution requires openat2")
+            } else {
+                failure(error)
+            });
+        }
+        let descriptor =
+            i32::try_from(descriptor).map_err(|_| refused("invalid grant root handle"))?;
+        // SAFETY: successful openat2 transfers this unique descriptor to File,
+        // before a possible late operation-recording failure.
+        Ok(unsafe { File::from_raw_fd(descriptor) })
     };
-    if descriptor < 0 {
-        let error = io::Error::last_os_error();
-        return Err(if error.raw_os_error() == Some(libc::ENOSYS) {
-            unavailable("rooted execution path resolution requires openat2")
-        } else {
-            failure(error)
-        });
+    match &mut operation {
+        Some(operation) => operation.control(open),
+        None => open(),
     }
-    let descriptor = i32::try_from(descriptor).map_err(|_| refused("invalid grant root handle"))?;
-    // SAFETY: successful openat2 transfers this unique descriptor to File.
-    Ok(unsafe { File::from_raw_fd(descriptor) })
 }
 
 #[repr(C)]
@@ -222,9 +258,12 @@ impl Prepared {
         let directory = if relative.as_os_str().is_empty() {
             None
         } else {
-            Some(native_control_attempt(meter, Read, || {
-                open_beneath_with_flags(&root, relative, libc::O_DIRECTORY)
-            })?)
+            Some(open_beneath_with_flags(
+                &root,
+                relative,
+                libc::O_DIRECTORY,
+                meter,
+            )?)
         };
         let prepared = Self {
             ruleset,

@@ -24,10 +24,9 @@ pub(crate) fn native_control_attempt<T>(
     kind: NativeOperationKind,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let (result, recorded) = native_operation_attempt(meter, kind, operation)?;
-    match result {
-        Err(error) => Err(error),
-        Ok(value) => recorded.map(|()| value),
+    match meter {
+        Some(meter) => NativeOperationReservation::new(meter, kind, 1)?.control(operation),
+        None => operation(),
     }
 }
 
@@ -57,6 +56,19 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M> 
             .unwrap_or_else(|| std::process::abort());
         let recorded = self.meter.record_reserved_operation(self.kind);
         (operation(), recorded)
+    }
+
+    /// Completes one pre-reserved operation whose value owns its resources.
+    /// Preparation before this call can fail without reporting a native attempt.
+    pub(crate) fn control<T>(
+        &mut self,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let (result, recorded) = self.attempt(operation);
+        match result {
+            Err(error) => Err(error),
+            Ok(value) => recorded.map(|()| value),
+        }
     }
 }
 

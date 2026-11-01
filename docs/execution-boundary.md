@@ -45,7 +45,7 @@ query, ruleset creation and rule insertion to that same invocation ledger.
 Every operation reserves before the native call. Successful handles acquire
 RAII ownership before a late recording failure is returned, so preparation
 failure closes them without launching a child. No preparation wait is added.
-Grant construction, implicit path storage and remaining launch allocations
+Grant construction and remaining launch allocations
 still require resource accounting; operation charging is not a complete
 active-memory reservation contract.
 The granted entry consumes the original `ProcessCommand`; ordinary command conversion refuses
@@ -108,7 +108,13 @@ The selected working directory is the one retained directory descriptor;
 binding another root temporarily needs one additional descriptor. Selecting
 the workspace itself reuses its existing open. A nested directory adds one
 metered `openat2` and one temporary NUL-terminated relative-path allocation
-and copy, with no extra metadata query. On the custodied
+and copy, with no extra metadata query. That buffer borrows the original
+allocation guard and meter until the synchronous open finishes. Its operation
+credit is reserved before allocation; allocation refusal refunds that unused
+credit and records no native attempt. Capacity is reconciled with the actual
+buffer and released after its physical destruction on success or error. No
+reference-counted owner allocation, extra buffer or wait is added. This charges
+the existing path buffer, not all remaining native launch storage. On the custodied
 path this replaces the original open of the host working directory and removes
 the child's second `chdir`. Direct launches replace `chdir` with `fchdir`.
 Before launch, the shared native file primitive relocates either retained
