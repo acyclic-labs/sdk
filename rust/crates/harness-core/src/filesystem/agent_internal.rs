@@ -25,6 +25,31 @@ pub(in crate::filesystem) struct AgentInternalFiles<A: 'static, O: 'static> {
     grant: ContentGrant,
 }
 
+/// Reads from one original private-volume generation, including its directory
+/// entries and file bodies. Later publications cannot change this selection.
+pub(in crate::filesystem) struct InternalRead<A: 'static, O: 'static> {
+    generation: acyclic_fs::Generation<A, O>,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRead<A, O> {
+    pub(in crate::filesystem) async fn read(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<OwnedBytes>> {
+        AgentInternalFiles::read_at(
+            &self.generation,
+            &format!("/{}", internal(path)),
+            maximum_bytes,
+        )
+        .await
+    }
+
+    pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
+        AgentInternalFiles::list_at(&self.generation, &format!("/{}", internal(path))).await
+    }
+}
+
 /// Storage path of internal-relative `path`.
 fn internal(path: &str) -> String {
     format!("{}{path}", InternalContentClass::Interaction.prefix())
@@ -114,18 +139,21 @@ where
             .value)
     }
 
+    /// Selects one generation for an entire internal read, without another
+    /// workspace open or head observation for its individual files.
+    pub(in crate::filesystem) async fn reader(&self) -> Result<InternalRead<A, O>> {
+        Ok(InternalRead {
+            generation: self.head().await?,
+        })
+    }
+
     /// The original owned bytes of internal file `path`, if it exists.
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
         maximum_bytes: u64,
     ) -> Result<Option<OwnedBytes>> {
-        Self::read_at(
-            &self.head().await?,
-            &format!("/{}", internal(path)),
-            maximum_bytes,
-        )
-        .await
+        self.reader().await?.read(path, maximum_bytes).await
     }
 
     /// The bytes of volume file `path` in `head`, if it exists.
@@ -196,7 +224,7 @@ where
     /// The names of the files in internal directory `path`, in name order;
     /// empty when the directory does not exist.
     pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        Self::list_at(&self.head().await?, &format!("/{}", internal(path))).await
+        self.reader().await?.list(path).await
     }
 
     /// The names of the entries of volume directory `directory` in `head`,

@@ -101,10 +101,10 @@ where
 
     fn recorded(&self) -> BoxProviderFuture<'_, Result<Vec<TurnEffect>>> {
         Box::pin(async move {
+            let reader = self.files.reader().await?;
             let mut recorded = Vec::new();
-            for name in self.files.list(&self.directory).await? {
-                let bytes = self
-                    .files
+            for name in reader.list(&self.directory).await? {
+                let bytes = reader
                     .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
                     .await?
                     .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
@@ -174,7 +174,7 @@ mod tests {
             u64::MAX,
             &mut None,
         )?;
-        let files = Arc::new(AgentInternalFiles::new(host, volume.clone(), write));
+        let files = Arc::new(AgentInternalFiles::new(host.clone(), volume.clone(), write));
         let effects = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
@@ -267,6 +267,41 @@ mod tests {
             Err(Error::UnsupportedRecordVersion(version)) if version == refusal
         ));
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+
+        // Removing a file after selection changes a fresh read, but cannot
+        // remove a listed effect from the retained original generation.
+        let reader = files.reader().await?;
+        let selected = reader.list(&effects.directory).await?;
+        let removed = format!("{}/0000000001-a.json", effects.directory);
+        let workspace = host
+            .filesystem
+            .open_workspace(
+                volume.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| super::super::map_error(failure.error))?
+            .value;
+        workspace
+            .remove(&format!(
+                "/{}{removed}",
+                super::super::InternalContentClass::Interaction.prefix(),
+            ))
+            .await
+            .map_err(super::super::map_error)?;
+        assert!(files.read(&removed, 4096).await?.is_none());
+        assert_eq!(reader.list(&effects.directory).await?, selected);
+        let mut retained = Vec::new();
+        for name in selected {
+            let bytes = reader
+                .read(&format!("{}/{name}", effects.directory), 4096)
+                .await?
+                .ok_or_else(|| Error::Storage("selected effect disappeared".into()))?;
+            retained.push(decode(&bytes)?);
+        }
+        assert_eq!(retained, [first, later.clone()]);
+        assert_eq!(effects.recorded().await?, [later]);
         Ok(())
     }
 }
