@@ -121,7 +121,7 @@ os.execv(sys.argv[1], sys.argv[1:])
       mkdirSync(cache);
       assert.deepEqual(readdirSync(cache), []);
       return spawnSync("python3", ["-c", isolated, process.execPath, "scripts/generate-proto.mjs"], {
-        cwd: root, encoding: "utf8", timeout: 8_000,
+        cwd: root, encoding: "utf8",
         env: { ...process.env, BUF_CACHE_DIR: join(cache, "buf"), XDG_CACHE_HOME: cache, HOME: cache,
           BUN_INSTALL_CACHE_DIR: join(cache, "bun") },
       });

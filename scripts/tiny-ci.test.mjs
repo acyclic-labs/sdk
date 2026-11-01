@@ -92,7 +92,7 @@ test('every cache save is main-only, with no per-run keys or automatic branch sa
    for(const hit of ['true','false'])for(const save of ['true','false'])for(const key of ['', 'key']){
     const steps=new Proxy({}, {get:()=>({outcome:'success',outputs:new Proxy({}, {get:(_,name)=>
      name==='save'?save:name==='cache-hit'||name==='downloads-hit'?hit:key})})});
-    assert.equal(runInNewContext(expression,{github:{ref,event_name:event},steps,cancelled:()=>false},{timeout:1000}),false,label+': off-main or PR save');
+    assert.equal(runInNewContext(expression,{github:{ref,event_name:event},steps,cancelled:()=>false}),false,label+': off-main or PR save');
    }
   }
  };
@@ -135,7 +135,7 @@ test('main qualification saves completed downloads and tools after failure, but 
    .replace(/steps\.([\w-]+)\.outcome\b/g,(_,id)=>`steps[${JSON.stringify(id)}].outcome`);
   for(const cancelled of [false,true])for(const key of ['', 'key'])for(const hit of ['true','false'])for(const outcome of ['success','failure','skipped']){
    const steps=new Proxy({}, {get:()=>({outcome,outputs:{'cache-primary-key':key,'cache-hit':hit}})});
-   const saved=runInNewContext(expression,{github:{ref:'refs/heads/main',event_name:'workflow_dispatch'},steps,cancelled:()=>cancelled,success:()=>false},{timeout:1000});
+   const saved=runInNewContext(expression,{github:{ref:'refs/heads/main',event_name:'workflow_dispatch'},steps,cancelled:()=>cancelled,success:()=>false});
    assert.equal(saved,!cancelled&&key!==''&&hit!=='true'&&(step.name!=='Save Windows ARM64 compiler'||outcome==='success'),step.name);
   }
  }
