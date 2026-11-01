@@ -47,7 +47,11 @@ pub struct Output<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObj
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub fn run<'a>(
     workspace: Workspace<'a>,
     args: &'a [String],

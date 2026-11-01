@@ -39,10 +39,78 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-async fn stock_publisher_finite_once_observes_original_metadata_after_head_changes() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+async fn stock_publisher_finite_once_observes_original_metadata_after_head_changes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
     let operation = OperationId::new();
     let cancellation = acyclic_fs::CancellationToken::new();
+    let filesystem = storage.host.filesystem.clone();
+    let reference = crate::filesystem::bounded_io::content_workspace(
+        &storage.host.provider,
+        &storage.volume,
+        None,
+    )?;
+    let root = storage.host.open(&reference, None).await?;
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(&root).await?;
+    let branch = graph
+        .fork(&root, "uploads", acyclic_fs::IdempotencyKey::new())
+        .await?;
+    let repository = acyclic_fs::GitCompatRepository::new(root.id(), store.clone());
+    repository
+        .register_branch_workspace("uploads", branch.id(), None, true)
+        .await?;
+    let original_key = crate::filesystem::content_publisher::once_key(operation, None)?;
+    let original_key = crate::filesystem::bounded_io::operation_key(&original_key, None)?;
+    let colliding_string = IdempotencyKey::new(format!(
+        "filesystem-content-workspace-v1:{}",
+        hex::encode(original_key.into_bytes())
+    ))?;
+    let write = ContentGrant::verify(
+        &storage.verifier(),
+        &storage.scope,
+        &storage.volume,
+        VolumeOperation::Write,
+        1024,
+        &mut None,
+    )?;
+    // A real user upload can choose an internal-looking string. Routing keys
+    // must live in a distinct primitive domain, rather than reserve that name.
+    storage
+        .host
+        .put_content(
+            &storage.volume,
+            &write,
+            "caller-selected-key",
+            b"root upload",
+            "text/plain",
+            "caller-selected-key",
+            1024,
+            &colliding_string,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )
+        .await?;
+    storage.host = FilesystemHost::new(filesystem, &storage.host.provider, None)?
+        .with_project_families(store.clone())?;
+    storage.publisher = FilesystemContentPublisher::new(
+        storage.host.clone(),
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        1024,
+        None,
+    )?;
+    storage.content_verifier = FilesystemContentVerifier::new(
+        storage.host.clone(),
+        &storage.verifier(),
+        &storage.scope,
+        1024,
+        None,
+    )?;
     let committed_io =
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
     let (committed, _committed_hold) = storage
@@ -60,6 +128,37 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         )?
         .await?;
     assert!(committed_io.receipt().backend_write_operations > 0);
+    let original_key =
+        crate::filesystem::content_publisher::once_key(operation, Some(&committed_io))?;
+    let original_key =
+        crate::filesystem::bounded_io::operation_key(&original_key, Some(&committed_io))?;
+    assert!(
+        committed_io
+            .sdk(
+                root.operation_generation(original_key, &committed_io, &cancellation)
+                    .await
+            )?
+            .is_none(),
+        "the old root-only lookup misses this actual branch upload"
+    );
+    assert_eq!(
+        storage
+            .publisher
+            .observe_staged_once(
+                operation,
+                None,
+                1024,
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&committed_io),
+                },
+            )?
+            .await?
+            .0
+            .as_ref(),
+        Some(&committed),
+        "recovery must find the branch publication before checkout changes"
+    );
     let replacement_operation = OperationId::new();
     let (replacement, _replacement_hold) = storage
         .publisher
@@ -112,6 +211,9 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         Err(error) if error.code() == crate::wire::ErrorCode::Invalid
     ));
     assert_eq!(committed_io.receipt().backend_write_operations, writes);
+    repository
+        .register_branch_workspace("main", root.id(), None, true)
+        .await?;
     storage
         .publisher
         .stage_once(
@@ -123,10 +225,23 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
+    let reopened_host = FilesystemHost::new(
+        storage.host.filesystem.clone(),
+        &storage.host.provider,
+        None,
+    )?
+    .with_project_families(store)?;
+    let reopened_publisher = FilesystemContentPublisher::new(
+        reopened_host,
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        1024,
+        None,
+    )?;
     let observed_io =
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
-    let (recovered, _recovered_hold) = storage
-        .publisher
+    let (recovered, _recovered_hold) = reopened_publisher
         .observe_staged_once(
             operation,
             None,
@@ -138,6 +253,48 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         )?
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
+    let root_before = root
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .id();
+    let branch_before = branch
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .id();
+    assert_eq!(
+        reopened_publisher
+            .stage_once(
+                operation,
+                "once.json",
+                b"original",
+                "application/json",
+                "original.json",
+                crate::conversation::ContentAccess {
+                    ceiling: None,
+                    io: Some(&committed_io),
+                },
+            )?
+            .await?
+            .0,
+        committed
+    );
+    assert_eq!(
+        root.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        root_before
+    );
+    assert_eq!(
+        branch
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        branch_before
+    );
     let read_io =
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
     assert_eq!(
@@ -149,8 +306,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         b"original"
     );
     assert!(
-        storage
-            .publisher
+        reopened_publisher
             .stage_once(
                 operation,
                 "once.json",
@@ -170,8 +326,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         crate::filesystem::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancelled)?;
     cancelled.cancel();
     assert!(
-        storage
-            .publisher
+        reopened_publisher
             .stage_once(
                 OperationId::new(),
                 "cancelled",
@@ -191,8 +346,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     denied.peak_allocation_bytes = 0;
     let denied_io = crate::filesystem::PreparationIo::from_budget(denied, &cancellation)?;
     assert!(
-        storage
-            .publisher
+        reopened_publisher
             .stage_once(
                 denied_operation,
                 "denied",
@@ -207,8 +361,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .is_err()
     );
     assert!(
-        storage
-            .publisher
+        reopened_publisher
             .observe_staged_once(
                 denied_operation,
                 None,

@@ -51,8 +51,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
         let hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let root = self.open(&workspace_ref.0, Some(io)).await?;
         let operation = bounded_io::operation_key(key, Some(io))?;
+        let Some((workspace, binding)) = self
+            .content_operation_workspace(&root, operation, internal_class.is_some(), io)
+            .await?
+        else {
+            return Ok(None);
+        };
         let Some(original) = io.sdk(
             workspace
                 .operation_generation(operation, io, io.cancellation())
@@ -102,11 +108,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = self
             .receipt_access(&workspace, original.id(), &request, &recorded.0.0, io)
             .await?;
+        let root_view = if workspace.id() != root.id() {
+            Some(
+                self.receipt_access(
+                    &root,
+                    binding
+                        .as_ref()
+                        .ok_or_else(|| io.invalid("missing content workspace binding"))?
+                        .id(),
+                    &request,
+                    &recorded.0.0,
+                    io,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(binding) = binding {
+            bounded_io::retain(&binding, Some(io)).await?;
+        }
         verify_upload_metadata(&original, &recorded.0, &receipt.0, io).await?;
         let recovered = self
             .recovered_upload(&original, recorded, &request, io)
             .await?;
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        if let Some(view) = root_view {
+            super::super::access::require_current(&root, &view.0, io).await?;
+        }
         Ok(Some(recovered))
     }
     async fn receipt_access<'a>(

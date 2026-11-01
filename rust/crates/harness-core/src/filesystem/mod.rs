@@ -281,11 +281,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let root = self.open(&workspace, io).await?;
             // Host records stay with the same volume owner as their readers
             // and journal. User content follows the selected project branch.
-            let opened = if internal_class.is_some() {
-                root.clone()
-            } else {
-                self.select_current_workspace(&root, active_io).await?
+            let binding = self
+                .content_operation_workspace(&root, operation, internal_class.is_some(), active_io)
+                .await?;
+            let needs_binding = binding.is_none();
+            let (opened, binding) = match binding {
+                Some(binding) => binding,
+                None => (self.select_current_workspace(&root, active_io).await?, None),
             };
+            if needs_binding {
+                let (generation, fence) = self
+                    .authorize_content_write(&root, grant, provisional.path(), true, ceiling, io)?
+                    .await?;
+                let _hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
+                self.bind_content_operation(
+                    &root,
+                    opened.id(),
+                    operation,
+                    (fence, grant),
+                    active_io,
+                )?
+                .await?;
+            }
             let prior = active_io.sdk(
                 opened
                     .operation_generation(operation, active_io, active_io.cancellation())
@@ -332,6 +349,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
                 .transpose()?;
             let authorized_generation = (authorized_generation, generation_hold);
+            if let Some(binding) = binding {
+                bounded_io::retain(&binding, io).await?;
+            }
             if let Some(prior) = prior {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
                 bounded_io::retain(&prior, io).await?;

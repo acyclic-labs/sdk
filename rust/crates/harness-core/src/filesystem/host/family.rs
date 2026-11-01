@@ -8,6 +8,14 @@ pub(super) trait ProjectFamily<A: 'static, O: 'static>:
     acyclic_stream::ProviderPlatform
 {
     fn applies(&self, root: WorkspaceId) -> bool;
+    fn selects_content(&self) -> bool;
+    fn workspace<'a>(
+        &'a self,
+        host: &'a FilesystemHost<A, O>,
+        root: &'a Workspace<A, O>,
+        owner: WorkspaceId,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Workspace<A, O>>>;
     fn current<'a>(
         &'a self,
         host: &'a FilesystemHost<A, O>,
@@ -36,6 +44,40 @@ impl<
 {
     fn applies(&self, root: WorkspaceId) -> bool {
         self.root.is_none_or(|bound| bound == root)
+    }
+
+    fn selects_content(&self) -> bool {
+        self.root.is_none()
+    }
+
+    fn workspace<'a>(
+        &'a self,
+        host: &'a FilesystemHost<A, O>,
+        root: &'a Workspace<A, O>,
+        owner: WorkspaceId,
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Workspace<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            io.check_cancellation()?;
+            if owner == root.id() {
+                return Ok(root.clone());
+            }
+            if io.original_native_work().is_some() {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unsupported,
+                    "project selection requires ordinary workspace execution",
+                ));
+            }
+            let graph = WorkspaceGraph::new(self.store.clone());
+            authorize(&graph, root.id(), owner).await?;
+            let workspace =
+                acyclic_fs::WorkspaceResolver::resolve(&(host.filesystem.clone(), graph), owner)
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+            io.check_cancellation()?;
+            Ok(workspace)
+        })
     }
 
     fn current<'a>(
@@ -72,20 +114,7 @@ impl<
                             .into(),
                     ));
                 }
-                if selected == root.id() {
-                    return Ok(root.clone());
-                }
-                let graph = WorkspaceGraph::new(self.store.clone());
-                authorize(&graph, root.id(), selected).await?;
-                io.check_cancellation()?;
-                let selected = acyclic_fs::WorkspaceResolver::resolve(
-                    &(host.filesystem.clone(), graph),
-                    selected,
-                )
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
-                io.check_cancellation()?;
-                Ok(selected)
+                self.workspace(host, root, selected, io)?.await
             },
         )?))
     }

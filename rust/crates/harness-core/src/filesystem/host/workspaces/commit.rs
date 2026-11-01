@@ -32,10 +32,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-            let publication = self.publish_selected_generation(
+            let operation = bounded_io::operation_key(&key, Some(io))?;
+            let publication = self.publish_selected_operation(
                 workspace,
                 mutations,
-                key,
+                operation,
                 io,
                 FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
             );
@@ -73,16 +74,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let workspace = self.open(reference, Some(io)).await?;
-            self.publish_selected_generation(&workspace, mutations, key, io, publication)
+            let operation = bounded_io::operation_key(&key, Some(io))?;
+            self.publish_selected_operation(&workspace, mutations, operation, io, publication)
                 .await
         })
     }
 
-    async fn publish_selected_generation(
+    pub(in crate::filesystem::host) async fn publish_selected_operation(
         &self,
         workspace: &Workspace<A, O>,
         mutations: &[WorkspaceMutation],
-        key: IdempotencyKey,
+        operation: FilesystemKey,
         io: &PreparationIo,
         publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
@@ -90,7 +92,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             FilePublication::Replace(expected) => expected,
             FilePublication::Authorized(..) => None,
         };
-        let operation = bounded_io::operation_key(&key, Some(io))?;
         let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
             let pinned = match expected {
                 Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
