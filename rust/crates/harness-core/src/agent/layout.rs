@@ -35,11 +35,13 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of every agent's status stream, keyed by its globally unique id.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 4] = [CHILDREN, CLOSED, TARGETS, MACHINES];
+pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
+/// Generation-linked checkpoints, indexed like [`CONVERSATION`].
+const HISTORY: &str = "history";
 const CLOSED: &str = "closed";
 const CHILDREN: &str = "children";
 const TARGETS: &str = "targets";
@@ -233,6 +235,12 @@ impl AgentPath {
         stream(&format!("{}/{CONVERSATION}", self.text))
     }
 
+    /// Generation-linked checkpoints, indexed exactly like the conversation.
+    /// Consumers read bounded ranges and follow its live tail.
+    pub fn history(&self) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{HISTORY}", self.text))
+    }
+
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
         stream(&format!("{STATUSES}/{}", self.id()))
@@ -316,11 +324,16 @@ impl fmt::Display for AgentPath {
 }
 
 /// Relative names excluded from a child's inherited subtree; a `fresh` child
-/// inherits no conversation either.
+/// inherits no conversation, nor the history indexed by it.
 pub fn not_inherited(fresh: bool) -> Result<Vec<StreamPath>, Error> {
     NOT_INHERITED
         .iter()
-        .chain(fresh.then_some(&CONVERSATION))
+        .chain(
+            fresh
+                .then_some([&CONVERSATION, &HISTORY])
+                .into_iter()
+                .flatten(),
+        )
         .map(|name| stream(name))
         .collect()
 }

@@ -30,6 +30,7 @@ fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
                     }),
                     kind: Some(wire::session_subscription::Kind::Follow(
                         wire::SessionFollow {
+                            opening_cut: false,
                             key: None,
                             read_limit: 0,
                             bootstrap_head: false,
@@ -76,6 +77,7 @@ proptest! {
     #[test]
     fn checked_anchor_round_trip_and_confirmation(anchor in any::<[u8;32]>(), other in any::<[u8;32]>(), next in 1_u64..=u64::MAX) {
         let follow = wire::SessionFollow {
+        opening_cut: false,
  key: None, read_limit: 0, bootstrap_head: false, when_absent: 0, resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: wire::SessionDelivery::All as i32, preceding_commit_id: anchor.to_vec().into(), until: 0, at_least: Default::default() };
         let decoded = wire::SessionFollow::decode(follow.encode_to_vec().as_slice())?;
         prop_assert_eq!(&decoded, &follow);
@@ -128,6 +130,7 @@ proptest! {
     #[test]
     fn malformed_guards_are_rejected(length in 0_usize..65, next in 0_u64..3, latest in any::<bool>(), opaque in any::<bool>()) {
         let follow = wire::SessionFollow {
+        opening_cut: false,
  key: None, read_limit: 0, bootstrap_head: false, when_absent: 0, resource: acyclic_stream::wire_codec::session::stream_resource("events"), delivery: if latest { wire::SessionDelivery::Latest } else { wire::SessionDelivery::All } as i32, preceding_commit_id: vec![7;length].into(), until: 0, at_least: Default::default() };
         let resume = wire::SessionCursor { next, opaque: if opaque { vec![1].into() } else { Default::default() } };
         let expected = if length == 0 {

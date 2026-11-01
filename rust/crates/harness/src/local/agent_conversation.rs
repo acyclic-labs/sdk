@@ -11,6 +11,7 @@
 //! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
+mod events;
 mod usage;
 mod usage_query;
 use crate::{
@@ -27,6 +28,7 @@ use crate::{
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
+pub use events::ExecutionQuery;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -134,19 +136,17 @@ impl Conversation {
         crate::OperationId::from_bytes(self.agent().id().to_bytes())
     }
 
-    async fn delivered(&self, command: &AgentCommand) -> Result<Delivered> {
-        match self.connection.execute(command).await? {
-            AgentReply::Delivered { delivery } => Ok(delivery),
-            _ => Err(unexpected()),
-        }
-    }
-
     /// The inbox sequence `command` committed at, which its settled entry
     /// carries.
     async fn committed(&self, command: &AgentCommand) -> Result<u64> {
-        match self.delivered(command).await? {
-            Delivered::Committed { inbox } => Ok(inbox),
-            Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
+        match self.connection.execute(command).await? {
+            AgentReply::Delivered {
+                delivery: Delivered::Committed { inbox },
+            } => Ok(inbox),
+            AgentReply::Delivered {
+                delivery: Delivered::Closed,
+            } => Err(Error::Conflict("conversation is archived".into())),
+            _ => Err(unexpected()),
         }
     }
 
@@ -176,6 +176,42 @@ impl Conversation {
         self.committed(&AgentCommand::Rewind {
             agent: self.agent().clone(),
             id: intent(id)?,
+        })
+        .await
+    }
+
+    /// Read the authorized current project heads for a restore confirmation.
+    /// A later edit makes these roots stale and refuses the complete restore.
+    pub async fn project_heads(&self) -> Result<Vec<crate::agent::HistoryVolume>> {
+        match self
+            .connection
+            .execute(&AgentCommand::ProjectHeads {
+                agent: self.agent().clone(),
+            })
+            .await?
+        {
+            AgentReply::ProjectHeads { items } => Ok(items),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Restore a selected settled turn. Project files and the context cut
+    /// share one conditional commit in `Both` mode. The caller supplies every
+    /// project head it observed; a concurrent edit refuses the restoration.
+    /// Child agents and external effects continue independently.
+    pub async fn restore(
+        &self,
+        id: &str,
+        at: u64,
+        mode: crate::agent::RestoreMode,
+        expected: Vec<crate::agent::HistoryVolume>,
+    ) -> Result<u64> {
+        self.committed(&AgentCommand::Restore {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+            at,
+            mode,
+            expected,
         })
         .await
     }
@@ -240,7 +276,7 @@ impl Conversation {
             agent: self.agent().clone(),
             id: intent(&crate::OperationId::new().to_string())?,
         };
-        self.delivered(&command).await.map(drop)
+        self.committed(&command).await.map(drop)
     }
 
     /// Answer the agent's pending approval request `request`, bound to the
@@ -255,7 +291,22 @@ impl Conversation {
             None => self.pending_binding(request).await?,
         };
         self.decided().insert(request.clone(), binding.clone());
-        self.delivered(&AgentCommand::Decide {
+        self.decide_with_binding(request, binding, approved).await
+    }
+
+    /// Decides the exact immutable action already shown to the caller. The
+    /// caller retains this binding for retries; no pending-request listing or
+    /// client history cache is needed. The original host validates the binding.
+    ///
+    /// # Errors
+    /// Original authorization, binding, session or publication refusal.
+    pub async fn decide_with_binding(
+        &self,
+        request: &IntentId,
+        binding: ApprovalBinding,
+        approved: bool,
+    ) -> Result<()> {
+        self.committed(&AgentCommand::Decide {
             agent: self.agent().clone(),
             id: request.clone(),
             binding,
@@ -473,6 +524,18 @@ impl Conversation {
     pub async fn observe(&self, from: u64) -> Result<super::Observer> {
         let (_, statuses, _) = self.settlement().await?;
         super::Observer::open(&self.connection, from, statuses.saturating_sub(1))
+    }
+
+    /// Replay every committed transition after the source cursors in `projection`.
+    /// Opening is lazy and uses this conversation's authenticated session.
+    ///
+    /// # Errors
+    /// When the follows or their provider cursors are refused.
+    pub fn replay(
+        &self,
+        projection: &acyclic_harness_client::EventProjection,
+    ) -> Result<super::Observer> {
+        super::Observer::replay(&self.connection, projection)
     }
 }
 

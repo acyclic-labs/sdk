@@ -292,6 +292,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
             Out::Conversation(b"c3".to_vec()),
             Out::Spawn {
                 profile: None,
+                history: None,
                 intent: intent(name),
                 brief: None,
                 volumes: Vec::new(),
@@ -406,6 +407,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
         outs: vec![
             Out::Spawn {
                 profile: None,
+                history: None,
                 intent: intent("s1"),
                 brief: None,
                 volumes: Vec::new(),
@@ -974,6 +976,7 @@ fn spawn_request(sequence: u64) -> Wake {
                 digest: [0; 32],
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
             },
+            history: None,
             by: user(),
             id: intent(&format!("s{sequence}")),
             brief: Box::new(driver::file("task").expect("file")),
@@ -1050,6 +1053,7 @@ impl TurnDriver for ToolSpawner {
                 checkpoint: None,
                 outs: vec![Out::Spawn {
                     profile: None,
+                    history: None,
                     intent: intent("spawn:tool"),
                     brief: None,
                     volumes: Vec::new(),
@@ -1137,6 +1141,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         checkpoint: None,
         outs: vec![Out::Spawn {
             profile: None,
+            history: None,
             intent: intent("spawn:tool"),
             brief: None,
             volumes: Vec::new(),

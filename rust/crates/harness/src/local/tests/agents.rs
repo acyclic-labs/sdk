@@ -17,6 +17,152 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
     Conversation::open(harness.connect().await?)
 }
 
+#[tokio::test]
+async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() -> Result<()> {
+    use crate::model::{ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{EventProjection, MAX_READ_BYTES};
+
+    let arguments = serde_json::json!({"text": "request".repeat(12_000)});
+    let provider = super::scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "echo-request".into(),
+                "example.echo".into(),
+                arguments.clone(),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("approved".into()),
+    ]);
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .tool(super::tool("example.echo"))
+                .approval_policy(crate::approvals::ApprovalPolicy::default()),
+        )
+        .await?,
+    );
+    let client = conversation(&harness).await?;
+    let mut projection = EventProjection::new("approval-export".into());
+    let mut observer = client.replay(&projection)?;
+    client.send("approval-input", "echo the request").await?;
+    let (id, delivery) = loop {
+        let (event, delivery) = observer.next_projected().await?;
+        if let Some(crate::local::Event::Status(StatusRecord {
+            phase: crate::agent::Phase::WaitingApproval { id },
+            ..
+        })) = event?
+        {
+            break (id, delivery);
+        }
+        let after = projection.event(&delivery).after;
+        projection.accepted(delivery.resource.clone(), after);
+    };
+    let sequence = projection
+        .event(&delivery)
+        .sequence
+        .ok_or_else(|| Error::Invalid("approval status has no sequence".into()))?;
+    let before = projection.cursor(&delivery.resource);
+    let checkpoint = serde_json::to_vec(&projection).map_err(agent)?;
+    let mut bytes = Vec::new();
+    let (length, after) = loop {
+        let offset = bytes.len() as u64;
+        let (chunk, length) = client.approval_request(sequence, offset).await?;
+        assert!(chunk.len() as u64 <= MAX_READ_BYTES);
+        let event = projection
+            .approval_payload_event(&delivery, offset, &chunk, length)
+            .map_err(agent)?;
+        assert_eq!(event.sequence, sequence);
+        assert_eq!(projection.cursor(&delivery.resource), before);
+        assert_eq!(serde_json::to_vec(&projection).map_err(agent)?, checkpoint);
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 == length {
+            assert_eq!(event.after.next, sequence + 1);
+            break (length, event.after);
+        }
+        assert_eq!(
+            event.after, before,
+            "partial request acknowledged its status"
+        );
+        assert!(
+            projection
+                .approval_payload_event(&delivery, offset, &chunk[..chunk.len() - 1], length)
+                .is_err()
+        );
+    };
+    assert!(length > MAX_READ_BYTES * 2);
+    let request: crate::interaction::Interaction = serde_json::from_slice(&bytes).map_err(agent)?;
+    let crate::interaction::Interaction::Approval {
+        operation_id,
+        action_digest,
+        subject:
+            crate::interaction::ApprovalSubject::Tool {
+                arguments: saved, ..
+            },
+        ..
+    } = request
+    else {
+        return Err(Error::Invalid("request is not a tool approval".into()));
+    };
+    assert_eq!(saved, arguments);
+    assert_eq!(
+        client.approval_request(sequence, length).await?,
+        (Vec::new(), length)
+    );
+    assert!(client.approval_request(sequence, length + 1).await.is_err());
+    assert!(client.approval_request(0, 0).await.is_err());
+    assert_eq!(provider.request_count(), 1);
+    projection.accepted(delivery.resource.clone(), Some(after));
+    assert_eq!(projection.cursor(&delivery.resource).next, sequence + 1);
+    let binding = crate::interaction::ApprovalBinding {
+        operation_id,
+        action_digest,
+    };
+    let mut different = binding.clone();
+    different.action_digest[0] ^= 1;
+    assert!(
+        client
+            .decide_with_binding(&id, different, true)
+            .await
+            .is_err()
+    );
+    assert_eq!(provider.request_count(), 1);
+    client
+        .decide_with_binding(&id, binding.clone(), true)
+        .await?;
+    let (agents, root) = harness.agents().await?;
+    settled(agents, root).await?;
+    let requests = provider.request_count();
+    let (historical, saved_length) = client.approval_request(sequence, 0).await?;
+    assert_eq!(saved_length, length);
+    assert_eq!(historical, bytes[..MAX_READ_BYTES as usize]);
+    assert_eq!(provider.request_count(), requests);
+    client.decide_with_binding(&id, binding, true).await?;
+    assert_eq!(provider.request_count(), requests);
+    agents
+        .archive(
+            root,
+            &crate::agent::Sender::User {
+                principal: crate::approvals::HUMAN_APPROVER.into(),
+            },
+            &crate::agent::IntentId::try_from("close-approval-export").map_err(agent)?,
+        )
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        client.cancel().await,
+        Err(Error::Conflict(reason)) if reason.contains("archived")
+    ));
+    assert_eq!(provider.request_count(), requests);
+    Ok(())
+}
+
 fn agent(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
@@ -1671,4 +1817,413 @@ fn is_roster(content: &crate::model::ModelContent) -> bool {
         crate::model::ModelContent::Part(crate::model::ModelContentPart::File { file, .. })
             if file.path().contains("/targets/")
     )
+}
+
+/// Exercise file generations, selection refusal, immutable outputs and indexed
+/// history through the actual local server/actor path. The existing text fixture
+/// supplies only the first turn; restore is model-free.
+#[tokio::test]
+async fn selected_restore_retains_files_and_settles_stale_heads_without_model_work() -> Result<()> {
+    use crate::agent::{RestoreMode, TurnOutcome};
+    use acyclic_fs::{CancellationToken, WorkBudget};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(agent)?;
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(
+            project.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    workspace
+        .write_text("/plan.md", "saved")
+        .await
+        .map_err(agent)?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone())?;
+    client.send("first", "hello").await?;
+    settled(&agents, &root).await?;
+    let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
+    let snapshot = saved
+        .volumes
+        .first()
+        .ok_or_else(|| Error::Invalid("project snapshot missing".into()))?;
+    let expected = client.project_heads().await?;
+    assert_eq!(expected[0].generation, snapshot.generation);
+    workspace
+        .write_text("/plan.md", "user edit")
+        .await
+        .map_err(agent)?;
+    client
+        .restore("refuse", 0, RestoreMode::Both, expected)
+        .await?;
+    let entries = settled(&agents, &root).await?;
+    let refusal = ConversationEntry::decode(
+        entries
+            .last()
+            .ok_or_else(|| Error::Invalid("restore refusal missing".into()))?,
+    )
+    .map_err(agent)?;
+    assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
+    assert!(
+        client
+            .turn(&refusal)
+            .await?
+            .1
+            .contains("expected project heads changed")
+    );
+    assert_eq!(
+        workspace
+            .read("/plan.md", 32, WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| agent(failure.error))?
+            .value
+            .as_ref(),
+        b"user edit"
+    );
+    let refused =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 1).await?;
+    assert_eq!(refused.context.tail, saved.context.tail);
+    assert_ne!(
+        refused.volumes[0].retained_workspace,
+        snapshot.retained_workspace
+    );
+    let crate::client::AgentReply::History { items, next } = connection
+        .execute(&crate::client::AgentCommand::History {
+            agent: root.clone(),
+            page: crate::client::AgentPageRequest::new(1, 4096, None).map_err(agent)?,
+        })
+        .await?
+    else {
+        return Err(Error::Invalid(
+            "history query returned another reply".into(),
+        ));
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].conversation, 2);
+    assert_eq!(items[0].context_tail, saved.context.tail);
+    assert_eq!(items[0].volume_count, saved.volumes.len() as u64);
+    let measure = crate::client::AgentCommand::History {
+        agent: root.clone(),
+        page: crate::client::AgentPageRequest::new(1, 4096, None).map_err(agent)?,
+    };
+    let exact_credit = acyclic_harness_client::encode_agent_reply(
+        &Ok(crate::client::AgentReply::History {
+            items: items.clone(),
+            next: next.clone(),
+        }),
+        &measure,
+    )
+    .map_err(agent)?
+    .len() as u32;
+    let exact_page = connection
+        .execute(&crate::client::AgentCommand::History {
+            agent: root.clone(),
+            page: crate::client::AgentPageRequest::new(1, exact_credit, None).map_err(agent)?,
+        })
+        .await?;
+    assert_eq!(
+        acyclic_harness_client::encode_agent_reply(&Ok(exact_page.clone()), &measure)
+            .map_err(agent)?
+            .len(),
+        exact_credit as usize,
+        "the newest row and its exact continuation must fit their byte credit"
+    );
+    let crate::client::AgentReply::History {
+        items: exact_items,
+        next: exact_next,
+    } = exact_page
+    else {
+        return Err(Error::Invalid(
+            "history query returned another reply".into(),
+        ));
+    };
+    assert_eq!(exact_items, items);
+    assert_eq!(exact_next, next);
+    assert!(
+        connection
+            .execute(&crate::client::AgentCommand::History {
+                agent: root.clone(),
+                page: crate::client::AgentPageRequest::new(1, exact_credit - 1, None)
+                    .map_err(agent)?,
+            })
+            .await
+            .is_err(),
+        "one missing credit byte must refuse rather than exceed the page"
+    );
+    let mut invalid = saved.clone();
+    invalid.volumes.push(snapshot.clone());
+    assert!(
+        crate::agent::HistoryCheckpoint::decode(&serde_json::to_vec(&invalid).map_err(agent)?)
+            .is_err()
+    );
+    let older = next.ok_or_else(|| Error::Invalid("older continuation missing".into()))?;
+    let expected = client.project_heads().await?;
+    client
+        .restore("apply", 0, RestoreMode::Both, expected)
+        .await?;
+    let entries = settled(&agents, &root).await?;
+    assert_eq!(entries.len(), 3);
+    let restored =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 2).await?;
+    assert_eq!(restored.context.tail, saved.context.tail);
+    assert_eq!(
+        restored.volumes[0].retained_workspace,
+        snapshot.retained_workspace
+    );
+    // The saved continuation stays at its original cut after another turn.
+    // A fresh selection seeks directly to the new tail.
+    for (cursor, expected) in [(Some(older), 1), (None, 3)] {
+        let crate::client::AgentReply::History { items, .. } = connection
+            .execute(&crate::client::AgentCommand::History {
+                agent: root.clone(),
+                page: crate::client::AgentPageRequest::new(1, 4096, cursor).map_err(agent)?,
+            })
+            .await?
+        else {
+            return Err(Error::Invalid(
+                "history query returned another reply".into(),
+            ));
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].conversation, expected);
+    }
+    assert_eq!(
+        workspace
+            .read("/plan.md", 32, WorkBudget::UNBOUNDED, &cancel)
+            .await
+            .map_err(|failure| agent(failure.error))?
+            .value
+            .as_ref(),
+        b"saved"
+    );
+    // A content restore cannot reinstate an earlier authority policy, even
+    // when the changed policy happens to grant the same content actions.
+    let mut policy = acyclic_fs::access::INITIAL_POLICY.to_vec();
+    policy.push(b'\n');
+    let mut writer = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    writer
+        .write_access_policy(
+            &policy,
+            acyclic_fs::NamedAttributeWriteMode::Replace,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?;
+    writer
+        .commit(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+            |_| {
+                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?;
+    let expected = client.project_heads().await?;
+    client
+        .restore("policy-refusal", 0, RestoreMode::Both, expected.clone())
+        .await?;
+    let entries = settled(&agents, &root).await?;
+    let refusal = ConversationEntry::decode(
+        entries
+            .last()
+            .ok_or_else(|| Error::Invalid("policy refusal missing".into()))?,
+    )
+    .map_err(agent)?;
+    assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
+    assert!(
+        client
+            .turn(&refusal)
+            .await?
+            .1
+            .contains("cannot replace the current access policy")
+    );
+    assert_eq!(client.project_heads().await?, expected);
+    let refused =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 3).await?;
+    assert_eq!(refused.context, restored.context);
+    client
+        .restore("context-only", 0, RestoreMode::Context, Vec::new())
+        .await?;
+    settled(&agents, &root).await?;
+    let context_only =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 4).await?;
+    assert_eq!(context_only.context, saved.context);
+    assert_eq!(context_only.volumes, refused.volumes);
+    assert_eq!(client.project_heads().await?, expected);
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "selection ran another model request"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
+    use acyclic_fs::{CancellationToken, WorkBudget};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(agent)?;
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(
+            project.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    workspace
+        .write_text("/plan.md", "selected files")
+        .await
+        .map_err(agent)?;
+    let provider = super::scripted(
+        (0..4).map(|index| crate::test_support::ScriptedTurn::Text(format!("answer {index}"))),
+    );
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone())?;
+    for id in ["first", "second", "third"] {
+        client.send(id, id).await?;
+        settled(&agents, &root).await?;
+        if id == "first" {
+            workspace
+                .write_text("/plan.md", "later files")
+                .await
+                .map_err(agent)?;
+        }
+    }
+    let crate::client::AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&crate::client::AgentCommand::Fork {
+            parent: root.clone(),
+            id: crate::agent::IntentId::try_from("historical-child").map_err(agent)?,
+            at: 0,
+            brief: crate::model::ModelContent::Text("continue the first turn".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid(
+            "historical fork returned another reply".into(),
+        ));
+    };
+    // The existing runtime lifetime is the failure producer for this wait;
+    // a conflicted child commit must fail here instead of waiting for a timer.
+    let completion = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("fork has no serving runtime".into()))?
+        .runtime
+        .completion();
+    let entries = tokio::select! {
+        biased;
+        result = completion => { result?; return Err(Error::Invalid("runtime completion returned success".into())); },
+        result = settled(&agents, &child) => result?,
+    };
+    assert_eq!(entries.len(), 2);
+    let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
+    assert!(matches!(branched.input, TurnInput::Brief { .. }));
+    assert_eq!(client.turn(&inherited).await?.1, "answer 0");
+    let saved =
+        crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
+    assert_eq!(saved.context.tail, 2);
+    assert_eq!(saved.context.path.as_str(), format!("{child}/context/1"));
+    assert_eq!(
+        records(&**agents.provider(), root.conversation().map_err(agent)?)
+            .await?
+            .len(),
+        3
+    );
+    assert_eq!(provider.request_count(), 4);
+    let request = provider
+        .last_request()
+        .ok_or_else(|| Error::Invalid("historical child made no model request".into()))?;
+    let context = serde_json::to_string(&request.messages).map_err(agent)?;
+    assert!(context.contains("answer 0"));
+    assert!(!context.contains("answer 1") && !context.contains("answer 2"));
+    let child_state = agents.state(&child).await.map_err(agent)?;
+    let project = child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project)
+        .ok_or_else(|| Error::Invalid("historical child has no project volume".into()))?;
+    let child_workspace = fs
+        .open_workspace(
+            project.volume.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    for (selected, expected) in [
+        (&child_workspace, b"selected files".as_slice()),
+        (&workspace, b"later files".as_slice()),
+    ] {
+        assert_eq!(
+            selected
+                .read("/plan.md", 32, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .map_err(|failure| agent(failure.error))?
+                .value
+                .as_ref(),
+            expected,
+            "fork must retain the selected files while its parent keeps later edits"
+        );
+    }
+    Ok(())
 }

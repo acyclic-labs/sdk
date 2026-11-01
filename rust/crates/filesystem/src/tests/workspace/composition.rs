@@ -209,6 +209,103 @@ async fn a_rejected_caller_condition_leaves_no_forked_volume() -> Result<(), Box
     Ok(())
 }
 
+/// The history marker and restored generation have one decision. A user write
+/// between preparation and submission must also reject the complete restore.
+#[tokio::test]
+async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn Error>> {
+    let stream = Arc::new(MemoryStream::default());
+    let fs = placed(&stream)?;
+    let original = parent(&fs, &stream).await?;
+    let mut retention = FilesystemCommit::new(CommitRequest {
+        deadline_unix_millis: None,
+        conditions: Vec::new(),
+        mutations: Vec::new(),
+        idempotency_key: acyclic_stream::IdempotencyKey::new(vec![0])?,
+    });
+    let saved = unbounded!(
+        fs,
+        prepare_fork_many(
+            &[ForkSpec {
+                destination: name("saved-project")?,
+                source: &original,
+                paths: None,
+                idempotency_key: IdempotencyKey::from_bytes([0x42; 16]),
+            }],
+            &mut retention
+        )
+    )?;
+    let saved = saved
+        .first()
+        .ok_or("retained generation missing")?
+        .generation;
+    assert!(matches!(
+        unbounded!(fs, submit_commit(retention))?,
+        FilesystemCommitOutcome::Committed(_)
+    ));
+    let retained = unbounded!(fs, open_workspace("saved-project"))?;
+    let retained = unbounded!(retained, generation(saved))?;
+    let workspace = unbounded!(fs, open_workspace("root-project"))?;
+    workspace.write_text("/plan.md", "later").await?;
+    let expected = unbounded!(workspace, head())?;
+    let marker = StreamPath::new("harness/history/selected")?;
+    for (attempt, caller_tail, concurrent) in [(1, 7, false), (2, 0, true), (3, 0, false)] {
+        let expected = if attempt == 3 {
+            unbounded!(workspace, head())?
+        } else {
+            expected.clone()
+        };
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Tail {
+                path: marker.clone(),
+                expected: caller_tail,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: marker.clone(),
+                records: vec![record(b"cut-1")],
+            }],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(vec![attempt])?,
+        });
+        unbounded!(
+            fs,
+            prepare_restore_many(
+                &[crate::RestoreSpec {
+                    expected: &expected,
+                    source: &retained,
+                    operation: OperationId::from_bytes([attempt; 16]),
+                    permit: crate::PublicationPermit::Unrestricted,
+                }],
+                &mut commit
+            )
+        )?;
+        assert_eq!(unbounded!(workspace, head())?.id(), expected.id());
+        if concurrent {
+            workspace.write_text("/plan.md", "user edit").await?;
+        }
+        let outcome = unbounded!(fs, submit_commit(commit))?;
+        if attempt == 3 {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
+            assert_eq!(
+                unbounded!(workspace, read("/plan.md", 32))?.as_ref(),
+                b"ship it"
+            );
+            assert_eq!(stream.tail(marker.clone()).await?, 1);
+        } else {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
+            assert!(stream.tail(marker.clone()).await.is_err());
+            assert_eq!(
+                unbounded!(workspace, read("/plan.md", 32))?.as_ref(),
+                if concurrent {
+                    b"user edit".as_slice()
+                } else {
+                    b"later".as_slice()
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
 /// A head-conditioned spawn of an unchanged source commits.
 #[tokio::test]
 async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), Box<dyn Error>> {

@@ -547,3 +547,214 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
     })
     .await?
 }
+
+/// Capture frames from the real in-process Streams service, rather than a
+/// handwritten provider fixture. Resume must exclude an accepted line while
+/// retaining every byte of binary application data and its original cursor.
+#[tokio::test]
+async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
+-> Result<(), Box<dyn std::error::Error>> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use prost::Message as _;
+    let subscription = |path: &StreamPath, from: u64, credential: u32, latest: bool| {
+        let mut request = subscription(path, from, credential, latest);
+        if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
+            follow.opening_cut = true;
+        }
+        request
+    };
+    let memory = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("projection/binary")?;
+    append(
+        &memory,
+        path.clone(),
+        vec![
+            vec![0, 255, 128].into(),
+            b"{\"after\":1}".as_slice().into(),
+            b"{\"after\":2}".as_slice().into(),
+            b"{\"after\":3}".as_slice().into(),
+        ],
+    )
+    .await?;
+    let pool = Client::with_transport(
+        Arc::new(Endpoint(Arc::clone(&memory))),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(PlatformExecutor),
+    );
+    pool.register_credential(0, session::testing::credential())?;
+    let resource = wire_codec::session::stream_resource(path.as_str());
+    let mut projection = crate::EventProjection::new("projection-operation".into());
+    let mut drain = crate::EventDrain::new([(resource.clone(), 0), ("not-yet-followed".into(), 0)]);
+    let mut selected = crate::EventDrain::new([(resource.clone(), 0)]);
+    let mut source = pool.subscribe(subscription(&path, 0, 0, false)).await?;
+    loop {
+        let frame = source
+            .next()
+            .await
+            .ok_or("provider ended before first record")??
+            .into_wire();
+        let delivery = AgentDelivery {
+            resource: resource.clone(),
+            frame,
+        };
+        let event = projection.event(&delivery);
+        selected.accepted(&delivery);
+        let decoded = wire::SessionFrame::decode(STANDARD.decode(&event.frame)?.as_slice())?;
+        assert_eq!(decoded, delivery.frame);
+        if event.sequence == Some(0) {
+            assert!(event.value.is_none());
+            assert_eq!(
+                projection.cursor(&resource).next,
+                0,
+                "unflushed output advanced resume"
+            );
+            let cursor = event.after.clone();
+            projection.accepted(resource.clone(), cursor);
+            drain.accepted(&delivery);
+            assert!(!drain.complete(), "an unobserved source was skipped");
+            assert!(
+                !selected.complete(),
+                "one record was mistaken for the opening tail"
+            );
+            break;
+        }
+    }
+    drop(source);
+    let selected_agent = AgentPath::root(&crate::AgentId::from_bytes([13; 16]));
+    let position = crate::ExecutionPosition { input: 7, after: 3 };
+    projection.accepted_execution(&selected_agent, position)?;
+    let checkpoint = serde_json::to_vec(&projection)?;
+    let mut restored: crate::EventProjection = serde_json::from_slice(&checkpoint)?;
+    assert_eq!(restored.execution_position(&selected_agent)?, position);
+    let another_agent = AgentPath::root(&crate::AgentId::from_bytes([14; 16]));
+    assert!(restored.execution_position(&another_agent).is_err());
+    assert!(
+        restored
+            .accepted_execution(
+                &selected_agent,
+                crate::ExecutionPosition { input: 7, after: 2 }
+            )
+            .is_err()
+    );
+    assert_eq!(
+        serde_json::to_vec(&restored)?,
+        checkpoint,
+        "refusal mutated resume"
+    );
+    restored.accepted_execution(
+        &selected_agent,
+        crate::ExecutionPosition {
+            input: u64::MAX,
+            after: u64::MAX,
+        },
+    )?;
+    assert!(
+        serde_json::to_vec(&restored)?.len() <= checkpoint.len() + 40,
+        "retired inputs accumulated cursor state instead of replacing it"
+    );
+    restored.validate("projection-operation")?;
+    assert!(restored.validate("another-operation").is_err());
+    assert!(
+        restored
+            .validate_sources(&["another-source".into()])
+            .is_err()
+    );
+    let mut request = subscription(&path, 0, 0, false);
+    request.resume = Some(restored.cursor(&resource).wire()?);
+    let mut resumed = pool.subscribe(request).await?;
+    let mut drain = crate::EventDrain::new([(resource.clone(), 1)]);
+    let mut records = 0;
+    let mut appended = false;
+    while !drain.complete() {
+        let delivery = AgentDelivery {
+            resource: resource.clone(),
+            frame: resumed
+                .next()
+                .await
+                .ok_or("provider ended before resumed cut")??
+                .into_wire(),
+        };
+        let event = restored.event(&delivery);
+        if let Some(sequence) = event.sequence {
+            records += 1;
+            assert_eq!(sequence, records, "resume replayed or skipped a record");
+            assert_eq!(event.value, Some(serde_json::json!({"after":records})));
+        }
+        let after = event.after.clone();
+        restored.accepted(resource.clone(), after);
+        drain.accepted(&delivery);
+        if matches!(&delivery.frame.body, Some(wire::session_frame::Body::Watermark(mark)) if mark.opening_tail == Some(4))
+            && !appended
+        {
+            append(&memory, path.clone(), vec![b"later".as_slice().into()]).await?;
+            appended = true;
+        }
+    }
+    assert_eq!(records, 3);
+    assert!(
+        appended,
+        "the provider did not expose its fixed opening cut"
+    );
+    // Consume the later record, then reopen at the exact tail. Completion must
+    // come from the registration event, without waiting for another append.
+    let mut request = subscription(&path, 0, 0, false);
+    request.resume = Some(restored.cursor(&resource).wire()?);
+    let mut source = pool.subscribe(request).await?;
+    let mut drain = crate::EventDrain::new([(resource.clone(), 4)]);
+    while !drain.complete() {
+        let delivery = AgentDelivery {
+            resource: resource.clone(),
+            frame: source.next().await.ok_or("missing later cut")??.into_wire(),
+        };
+        let after = restored.event(&delivery).after;
+        restored.accepted(resource.clone(), after);
+        drain.accepted(&delivery);
+    }
+    assert_eq!(restored.cursor(&resource).next, 5);
+    drop(source);
+    let mut request = subscription(&path, 0, 0, false);
+    request.resume = Some(restored.cursor(&resource).wire()?);
+    let mut source = pool.subscribe(request).await?;
+    let mut drain = crate::EventDrain::new([(resource.clone(), 5)]);
+    while !drain.complete() {
+        let delivery = AgentDelivery {
+            resource: resource.clone(),
+            frame: source
+                .next()
+                .await
+                .ok_or("exact-tail replay ended")??
+                .into_wire(),
+        };
+        assert!(restored.event(&delivery).sequence.is_none());
+        drain.accepted(&delivery);
+    }
+    let empty = StreamPath::new("projection/empty")?;
+    memory
+        .fork(acyclic_stream::ForkRequest {
+            exclude: Vec::new(),
+            source: path,
+            destination: empty.clone(),
+            at_tail: Some(0),
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    let resource = wire_codec::session::stream_resource(empty.as_str());
+    let mut source = pool.subscribe(subscription(&empty, 0, 0, false)).await?;
+    let mut drain = crate::EventDrain::new([(resource.clone(), 0)]);
+    while !drain.complete() {
+        let delivery = AgentDelivery {
+            resource: resource.clone(),
+            frame: source
+                .next()
+                .await
+                .ok_or("empty replay ended")??
+                .into_wire(),
+        };
+        assert!(matches!(
+            delivery.frame.body,
+            Some(wire::session_frame::Body::Watermark(_))
+        ));
+        drain.accepted(&delivery);
+    }
+    Ok(())
+}

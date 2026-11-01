@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-const UPLOAD_RECORD_BYTES: u64 = 6
+pub(super) const UPLOAD_RECORD_BYTES: u64 = 6
     * (crate::conversation::MAX_PATH_BYTES as u64
         + 32 * crate::conversation::MAX_LABEL_BYTES as u64
         + 1024);

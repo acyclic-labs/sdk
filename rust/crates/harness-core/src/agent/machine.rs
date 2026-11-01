@@ -381,6 +381,8 @@ pub enum Out {
         profile: Option<super::AgentProfilePin>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
+        /// Optional retained conversation cut selected by the caller.
+        history: Option<super::HistorySelection>,
     },
 }
 
@@ -591,6 +593,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
                 brief: Some(*spawn.brief),
                 profile: Some(spawn.profile),
                 volumes: Vec::new(),
+                history: spawn.history,
             });
             // A turn in progress keeps the slots its recorded spawns take.
             let free = state.free_children();
@@ -856,7 +859,7 @@ fn admissible(out: &Out) -> bool {
         | Out::Roster(_)
         | Out::Notices(_)
         | Out::GoalCompleted { .. } => true,
-        Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
+        Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
 

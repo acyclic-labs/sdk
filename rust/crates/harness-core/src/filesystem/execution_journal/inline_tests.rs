@@ -90,6 +90,252 @@ fn events() -> Vec<ModelEvent> {
     ]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn private_payload_ranges_preserve_original_authority_and_bounded_residency() -> Result<()> {
+    let (journal, _issuer) = test_support::journal().await?;
+    let operation = OperationId::new();
+    initialize(&journal, operation).await?;
+    let payload = "x".repeat(4 * 1024 * 1024);
+    let file = crate::executor::stage_json(&journal, operation, "range", &payload, None).await?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let range = acyclic_fs::ByteRange {
+        offset: 65530,
+        length: 16,
+    };
+    {
+        // Original storage chunks are authenticated whole. Credit for exactly
+        // one chunk leaves no room for metadata and must refuse before output.
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 1024 * 1024,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &stop,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let error = journal
+            .load_range(&file, range, Some(&io))?
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::NativeWorkspace { source, .. }
+        if matches!(source.as_ref(), acyclic_fs::WorkspaceError::Work(
+            acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
+        ))));
+    }
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let bytes = journal.load_range(&file, range, Some(&io))?.await?;
+    assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
+    // Residency includes a bounded authenticated chunk and policy metadata.
+    // A whole-payload load then slice would exceed this measured bound.
+    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    let length = file.descriptor().byte_length();
+    assert!(
+        journal
+            .load_range(
+                &file,
+                acyclic_fs::ByteRange {
+                    offset: length,
+                    length: 0
+                },
+                None
+            )?
+            .await?
+            .is_empty()
+    );
+    for range in [
+        acyclic_fs::ByteRange {
+            offset: length,
+            length: 1,
+        },
+        acyclic_fs::ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+    ] {
+        assert!(journal.load_range(&file, range, None)?.await.is_err());
+    }
+    let foreign = FileRef::new(
+        VolumeRef::new(
+            journal.volume.provider().clone(),
+            "foreign".into(),
+            VolumeClass::AgentPrivate,
+            crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes([81; 16])),
+            &mut None,
+        )?,
+        file.path().into(),
+        file.version().into(),
+        file.descriptor().clone(),
+        file.display_name().into(),
+        &mut None,
+    )?;
+    assert_eq!(
+        journal
+            .load_range(&foreign, range, None)?
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    let mut digest = *file.descriptor().sha256();
+    digest[0] ^= 1;
+    let forged = FileRef::new(
+        file.volume().clone(),
+        file.path().into(),
+        file.version().into(),
+        crate::conversation::FileDescriptor::new(
+            digest,
+            length,
+            file.descriptor().media_type().into(),
+        )?,
+        file.display_name().into(),
+        &mut None,
+    )?;
+    assert!(journal.load_range(&forged, range, None)?.await.is_err());
+    assert_eq!(
+        journal.load_range(&file, range, None)?.await?.as_ref(),
+        bytes.as_ref()
+    );
+    let reads = io.receipt().backend_read_operations;
+    stop.cancel();
+    let cancelled = match journal.load_range(&file, range, Some(&io)) {
+        Ok(read) => read.await,
+        Err(error) => Err(error),
+    };
+    assert_eq!(
+        cancelled.unwrap_err().code(),
+        crate::wire::ErrorCode::Cancelled
+    );
+    assert_eq!(io.receipt().backend_read_operations, reads);
+    // Capture the real journal's committed frames, then omit their original
+    // atomic proof publications. Reference replay must refuse rather than
+    // reconstruct payload bodies to accept an unproven observation.
+    use futures::TryStreamExt as _;
+    let path = crate::distributed::execution_path(operation, &mut None)?;
+    let mut captured = journal
+        .stream
+        .read(acyclic_stream::ReadRequest {
+            key: None,
+            path,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let source = captured
+        .try_next()
+        .await?
+        .ok_or_else(|| Error::Storage("original journal frame is absent".into()))?;
+    let isolated = Arc::new(acyclic_stream::MemoryStream::default());
+    let unproven = FilesystemExecutionJournal::new(
+        isolated,
+        journal.host.clone(),
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &journal.volume,
+            verifier: &journal.verifier,
+            scope: &journal.scope,
+            io: None,
+        },
+    )?;
+    unproven
+        .path(operation)?
+        .append_batch(
+            vec![source.value.into()],
+            Some(0),
+            crate::test_support::fresh_key()?,
+        )
+        .await?;
+    assert!(matches!(unproven.replay(operation, 0, 1, None)?.await,
+        Err(Error::Storage(reason)) if reason.contains("original publication proof")));
+
+    // The host's immutable request owner resolves its original publication,
+    // rather than reading a whole request or delegating its internal path.
+    let write = ContentGrant::verify(
+        &journal.verifier,
+        &journal.scope,
+        &journal.volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    let read = ContentGrant::verify(
+        &journal.verifier,
+        &journal.scope,
+        &journal.volume,
+        VolumeOperation::Read,
+        u64::MAX,
+        &mut None,
+    )?;
+    let path = ".system/interactions/approvals/approval-test/request.json";
+    let original = journal
+        .host
+        .put_internal_content(
+            &journal.volume,
+            &write,
+            path,
+            payload.as_bytes(),
+            "text/plain",
+            "request.json",
+            u64::MAX,
+            &crate::IdempotencyKey("internal-file:approval-test".into()),
+            crate::filesystem::InternalContentClass::Interaction,
+            None,
+        )
+        .await?;
+    for offset in [range.offset, payload.len() as u64] {
+        let (selected, bytes) = journal
+            .host
+            .read_internal_range(
+                &journal.volume,
+                &read,
+                path,
+                crate::filesystem::InternalContentClass::Interaction,
+                acyclic_fs::ByteRange { offset, length: 16 },
+                None,
+            )
+            .await?;
+        assert_eq!(selected, original);
+        assert_eq!(
+            bytes.as_ref(),
+            &payload.as_bytes()[offset as usize..][..bytes.len()]
+        );
+        assert_eq!(
+            bytes.len(),
+            if offset == payload.len() as u64 {
+                0
+            } else {
+                16
+            }
+        );
+    }
+    for (class, offset) in [
+        (crate::filesystem::InternalContentClass::Execution, 0),
+        (
+            crate::filesystem::InternalContentClass::Interaction,
+            payload.len() as u64 + 1,
+        ),
+    ] {
+        assert!(
+            journal
+                .host
+                .read_internal_range(
+                    &journal.volume,
+                    &read,
+                    path,
+                    class,
+                    acyclic_fs::ByteRange { offset, length: 16 },
+                    None,
+                )
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial_records()
 -> Result<()> {
@@ -156,7 +402,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     let change = async {
         let updates = journal
             .stream
-            .follow(journal.usage_follow(operation, quiet.end)?)
+            .follow(journal.follow(operation, quiet.end)?)
             .await?;
         let record = futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await;
         assert!(matches!(record, Some(Ok(_))));
@@ -215,7 +461,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     // cut, rather than resolving a new head and losing this terminal record.
     let updates = journal
         .stream
-        .follow(journal.usage_follow(operation, quiet.end)?)
+        .follow(journal.follow(operation, quiet.end)?)
         .await?;
     assert!(matches!(
         futures::StreamExt::next(&mut acyclic_stream::records_only(updates)).await,
@@ -223,6 +469,16 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     ));
     let records = journal.records(operation, 0, 64, None).await?;
     assert_eq!(records.len(), 3);
+    let exported = crate::executor::event_page(&journal, operation, 0).await?;
+    assert_eq!(exported.operation, Some(operation));
+    assert_eq!(exported.items, records);
+    let resumed_events = crate::executor::event_page(&journal, operation, quiet.end).await?;
+    assert_eq!(resumed_events.items, records[2..]);
+    assert_eq!(resumed_events.end, exported.end);
+    assert_ne!(
+        exported.items, resumed_events.items,
+        "resume replayed the prefix"
+    );
     let ExecutionEvent::Model {
         usage: Some(reference),
         ..

@@ -27,6 +27,7 @@ acyclic-observability = { path = "../../../../observability" }
 acyclic-stream = { path = "../../../../stream", default-features = false }
 clap.workspace = true
 futures.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["rt", "macros", "sync", "io-std", "io-util", "net", "signal", "time"] }

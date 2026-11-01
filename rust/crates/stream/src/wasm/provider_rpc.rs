@@ -213,6 +213,21 @@ impl InjectedStream {
                             }
                             (FollowUpdate::Record(record), after)
                         }
+                        Some(wire::session_frame::Body::Watermark(progress))
+                            if !read && progress.opening_tail.is_some() =>
+                        {
+                            if progress.after.is_some() {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            (
+                                FollowUpdate::Opening {
+                                    tail: progress
+                                        .opening_tail
+                                        .ok_or(StreamError::InvalidResponse)?,
+                                },
+                                next,
+                            )
+                        }
                         Some(wire::session_frame::Body::Watermark(progress)) if !read => {
                             let after = progress.after.ok_or(StreamError::InvalidResponse)?;
                             if after.next <= next || !after.opaque.is_empty() {
@@ -433,6 +448,13 @@ impl super::WasmStream {
             .map(move |item| {
                 item.map(|update| {
                     let body = match update {
+                        FollowUpdate::Opening { tail } => {
+                            wire::session_frame::Body::Watermark(wire::SessionWatermark {
+                                opening_tail: Some(tail),
+                                accepted: tail,
+                                ..Default::default()
+                            })
+                        }
                         FollowUpdate::Record(record) => {
                             let after = record.sequence + 1;
                             wire::session_frame::Body::Data(wire::SessionData {
@@ -449,6 +471,7 @@ impl super::WasmStream {
                         }
                         FollowUpdate::Progress { next, preceding } => {
                             wire::session_frame::Body::Watermark(wire::SessionWatermark {
+                                opening_tail: None,
                                 accepted: next,
                                 durable: 0,
                                 after: Some(wire::SessionCursor {

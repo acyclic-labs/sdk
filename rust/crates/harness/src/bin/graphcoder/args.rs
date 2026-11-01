@@ -8,6 +8,13 @@ pub enum InputFormat {
     Jsonl,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Text,
+    Jsonl,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -15,7 +22,7 @@ pub enum InputFormat {
 )]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
-    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl"])]
+    #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
     pub host_workspace: bool,
     /// Explicit durable storage, opened only by this trusted harness owner.
     #[arg(long, requires = "host_workspace")]
@@ -58,13 +65,29 @@ pub struct Args {
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
+    /// Project every committed event with source cursors as versioned JSONL.
+    #[arg(long, global = true, value_enum, default_value_t)]
+    pub output_format: OutputFormat,
+    /// Read source cursors here and replace the file after a complete flushed acknowledgement.
+    /// Reuse the same operation; an interrupted observation may replay its payload chunks.
+    #[arg(long, requires = "operation")]
+    pub event_cursor: Option<PathBuf>,
+    /// Validate final JSON artifacts against this schema before reporting success.
+    #[arg(long, global = true)]
+    pub output_schema: Option<PathBuf>,
+    /// Atomically replace this file with the last successfully validated output.
+    #[arg(long, global = true)]
+    pub output: Option<PathBuf>,
     /// Message identity: rerunning an operation replays its settled answers
     /// instead of sending its prompts again.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub operation: Option<String>,
     /// Reopen the last interactive conversation, including after a normal quit.
-    #[arg(long, conflicts_with_all = ["prompt", "input_format", "host_workspace"])]
+    #[arg(long, global = true)]
     pub resume: bool,
+    /// Select an existing session by its canonical agent path.
+    #[arg(long, global = true)]
+    pub agent: Option<String>,
     #[arg(long)]
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
@@ -76,12 +99,96 @@ pub struct Args {
     pub command: Option<Command>,
 }
 
+impl Args {
+    /// Normalize the exec shorthand before validating its input identity.
+    pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if let Some(Command::Exec { prompt }) = &self.command {
+            if self.prompt.is_some() {
+                return Err("exec input: task supplied twice; recovery: graphcoder exec 'TASK'");
+            }
+            self.prompt = prompt.clone();
+            if prompt.is_none() {
+                self.input_format = InputFormat::Jsonl;
+            }
+        }
+        if self.input_format == InputFormat::Jsonl && self.operation.is_none() {
+            return Err(
+                "JSONL input: --operation is required; recovery: graphcoder --operation OPERATION exec",
+            );
+        }
+        if self.output_format == OutputFormat::Jsonl
+            && self.input_format == InputFormat::Text
+            && self.prompt.is_none()
+            && self.command.is_none()
+        {
+            return Err(
+                "event input: no task or JSONL input; recovery: graphcoder --output-format jsonl --operation OPERATION exec",
+            );
+        }
+        let event_options = self.output_format == OutputFormat::Jsonl
+            || self.event_cursor.is_some()
+            || self.output_schema.is_some()
+            || self.output.is_some();
+        if event_options
+            && (self.host_workspace || !matches!(self.command, None | Some(Command::Exec { .. })))
+        {
+            return Err(
+                "output projection: requires an execution; recovery: graphcoder --output-format jsonl exec 'TASK'",
+            );
+        }
+        if event_options && self.output_format != OutputFormat::Jsonl {
+            return Err(
+                "output projection: requires JSONL output; recovery: graphcoder --output-format jsonl exec 'TASK'",
+            );
+        }
+        if self
+            .output
+            .as_ref()
+            .is_some_and(|path| path.as_os_str() == "-")
+        {
+            return Err(
+                "output artifact: stdout is reserved for events; recovery: graphcoder --output-format jsonl --output final-output.json exec 'TASK'",
+            );
+        }
+        if self.output_format == OutputFormat::Jsonl
+            && self
+                .usage_jsonl
+                .as_ref()
+                .is_some_and(|path| path.as_os_str() == "-")
+        {
+            return Err(
+                "output projection: usage export also selects stdout; recovery: graphcoder --usage-jsonl usage.jsonl --output-format jsonl exec 'TASK'",
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Execute through the same conversation driver used by prompt mode.
+    Exec {
+        /// One task; omitted reads JSONL requests from stdin.
+        prompt: Option<String>,
+    },
+    /// Read one lazy page of the selected session's direct children.
+    Sessions(Page),
+    /// Read one immutable page of the selected session's saved turns.
+    History(Page),
     /// Serve this harness's agent tree through the harness server
     /// (`acyclic_harness::server::serve`), as a managed host does; prints its
     /// endpoint, credential and principal as one JSON line.
     Serve(Serve),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Page {
+    /// Return this opaque continuation unchanged from the preceding page.
+    #[arg(long)]
+    pub cursor: Option<String>,
+    /// Entries per page; this chunks discovery and never limits session count.
+    #[arg(long, default_value_t = 32)]
+    pub page_size: u32,
 }
 
 #[derive(Debug, clap::Args)]

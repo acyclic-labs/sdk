@@ -482,13 +482,20 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
         if let CommitMutation::Fork {
             source,
             destination,
+            exclude,
             ..
         } = mutation
             && (source == destination
                 || request.mutations.iter().any(|other| {
                     let path = mutation_path(other).as_str();
                     path.strip_prefix(destination.as_str())
-                        .is_some_and(|suffix| suffix.starts_with('/'))
+                        .and_then(|suffix| suffix.strip_prefix('/'))
+                        // Only an excluded direct child may be written in the
+                        // same commit: the fork installs its parent first. A
+                        // deeper path would need parents the fork replaces.
+                        .is_some_and(|relative| {
+                            !exclude.iter().any(|excluded| relative == excluded.as_str())
+                        })
                 }))
         {
             return Err(StreamError::InvalidArgument);

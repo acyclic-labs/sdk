@@ -30,7 +30,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// and the frozen original notice range retained by a settled turn.
 /// Version 6 retains waking Notice payloads by immutable file reference.
 /// Version 7 pins each stock agent's role profile at adoption.
-pub const RECORD_VERSION: u32 = 7;
+/// Version 8 adds explicit generation-linked file/context restoration requests.
+pub const RECORD_VERSION: u32 = 8;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -360,6 +361,8 @@ pub struct SpawnRequest {
     pub brief: Box<FileRef>,
     /// The child's admitted role profile.
     pub profile: AgentProfilePin,
+    /// Select a retained prior turn instead of the current conversation head.
+    pub history: Option<super::HistorySelection>,
 }
 
 /// A child delegates an approval request to this agent (the parent approver).
@@ -413,6 +416,17 @@ pub enum ContextAction {
     Rewind,
     /// Retires the conversation: later turns start with no history.
     Clear,
+    /// Select a prior settled turn and/or restore its project generations.
+    Restore {
+        /// Sequence in this agent's history and conversation streams.
+        at: u64,
+        /// Explicit files, context or both semantics.
+        mode: super::RestoreMode,
+        /// Exact current project generations approved by the caller. A
+        /// concurrent edit refuses the complete restoration.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        expected: Vec<super::HistoryVolume>,
+    },
 }
 
 /// Compact, rewind or clear the agent's model context.
@@ -619,13 +633,13 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
 }
 
 /// At most [`MAX_VOLUMES`] bindings, each with a valid name.
-pub(super) fn check_volumes(volumes: &[VolumeBinding]) -> Result<(), Error> {
+pub(super) fn check_volumes<'a>(
+    mut volumes: impl ExactSizeIterator<Item = &'a VolumeBinding>,
+) -> Result<(), Error> {
     if volumes.len() > MAX_VOLUMES {
         return Err(Error::Record("too many volumes"));
     }
-    volumes
-        .iter()
-        .try_for_each(|binding| check_text(&binding.name))
+    volumes.try_for_each(|binding| check_text(&binding.name))
 }
 
 /// A name: a binding, principal or host. Like a label, it admits no control
@@ -643,7 +657,7 @@ impl AgentRecord for InboxRecord {
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
-                check_volumes(&adopted.volumes)?;
+                check_volumes(adopted.volumes.iter())?;
                 if adopted
                     .parent
                     .as_ref()
@@ -674,10 +688,35 @@ impl AgentRecord for InboxRecord {
             }
             Self::Message(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
-            | Self::Archive(Control { by: from, .. })
-            | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),
+            | Self::Archive(Control { by: from, .. }) => check_sender(from),
+            Self::Context(ContextRequest { by, action, .. }) => {
+                check_sender(by)?;
+                if let ContextAction::Restore { mode, expected, .. } = action {
+                    check_volumes(expected.iter().map(|volume| &volume.binding))?;
+                    if (!mode.files() && !expected.is_empty())
+                        || expected.iter().enumerate().any(|(index, volume)| {
+                            volume.binding.volume.class()
+                                != crate::conversation::VolumeClass::Project
+                                || expected[..index]
+                                    .iter()
+                                    .any(|prior| prior.binding.name == volume.binding.name)
+                        })
+                    {
+                        return Err(Error::Record("restore project bindings are invalid"));
+                    }
+                }
+                Ok(())
+            }
             Self::Hook(hook) => check_text(&hook.host),
-            Self::Spawn(spawn) => check_sender(&spawn.by),
+            Self::Spawn(spawn) => {
+                check_sender(&spawn.by)?;
+                // Refused before the parent's inbox admits it: once queued, a
+                // request its spawn cannot apply would block the parent.
+                if spawn.profile.context == SpawnContext::Fresh && spawn.history.is_some() {
+                    return Err(Error::Record("a fresh-context role selects no history"));
+                }
+                Ok(())
+            }
             Self::Approval(_)
             | Self::ApprovalRequested(_)
             | Self::Awaited
@@ -761,6 +800,7 @@ mod tests {
                 digest: [0; 32],
                 context: SpawnContext::Fork,
             },
+            history: None,
             by: Sender::User {
                 principal: "p".into(),
             },

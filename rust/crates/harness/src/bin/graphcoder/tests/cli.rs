@@ -291,11 +291,86 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
 async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
+    for args in [
+        vec!["exec"],
+        vec!["--output-format", "jsonl"],
+        vec!["--output-format", "jsonl", "sessions"],
+        vec!["--output-schema", "missing.json", "exec", "hello"],
+        vec!["--output-format", "jsonl", "--output", "-", "exec", "hello"],
+    ] {
+        let refused = graphcoder(&fixture, &model.catalog, args, "").await;
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("recovery: graphcoder"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    for input in [
+        "{\"prompt\":\"do not dispatch\",\"cancel\":true}\n",
+        "{\"approve\":\"approval\",\"approved\":true}\n",
+        "{\"cancel\":false}\n",
+    ] {
+        let refused = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--operation",
+                "invalid-input",
+                "--output-format",
+                "jsonl",
+                "--input-format",
+                "jsonl",
+                "exec",
+            ],
+            input,
+        )
+        .await;
+        assert!(!refused.status.success());
+        let records = String::from_utf8_lossy(&refused.stdout)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.last().map(|record| &record["kind"]),
+            Some(&Value::String("error".into())),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(model.generated(), 0, "invalid input dispatched model work");
+    }
+    let schema = fixture._directory.path().join("output.schema.json");
+    std::fs::write(&schema, b"{\"type\":42}").unwrap();
+    let refused = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--output-format",
+            "jsonl",
+            "--output-schema",
+            schema.to_str().unwrap(),
+            "exec",
+            "hello",
+        ],
+        "",
+    )
+    .await;
+    assert!(!refused.status.success());
+    let failure: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(failure["kind"], "error");
+    assert_eq!(failure["step"], "prepare_output");
+    assert!(
+        failure["recovery"]["command"]
+            .as_str()
+            .unwrap()
+            .contains(failure["operation"].as_str().unwrap())
+    );
+    assert_eq!(model.generated(), 0, "invalid input dispatched model work");
     let input = "{\"prompt\":\"hello\"}\n{\"prompt\":\"again\",\"id\":\"second\"}\n";
     let output = graphcoder(
         &fixture,
         &model.catalog,
-        vec!["--operation", "jsonl", "--input-format", "jsonl"],
+        vec!["--operation", "jsonl", "--output-format", "jsonl", "exec"],
         input,
     )
     .await;
@@ -305,11 +380,22 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         .collect::<Vec<_>>();
     let mut ids = lines
         .iter()
+        .filter(|line| line["kind"] == "result")
         .map(|line| line["id"].clone())
         .collect::<Vec<_>>();
     ids.sort_by_key(Value::to_string);
     assert_eq!(ids, [json!("jsonl-1"), json!("second")]);
-    assert!(lines.iter().all(|line| line["text"] == "fixture answer"));
+    assert!(
+        lines
+            .iter()
+            .filter(|line| line["kind"] == "result")
+            .all(|line| line["text"] == "fixture answer")
+    );
+    assert_eq!(lines.last().unwrap()["kind"], "completed");
+    assert!(
+        lines.iter().any(|line| line["kind"] == "execution"
+            && line["record"]["event"]["kind"] == "model_started")
+    );
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     // The later turn's model context carries the earlier settled turn.
@@ -318,6 +404,198 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         .find(|body| body.to_string().contains("again"))
         .unwrap();
     assert!(later.to_string().contains("hello"), "{later}");
+    let replayed = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec!["--operation", "jsonl", "exec"],
+        input,
+    )
+    .await;
+    assert_eq!(succeeded(&replayed).lines().count(), 2);
+    assert_eq!(model.generated(), 2, "replay dispatched new model work");
+    let cursor = fixture._directory.path().join("events.cursor.json");
+    for resumed in [false, true] {
+        let exported = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--operation",
+                "jsonl",
+                "--output-format",
+                "jsonl",
+                "--event-cursor",
+                cursor.to_str().unwrap(),
+                "exec",
+            ],
+            input,
+        )
+        .await;
+        let lines = succeeded(&exported)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            lines
+                .iter()
+                .all(|line| line["version"] == 1 && line["operation"] == "jsonl")
+        );
+        let completion = lines.last().unwrap();
+        assert_eq!(completion["kind"], "completed");
+        assert_eq!(completion["success"], true);
+        let turns = lines
+            .iter()
+            .filter(|line| {
+                line["kind"] == "record"
+                    && line["resource"]
+                        .as_str()
+                        .is_some_and(|resource| resource.ends_with("/conversation"))
+            })
+            .count();
+        assert_eq!(turns, if resumed { 0 } else { 2 });
+        let execution = lines
+            .iter()
+            .filter(|line| line["kind"] == "execution")
+            .collect::<Vec<_>>();
+        if resumed {
+            assert!(execution.is_empty(), "resume replayed completed journals");
+            assert!(lines.iter().all(|line| line["kind"] != "execution_payload"));
+        } else {
+            let mut sequences = std::collections::BTreeMap::new();
+            for line in &execution {
+                let record = &line["record"];
+                let previous = sequences
+                    .entry(record["operation_id"].to_string())
+                    .or_insert(0);
+                let sequence = record["sequence"].as_u64().unwrap();
+                assert_eq!(
+                    sequence,
+                    *previous + 1,
+                    "journal export skipped or repeated an observation"
+                );
+                *previous = sequence;
+            }
+            assert_eq!(
+                execution
+                    .iter()
+                    .filter(|line| line["record"]["event"]["kind"] == "model_started")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                execution
+                    .iter()
+                    .filter(|line| !line["record"]["event"]["usage"].is_null())
+                    .count(),
+                2
+            );
+            // Reconstruct only captured binary output, never a hand-authored
+            // provider fixture. Every referenced field must have exact bytes.
+            let mut payloads = std::collections::BTreeMap::new();
+            for line in &execution {
+                let record: acyclic_harness::executor::ExecutionRecord =
+                    serde_json::from_value(line["record"].clone()).unwrap();
+                for (field, reference) in
+                    acyclic_harness::executor::ExecutionPayloadField::fields(&record.event)
+                {
+                    let key = (
+                        record.operation_id.to_string(),
+                        record.sequence,
+                        serde_json::to_string(&field).unwrap(),
+                    );
+                    assert!(
+                        payloads
+                            .insert(key, (reference.clone(), Vec::new()))
+                            .is_none()
+                    );
+                }
+            }
+            for line in lines
+                .iter()
+                .filter(|line| line["kind"] == "execution_payload")
+            {
+                let turn: acyclic_harness::OperationId =
+                    serde_json::from_value(line["turn"].clone()).unwrap();
+                let key = (
+                    turn.to_string(),
+                    line["sequence"].as_u64().unwrap(),
+                    serde_json::to_string(&line["field"]).unwrap(),
+                );
+                let (reference, body) = payloads
+                    .get_mut(&key)
+                    .expect("chunk has no original observation");
+                let original: acyclic_harness::conversation::FileRef =
+                    serde_json::from_value(line["file"].clone()).unwrap();
+                assert_eq!(&original, reference);
+                assert_eq!(line["offset"].as_u64().unwrap(), body.len() as u64);
+                let (bytes, _) = acyclic_harness::client::AgentReply::Content {
+                    data: line["data"].as_str().unwrap().into(),
+                    length: reference.descriptor().byte_length(),
+                }
+                .content()
+                .unwrap();
+                assert!(bytes.len() as u64 <= acyclic_harness::client::MAX_READ_BYTES);
+                assert!(!bytes.is_empty() || reference.descriptor().byte_length() == 0);
+                body.extend_from_slice(&bytes);
+            }
+            assert!(!payloads.is_empty());
+            for (_, (reference, bytes)) in payloads {
+                reference.descriptor().verify(&bytes, &mut None).unwrap();
+            }
+        }
+        assert!(cursor.exists());
+        let checkpoint: Value = serde_json::from_slice(&std::fs::read(&cursor).unwrap()).unwrap();
+        assert_eq!(checkpoint["execution"]["position"]["after"], 0);
+        assert_eq!(
+            model.generated(),
+            2,
+            "event export dispatched new model work"
+        );
+    }
+    std::fs::write(&schema, b"{\"type\":\"object\"}").unwrap();
+    let artifact = fixture._directory.path().join("final-output.json");
+    std::fs::write(&artifact, b"previous complete output").unwrap();
+    let refused = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--operation",
+            "jsonl",
+            "--output-format",
+            "jsonl",
+            "--output-schema",
+            schema.to_str().unwrap(),
+            "--output",
+            artifact.to_str().unwrap(),
+            "exec",
+        ],
+        input,
+    )
+    .await;
+    assert!(!refused.status.success());
+    let failure: Value = serde_json::from_str(
+        String::from_utf8_lossy(&refused.stdout)
+            .lines()
+            .last()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(failure["kind"], "error");
+    assert_eq!(failure["step"], "execute");
+    assert!(
+        failure["recovery"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("jsonl")
+    );
+    assert_eq!(
+        std::fs::read(&artifact).unwrap(),
+        b"previous complete output"
+    );
+    assert_eq!(
+        model.generated(),
+        2,
+        "schema projection dispatched model work"
+    );
     model.close().await;
 }
 

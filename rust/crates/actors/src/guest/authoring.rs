@@ -37,6 +37,10 @@ pub struct Checkpoint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "type", content = "detail", rename_all = "camelCase")]
 pub enum GuestError {
+    /// A host compositor observed a changed external guard before submission.
+    /// No part of its candidate committed; the original delivery is revalidated.
+    #[error("composed transaction precondition changed")]
+    PreconditionChanged,
     /// Host does not support the artifact-declared ABI.
     #[error("unsupported guest ABI: {0}")]
     UnsupportedAbi(u32),

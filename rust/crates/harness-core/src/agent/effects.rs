@@ -116,6 +116,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 brief: Some(*brief),
                 profile: Some(profile),
                 volumes: Vec::new(),
+                history: None,
             }),
             TurnEffect::Send { to, id, body } => Some(Out::Send {
                 to,

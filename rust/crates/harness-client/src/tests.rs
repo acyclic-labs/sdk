@@ -9,6 +9,7 @@ fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
     wire::SessionFrame {
         body: Some(wire::session_frame::Body::Watermark(
             wire::SessionWatermark {
+                opening_tail: None,
                 accepted: next,
                 durable: 0,
                 after: Some(wire::SessionCursor {

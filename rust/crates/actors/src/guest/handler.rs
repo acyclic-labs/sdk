@@ -224,6 +224,13 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
     /// The actor's original conditions and mutations must remain intact.
     fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest>;
 
+    /// Whether this participant can revalidate its external guards after their
+    /// conditional-commit refusal. The refusal is the wake event; transport
+    /// failures and unchanged actor conditions never enter this path.
+    fn revalidate(&self, _conflicts: &[acyclic_stream::CommitConflict]) -> bool {
+        false
+    }
+
     /// Release or adopt custody from the exact terminal provider outcome or
     /// definite refusal. Uncertain acknowledgements never reach settlement.
     fn settle<'a>(

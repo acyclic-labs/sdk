@@ -120,6 +120,7 @@ impl TurnDriver for Driver {
                         _ => None,
                     },
                     volumes: Vec::new(),
+                    history: None,
                 });
             }
             Ok(TurnStep {

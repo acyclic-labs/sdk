@@ -42,7 +42,7 @@ pub fn request_id(id: InteractionId) -> String {
     text
 }
 
-fn request_path(id: &str) -> String {
+pub(crate) fn request_path(id: &str) -> String {
     format!("approvals/{id}/request.json")
 }
 
