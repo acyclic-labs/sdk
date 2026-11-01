@@ -147,10 +147,20 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
     )
     .to_scope_label()
     .map_err(|error| Error::Invalid(error.to_string()))?;
-    let exact = task.scoped(
-        Capabilities::new(task.scope().grants().iter().chain([actions.as_str()])),
-        limits,
-    )?;
+    let exact = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([
+                private.read_capability.clone(),
+                private.write_capability.clone(),
+                actions,
+            ]),
+            limits,
+        )?,
+        artifacts: Some(private.content_bindings()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), private.content_bindings())?;
     let destination = exact.projection_destination(None)?.unwrap();
     let output = &selected.outputs[0].file;
     let operation = OperationId::parse(output.path().rsplit('/').next().unwrap())?;
