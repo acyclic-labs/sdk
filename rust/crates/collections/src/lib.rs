@@ -14,6 +14,9 @@ pub use arc::arc_allocation_bytes;
 mod recent;
 pub use recent::RecentIndex;
 
+mod prefix;
+pub use prefix::{ExtractedPrefix, PrefixTooLong};
+
 mod persistent;
 pub use persistent::{IndexInsertionBound, PersistentIndex, PersistentPosition};
 
@@ -520,46 +523,13 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 _ => return None,
             }
         }
-        let mut link = &mut self.root;
-        if let Some(parent) = parent {
-            loop {
-                match link.as_ref().map(|node| node.kind.as_ref()) {
-                    Some(Kind::Branch { bit, .. }) if *bit == parent => break,
-                    _ => {}
-                }
-                match link.as_mut().map(|node| node.kind.as_mut()) {
-                    Some(Kind::Branch {
-                        bit,
-                        low,
-                        high: upper,
-                    }) => {
-                        link = if high(&key, *bit) { upper } else { low };
-                    }
-                    _ => unreachable!("retirement follows the verified parent"),
-                }
-            }
-        }
-        let mut retired = link
+        let mut extracted = self
+            .extract_at(parent, |bit| high(&key, bit), |_| {})
+            .into_index();
+        let retired = extracted
+            .root
             .take()
             .unwrap_or_else(|| unreachable!("verified registration"));
-        if let Kind::Branch {
-            bit,
-            low,
-            high: upper,
-        } = retired.kind.as_mut()
-        {
-            let (selected, sibling) = if high(&key, *bit) {
-                (upper, low)
-            } else {
-                (low, upper)
-            };
-            *link = sibling.take();
-            let leaf = selected
-                .take()
-                .unwrap_or_else(|| unreachable!("verified leaf"));
-            drop(retired);
-            retired = leaf;
-        }
         let Node { kind, _allocation } = retired;
         let Kind::Leaf { key, value } = *kind else {
             unreachable!("extraction detaches exactly the verified leaf")
