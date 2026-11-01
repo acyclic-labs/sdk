@@ -338,6 +338,7 @@ enum OpKey {
 #[cfg(test)]
 thread_local! {
     static OP_PATH_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WANT_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl OpKey {
@@ -780,23 +781,40 @@ impl Reader {
     /// visible wants cover is marked displayed, so no insert evicts it, and
     /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
-        let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        // Keep the first admission order, but resolve and retain each exact
+        // intent only once at its strongest supplied priority.
+        let mut positions = BTreeMap::<Want, usize>::new();
+        let mut retained = Vec::<(Want, Priority)>::new();
+        for (want, priority) in wants {
+            match positions.entry(want) {
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    // Every position was inserted with the corresponding push;
+                    // the vector does not remove entries during admission.
+                    if let Some((_, retained_priority)) = retained.get_mut(*entry.get()) {
+                        *retained_priority = (*retained_priority).min(priority);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    retained.push((entry.key().clone(), priority));
+                    entry.insert(retained.len() - 1);
+                }
+            }
+        }
+        drop(positions);
         let pass_mark = self.cache.clock();
-        // Rows of one page each state the same page want; display it once.
-        let mut displayed = BTreeSet::new();
-        for (want, priority) in &wants {
-            if *priority == Priority::Visible && displayed.insert(want) {
+        for (want, priority) in &retained {
+            if *priority == Priority::Visible {
                 self.touch_want(want, true);
             }
         }
-        for (want, _) in &wants {
-            if displayed.insert(want) {
+        for (want, priority) in &retained {
+            if *priority == Priority::Prefetch {
                 self.touch_want(want, false);
             }
         }
         self.cache.retain_passed(pass_mark);
         self.demand.begin_plan();
-        for (want, priority) in wants {
+        for (want, priority) in retained {
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
@@ -863,6 +881,8 @@ impl Reader {
 
     /// The next uncached read for one want, or `None` when it is satisfied.
     fn resolve(&self, want: &Want) -> Option<(OpKey, Paging)> {
+        #[cfg(test)]
+        WANT_RESOLUTIONS.with(|visits| visits.set(visits.get() + 1));
         let path = match want {
             Want::Range { stream, .. } | Want::Last { stream, .. } => stream,
             Want::Listing { parent, .. } => parent,
@@ -2498,17 +2518,56 @@ mod reader_tests {
 
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
             reader.begin_frame(0);
-            reader.plan(heads.iter().map(|(stream, _)| {
-                (
-                    Want::Last {
-                        stream: stream.clone(),
-                        count: 1,
-                    },
-                    Priority::Visible,
+            // The lexically last path arrives first, repeatedly at lower
+            // priority. A later unique intent must survive that entire prefix.
+            let first = heads.last_key_value().unwrap().0.clone();
+            WANT_RESOLUTIONS.with(|visits| visits.set(0));
+            reader.plan(
+                std::iter::repeat_n(
+                    (
+                        Want::Last {
+                            stream: first.clone(),
+                            count: 1,
+                        },
+                        Priority::Prefetch,
+                    ),
+                    4097,
                 )
-            }));
+                .chain(heads.keys().map(|stream| {
+                    (
+                        Want::Last {
+                            stream: stream.clone(),
+                            count: 1,
+                        },
+                        Priority::Visible,
+                    )
+                })),
+            );
+            assert_eq!(
+                reader.residency().demand,
+                heads.len(),
+                "later unique intents were discarded"
+            );
+            assert_eq!(
+                reader
+                    .demand
+                    .get(&OpKey::Head(first.clone()))
+                    .unwrap()
+                    .priority,
+                Priority::Visible,
+                "duplicate priority weakened an original intent"
+            );
             let ops = reader.poll(0);
             assert_eq!(ops.len(), heads.len());
+            assert!(
+                matches!(ops.first(), Some(Op::Head { stream, .. }) if stream == &first),
+                "deduplication reordered original admission"
+            );
+            assert_eq!(
+                WANT_RESOLUTIONS.with(std::cell::Cell::get),
+                heads.len(),
+                "duplicate intents repeated cache resolution"
+            );
             let denied_id = ops
                 .iter()
                 .find_map(|op| match op {
