@@ -799,7 +799,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let timeout = async {
                     match limits.handler_timeout_millis() {
                         Some(timeout) => sleep(timeout).await,
-                        None => futures::future::pending::<()>().await,
+                        None => futures::future::pending::<Result<(), ClockError>>().await,
                     }
                 };
                 futures::pin_mut!(interrupted, timeout);
@@ -812,9 +812,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     futures::future::Either::Left((transition, _)) => {
                         transition.map_err(Error::from)
                     }
-                    futures::future::Either::Right((futures::future::Either::Left(_), _)) => {
-                        Err(Error::Invalid("handler exceeded its manifest timeout"))
-                    }
+                    futures::future::Either::Right((
+                        futures::future::Either::Left((elapsed, _)),
+                        _,
+                    )) => match elapsed {
+                        Ok(()) => Err(Error::Invalid("handler exceeded its manifest timeout")),
+                        Err(error) => Err(Error::from(error)),
+                    },
                     futures::future::Either::Right((
                         futures::future::Either::Right((error, _)),
                         _,

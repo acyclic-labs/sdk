@@ -11,7 +11,9 @@ test("durable wakes retain exact generations and visit only selected membership"
   const directory = mkdtempSync(join(tmpdir(), "event-wakes-"));
   const file = join(directory, "metadata.sqlite");
   let database = new Database(file);
-  let reads: string[] = [], writes = 0, scans = 0, forbidScans = false;
+  database.exec("PRAGMA journal_mode=WAL");
+  let reads: string[] = [], writes = 0, flushes = 0, scans = 0, forbidScans = false;
+  let durability: Promise<void> | undefined;
   const backend = {
     sql: { exec<Row extends Record<string, SqlValue>>(query: string, ...bindings: SqlValue[]): Iterable<Row> {
       if (query.startsWith("SELECT value")) reads.push(String(bindings[1]));
@@ -23,11 +25,11 @@ test("durable wakes retain exact generations and visit only selected membership"
       return database.query(query).all(...bindings.map(value => value instanceof ArrayBuffer ? new Uint8Array(value) : value)) as Row[];
     } },
     transactionSync<T>(operation: () => T): T { return database.transaction(operation)(); },
-    async sync() { database.exec("PRAGMA wal_checkpoint(FULL)"); },
+    async sync() { ++flushes; database.exec("PRAGMA wal_checkpoint(FULL)"); await durability; },
     async setAlarm() {}, async deleteAlarm() {},
   };
   const storage = new SqliteEventStorage(backend, "wakes");
-  const open = () => new WakeIndex(storage, 1024);
+  const open = () => new WakeIndex(storage);
   const change = (index: WakeIndex, source: string, changes: Parameters<WakeIndex["changed"]>[1]) =>
     storage.transaction(() => index.changed(source, changes));
   try {
@@ -37,15 +39,64 @@ test("durable wakes retain exact generations and visit only selected membership"
     assert.deepEqual(await index.register("root", ["tree/root/inbox", "tree/root/control"]), { admitted: true });
     assert.deepEqual(await index.register("child", ["tree/child/inbox", "tree/child/control"]), { admitted: true });
     assert.deepEqual(await index.register("leaf", ["tree/child/leaf/inbox", "tree/child/leaf/control"]), { admitted: true });
+    // A duplicate joins the same outstanding durability result. Avoiding a
+    // second barrier must never report admission before the original one ends.
+    const barrier = Promise.withResolvers<void>();
+    durability = barrier.promise;
+    const admission = index.register("custody", ["retained/durable"]);
+    const flushing = flushes;
+    let replayed = false;
+    const replay = index.register("custody", ["retained/durable"]).then(result => {
+      replayed = true; return result;
+    });
+    await Promise.resolve();
+    assert.equal(replayed, false);
+    assert.equal(flushes, flushing);
+    // A new index sees the original uncommitted rows, but has not yet joined
+    // their storage owner's completion. Its first replay must wait too.
+    const reopened = open();
+    const reopenedReplay = reopened.register("custody", ["retained/durable"]);
+    const firstReplayFlushes = flushes;
+    barrier.resolve();
+    assert.deepEqual(await admission, { admitted: true });
+    assert.deepEqual(await replay, { admitted: true });
+    assert.deepEqual(await reopenedReplay, { admitted: true });
+    const reopenedFlushed = flushes;
+    assert.deepEqual(await reopened.register("custody", ["retained/durable"]), { admitted: true });
+    assert.equal(flushes, reopenedFlushed, "subsequent replay retains the original completion");
+    durability = undefined;
+    assert.deepEqual(await index.register("custody", [], "0"), { admitted: true });
+    const lost = new Error("original storage durability producer lost");
+    const source = Promise.withResolvers<void>();
+    durability = source.promise;
+    const failure = index.register("custody", ["lost/source"], "1");
+    const reopenedFailed = open();
+    const reopenedFailure = reopenedFailed.register("custody", ["lost/source"], "1");
+    const failures = Promise.all([
+      assert.rejects(failure, error => error === lost),
+      assert.rejects(reopenedFailure, error => error === lost),
+    ]);
+    source.reject(lost);
+    await failures;
+    const failedFlushes = flushes;
+    await assert.rejects(index.register("custody", ["lost/source"], "1"), error => error === lost);
+    assert.equal(flushes, failedFlushes, "late replay retains original durability failure");
+    await assert.rejects(reopenedFailed.register("custody", ["lost/source"], "1"), error => error === lost);
+    assert.equal(flushes, failedFlushes, "reopened failure remains terminal without another barrier");
+    assert.equal(firstReplayFlushes, flushing + 1, "first replay joins storage durability once");
+    durability = undefined;
+    assert.deepEqual(await index.register("custody", [], "2"), { admitted: true });
     const costs: { register: number; exact: number; subtree: number; pending: number }[] = [];
     let population = 0;
-    for (const total of [1, 16, 256]) {
+    for (const total of [1, 16, 1001]) {
       for (; population < total; ++population) {
         assert.deepEqual(await index.register(`unrelated-${population}`,
           [`unrelated/${population}/inbox`, `unrelated/${population}/control`]), { admitted: true });
       }
       reads = [];
+      const beforeReplay = { writes, flushes };
       assert.deepEqual(await index.register("root", ["tree/root/control", "tree/root/inbox"]), { admitted: true });
+      assert.deepEqual({ writes, flushes }, beforeReplay, "unchanged registration has no write or durability barrier");
       const register = reads.length;
       reads = [];
       change(index, "root", [["tree/child/inbox", false], ["tree/child/control", false]]);
@@ -99,9 +150,43 @@ test("durable wakes retain exact generations and visit only selected membership"
 
     const unchanged = writes;
     assert.deepEqual(await index.register("root", ["tree/other/inbox", "tree/other/control"]), { refused: "conflict" });
-    assert.deepEqual(await index.register("foreign", ["tree/child/inbox", "foreign/control"]), { refused: "conflict" });
     assert.deepEqual(await new WakeIndex(storage, 1).register("over-capacity", ["new/inbox", "new/control"]), { refused: "capacity" });
     assert.equal(writes, unchanged);
+    // Multiple original subscribers share one exact path without overwriting
+    // another recipient. Changed registration is revision fenced and retires
+    // old path nodes rather than leaving historical routing work behind.
+    assert.deepEqual(await index.register("foreign", ["tree/child/inbox", "foreign/control"]), { admitted: true });
+    change(index, "root", [["tree/child/inbox", false]]);
+    let shared = new Map(index.pending());
+    assert.deepEqual(new Set(shared.keys()), new Set(["child", "foreign"]));
+    const oldGeneration = shared.get("foreign")!;
+    assert.deepEqual(await index.register("foreign", ["replacement/0"], "0"), { admitted: true });
+    index.acknowledge("foreign", oldGeneration);
+    assert.equal(index.pendingCount(), 2, "old generation cannot acknowledge a new subscription");
+    const settled = new Map(index.pending());
+    for (const [actor, generation] of settled) index.acknowledge(actor, generation);
+    const afterReplacement = { writes, flushes };
+    assert.deepEqual(await index.register("foreign", ["replacement/0"], "0"), { admitted: true });
+    assert.deepEqual({ writes, flushes }, afterReplacement, "unknown reply replay does not republish");
+    assert.deepEqual(await index.register("foreign", ["stale"], "0"), { refused: "conflict" });
+    for (let revision = 1; revision <= 65; ++revision) {
+      assert.deepEqual(await index.register("foreign", [`replacement/${revision}`], String(revision)), { admitted: true });
+      assert.equal(storage.get(`path:replacement/${revision - 1}/`), undefined);
+    }
+    change(index, "root", [["tree/child/inbox", false], ["replacement", true]]);
+    shared = new Map(index.pending());
+    assert.deepEqual(new Set(shared.keys()), new Set(["child", "foreign"]));
+    for (const [actor, generation] of shared) index.acknowledge(actor, generation);
+    const many = Array.from({ length: 1001 }, (_, n) => `many/${n}/input`);
+    assert.deepEqual(await index.register("foreign", many, "66"), { admitted: true });
+    change(index, "root", [[many[1000]!, false]]);
+    const selected = index.pending();
+    assert.deepEqual(selected.map(([actor]) => actor), ["foreign"]);
+    index.acknowledge(...selected[0]!);
+    assert.deepEqual(await index.register("foreign", [], "67"), { admitted: true });
+    assert.equal(storage.get("path:many/"), undefined, "empty subscription retires all original membership prefixes");
+    change(index, "root", [["many", true], ["replacement", true]]);
+    assert.equal(index.pendingCount(), 0);
     // Path segments remain exact, including prefixes ending at an empty segment.
     await index.register("slash", ["/inbox", "/control"]);
     change(index, "root", [["", true], ["tree/childish", true]]);
@@ -113,7 +198,7 @@ test("durable wakes retain exact generations and visit only selected membership"
     storage.put("actor:child", JSON.stringify({ ...row, next: "child" }));
     assert.throws(() => index.pending(), { code: "data_loss" });
     storage.put("actor:child", JSON.stringify(row));
-    storage.put("index", JSON.stringify({ format: "acyclic.host.wakes/v0" }));
+    storage.put("index", JSON.stringify({ format: "acyclic.host.wakes/v1" }));
     assert.throws(open, { code: "failed_precondition" });
     forbidScans = false;
     const legacy = new SqliteEventStorage(backend, "unversioned");

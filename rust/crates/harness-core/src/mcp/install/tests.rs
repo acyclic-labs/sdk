@@ -306,37 +306,66 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
 
 #[tokio::test]
 async fn initialization_is_concurrent_and_optional_diagnostics_keep_config_order() -> Result<()> {
-    let mut config = McpConfig::default();
-    for name in ["a", "b", "c"] {
-        config.servers.insert(
-            name.into(),
-            server(json!({"command":name}), Dialect::Codex)?,
-        );
+    struct Active(Arc<AtomicUsize>);
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
     }
-    let barrier = Arc::new(tokio::sync::Barrier::new(3));
-    let result = config
-        .install_with(
-            ToolRegistry::default(),
-            McpClientLimits::default(),
-            move |_| {
-                let barrier = barrier.clone();
-                Box::pin(async move {
-                    barrier.wait().await;
-                    Err(Error::Invalid("startup rejected".into()))
-                })
-            },
-        )
-        .await?;
-    assert_eq!(
-        result
-            .diagnostics
-            .iter()
-            .map(|failure| failure.server.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "b", "c"]
-    );
-    assert!(result.tools.definitions(None)?.is_empty());
-    assert!(result.capabilities.iter().next().is_none());
+    for credit in [None, Some(2)] {
+        let names: &'static [&str] = if credit.is_some() {
+            &["a", "b", "c", "d", "e"]
+        } else {
+            &["a", "b", "c"]
+        };
+        let mut config = McpConfig::default();
+        for name in names {
+            config.servers.insert(
+                (*name).into(),
+                server(json!({"command":name}), Dialect::Codex)?,
+            );
+        }
+        let concurrent = credit.map_or(names.len(), |credit| credit as usize);
+        let barrier = Arc::new(tokio::sync::Barrier::new(concurrent));
+        let active = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let result = config
+            .install_with(
+                ToolRegistry::default(),
+                McpClientLimits {
+                    servers: credit,
+                    ..Default::default()
+                },
+                |_| {
+                    let barrier = barrier.clone();
+                    let active = active.clone();
+                    let calls = calls.clone();
+                    Box::pin(async move {
+                        let index = calls.fetch_add(1, Ordering::SeqCst);
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _active = Active(active);
+                        assert!(current <= concurrent, "initialization credit exceeded");
+                        if index < names.len() - names.len() % concurrent {
+                            barrier.wait().await;
+                        }
+                        Err(Error::Invalid("startup rejected".into()))
+                    })
+                },
+            )
+            .await?;
+        assert_eq!(calls.load(Ordering::SeqCst), names.len());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .map(|failure| failure.server.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+        assert!(result.tools.definitions(None)?.is_empty());
+        assert!(result.capabilities.iter().next().is_none());
+    }
     Ok(())
 }
 
@@ -431,6 +460,65 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
             _ => panic!("unexpected startup decision"),
         }
     }
+    let mut config = McpConfig::default();
+    for (name, required) in [("a", true), ("b", false)] {
+        config.servers.insert(
+            name.into(),
+            server(json!({"command":name, "required":required}), Dialect::Codex)?,
+        );
+    }
+    let (release, released) = tokio::sync::oneshot::channel();
+    let released = Mutex::new(Some(released));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let remote = Arc::new(Remote::default());
+    let retained = remote.clone();
+    {
+        let installation = config.install_with(
+            ToolRegistry::default(),
+            McpClientLimits {
+                servers: Some(1),
+                ..Default::default()
+            },
+            move |server| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                let remote = retained.clone();
+                let released = (!server.required).then(|| {
+                    released
+                        .lock()
+                        .expect("release lock")
+                        .take()
+                        .expect("original completion")
+                });
+                Box::pin(async move {
+                    let Some(released) = released else {
+                        return Err(Error::Invalid("required startup failed".into()));
+                    };
+                    released
+                        .await
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    Ok(Connected {
+                        transport: remote,
+                        tools: advertised(&["read"]),
+                        binding: [2; 32],
+                    })
+                })
+            },
+        );
+        tokio::pin!(installation);
+        assert!(
+            futures::poll!(&mut installation).is_pending(),
+            "required failure must join the original startup owners"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        release.send(()).expect("original startup still owned");
+        let result = installation.await;
+        assert!(matches!(
+            result,
+            Err(Error::Invalid(message)) if message == "required startup failed"
+        ));
+    }
+    assert_eq!(Arc::strong_count(&remote), 1);
     Ok(())
 }
 
@@ -457,20 +545,31 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
     let pages = Mutex::new(VecDeque::from([first, page(&["two"], None)]));
     let mut requests = Vec::new();
     let cursors = Mutex::new(&mut requests);
-    let tools = native::discover(McpClientLimits::default(), |cursor| {
-        cursors.lock().expect("cursor lock").push(cursor);
-        std::future::ready(Ok(pages
-            .lock()
-            .expect("pages lock")
-            .pop_front()
-            .expect("next page")))
-    })
+    let tools = native::discover(
+        McpClientLimits::default(),
+        |name| name == "one",
+        |cursor| {
+            cursors.lock().expect("cursor lock").push(cursor);
+            std::future::ready(Ok(pages
+                .lock()
+                .expect("pages lock")
+                .pop_front()
+                .expect("next page")))
+        },
+    )
     .await?;
     assert_eq!(
         &tools[0].input_schema["type"] as *const Value,
         schema_pointer
     );
     assert_eq!(requests, [None, Some("next".into())]);
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["one"]
+    );
     for (pages, limits) in [
         (
             vec![page(&["a"], Some("x")), page(&["b"], Some("x"))],
@@ -501,11 +600,15 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
     ] {
         let pages = Mutex::new(VecDeque::from(pages));
         assert!(
-            native::discover(limits, |_| std::future::ready(Ok(pages
-                .lock()
-                .expect("pages lock")
-                .pop_front()
-                .expect("next page"))))
+            native::discover(
+                limits,
+                |_| false,
+                |_| std::future::ready(Ok(pages
+                    .lock()
+                    .expect("pages lock")
+                    .pop_front()
+                    .expect("next page")))
+            )
             .await
             .is_err()
         );
@@ -717,9 +820,27 @@ IFS= read -r input
 "#.replace("configured stdio", &"x".repeat(2048)),
     )
     .map_err(Error::process_io)?;
-    let document = json!({"mcpServers":{"configured":{"command":"sh","args":[script],
+    let configuration = json!({"command":"sh","args":[script],
         "env":{"MCP_TEST_VALUE":"literal ' $ spaces"},"cwd":"child","required":true,
-        "startup_timeout_sec":1,"tool_timeout_sec":1}}});
+        "startup_timeout_sec":1,"tool_timeout_sec":1});
+    // Reuse the original stdio fixture beyond both the initialization credit
+    // and the former default server count. Each owns its original session.
+    let mut servers = serde_json::Map::new();
+    for index in 0..33 {
+        let name = if index == 0 {
+            "configured".to_owned()
+        } else {
+            format!("configured-{index:02}")
+        };
+        let mut selected = configuration.clone();
+        if index != 0 {
+            let directory = format!("child-{index:02}");
+            std::fs::create_dir(root.path().join(&directory)).map_err(Error::process_io)?;
+            selected["cwd"] = directory.into();
+        }
+        servers.insert(name, selected);
+    }
+    let document = json!({"mcpServers":servers});
     std::fs::write(root.path().join(".claude.json"), document.to_string())
         .map_err(Error::process_io)?;
     let settings = NativeSettings::load(
@@ -732,6 +853,7 @@ IFS= read -r input
             ToolRegistry::default(),
             root.path(),
             McpClientLimits {
+                servers: Some(2),
                 catalog_bytes: Some(1024),
                 tool_bytes: Some(8192),
                 ..Default::default()
@@ -740,31 +862,46 @@ IFS= read -r input
         )
         .await?;
     assert!(installed.diagnostics.is_empty());
-    assert_eq!(
-        std::fs::read_to_string(cwd.join("environment")).map_err(Error::process_io)?,
-        format!("literal ' $ spaces\n{}\n", root.path().display())
-    );
-    let tool = installed
-        .tools
-        .get("mcp.configured.echo", None, None)?
-        .expect("installed stdio tool");
-    let invocation = ToolInvocation {
-        operation_id: OperationId::new(),
-        call_id: "configured-call".into(),
-        name: tool.definition.name.clone(),
-        arguments: json!({"payload":"y".repeat(2048)}),
-    };
+    let definitions = installed.tools.definitions(None)?;
+    assert_eq!(definitions.len(), 33);
     let scope = RuntimeScope::new(installed.capabilities, Limits::default())?;
-    tool.executor
-        .authorize(Some(&scope), None, &invocation, None)?;
-    let result = tool.executor.execute(invocation, None).await?;
-    assert_eq!(result.value["content"][0]["text"], "x".repeat(2048));
-    let dispatched: Value =
-        serde_json::from_slice(&std::fs::read(cwd.join("invocation")).map_err(Error::process_io)?)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(
-        dispatched["params"]["arguments"]["payload"],
-        "y".repeat(2048)
-    );
+    for definition in definitions {
+        let tool = installed
+            .tools
+            .get(&definition.name, Some(&definition.revision), None)?
+            .expect("installed stdio tool");
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "configured-call".into(),
+            name: definition.name.clone(),
+            arguments: json!({"payload":"y".repeat(2048)}),
+        };
+        tool.executor
+            .authorize(Some(&scope), None, &invocation, None)?;
+        let result = tool.executor.execute(invocation, None).await?;
+        assert_eq!(result.value["content"][0]["text"], "x".repeat(2048));
+        let name = definition
+            .name
+            .strip_prefix("mcp.configured")
+            .and_then(|name| name.strip_suffix(".echo"))
+            .expect("configured server name");
+        let directory = if name.is_empty() {
+            cwd.clone()
+        } else {
+            root.path().join(format!("child{name}"))
+        };
+        assert_eq!(
+            std::fs::read_to_string(directory.join("environment")).map_err(Error::process_io)?,
+            format!("literal ' $ spaces\n{}\n", root.path().display())
+        );
+        let dispatched: Value = serde_json::from_slice(
+            &std::fs::read(directory.join("invocation")).map_err(Error::process_io)?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            dispatched["params"]["arguments"]["payload"],
+            "y".repeat(2048)
+        );
+    }
     Ok(())
 }

@@ -35,7 +35,21 @@ pub trait Executor: ProviderPlatform {
     /// Runs one owned pool operation until completion or cancellation.
     fn spawn(&self, future: BoxProviderFuture<'static, ()>);
     /// Deadline or reconnect backoff; never used to poll a follow.
-    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()>;
+    /// Registration or producer loss is terminal, never an elapsed deadline.
+    /// Dropping the future withdraws its original timer registration.
+    fn sleep(&self, milliseconds: u64) -> BoxProviderFuture<'static, Result<(), SleepError>>;
+}
+
+/// Failure of the original platform timer, distinct from elapsed time.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum SleepError {
+    /// The registered callback's original completion producer was lost.
+    #[error("platform timer producer closed")]
+    SourceClosed,
+    /// The host refused registration; retains the exact thrown JavaScript value.
+    #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+    #[error("platform timer registration failed: {0:?}")]
+    Registration(wasm_bindgen::JsValue),
 }
 
 /// Native Tokio or browser event-loop scheduling.
@@ -74,9 +88,12 @@ impl Executor for PlatformExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         self.spawn_owned(future);
     }
-    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, milliseconds: u64) -> BoxProviderFuture<'static, Result<(), SleepError>> {
         Box::pin(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await;
+            if milliseconds != 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(milliseconds)).await;
+            }
+            Ok(())
         })
     }
 }
@@ -85,7 +102,7 @@ impl Executor for PlatformExecutor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         self.spawn_owned(future);
     }
-    fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, milliseconds: u64) -> BoxProviderFuture<'static, Result<(), SleepError>> {
         Box::pin(browser::delay(milliseconds))
     }
 }

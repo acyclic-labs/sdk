@@ -43,7 +43,7 @@ impl crate::runtime::Executor for Immediate {
             "terminal delivery must fit the reserved slot"
         );
     }
-    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, _: u64) -> BoxProviderFuture<'static, Result<(), crate::runtime::SleepError>> {
         Box::pin(future::pending())
     }
 }

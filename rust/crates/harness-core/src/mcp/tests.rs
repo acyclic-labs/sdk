@@ -150,31 +150,33 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
     let approval = CatalogApproval {
         operation: OperationId::from_bytes([46; 16]),
         interaction: InteractionId::from_bytes([47; 16]),
-        digest: original.installation_digest(None, 8, 8192)?,
+        digest: original.installation_digest(None, Some(8), Some(8192))?,
         reads: AtomicUsize::new(0),
     };
     let transport = Arc::new(Transport::default());
     let bound: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
-    for control in 0..=13 {
+    for control in 0..=15 {
         let mut input = original.clone();
         let mut operation = approval.operation;
         let mut interaction = approval.interaction;
         let mut selected_scope = &scope;
-        let mut maximum_tools = 8;
-        let mut maximum_bytes = 8192;
+        let mut maximum_tools = Some(8);
+        let mut maximum_bytes = Some(8192);
         match control {
             0 => selected_scope = &missing,
             1 => selected_scope = &forged,
             2 => operation = OperationId::from_bytes([48; 16]),
             3 => interaction = InteractionId::from_bytes([48; 16]),
-            4 => maximum_tools = 9,
-            5 => maximum_bytes = 8193,
+            4 => maximum_tools = Some(9),
+            5 => maximum_bytes = Some(8193),
             6 => input.revision = "different".into(),
             7 => input.schema_exposure = McpSchemaExposure::Selected { names: vec![] },
             8 => input.discovery = McpDiscoveryPolicy::Disabled,
             9 => input.tools.pop().map(|_| ()).unwrap_or_default(),
+            13 => maximum_tools = None,
+            14 => maximum_bytes = None,
             12 => {
                 input.projection_schema =
                     crate::tool::json_projection_schema(json!({"type":"string"}));
@@ -205,7 +207,7 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
                 (maximum_tools, maximum_bytes),
             )
             .await;
-        if control == 13 {
+        if control == 15 {
             result?;
         } else {
             assert!(result.is_err());
@@ -243,7 +245,7 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
     let approval = CatalogApproval {
         operation: OperationId::from_bytes([50; 16]),
         interaction: InteractionId::from_bytes([51; 16]),
-        digest: replacement.installation_digest(Some(&original), 8, 8192)?,
+        digest: replacement.installation_digest(Some(&original), Some(8), Some(8192))?,
         reads: AtomicUsize::new(0),
     };
     let mut stale = original.clone();
@@ -256,7 +258,7 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
                 (&bound, &projection),
                 (approval.operation, approval.interaction),
                 (&scope, &verifier, &approval),
-                (8, 8192),
+                (Some(8), Some(8192)),
             )
             .await;
         if previous == Some(&original) {
@@ -265,7 +267,7 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
             assert!(matches!(result, Err(Error::Unauthorized(_))));
             assert_eq!(
                 registry.definitions(None)?,
-                original.model_definitions(8, 8192)?
+                original.model_definitions(Some(8), Some(8192))?
             );
             assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_none());
         }
@@ -274,6 +276,41 @@ async fn scoped_catalog_installation_and_replacement_require_exact_approval() ->
     assert!(registry.get("mcp.fixture.a", Some("1"), None)?.is_some());
     assert!(registry.get("mcp.fixture.b", Some("1"), None)?.is_some());
     assert!(registry.get("mcp.fixture.a", Some("2"), None)?.is_some());
+
+    let names: Vec<_> = (0..33).map(|index| format!("tool{index}")).collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let mut unlimited = catalog("3", &names);
+    unlimited.tools[0].description = "x".repeat(131_072);
+    let approval = CatalogApproval {
+        operation: OperationId::from_bytes([52; 16]),
+        interaction: InteractionId::from_bytes([53; 16]),
+        digest: unlimited.installation_digest(Some(&replacement), None, None)?,
+        reads: AtomicUsize::new(0),
+    };
+    for bounds in [(Some(8), None), (None, Some(8192)), (None, None)] {
+        let result = unlimited
+            .install_scoped(
+                &mut registry,
+                Some(&replacement),
+                (&bound, &projection),
+                (approval.operation, approval.interaction),
+                (&scope, &verifier, &approval),
+                bounds,
+            )
+            .await;
+        if bounds == (None, None) {
+            result?;
+            let definitions = registry.definitions(None)?;
+            assert_eq!(definitions.len(), 33);
+            assert_eq!(definitions[0].description.len(), 131_072);
+        } else {
+            assert!(result.is_err());
+            assert!(registry.definitions(None)?.is_empty());
+            assert_eq!(approval.reads.load(Ordering::SeqCst), 0);
+        }
+    }
+    assert_eq!(approval.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(transport.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -343,7 +380,14 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
     let bound: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
-    catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
+    catalog("1", &["a"]).install(
+        &mut registry,
+        None,
+        &bound,
+        &projection,
+        Some(8),
+        Some(8192),
+    )?;
     let tool = registry
         .get("mcp.fixture.a", None, None)?
         .cloned()
@@ -356,20 +400,91 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
 }
 #[tokio::test]
 async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Result<()> {
+    let mut page_bytes = None;
+    for count in [64, 256] {
+        let names: Vec<_> = (0..count)
+            .rev()
+            .map(|index| format!("tool{index:06}"))
+            .collect();
+        let names: Vec<_> = names.iter().map(String::as_str).collect();
+        let catalog = catalog("1", &names);
+        catalog.validate(None, None)?;
+        let mut matched = None;
+        let matching = acyclic_test_support::measure(|| {
+            matched = Some(catalog.search("find", None, 3, None, None));
+        });
+        let matched = matched.expect("search completed")?;
+        assert_eq!(
+            matched
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "mcp.fixture.tool000000",
+                "mcp.fixture.tool000001",
+                "mcp.fixture.tool000002"
+            ]
+        );
+        let mut missed = None;
+        let missing = acyclic_test_support::measure(|| {
+            missed = Some(catalog.search("miss", None, 3, None, None));
+        });
+        assert!(missed.expect("search completed")?.is_empty());
+        // Both queries validate and inspect the same catalog, with equal-length
+        // query strings. Only the retained matches and returned page differ.
+        let bytes = matching
+            .bytes_total
+            .checked_sub(missing.bytes_total)
+            .expect("returning a page requires allocation");
+        if let Some(previous) = page_bytes {
+            assert_eq!(
+                bytes, previous,
+                "search retained matches beyond page credit"
+            );
+        }
+        page_bytes = Some(bytes);
+
+        let mut after = None;
+        let mut delivered = 0;
+        loop {
+            let page = catalog.search("find", after.as_deref(), 7, None, None)?;
+            if page.is_empty() {
+                break;
+            }
+            for tool in page {
+                assert_eq!(tool.name, format!("mcp.fixture.tool{delivered:06}"));
+                after = Some(
+                    tool.name
+                        .strip_prefix("mcp.fixture.")
+                        .expect("catalog namespace")
+                        .to_owned(),
+                );
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, count);
+    }
     let catalog = catalog("1", &["c", "a", "b"]);
     assert_eq!(
-        catalog.search("find", None, 1, 8, 8192)?[0].name,
+        catalog.search("find", None, 1, Some(8), Some(8192))?[0].name,
         "mcp.fixture.a"
     );
     assert_eq!(
-        catalog.search("find", Some("a"), 1, 8, 8192)?[0].name,
+        catalog.search("find", Some("a"), 1, Some(8), Some(8192))?[0].name,
         "mcp.fixture.b"
     );
     let transport = Arc::new(Transport::default());
     let bound: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
-    catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
+    catalog.install(
+        &mut registry,
+        None,
+        &bound,
+        &projection,
+        Some(8),
+        Some(8192),
+    )?;
     let tool = registry
         .get("mcp.fixture.a", None, None)?
         .ok_or_else(|| Error::NotFound("fixture".into()))?;
@@ -410,18 +525,18 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
 #[test]
 fn schema_bounds_namespace_and_result_negative_controls() {
     let mut input = catalog("1", &["a"]);
-    assert!(input.validate(1, 1).is_err());
+    assert!(input.validate(Some(1), Some(1)).is_err());
     input.server = "fixture.other".into();
-    assert!(input.validate(1, 8192).is_err());
+    assert!(input.validate(Some(1), Some(8192)).is_err());
     input.server = "fixture".into();
     input.tools.push(input.tools[0].clone());
-    assert!(input.validate(8, 8192).is_err());
+    assert!(input.validate(Some(8), Some(8192)).is_err());
     input.tools.pop();
     input.tools[0].input_schema = json!({"type":"unknown"});
-    assert!(input.validate(1, 8192).is_err());
+    assert!(input.validate(Some(1), Some(8192)).is_err());
     input.tools.clear();
     input.projection_schema = json!({"type":"invalid-type"});
-    assert!(input.validate(8, 8192).is_err());
+    assert!(input.validate(Some(8), Some(8192)).is_err());
     let tool = RemoteTool {
         server: "fixture".into(),
         name: "a".into(),
@@ -490,7 +605,14 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
     let old_catalog = catalog("1", &["a"]);
-    old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
+    old_catalog.install(
+        &mut registry,
+        None,
+        &old_transport,
+        &projection,
+        Some(8),
+        Some(8192),
+    )?;
     let admitted = registry
         .get("mcp.fixture.a", None, None)?
         .cloned()
@@ -512,8 +634,8 @@ async fn reload_during_remote_call_retains_admitted_transport() -> Result<()> {
         Some(&old_catalog),
         &new_transport,
         &projection,
-        8,
-        8192,
+        Some(8),
+        Some(8192),
     )?;
     sender
         .send(json!({"content":[], "structuredContent":{"value":11}, "isError":false}))
@@ -552,15 +674,35 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
             let old = selected("1", initial);
             let new = selected("2", replacement);
             let mut registry = ToolRegistry::default();
-            old.install(&mut registry, None, &transport, &projection, 3, 8192)?;
-            assert_eq!(registry.definitions(None)?, old.model_definitions(3, 8192)?);
-            new.install(&mut registry, Some(&old), &transport, &projection, 3, 8192)?;
-            assert_eq!(registry.definitions(None)?, new.model_definitions(3, 8192)?);
+            old.install(
+                &mut registry,
+                None,
+                &transport,
+                &projection,
+                Some(3),
+                Some(8192),
+            )?;
+            assert_eq!(
+                registry.definitions(None)?,
+                old.model_definitions(Some(3), Some(8192))?
+            );
+            new.install(
+                &mut registry,
+                Some(&old),
+                &transport,
+                &projection,
+                Some(3),
+                Some(8192),
+            )?;
+            assert_eq!(
+                registry.definitions(None)?,
+                new.model_definitions(Some(3), Some(8192))?
+            );
             assert_eq!(
                 registry.definitions(None)?.len(),
                 replacement.count_ones() as usize
             );
-            assert_eq!(new.search("", None, 3, 3, 8192)?.len(), 3);
+            assert_eq!(new.search("", None, 3, Some(3), Some(8192))?.len(), 3);
             for name in names {
                 assert!(
                     registry
@@ -576,12 +718,26 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
             let before = registry.definitions(None)?;
             assert!(
                 selected("3", replacement)
-                    .install(&mut registry, Some(&old), &transport, &projection, 3, 8192)
+                    .install(
+                        &mut registry,
+                        Some(&old),
+                        &transport,
+                        &projection,
+                        Some(3),
+                        Some(8192)
+                    )
                     .is_err()
             );
             assert!(
                 selected("3", replacement)
-                    .install(&mut registry, None, &transport, &projection, 3, 8192)
+                    .install(
+                        &mut registry,
+                        None,
+                        &transport,
+                        &projection,
+                        Some(3),
+                        Some(8192)
+                    )
                     .is_err()
             );
             assert_eq!(registry.definitions(None)?, before);
@@ -593,17 +749,31 @@ fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Resu
         invalid.schema_exposure = McpSchemaExposure::Selected { names };
         assert!(
             invalid
-                .install(&mut registry, None, &transport, &projection, 3, 8192)
+                .install(
+                    &mut registry,
+                    None,
+                    &transport,
+                    &projection,
+                    Some(3),
+                    Some(8192)
+                )
                 .is_err()
         );
         assert!(registry.definitions(None)?.is_empty());
     }
     let mut disabled = selected("1", 0);
     disabled.discovery = McpDiscoveryPolicy::Disabled;
-    disabled.install(&mut registry, None, &transport, &projection, 3, 8192)?;
+    disabled.install(
+        &mut registry,
+        None,
+        &transport,
+        &projection,
+        Some(3),
+        Some(8192),
+    )?;
     assert!(registry.definitions(None)?.is_empty());
     assert!(matches!(
-        disabled.search("", None, 3, 3, 8192),
+        disabled.search("", None, 3, Some(3), Some(8192)),
         Err(Error::Unsupported(_))
     ));
     Ok(())
