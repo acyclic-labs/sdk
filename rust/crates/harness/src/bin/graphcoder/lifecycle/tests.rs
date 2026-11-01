@@ -263,7 +263,13 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                 release.send(()).unwrap();
             }
             let ((result, report_result), failure) = host.await;
-            report_result?;
+            if let Err(error) = report_result {
+                // EOF and the original cancellation event may be ready in
+                // either order. With no owner request, interruption makes no
+                // acknowledgement claim and is an equally valid terminal.
+                assert_eq!(case, "owner-lost");
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            }
             assert!(failure.is_none());
             if case == "producer-lost" {
                 assert_eq!(
