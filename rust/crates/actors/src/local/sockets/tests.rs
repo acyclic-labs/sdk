@@ -534,7 +534,10 @@ impl Executor for HeldCloseExecutor {
         self.tasks.lock().unwrap().push_back(future);
     }
 
-    fn sleep(&self, _milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(
+        &self,
+        _milliseconds: u64,
+    ) -> BoxProviderFuture<'static, Result<(), acyclic_stream::runtime::SleepError>> {
         Box::pin(async { panic!("a decided socket operation must not retry") })
     }
 }
