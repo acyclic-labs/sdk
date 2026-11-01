@@ -65,7 +65,6 @@ checked=subprocess.run(base+['sh','-c',
 assert checked.returncode==(17 if prompt=='failed' else 0),checked.stderr
 if prompt=='recursive':
  nested=subprocess.Popen([os.environ['FIXTURE_ACYCLIC'],'__mcp','codex'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
- mcp=None
  try:
   mcp=McpClient(nested,'python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX recursive')
   grandchild=mcp.call('spawn','nested','first');finished=mcp.call('wait','nested')
@@ -75,11 +74,8 @@ if prompt=='recursive':
   assert (cwd/'first.txt').read_text()=='native'
   assert not (cwd/'.acyclic-sdk').exists(),'nested custody was authored into the child project'
  finally:
-  try:
-   if mcp:mcp.close()
-  finally:
-   try:nested.stdin.close()
-   finally:assert nested.wait()==0
+  try:nested.stdin.close()
+  finally:assert nested.wait()==0
 if prompt=='cancelled':
  child=subprocess.Popen(['sh','-c','sleep 30'])
  (cwd/'descendant.pid').write_text(str(child.pid))
@@ -110,14 +106,11 @@ if prompt=='resumed':
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
  def close_bridge():
   global bridge,mcp
-  previous_mcp,mcp=mcp,None
+  mcp=None
   previous_bridge,bridge=bridge,None
-  try:
-   if previous_mcp:previous_mcp.close()
-  finally:
-   if previous_bridge:
-    try:previous_bridge.stdin.close()
-    finally:assert previous_bridge.wait()==0,(root/'bridge.log').read_text()[-1200:]
+  if previous_bridge:
+   try:previous_bridge.stdin.close()
+   finally:assert previous_bridge.wait()==0,(root/'bridge.log').read_text()[-1200:]
  def stop_owner():
   global owner
   previous,owner=owner,None
