@@ -1,10 +1,10 @@
-// Installed real native hosts against the shipping mock; no authentication
-// fixture and no login. The acceptance matrix owns the process scope, mock,
+// Installed real native hosts against the shipping mock or an explicit native
+// login profile. The acceptance caller owns the process scope, provider,
 // deadline and request oracle; this module only drives one installed host.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {readFile,realpath,writeFile} from 'node:fs/promises';
-import {dirname,delimiter,isAbsolute,join,toNamespacedPath} from 'node:path';
+import {readFile,realpath,stat,writeFile} from 'node:fs/promises';
+import {dirname,delimiter,isAbsolute,join,relative,sep,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
@@ -58,45 +58,59 @@ export function assertNativeCompletion(host,result,answer) {
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
 // permission hook, which the owner's approval policy answers; Claude Code
 // approves the same coordination tools by its native allow list.
-export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,installed=true,input=false}) {
+export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
  if(host==='codex') {
-  const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
+  const provider=live?['--config','model_provider="openai"','--model',live.model]
+   :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
-   '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
+   '--config','model_providers.mock.requires_openai_auth=false','--model','tiny'];
+  const policy=[...provider,
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
   return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
   // Foundry's Messages endpoint with its documented gateway mode: no key,
   // token or account header reaches the localhost mock.
-  Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
+  if(!live)Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
    ANTHROPIC_FOUNDRY_BASE_URL:url.replace(/\/v1$/,''),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
   const settings=join(root,'claude-policy.json');
   await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
-  const policy=['--model','claude-haiku-5-5','--settings',settings,'--permission-mode','default',
+  const policy=['--model',live?.model??'claude-haiku-5-5','--settings',settings,'--permission-mode','default',
    ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
   return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
- env.ACYCLIC_E2E_MODEL_URL=url;
- const policy=['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
- return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,prompt]};
+ if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
+ const policy=live?['--no-extensions',...(installed?['--extension',extension]:[]),
+  '--provider',live.provider,'--model',live.model,'--session-dir',join(root,'native-sessions')]
+  :['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
+ return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,...(input?[]:[prompt])]};
 }
 
 // One installed host session under the caller's process scope: stage the
 // production package, install through the shipping CLI or the host's native
 // plugin directory, open the root through the workspace API, then run the
-// actual host once against the caller's mock endpoint.
+// actual host once against the caller's admitted provider.
 export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute}) {
  const native=await nativeHost(host,fixture.env);
- nativeProvider(native);
+ nativeProvider(native,fixture.live);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
- let endpoint;
- try {endpoint=new URL(fixture.url);}
- catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}
- assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1',
-  'step=admit mock endpoint; recovery=supply the original loopback fixture.url');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
+ if(fixture.live) {
+  // The caller provisions an exclusive authenticated profile outside guest
+  // files. Pass its path to the original host; never read or copy credentials.
+  const profile=await realpath(fixture.live.profile),within=relative(await realpath(root),profile);
+  assert.ok(within==='..'||within.startsWith('..'+sep)||isAbsolute(within),
+   'step=admit live native login location; recovery=provision the native login profile outside the fixture root');
+  assert.ok((await stat(profile)).isDirectory(),'step=admit live native login profile; recovery=supply an existing directory');
+  env[{codex:'CODEX_HOME','claude-code':'CLAUDE_CONFIG_DIR',pi:'PI_CODING_AGENT_DIR'}[host]]=profile;
+ } else {
+  let endpoint;
+  try {endpoint=new URL(fixture.url);}
+  catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}
+  assert.ok(endpoint.protocol==='http:'&&endpoint.hostname==='127.0.0.1',
+   'step=admit mock endpoint; recovery=supply the original loopback fixture.url');
+ }
  env.PATH=[dirname(native.entry),native.path,env.PATH].join(delimiter);
  let step='stage native package';
  const run=async(program,args,input)=>{
@@ -117,8 +131,10 @@ export async function installedHost({host,processes,fixture,capture,tools,native
    assert.equal(installation.code,0,installation.stderr);
     const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
    assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
+   if(fixture.live)assert.deepEqual(JSON.parse(listed.stdout).installed.filter(row=>row.enabled).map(row=>row.pluginId),
+    ['acyclic@acyclic'],'step=admit native plugins; recovery=use an exclusive native login profile with no unrelated enabled plugins');
   } else if(host==='pi') {
-   const extension=join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
+   const extension=fixture.live?join(root,'acyclic.ts'):join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot,'--settings',extension]);
    assert.equal(installation.code,0,installation.stderr);
    assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
@@ -137,7 +153,8 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const configuration={url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt};
+  const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
+   extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
   const {policy,args}=await launchNativeHost(host,configuration);
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
