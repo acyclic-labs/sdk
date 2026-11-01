@@ -273,6 +273,50 @@ mod tests {
             let (body, first_bytes) = measured_projection(&provider, &prepared, "first")?;
             let (_, repeated) = measured_projection(&provider, &prepared, "repeat")?;
             assert_eq!(repeated, first_bytes);
+            let retained: acyclic_harness_core::model::ModelRequest =
+                serde_json::from_slice(prepared.bytes()).unwrap();
+            assert_eq!(&retained, prepared.request());
+            // Restoring a deleted options map must refuse at the shared request
+            // boundary, rather than silently retaining the same cache identity
+            // while discarding configuration the caller expected to apply.
+            let mut restored = serde_json::to_value(&retained).unwrap();
+            restored["options"] = json!({
+                "max_output_tokens": 65,
+                "tools": [],
+                "reasoning_effort": "low",
+            });
+            let restored = serde_json::to_vec(&restored).unwrap();
+            let mut admitted = None;
+            let cost = acyclic_test_support::measure(|| {
+                admitted = Some(serde_json::from_slice::<
+                    acyclic_harness_core::model::ModelRequest,
+                >(&restored));
+            });
+            let error = admitted.unwrap().unwrap_err();
+            assert!(error.is_data());
+            println!(
+                "{}",
+                json!({
+                    "version": 1,
+                    "task": "removed-model-configuration",
+                    "input_kind": "generated_profile_and_request",
+                    "phase": "restored_options",
+                    "adapter": adapter,
+                    "model": provider.model(),
+                    "prefix_digest": profile.prefix_digest(),
+                    "prepared_request": std::str::from_utf8(prepared.bytes()).unwrap(),
+                    "restored_request": std::str::from_utf8(&restored).unwrap(),
+                    "refusal": error.to_string(),
+                    "allocation_count": cost.count_total,
+                    "allocated_bytes": cost.bytes_total,
+                    "peak_bytes": cost.bytes_max,
+                    "model_calls": 0,
+                    "tokens": Value::Null,
+                    "cache_hits": Value::Null,
+                    "tool_execution": Value::Null,
+                    "terminal_quality": Value::Null,
+                })
+            );
             assert_eq!(body.pointer(pointer), Some(&json!("high")));
             if matches!(adapter, Adapter::Anthropic | Adapter::Gemini) {
                 let mut smaller = None;

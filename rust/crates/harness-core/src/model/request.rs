@@ -10,6 +10,7 @@ mod encoding;
 /// Complete immutable provider-neutral model request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
 pub struct ModelRequest {
     /// Pinned model selection.
     pub model: Model,
