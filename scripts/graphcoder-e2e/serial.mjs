@@ -1,9 +1,9 @@
 // A matrix is a collection of bounded case suites. Windows executes them serially.
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
@@ -126,12 +126,30 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
     return digests.get(absolute);
   };
   const source = {};
-  async function sources(root,prefix) {
-    for (const entry of (await readdir(root,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
-      if (entry.name.startsWith('.') || entry.name==='node_modules' || entry.name==='__pycache__') continue;
-      const name=prefix+entry.name,path=join(root,entry.name);
-      if(entry.isDirectory())await sources(path,name+'/');
-      else if(entry.isFile())source[name]=await digest(path);
+  async function sources(root,prefix,closure) {
+    const entries=(await readdir(root,{withFileTypes:true}))
+      .filter(entry=>closure||!(entry.name.startsWith('.') || entry.name==='node_modules' || entry.name==='__pycache__'))
+      .sort((a,b)=>a.name.localeCompare(b.name));
+    // Bound open readers by one page, independent of installed tree size.
+    // Finish every reader before descending or reporting an admission failure.
+    for(let start=0;start<entries.length;start+=64) {
+      const page=entries.slice(start,start+64);
+      const results=await Promise.allSettled(page.map(async entry=>{
+        const name=prefix+entry.name,path=join(root,entry.name);
+        if(entry.isFile())return await digest(path);
+        if(entry.isDirectory()||!closure)return;
+        const target=await realpath(path),within=relative(closure,target);
+        assert.ok(entry.isSymbolicLink()&&!isAbsolute(within)&&within!=='..'&&!within.startsWith('..'+sep),
+          `step=admit host dependency ${name}; recovery=npm ci --prefix plugin/tests/hosts with no external dependency links`);
+        // The target is visited at its ordinary path; only bind the link edge.
+        return createHash('sha256').update(within).digest('hex');
+      }));
+      for(const result of results)if(result.status==='rejected')throw result.reason;
+      for(let index=0;index<page.length;index++) {
+        const entry=page[index],name=prefix+entry.name;
+        if(entry.isDirectory())await sources(join(root,entry.name),name+'/',closure);
+        else if(results[index].value!==undefined)source[name]=results[index].value;
+      }
     }
   }
   await sources(directory,'graphcoder-e2e/');
@@ -141,16 +159,23 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
     'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
     if(env[name])executables[name]=await executable(env[name]);
-  const hosts={};let closure;
+  const hosts={},closures=new Map();
   for(const test of cases)for(const input of test.inputs??[]) {
     if(input.format!=='installed-host'||hosts[input.host])continue;
     const native=await nativeHost(input.host,env,join(directory,'../../plugin/tests/hosts'));
-    hosts[input.host]={program:await executable(native.program),entry:await executable(native.entry),args:native.args.length};
-    closure??=native.closure;
+    let prefix=closures.get(native.closure);
+    if(prefix===undefined) {
+      prefix='installed-hosts/'+input.host+'/';
+      closures.set(native.closure,prefix);
+      try {await sources(native.closure,prefix,native.closure);}
+      catch(cause) {
+        throw new Error(`step=admit ${input.host} dependency tree: ${cause.message}; recovery=npm ci --prefix plugin/tests/hosts with no external dependency links`,{cause});
+      }
+    }
+    hosts[input.host]={program:await executable(native.program),entry:await executable(native.entry),args:native.args.length,closure:prefix};
   }
   // Admission binds the installed transitive JS/native closure once, outside
   // every host turn. A lockfile alone cannot identify the installed bytes.
-  if(closure)await sources(closure,'installed-hosts/');
   return { binary: await executable(binary), mock: await executable(mock), source,executables,hosts,
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
 }

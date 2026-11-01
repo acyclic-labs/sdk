@@ -29,7 +29,7 @@ qualify() {
     python3 scripts/qualify-graphcoder-artifact.py "${artifact_args[@]}" "${prefixes[@]}"
 }
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
-binary_features=acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/terminal,acyclic-harness/tui,acyclic-harness/test-support,acyclic-harness/grpc,acyclic-harness/search-http
+binary_features=acyclic-harness/${features//,/,acyclic-harness/}
 core_features=filesystem-local,native-execution,tui,test-support,grpc,search-http
 qualify core-library 'executor::tool_execution::cancellation_tests:: command_request::diff_tests:: native_settings::model::tests::' \
   cargo test --locked -p acyclic-harness-core --features "$core_features" --lib
