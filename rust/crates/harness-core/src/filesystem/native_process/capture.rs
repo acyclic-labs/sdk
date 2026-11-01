@@ -104,68 +104,99 @@ pub async fn capture_with_custody<T: Send + 'static>(
     wake: Option<acyclic_native_runtime::ProcessWake>,
     retention: OutputRetention,
 ) -> Result<(Option<NativeProcessResult>, T)> {
+    start_capture_with_custody(invocation, observer, check, custody, wake, retention)
+        .await?
+        .await
+}
+
+/// Starts the original capture and returns its owned completion future.
+/// The spawn turn transfers the tree into the native capture owner before
+/// returning. Moving this future preserves the original process, callbacks,
+/// output credit, lifetime deadline and cleanup join; it launches no new task.
+/// A caller may race a borrowed completion against foreground presentation,
+/// then transfer that SAME completion to its admitted background owner.
+///
+/// The caller must transfer its original stop-on-drop guard and authority
+/// with the completion before acknowledging background admission. This API
+/// does not publish a durable task identity or terminal Notice. Losing an
+/// observed stream closes output credit and cancels its original capture;
+/// collected output retains the existing detached-task cancellation contract.
+#[doc(hidden)]
+pub async fn start_capture_with_custody<T: Send + 'static>(
+    invocation: Invocation,
+    observer: impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>
+    + Send
+    + 'static,
+    check: impl Fn() -> std::io::Result<()> + Send + 'static,
+    custody: T,
+    wake: Option<acyclic_native_runtime::ProcessWake>,
+    retention: OutputRetention,
+) -> Result<
+    impl std::future::Future<Output = Result<(Option<NativeProcessResult>, T)>> + Send + 'static,
+> {
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so they run on main's independent native host service.
     // Spawning runs there too; the running child then holds no worker: the
     // capture awaits readiness between its turns.
     let spawner = acyclic_native_runtime::TaskSpawner::current();
-    let started = acyclic_native_runtime::run_blocking_io(
-        move || {
-            let mut handler = Handler {
-                custody,
-                observer,
-                check,
-                wake,
-            };
-            match start(&invocation, &mut handler) {
-                Ok(Ok((tree, input))) => {
-                    let schedule = invocation.schedule;
-                    // Transfer physical custody before returning from the
-                    // worker. Losing the waiter cannot drop an unsubmitted tree.
-                    match retention {
-                        OutputRetention::Collect => Started::Running(spawner.spawn(tree.capture(
-                            schedule,
-                            invocation.maximum_output_bytes,
-                            input,
-                            handler,
-                        ))),
-                        OutputRetention::Observe => Started::Streaming(tree.stream_capture(
-                            &spawner,
-                            schedule,
-                            invocation.maximum_output_bytes,
-                            input,
-                            handler,
-                        )),
+    let started =
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                let mut handler = Handler {
+                    custody,
+                    observer,
+                    check,
+                    wake,
+                };
+                let schedule = invocation.schedule;
+                let maximum_output_bytes = invocation.maximum_output_bytes;
+                match start(invocation, &mut handler) {
+                    Ok(Ok((tree, input))) => {
+                        // Transfer physical custody before returning from the
+                        // worker. Losing the waiter cannot drop an unsubmitted tree.
+                        match retention {
+                            OutputRetention::Collect => Started::Running(spawner.spawn(
+                                tree.capture(schedule, maximum_output_bytes, input, handler),
+                            )),
+                            OutputRetention::Observe => Started::Streaming(tree.stream_capture(
+                                &spawner,
+                                schedule,
+                                maximum_output_bytes,
+                                input,
+                                handler,
+                            )),
+                        }
                     }
+                    Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
+                    Err(error) => Started::Finished(Err(error), handler.custody),
                 }
-                Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
-                Err(error) => Started::Finished(Err(error), handler.custody),
+            },
+            None,
+        )
+        .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
+        .await
+        .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+    Ok(async move {
+        let (output, custody) = match started {
+            Started::Finished(output, custody) => (output, custody),
+            Started::Running(capture) => {
+                // Ownership stays with the spawned capture until process cleanup
+                // finishes, even if its awaiting task is cancelled.
+                let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
+                    Error::Storage(format!("native process observer interrupted: {error}"))
+                })?;
+                (Ok(outcome.result), outcome.handler.custody)
             }
-        },
-        None,
-    )
-    .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
-    .await
-    .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
-    let (output, custody) = match started {
-        Started::Finished(output, custody) => (output, custody),
-        Started::Running(capture) => {
-            // Ownership stays with the spawned capture until process cleanup
-            // finishes, even if its awaiting task is cancelled.
-            let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
-                Error::Storage(format!("native process observer interrupted: {error}"))
-            })?;
-            (Ok(outcome.result), outcome.handler.custody)
-        }
-        Started::Streaming(mut stream) => {
-            while stream.recv().await.is_some() {}
-            let outcome = stream.finish().await.map_err(|error| {
+            Started::Streaming(mut stream) => {
+                while stream.recv().await.is_some() {}
+                let outcome = stream.finish().await.map_err(|error| {
                 Error::Storage(format!("native process stream interrupted: {error}; recovery: reconcile the original command"))
             })?;
-            (Ok(outcome.result), outcome.handler.custody)
-        }
-    };
-    Ok((result(output), custody))
+                (Ok(outcome.result), outcome.handler.custody)
+            }
+        };
+        Ok((result(output), custody))
+    })
 }
 
 /// A spawned tree and its owned input, or the output an installed test
@@ -180,7 +211,7 @@ type Spawned = std::result::Result<
 
 /// Checks intent and spawns the tree.
 fn start<T>(
-    invocation: &Invocation,
+    invocation: Invocation,
     handler: &mut Handler<
         T,
         impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
@@ -233,7 +264,6 @@ fn start<T>(
     }
     let input = invocation
         .standard_input
-        .clone()
         .map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     let tree = match &invocation.process_custody {
         Some(custody) => {

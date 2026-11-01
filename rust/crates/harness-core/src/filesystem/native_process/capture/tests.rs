@@ -45,6 +45,8 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         let handle = runtime.handle().clone();
         let observed = Arc::new(AtomicUsize::new(0));
         let completed = Arc::clone(&observed);
+        let handoff = Arc::new(tokio::sync::Notify::new());
+        let physical_handoff = Arc::clone(&handoff);
         let invocation = Invocation {
             executable: std::env::current_exe()?,
             argv: vec![
@@ -70,15 +72,21 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
                 "capture occupies the publication executor"
             );
             let completed = Arc::clone(&completed);
+            let physical_handoff = Arc::clone(&physical_handoff);
             handle.block_on(async move {
-                tokio::task::spawn_blocking(move || {
-                    completed.fetch_add(1, Ordering::SeqCst);
-                })
-                .await
-                .map_err(std::io::Error::other)
+                let previous =
+                    tokio::task::spawn_blocking(move || completed.fetch_add(1, Ordering::SeqCst))
+                        .await
+                        .map_err(std::io::Error::other)?;
+                if previous == 0 {
+                    // Physical capture may start before its foreground waiter
+                    // receives the completion. It must not hold that waiter.
+                    physical_handoff.notified().await;
+                }
+                Ok(())
             })
         });
-        let (output, ()) = runtime.block_on(capture_with_custody(
+        let capture = runtime.block_on(start_capture_with_custody(
             invocation,
             move |(), chunk| observer(chunk),
             || Ok(()),
@@ -86,6 +94,15 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             None,
             OutputRetention::Observe,
         ))?;
+        let (output, ()) = runtime.block_on(async move {
+            // Transfer the SAME owned completion, without awaiting it on the
+            // foreground path or constructing another process/capture.
+            let completion = acyclic_native_runtime::TaskSpawner::current().spawn(capture);
+            handoff.notify_one();
+            completion.await.map_err(|error| {
+                Error::Storage(format!("native capture handoff interrupted: {error}"))
+            })?
+        })?;
         let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
         if let Some(kind) = stopped {
