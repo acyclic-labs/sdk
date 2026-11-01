@@ -7,10 +7,10 @@ use crate::foundation::{
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, CreateAuthorityOutcome, FenceOutcome, GuardedAppend, ObjectId, ObjectRead,
-    ObjectReadRequest, ObjectResult, ObjectWrite, PublicationPermit, PublicationReservation,
-    ReplayLimit, ReservationOutcome,
+    ObjectReadRequest, ObjectResult, PublicationPermit, PublicationReservation, ReplayLimit,
+    ReservationOutcome,
 };
-use acyclic_stream::{OwnedBytes, ProviderPlatform, ProviderTask};
+use acyclic_stream::{ProviderPlatform, ProviderTask};
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ pub(crate) use read_batch::read_many_stored_sequential;
 #[path = "../tests/async_storage.rs"]
 mod tests;
 
-pub(crate) use objects::prepare_object;
+pub(crate) use objects::{forward_object_store, prepare_object};
 
 #[cfg(test)]
 pub(crate) use cache::{cached_value, publish_decoded};
