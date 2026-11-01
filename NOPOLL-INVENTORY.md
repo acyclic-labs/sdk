@@ -1,5 +1,29 @@
 # Polling and timed-wait inventory
 
+MCP reader successor, location on `f4e34ab9f9`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-core/src/mcp/stdio/native/server/tests.rs:213` | One-millisecond sleep before every reply write | The same writer announces entry on a rendezvous channel, then waits for the reader's admission channel. Dropping its sole producer returns `BrokenPipe` through the original writer and serving join. | Qualified at `5a9a6f9a10` |
+
+The original 101 ordered replies remain checked. The same named control also
+withdraws the reader before admitting its first write and requires the original
+serving error with no output. The readiness notification precedes each write;
+the reader can release admission before the writer receives it without loss.
+Each write performs one fixed-size entry send and one admission receive; no
+history scan, retry or elapsed-time readiness inference is added. One scoped
+serving thread and two fixed channels coordinate the test. The original input
+and writer threads remain unchanged. Sleeps decrease from 101 to zero on the
+successful burst. Channel syscall/allocation counts remain unmeasured; no
+production operation, durability barrier or protocol round trip changes.
+
+Linux x86_64: at `5a9a6f9a10`, `cargo test --locked -p
+acyclic-harness-core --lib --no-default-features --features mcp-stdio
+mcp::stdio::native::server::tests::request_bursts_wait_for_a_slow_reader --
+--exact --nocapture` passed 1/1, 0.00 seconds execution, with the successful
+burst and producer-withdrawal negative in the same original control. No Windows
+or macOS execution is claimed.
+
 Compiler-overlap successor, locations on `c3010262af`:
 
 | Source | Kind | Replacement and terminal | Status |
