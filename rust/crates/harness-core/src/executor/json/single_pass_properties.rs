@@ -140,6 +140,77 @@ fn has_array(value: &Value) -> bool {
         _ => false,
     }
 }
+
+fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseResult {
+    let calls = Cell::new(0);
+    let once = Once {
+        value,
+        calls: &calls,
+    };
+    let mut encoded = 0;
+    let mut storage = 0;
+    let bounds = JsonBounds {
+        maximum_bytes: 65536,
+        maximum_items: 65536,
+        maximum_depth: 256,
+    };
+    let mut charge = |event| {
+        match event {
+            JsonCodecCharge::Work { bytes, .. } => encoded += bytes,
+            JsonCodecCharge::Retain { bytes }
+            | JsonCodecCharge::AllocationOperation { bytes }
+            | JsonCodecCharge::CopyAdmission { bytes }
+            | JsonCodecCharge::Copy { bytes } => storage += bytes,
+            _ => {}
+        }
+        Ok(())
+    };
+    let actual = {
+        let mut compare = || {
+            if buffered {
+                json_bytes_bounded(&once, bounds, None, &mut charge).unwrap() == expected
+            } else {
+                json_bytes_match_bounded(&once, expected, bounds, None, &mut charge).unwrap()
+            }
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            let mut actual = None;
+            let physical = acyclic_test_support::measure(|| actual = Some(compare()));
+            prop_assert!(
+                physical.count_total == 0,
+                "borrowed comparison retained output: {physical:?}"
+            );
+            actual.unwrap()
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        compare()
+    };
+    let bytes = serde_json::to_vec(value).unwrap();
+    prop_assert!(
+        actual == (bytes == expected)
+            && calls.get() == 1
+            && encoded == bytes.len() as u64
+            && storage == 0,
+        "borrowed comparison changed bytes, repeated encoding or retained output"
+    );
+    let original = crate::OperationId::from_bytes([23; 16]);
+    let result = json_bytes_match_bounded(
+        value,
+        expected,
+        bounds,
+        Some(crate::wire::ErrorCode::Invalid),
+        &mut |event| match event {
+            JsonCodecCharge::Work { bytes, .. } if bytes != 0 => {
+                Err(crate::Error::Indeterminate(original))
+            }
+            _ => Ok(()),
+        },
+    );
+    prop_assert!(matches!(result, Err(crate::Error::Indeterminate(id)) if id == original));
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
@@ -149,11 +220,28 @@ proptest! {
         let mut value = serde_json::json!({"z": text, "a": (0..width).collect::<Vec<_>>()});
         for _ in 0..depth { value = Value::Array(vec![value, Value::Array(vec![])]); }
         for canonical in [false, true] { check(&value, canonical, Fault::None)?; }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        check_comparison(&value, &bytes, false)?;
+        check_comparison(&value, &bytes[..bytes.len() - 1], false)?;
+        let mut changed = bytes.clone();
+        changed[0] ^= 1;
+        check_comparison(&value, &changed, false)?;
+        let mut extended = bytes;
+        extended.push(b' ');
+        check_comparison(&value, &extended, false)?;
     }
 }
 #[test]
 fn single_pass_negative_controls() {
     let value = serde_json::json!({"z": ["a", "b"], "a": 7});
+    let bytes = serde_json::to_vec(&value).unwrap();
+    check_comparison(&value, &bytes, false).unwrap();
+    assert!(
+        check_comparison(&value, &bytes, true)
+            .unwrap_err()
+            .to_string()
+            .contains("retained output")
+    );
     for canonical in [false, true] {
         check(&value, canonical, Fault::None).unwrap();
         let mut faults = vec![Fault::Repeat, Fault::Corrupt, Fault::OmitCharge];

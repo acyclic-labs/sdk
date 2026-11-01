@@ -703,6 +703,35 @@ pub(crate) fn count_json_bytes_trusted<
     Ok(size)
 }
 
+/// Compares compact encoding on the original writer without retaining output.
+/// The caller supplies normalized, ordered data when canonical bytes are needed.
+#[cfg(any(feature = "filesystem", test))]
+pub(crate) fn json_bytes_match_bounded<
+    T: Serialize + ?Sized,
+    F: FnMut(JsonCodecCharge) -> Result<()>,
+>(
+    value: &T,
+    expected: &[u8],
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut F,
+) -> Result<bool> {
+    let mut scope = scope(bounds, code, charge);
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    let mut matched = true;
+    let size = write(
+        value,
+        &mut scope,
+        None,
+        None,
+        Some((expected, &mut matched)),
+        bounds.maximum_bytes,
+        false,
+    )?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    Ok(matched && size == expected.len() as u64)
+}
+
 #[cfg(test)]
 #[path = "single_pass_properties.rs"]
 mod single_pass_properties;

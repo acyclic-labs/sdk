@@ -94,6 +94,37 @@ impl PreparationIo {
             maximum_depth: depth,
         })
     }
+
+    pub(crate) fn encoded_matches<T: Serialize>(&self, value: &T, bytes: &[u8]) -> Result<bool> {
+        let remaining = self.remaining()?;
+        let bounds = JsonBounds {
+            maximum_bytes: (bytes.len() as u64).min(remaining.bytes_encoded),
+            maximum_items: remaining.items_examined,
+            maximum_depth: 256,
+        };
+        let code = self
+            .original_native_work()
+            .is_some()
+            .then_some(crate::wire::ErrorCode::Invalid);
+        #[cfg(not(target_arch = "wasm32"))]
+        let diagnostics = code
+            .map(|_| self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes()))
+            .transpose()?;
+        let result = crate::executor::json::json_bytes_match_bounded(
+            value,
+            bytes,
+            bounds,
+            code,
+            &mut |charge| self.codec_charge(charge, true),
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = match diagnostics {
+            Some(guard) => finish_encoding(guard, result),
+            None => result,
+        };
+        result
+    }
+
     #[doc(hidden)]
     pub fn encode<T: Serialize>(
         &self,
