@@ -289,6 +289,143 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         b"rebased"
     );
 
+    // Force an actual merge against a newer root before delaying the provider.
+    // Each exit retains the original pin and mutation/publication leases.
+    for exit in ["return", "superseded", "abandoned", "cancelled"] {
+        source.runtime.wait(|| async {
+            let stop = CancellationToken::new();
+            let pending_work = capture_meter(BOUNDARY_BUDGET, &stop)?;
+            let bytes = match exit {
+                "superseded" => b"refused",
+                "abandoned" => b"abandon",
+                "cancelled" => b"cancel!",
+                _ => b"outside",
+            };
+            let mut pending_carrier = NativeDemandCarrier::Native(&pending_work);
+            let mut pending = source
+                .checkout
+                .file_candidate(left, &mut pending_carrier, &stop, None)
+                .await?;
+            pending
+                .checkout
+                .change_content(
+                    left,
+                    ContentChange::Write {
+                        offset: 0,
+                        bytes: OwnedBytes::from_static(bytes),
+                    },
+                    ContentTimes::Preserve,
+                    &pending_work,
+                    &stop,
+                )
+                .await?;
+            let seed = match exit {
+                "superseded" => b"seed-b",
+                "abandoned" => b"seed-c",
+                "cancelled" => b"seed-d",
+                _ => b"seed-a",
+            };
+            write(&source, right, 0, seed, &work).await?;
+            let winner = staged_write(&source.checkout, right, b"newest", &work).await?;
+            let reads = objects.entered.load(Ordering::Acquire);
+            objects.paused_reads.store(true, Ordering::Release);
+            let mut rebase = Box::pin(source.checkout.install_change(
+                pending,
+                ViewChange::Node(left),
+                None,
+                &pending_work,
+                source.cancellation(),
+                None,
+            ));
+            assert!(futures::poll!(rebase.as_mut()).is_pending());
+            assert_eq!(objects.entered.load(Ordering::Acquire), reads + 1);
+            assert!(
+                source.checkout.state.try_write().is_ok(),
+                "rebase I/O retains no shared checkout guard"
+            );
+            let mut successor_carrier = NativeDemandCarrier::Native(&work);
+            let mut successor = Box::pin(source.checkout.file_candidate(
+                left,
+                &mut successor_carrier,
+                work.cancellation(),
+                None,
+            ));
+            assert!(
+                futures::poll!(successor.as_mut()).is_pending(),
+                "same-file successor waits for the original mutation lease"
+            );
+            assert_eq!(
+                objects.entered.load(Ordering::Acquire),
+                reads + 1,
+                "same-file successor cannot reach provider I/O during rebase"
+            );
+            match exit {
+                "superseded" => {
+                    source
+                        .checkout
+                        .install_change(
+                            winner,
+                            ViewChange::Node(right),
+                            None,
+                            &work,
+                            source.cancellation(),
+                            None,
+                        )
+                        .await?;
+                    objects.release();
+                    assert!(matches!(rebase.await, Err(MountSourceError::Stale)));
+                }
+                "abandoned" => {
+                    drop(winner);
+                    drop(rebase);
+                    objects.release();
+                }
+                "cancelled" => {
+                    drop(winner);
+                    stop.cancel();
+                    objects.release();
+                    let result = rebase.await;
+                    assert!(
+                        matches!(
+                            result,
+                            Err(MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::Cancelled
+                            ))
+                        ),
+                        "original native cancellation cause: {result:?}"
+                    );
+                }
+                _ => {
+                    drop(winner);
+                    objects.release();
+                    rebase.await?;
+                }
+            }
+            match futures::poll!(successor.as_mut()) {
+                Poll::Ready(result) => drop(result?),
+                Poll::Pending => panic!("same-file successor remains blocked after {exit}"),
+            }
+            drop(successor);
+            assert!(
+                source
+                    .checkout
+                    .file_mutations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entries
+                    .is_empty(),
+                "the original mutation lease retires after {exit}"
+            );
+            assert!(source.checkout.state.try_write().is_ok());
+            assert!(source.checkout.publication_fence.try_write().is_ok());
+            Ok(())
+        })?;
+        assert_eq!(
+            source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
+            b"outside"
+        );
+    }
+
     // Project the original private candidate while a disjoint candidate wins.
     // The original read is released by its provider; adoption must then refuse
     // the changed base instead of returning facts for a different root.
@@ -327,7 +464,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     })?;
     assert_eq!(
         source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
-        b"rebased"
+        b"outside"
     );
     assert_eq!(
         source.open_file(&paths[1])?.read_up_to(0, 16)?.as_ref(),

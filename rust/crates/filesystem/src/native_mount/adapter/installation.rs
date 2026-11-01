@@ -78,7 +78,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         // Record invalidation before adoption, then dispatch only after every lease drops.
         let result = async move {
             recorded?;
-            let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+            let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
             if self.view_gate.generation() != candidate.epoch
                 || state.publication_operation.is_some()
                     && state.publication_operation != candidate.operation
@@ -100,22 +100,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 _publication,
                 _file_mutation,
             } = candidate;
-            let Some((base, checkout)) = state
-                .checkout
-                .rebase_native_candidate(
-                    base,
-                    checkout,
-                    rename,
-                    MAXIMUM_EXACT_INSTALL_CHANGES,
-                    &mut crate::kernel::allocation::KernelAccounting::native(
-                        &original,
-                        cancellation,
-                    ),
-                    cancellation,
-                )
-                .await?
-            else {
-                return Ok(None);
+            let target = state.checkout.pin_native_candidate_rebase(
+                &base,
+                &checkout,
+                &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
+                cancellation,
+            )?;
+            let mut state = Some(state);
+            let (base, checkout) = match target {
+                crate::facade::NativeCandidateRebasePlan::Unchanged => (base, checkout),
+                crate::facade::NativeCandidateRebasePlan::Stale => return Ok(None),
+                crate::facade::NativeCandidateRebasePlan::Rebase(target) => {
+                    // The target retains its original root, mode and proof while
+                    // provider I/O proceeds independently of the shared checkout.
+                    drop(state.take());
+                    let Some(rebased) = target
+                        .rebase(
+                            base,
+                            checkout,
+                            rename,
+                            MAXIMUM_EXACT_INSTALL_CHANGES,
+                            &mut crate::kernel::allocation::KernelAccounting::native(
+                                &original,
+                                cancellation,
+                            ),
+                            cancellation,
+                        )
+                        .await?
+                    else {
+                        return Ok(None);
+                    };
+                    rebased
+                }
             };
             let mut candidate = CheckoutCandidate {
                 base,
@@ -130,7 +146,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let facts = if let Some(file_id) = facts {
                 // The final candidate owns its root and original mutation lease.
                 // Select its facts without retaining shared checkout guards.
-                drop(state);
+                drop(state.take());
                 let record = candidate
                     .checkout
                     .read_file_record_by_id(file_id, &original, cancellation)
@@ -139,13 +155,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     .checkout
                     .read_metadata(file_id, &original, cancellation)
                     .await?;
-                state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
-                if self.view_gate.generation() != candidate.epoch
-                    || state.publication_operation.is_some()
-                        && state.publication_operation != candidate.operation
-                {
-                    return Ok(None);
-                }
                 Some(super::MountWriteFacts {
                     lookup: MountLookup {
                         node: mount_node(record),
@@ -155,6 +164,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 })
             } else {
                 None
+            };
+            let mut state = match state {
+                Some(state) => state,
+                None => {
+                    let state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+                    if self.view_gate.generation() != candidate.epoch
+                        || state.publication_operation.is_some()
+                            && state.publication_operation != candidate.operation
+                    {
+                        return Ok(None);
+                    }
+                    state
+                }
             };
             let prepared = state.checkout.prepare_candidate_adoption(
                 &candidate.base,
