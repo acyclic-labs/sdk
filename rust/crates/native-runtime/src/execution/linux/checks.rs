@@ -1,7 +1,54 @@
-//! Interpret the actual generated filter, including its jumps. These checks
-//! complement the real-process cases rather than replacing kernel enforcement.
+//! Native object controls and interpretation of the actual generated filter.
+//! These complement real-process cases without replacing kernel enforcement.
 use super::*;
 use proptest::prelude::*;
+
+#[test]
+fn computation_devices_bind_objects_and_refuse_name_substitution() {
+    let root = tempfile::tempdir().unwrap();
+    let alias = root.path().join("device");
+    let ordinary = root.path().join("ordinary");
+    std::fs::write(&ordinary, "outside authority").unwrap();
+    for (path, expected, wrong_device) in [
+        ("/dev/null", entry::NULL_DEVICE, "/dev/urandom"),
+        ("/dev/urandom", URANDOM_DEVICE, "/dev/null"),
+    ] {
+        std::os::unix::fs::symlink(path, &alias).unwrap();
+        let held = computation_device(&alias, expected, None).unwrap();
+        for replacement in [Path::new(wrong_device), &ordinary, root.path()] {
+            std::fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(replacement, &alias).unwrap();
+            // The original name-only opening accepts every replacement,
+            // including a directory that would grant a whole hierarchy.
+            let unvalidated = BoundPath::open_path(&alias).unwrap();
+            let metadata = unvalidated.metadata().unwrap();
+            assert!(!entry::character_device(
+                metadata.mode(),
+                metadata.rdev(),
+                expected
+            ));
+            let error = computation_device(&alias, expected, None).unwrap_err();
+            assert!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .is::<super::super::ExecutionRefusal>()
+            );
+            // Replacing the name after admission cannot replace its object.
+            let metadata = held.metadata().unwrap();
+            assert!(entry::character_device(
+                metadata.mode(),
+                metadata.rdev(),
+                expected
+            ));
+        }
+        std::fs::remove_file(&alias).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(ordinary).unwrap(),
+        "outside authority"
+    );
+}
 
 #[cfg(target_arch = "x86_64")]
 const ARCH: u32 = 0xc000_003e;

@@ -22,7 +22,7 @@ use std::{
     io,
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::{ffi::OsStrExt, process::CommandExt},
+        unix::{ffi::OsStrExt, fs::MetadataExt, process::CommandExt},
     },
     path::Path,
     process::Command,
@@ -33,6 +33,7 @@ mod sys;
 pub(super) use entry::Instruction;
 
 const READ: u64 = (1 << 0) | (1 << 2) | (1 << 3);
+const URANDOM_DEVICE: u64 = 0x109;
 const WRITE: u64 = (1 << 1)
     | (1 << 4)
     | (1 << 5)
@@ -107,6 +108,22 @@ struct PathRule {
 struct PortRule {
     access: u64,
     port: u64,
+}
+
+/// Only the two fixed computation devices receive implicit path access. Use
+/// the held object's metadata, so a substituted name cannot grant a subtree
+/// or an unrelated device before the kernel takes its own rule reference.
+fn computation_device(
+    path: &Path,
+    device: u64,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<File> {
+    let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
+    let metadata = native_control_attempt(meter, Read, || root.metadata().map_err(failure))?;
+    if !entry::character_device(metadata.mode(), metadata.rdev(), device) {
+        return Err(refused("execution computation device was replaced"));
+    }
+    Ok(root)
 }
 
 pub(super) struct Prepared {
@@ -235,14 +252,16 @@ impl Prepared {
         }
         // Null output and entropy are capabilities of computation. No arbitrary
         // device, host home, procfs or temporary tree is exposed.
-        for (path, access) in [
-            (Path::new("/dev/null"), (1 << 1) | (1 << 2)),
-            (Path::new("/dev/urandom"), 1 << 2),
+        for (path, access, device) in [
+            (
+                Path::new("/dev/null"),
+                (1 << 1) | (1 << 2),
+                entry::NULL_DEVICE,
+            ),
+            (Path::new("/dev/urandom"), 1 << 2, URANDOM_DEVICE),
         ] {
-            let root = native_control_attempt(meter, Read, || BoundPath::open_path(path))?;
-            let metadata =
-                native_control_attempt(meter, Read, || root.metadata().map_err(failure))?;
-            prepared.path(&root, access, metadata.is_dir(), meter)?;
+            let root = computation_device(path, device, meter)?;
+            prepared.path(&root, access, false, meter)?;
         }
         if let ExecutionNetwork::TcpPorts(ports) = &grant.network {
             for port in ports {

@@ -37,6 +37,13 @@ pub(super) struct Program {
     pub(super) filter: *const Instruction,
 }
 
+pub(super) const NULL_DEVICE: u64 = 0x103;
+
+/// Linux device numbers and file types identify the held object, not its name.
+pub(super) fn character_device(mode: u32, device: u64, expected: u64) -> bool {
+    mode & 0o170_000 == 0o020_000 && device == expected
+}
+
 /// Irreversibly confines only the final guest child. Every failure stops the
 /// launch before exec; there is no fallback, allocation, wait or host callback.
 pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<(), i32> {
@@ -51,7 +58,7 @@ pub(super) fn enter(ruleset: i32, filter: &[Instruction]) -> Result<(), i32> {
         let (mode, device) = sys::stdio_metadata(fd)?;
         let kind = mode & 0o170_000;
         // Pipes or Linux's null character device (major 1, minor 3).
-        if kind != 0o010_000 && !(kind == 0o020_000 && device == 0x103) {
+        if kind != 0o010_000 && !character_device(mode, device, NULL_DEVICE) {
             return Err(sys::EPERM);
         }
     }

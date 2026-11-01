@@ -118,6 +118,13 @@ descriptor through RAII. Both handles have ownership before a late recording
 failure, so refusal cannot leak either handle or continue to guest execution.
 Implicit descriptor-close and complete active-resource accounting remain
 outstanding; operation charging is not a claim that all cleanup is metered.
+The two implicit computation-device rules verify the opened object's character
+device type and device number, using the metadata already read during
+preparation. A directory, ordinary file or different device at either name
+refuses before rule insertion. The same type/number predicate checks inherited
+null standard streams in both final-child adapters. This adds no native call,
+allocation or copy. Device numbers follow the
+[Linux device registry](https://www.kernel.org/doc/Documentation/admin-guide/devices.txt).
 Root file types are bound with their identities at grant construction. A
 pinned inode's type cannot change; launch reuses that type after checking
 identity, removing one repeated metadata syscall per declared root.
