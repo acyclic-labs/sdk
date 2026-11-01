@@ -38,7 +38,6 @@ pub(crate) fn generate_encoded<'a>(
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
     async_stream::try_stream! {
         let input_bytes = body.len();
-        #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
         loop {
@@ -71,21 +70,8 @@ pub(crate) fn generate_encoded<'a>(
                 }
             };
             let Some(error) = failure else { break; };
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(login) = &provider.codex_login {
-                if attempt.refresh(&error) {
-                    drop(error);
-                    let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
-                    auth = (Some(Cow::Owned(key)), account);
-                    continue;
-                }
-            }
-            if let Some(wait) = attempt.redeliver(&error, retry_after) {
-                drop(error);
-                crate::deadline::timer(provider.transport.as_ref(), wait, None)?.await?;
-                continue;
-            }
-            Err(error)?;
+            attempt.recover(provider, &mut auth, error, retry_after,
+                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
         }
 
     }
@@ -239,6 +225,37 @@ impl GenerationAttempt {
         if self.admission != Admission::Accepted {
             self.admission = Admission::Refused;
         }
+    }
+
+    /// Complete recovery before the caller may send another model request.
+    /// Refresh and timer failures are final causes, never model retry inputs.
+    pub(crate) async fn recover(
+        &mut self,
+        provider: &ResolvedModel,
+        auth: &mut (Option<Cow<'_, str>>, Option<String>),
+        error: acyclic_harness_core::Error,
+        retry_after: Option<std::time::Duration>,
+        #[cfg(not(target_arch = "wasm32"))] custody: Option<&mut acyclic_fs::NativeAllocation>,
+        work: acyclic_harness_core::NativeWork<'_>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(login) = &provider.codex_login
+            && self.refresh(&error)
+        {
+            drop(error);
+            let (key, account) = login
+                .bearer(provider.transport.as_ref(), auth.0.as_deref(), custody)
+                .await?;
+            *auth = (Some(Cow::Owned(key)), account);
+            return Ok(());
+        }
+        let _ = auth;
+        if let Some(wait) = self.redeliver(&error, retry_after) {
+            drop(error);
+            crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
+            return Ok(());
+        }
+        Err(error)
     }
 
     pub(crate) fn redeliver(

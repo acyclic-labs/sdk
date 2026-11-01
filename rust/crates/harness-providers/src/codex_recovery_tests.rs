@@ -99,27 +99,61 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
 #[tokio::test]
 async fn ordinary_and_native_refresh_only_before_successful_response_admission() -> Result<()> {
     for native in [false, true] {
-        for (first, second, succeeds, expected) in [
+        for (first, second, succeeds, expected, refresh_failure) in [
             (
                 (200, AUTH_ERROR.to_owned()),
                 (200, RESPONSE.to_owned()),
                 false,
                 1,
+                None,
             ),
-            ((401, String::new()), (200, RESPONSE.to_owned()), true, 3),
-            ((401, String::new()), (200, AUTH_ERROR.to_owned()), false, 3),
+            (
+                (401, String::new()),
+                (200, RESPONSE.to_owned()),
+                true,
+                3,
+                None,
+            ),
+            (
+                (401, String::new()),
+                (200, AUTH_ERROR.to_owned()),
+                false,
+                3,
+                None,
+            ),
             (
                 (200, format!("{TEXT}{AUTH_ERROR}")),
                 (200, RESPONSE.to_owned()),
                 false,
                 1,
+                None,
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            [
+                acyclic_harness_core::ModelTransportFailure::Connect,
+                acyclic_harness_core::ModelTransportFailure::Timeout,
+                acyclic_harness_core::ModelTransportFailure::Interrupted,
+                acyclic_harness_core::ModelTransportFailure::Tls,
+                acyclic_harness_core::ModelTransportFailure::Status(503),
+            ]
+            .map(|failure| {
+                (
+                    (401, String::new()),
+                    (200, RESPONSE.to_owned()),
+                    false,
+                    2,
+                    Some(failure),
+                )
+            }),
+        ) {
             let (_root, login, server, _) = fixture(vec![
                 first,
                 (200, json!({"access_token":"rotated-access"}).to_string()),
                 second,
             ])?;
+            *server.refresh_failure.lock().unwrap() = refresh_failure;
             let work = NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
                 &CancellationToken::new(),
@@ -158,6 +192,7 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
                         }
                     }
                 }
+                assert!(events.next().await.is_none(), "one original terminal");
             } else {
                 let mut events = provider.generate(&request, dispatch);
                 while let Some(event) = events.next().await {
@@ -169,9 +204,16 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
                         }
                     }
                 }
+                assert!(events.next().await.is_none(), "one original terminal");
             }
             assert_eq!(completed, succeeds);
-            if !succeeds {
+            if let Some(expected) = refresh_failure {
+                assert!(
+                    matches!(error.as_ref(), Some(Error::ModelUnavailable { failure, .. })
+                    if *failure == expected),
+                    "{error:?}"
+                );
+            } else if !succeeds {
                 assert_eq!(
                     error.as_ref().unwrap().code(),
                     acyclic_harness_core::wire::ErrorCode::Unauthorized
@@ -180,6 +222,13 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
             drop(error);
             let mut requests = server.requests.lock().unwrap();
             assert_eq!(requests.len(), expected, "native={native}");
+            if refresh_failure.is_some() {
+                assert_eq!(requests[1].url, "https://auth.openai.com/oauth/token");
+                assert!(
+                    server.replies.lock().unwrap().len() == 2,
+                    "a failed refresh cannot consume the old-policy success replies"
+                );
+            }
             if expected == 3 {
                 assert_eq!(requests[0].body, requests[2].body);
                 assert_eq!(

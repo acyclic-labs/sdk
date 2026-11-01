@@ -19,14 +19,29 @@ struct Server {
     replies: Mutex<VecDeque<(u16, String)>>,
     requests: Mutex<Vec<HttpRequest>>,
     remove_auth_on_unauthorized: Mutex<Option<std::path::PathBuf>>,
+    refresh_failure: Mutex<Option<acyclic_harness_core::ModelTransportFailure>>,
 }
 
 impl Server {
     fn reply(&self, request: HttpRequest) -> Result<(u16, String)> {
+        let refreshing = request.url.ends_with("/oauth/token");
         self.requests
             .lock()
             .map_err(|_| invalid("fixture poisoned"))?
             .push(request);
+        if refreshing
+            && let Some(failure) = self
+                .refresh_failure
+                .lock()
+                .map_err(|_| invalid("fixture poisoned"))?
+                .take()
+        {
+            return Err(crate::transport_failure(
+                true,
+                failure,
+                "refresh endpoint failure",
+            ));
+        }
         let response = self
             .replies
             .lock()
@@ -109,6 +124,7 @@ fn fixture(
             replies: Mutex::new(replies.into()),
             requests: Mutex::new(Vec::new()),
             remove_auth_on_unauthorized: Mutex::new(None),
+            refresh_failure: Mutex::new(None),
         }),
         token,
     ))

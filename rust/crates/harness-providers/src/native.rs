@@ -265,29 +265,11 @@ pub(crate) fn generate<'a>(
                             }
                         };
                         let Some(error) = failure else { break; };
-                        if let Some(login) = &provider.codex_login {
-                            if attempt.refresh(&error) {
-                                drop(error);
-                                response = async {
-                                    let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
-                                    auth = (Some(std::borrow::Cow::Owned(key)), account);
-                                    work.remaining()?;
-                                    send(provider, body.clone(), dispatch_id,
-                                        (auth.0.as_deref(), auth.1.as_deref()), work).await
-                                }.await;
-                                continue;
-                            }
-                        }
-                        if let Some(wait) = attempt.redeliver(&error, retry_after) {
-                            drop(error);
-                            crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
-                            work.remaining()?;
-                            response = send(provider, body.clone(), dispatch_id,
-                                (auth.0.as_deref(), auth.1.as_deref()), work).await;
-                            continue;
-                        }
-                        Err(error)?;
-                        break;
+                        attempt.recover(provider, &mut auth, error, retry_after,
+                            Some(&mut auth_custody), Some(work)).await?;
+                        work.remaining()?;
+                        response = send(provider, body.clone(), dispatch_id,
+                            (auth.0.as_deref(), auth.1.as_deref()), work).await;
                     }
                 }
             })
