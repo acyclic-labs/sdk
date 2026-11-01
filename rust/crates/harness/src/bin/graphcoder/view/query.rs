@@ -1,6 +1,10 @@
 //! Visible query selection over the connection's original authenticated pool.
 use super::{Conversation, Failure, Line, diff};
-use acyclic_harness::{client::AgentPageRequest, tui::QueryPage};
+use acyclic_harness::{agent::IntentId, interaction::ApprovalBinding};
+use acyclic_harness::{
+    client::AgentPageRequest,
+    tui::{QueryPage, display_text, display_text_prefix},
+};
 use std::{ops::RangeInclusive, sync::Arc};
 
 /// Keep the original query owned by its pending future across input and draws.
@@ -18,6 +22,12 @@ pub(super) async fn usage(
 pub(super) enum Source {
     Diff(Option<String>),
     History(Option<String>),
+    Approval {
+        request: IntentId,
+        binding: ApprovalBinding,
+        status: Option<u64>,
+        offset: u64,
+    },
 }
 
 impl Source {
@@ -25,6 +35,7 @@ impl Source {
         match self {
             Self::Diff(_) => "Diff",
             Self::History(_) => "History",
+            Self::Approval { .. } => "Approval request",
         }
     }
 
@@ -32,6 +43,17 @@ impl Source {
         match self {
             Self::Diff(_) => Self::Diff(None),
             Self::History(_) => Self::History(None),
+            Self::Approval {
+                request,
+                binding,
+                status,
+                ..
+            } => Self::Approval {
+                request: request.clone(),
+                binding: binding.clone(),
+                status: *status,
+                offset: 0,
+            },
         }
     }
 
@@ -42,6 +64,7 @@ impl Source {
 
 pub(super) struct Panel {
     pub page: QueryPage<Source>,
+    pub approval_status: Option<u64>,
     history: Option<RangeInclusive<u64>>,
 }
 
@@ -62,6 +85,7 @@ pub(super) async fn load(
 ) -> Result<Panel, Failure> {
     match source {
         Source::Diff(cursor) => Ok(Panel {
+            approval_status: None,
             page: diff::query(conversation, rows, cursor).await?,
             history: None,
         }),
@@ -89,12 +113,70 @@ pub(super) async fn load(
                 "Enter a displayed cut to select · PgDn: older · PgUp: newest · Esc: close",
             ));
             Ok(Panel {
+                approval_status: None,
                 page: QueryPage::new(
                     lines,
                     history.next.map(|cursor| Source::History(Some(cursor))),
                     continued,
                 ),
                 history: selected,
+            })
+        }
+        Source::Approval {
+            request,
+            binding,
+            status,
+            offset,
+        } => {
+            let status = match status {
+                Some(status) => status,
+                None => {
+                    let pending = conversation
+                        .pending_approval(&request)
+                        .await?
+                        .filter(|pending| pending.binding == binding)
+                        .ok_or("The selected approval is no longer pending.")?;
+                    pending.status
+                }
+            };
+            let (bytes, length) = conversation.approval_request(status, offset).await?;
+            let range_end = offset
+                .checked_add(bytes.len() as u64)
+                .ok_or("Approval range overflows.")?;
+            // A byte page can end inside a character. Leave that suffix at the
+            // original offset for the next range; never replace or lose bytes.
+            let text = display_text_prefix(&bytes, range_end == length)?;
+            let end = offset
+                .checked_add(text.len() as u64)
+                .ok_or("Approval range overflows.")?;
+            if end == offset && end < length {
+                return Err("Approval range made no progress.".into());
+            }
+            let mut lines = Vec::new();
+            lines.push(Line::raw(format!(
+                "Request {} · bytes {offset}–{end} of {length}",
+                display_text(request.as_str())
+            )));
+            lines.extend(
+                text.lines()
+                    .map(|line| Line::raw(display_text(line).into_owned())),
+            );
+            lines.push(Line::raw(
+                "PgDn: more · PgUp: start · y: approve · n: decline · Esc: close",
+            ));
+            Ok(Panel {
+                approval_status: Some(status),
+                page: QueryPage::new(
+                    lines,
+                    (end < length).then_some(Source::Approval {
+                        request,
+                        binding,
+                        status: Some(status),
+                        offset: end,
+                    }),
+                    offset != 0,
+                ),
+                history: None,
             })
         }
     }

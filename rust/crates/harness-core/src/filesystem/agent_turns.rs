@@ -554,22 +554,6 @@ where
         agents.send(agent, &from, &wake).await
     }
 
-    /// The approval `agent`'s turn waits on, read from its request file.
-    pub async fn pending_approval(
-        &self,
-        agent: &AgentState,
-    ) -> Result<Option<(crate::agent::IntentId, crate::interaction::Interaction)>> {
-        let crate::agent::Phase::WaitingApproval { id } = &agent.phase else {
-            return Ok(None);
-        };
-        let (_, bindings, files) = self.approval_journal(agent).await?;
-        let (policy, _) = self.approvals(agent, &bindings.content).await?;
-        let bytes = policy.request(&*files, id.as_str()).await?;
-        let request = crate::contract::json_from_slice(&bytes)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(Some((id.clone(), request)))
-    }
-
     /// Approval `id` of `agent` as `principal` already decided it, read from
     /// its request file whether or not the turn still waits on it: an
     /// identical decision retried after the agent resumed replays.

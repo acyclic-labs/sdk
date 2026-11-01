@@ -497,7 +497,8 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
     assert_eq!(
         first.state.phase,
         Phase::WaitingApproval {
-            id: waiting.clone()
+            id: waiting.clone(),
+            binding: None,
         }
     );
     assert!(first.state.turn.is_some());

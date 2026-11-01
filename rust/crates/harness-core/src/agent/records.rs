@@ -26,8 +26,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced.
-pub const RECORD_VERSION: u32 = 4;
+/// execution-target roster its turn announced. Version 6 retains the original
+/// action binding in a waiting approval's status and actor checkpoint.
+pub const RECORD_VERSION: u32 = 6;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -432,6 +433,9 @@ pub enum Phase {
         /// Request identity.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
+        /// Exact original action, or absent when an external host publishes no
+        /// approval request. Display bodies remain in the immutable request file.
+        binding: Option<crate::interaction::ApprovalBinding>,
     },
     /// Waiting for an event hook from its host.
     WaitingHost {
@@ -614,9 +618,15 @@ impl AgentRecord for StatusRecord {
         match &self.phase {
             Phase::Done { outcome } => check_outcome(outcome),
             Phase::WaitingHost { host } => check_text(host),
+            Phase::WaitingApproval {
+                binding: Some(binding),
+                ..
+            } => binding
+                .validate()
+                .map_err(|_| Error::Record("approval action binding is invalid")),
             Phase::Idle
             | Phase::Running
-            | Phase::WaitingApproval { .. }
+            | Phase::WaitingApproval { binding: None, .. }
             | Phase::WaitingChildren { .. }
             | Phase::WaitingAlarm { .. } => Ok(()),
         }

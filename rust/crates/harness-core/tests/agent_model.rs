@@ -673,7 +673,10 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
 async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Result {
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
-    state.phase = Phase::WaitingApproval { id: intent("q") };
+    state.phase = Phase::WaitingApproval {
+        id: intent("q"),
+        binding: None,
+    };
     state.turn = Some(Progress {
         inbox: 0,
         checkpoint: Vec::new(),
@@ -1121,7 +1124,10 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         inbox: 0,
         checkpoint: Vec::new(),
     });
-    state.phase = Phase::WaitingApproval { id: intent("q") };
+    state.phase = Phase::WaitingApproval {
+        id: intent("q"),
+        binding: None,
+    };
     state.reserved_children = 1;
     let driver = script(vec![TurnStep {
         reserved_children: 0,

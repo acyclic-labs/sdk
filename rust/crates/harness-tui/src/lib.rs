@@ -17,7 +17,7 @@ mod feedback;
 pub use feedback::Feedback;
 mod editor;
 #[cfg(feature = "tui")]
-pub use display_text::display_text;
+pub use display_text::{display_text, display_text_prefix};
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]

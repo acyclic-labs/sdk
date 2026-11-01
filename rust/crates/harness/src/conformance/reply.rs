@@ -59,7 +59,10 @@ impl TurnDriver for Replying {
                     reserved_children: 0,
                     checkpoint: Some(Vec::new()),
                     outs: Vec::new(),
-                    wait: Wait::Approval(id.clone()),
+                    wait: Wait::Approval {
+                        id: id.clone(),
+                        binding: None,
+                    },
                     drops: None,
                 });
             }

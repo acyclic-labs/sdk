@@ -117,8 +117,9 @@ struct View {
     prompt: Option<Prompt>,
     /// A command's result or refusal, until the next prompt.
     notice: Option<String>,
-    /// The pending approval's explanation, shown above the prompt.
-    approval_prompt: Option<String>,
+    /// Exact compact selection whose immutable request was displayed. A newer
+    /// status can clear it, but cannot silently replace the action being shown.
+    approval_shown: Option<acyclic_harness_client::PendingApproval>,
     /// Reports saved in this session.
     reports: Vec<String>,
 }
@@ -135,7 +136,10 @@ impl View {
 
     fn approval(&self) -> Option<&IntentId> {
         match &self.phase {
-            Some(Phase::WaitingApproval { id }) => Some(id),
+            Some(Phase::WaitingApproval {
+                id,
+                binding: Some(_),
+            }) => Some(id),
             _ => None,
         }
     }
@@ -212,10 +216,12 @@ impl View {
             Event::Output => return Ok(()),
             Event::Status(status) => {
                 self.ended = None;
-                self.approval_prompt = match &status.phase {
-                    Phase::WaitingApproval { id } => conversation.approval_prompt(id).await?,
-                    _ => None,
-                };
+                if !matches!((&status.phase, &self.approval_shown),
+                    (Phase::WaitingApproval { id, binding: Some(binding) }, Some(shown))
+                    if id == &shown.id && binding == &shown.binding)
+                {
+                    self.approval_shown = None;
+                }
                 // A settled agent consumed every request before its cursor:
                 // a context request it passed without an entry was dropped
                 // (cancelled) or failed, and is no longer work.
@@ -367,16 +373,11 @@ impl View {
         lines
     }
 
-    /// The pending approval's explanation, one row per line.
+    /// Controls stay visible when the immutable request panel is closed.
     fn approval_rows(&self) -> Vec<Line<'static>> {
-        self.approval_prompt
-            .iter()
-            .flat_map(|prompt| prompt.lines())
-            .map(|line| Line::raw(line.to_owned()))
-            .chain(std::iter::once(Line::raw(
-                "y approves · n declines · /feedback reports · Esc cancels",
-            )))
-            .collect()
+        vec![Line::raw(
+            "y approves · n declines · /feedback reports · Esc cancels",
+        )]
     }
 
     fn header(&self) -> Line<'static> {
@@ -653,6 +654,17 @@ pub async fn run(
                 query_future.set(None);
                 match result {
                     Ok(panel) => {
+                        if let query::Source::Approval { status, .. } = &mut query_source {
+                            *status = panel.approval_status;
+                        }
+                        if let query::Source::Approval { request, binding, status: Some(status), .. } = &query_source
+                            && matches!(&view.phase, Some(Phase::WaitingApproval { id, binding: Some(current) }) if id == request && current == binding)
+                            && !view.approval_shown.as_ref().is_some_and(|shown| shown.status == *status)
+                        {
+                            view.approval_shown = Some(acyclic_harness_client::PendingApproval {
+                                id: request.clone(), status: *status, binding: binding.clone(),
+                            });
+                        }
                         query_panel = Some(panel);
                         overlay_top = 0;
                         if std::mem::take(&mut query_refresh) && credit != 0 {
@@ -669,6 +681,14 @@ pub async fn run(
             event = events.next() => {
                 let event = event?;
                 let settled = matches!(&event, Event::Turn(_));
+                let approval = match &event {
+                    Event::Status(status) => match &status.phase {
+                        Phase::WaitingApproval { id, binding: Some(binding) }
+                            if view.phase.as_ref() != Some(&status.phase) => Some((id.clone(), binding.clone())),
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 if matches!(event, Event::Output) {
                     events.absorb().await?;
                 }
@@ -677,6 +697,16 @@ pub async fn run(
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
+                if let Some((request, binding)) = approval {
+                    overlay = None;
+                    query_open = true;
+                    query_source = query::Source::Approval { request, binding, status: None, offset: 0 };
+                    query_panel = None;
+                    query_refresh = false;
+                    query_credit = credit;
+                    query_future.set((credit != 0).then(|| query::load(Arc::clone(&conversation), credit, query_source.clone())));
+                    overlay_top = 0;
+                }
                 if query_open && settled && credit != 0 && query_source.follows_tail() {
                     query_source = query_source.restart();
                     if query_future.is_none() {
@@ -813,12 +843,16 @@ pub async fn run(
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
-                                if let Some(id) = view.approval().cloned()
+                                if view.approval().is_some()
                                     && !text.trim_start().starts_with('/')
                                 {
+                                    let Some(shown) = &view.approval_shown else {
+                                        view.notice = Some("The approval request must be displayed before deciding.".into());
+                                        continue;
+                                    };
                                     match text.trim().to_ascii_lowercase().as_str() {
-                                        "y" | "yes" => conversation.decide(&id, true).await?,
-                                        "n" | "no" => conversation.decide(&id, false).await?,
+                                        "y" | "yes" => conversation.decide_with_binding(&shown.id, shown.binding.clone(), true).await?,
+                                        "n" | "no" => conversation.decide_with_binding(&shown.id, shown.binding.clone(), false).await?,
                                         _ => {
                                             view.notice = Some("approval requires yes or no".into());
                                             input.editor = Editor::new(&text);
@@ -997,6 +1031,7 @@ mod tests {
             Phase::Running,
             Phase::WaitingApproval {
                 id: IntentId::try_from("approval")?,
+                binding: None,
             },
             Phase::WaitingHost {
                 host: "host".into(),

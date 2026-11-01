@@ -688,7 +688,11 @@ where
                 Ok(AgentReply::Approvals {
                     items: pending
                         .filter(|_| page.items() > 0)
-                        .map(|(id, request)| PendingApproval { id, request })
+                        .map(|(id, status, binding)| PendingApproval {
+                            id,
+                            status,
+                            binding,
+                        })
                         .into_iter()
                         .collect(),
                     next: None,
@@ -903,6 +907,7 @@ where
                 Ok(AgentReply::Diff { .. }
                     | AgentReply::Usage { .. }
                     | AgentReply::Directory { .. }
+                    | AgentReply::Approvals { .. }
                     | AgentReply::Content { .. })
             ) {
                 // The source may have awaited IO. No source data leaves after

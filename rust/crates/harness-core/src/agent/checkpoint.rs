@@ -591,7 +591,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             let phases = [Phase::Idle, Phase::Running,
-                Phase::WaitingApproval { id: intent() },
+                Phase::WaitingApproval { id: intent(), binding: Some(crate::interaction::ApprovalBinding { operation_id: crate::OperationId::from_bytes([255; 16]), action_digest: [255; 32] }) },
                 Phase::WaitingHost { host: widest(MAX_INTENT_BYTES) },
                 Phase::WaitingAlarm { deadline_unix_ms: u64::MAX }];
             let record_outcomes = outcomes().into_iter().chain([AgentOutcome::Failed {
