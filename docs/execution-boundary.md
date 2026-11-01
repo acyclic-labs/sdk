@@ -109,6 +109,15 @@ metered `openat2` and one temporary NUL-terminated relative-path allocation
 and copy, with no extra metadata query. On the custodied
 path this replaces the original open of the host working directory and removes
 the child's second `chdir`. Direct launches replace `chdir` with `fchdir`.
+Before launch, the shared native file primitive relocates either retained
+setup descriptor out of slots 0–2 if the host had closed standard streams.
+Otherwise child stdio installation could overwrite the ruleset or directory.
+Descriptors already above those slots require no syscall or allocation.
+Each relocation performs one metered `F_DUPFD_CLOEXEC` and retires its old
+descriptor through RAII. Both handles have ownership before a late recording
+failure, so refusal cannot leak either handle or continue to guest execution.
+Implicit descriptor-close and complete active-resource accounting remain
+outstanding; operation charging is not a claim that all cleanup is metered.
 Root file types are bound with their identities at grant construction. A
 pinned inode's type cannot change; launch reuses that type after checking
 identity, removing one repeated metadata syscall per declared root.

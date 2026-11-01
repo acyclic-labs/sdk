@@ -264,7 +264,13 @@ impl Prepared {
                 })?;
             }
         }
-        Ok(prepared)
+        // std and the static runner install stdio before guest entry. Keep
+        // both retained setup objects outside those three target slots even
+        // when the owner originally had closed standard streams.
+        Ok(Self {
+            ruleset: crate::file::outside_standard_streams(prepared.ruleset, meter)?,
+            cwd: crate::file::outside_standard_streams(prepared.cwd.into(), meter)?.into(),
+        })
     }
 
     fn path(

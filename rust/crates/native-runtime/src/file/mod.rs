@@ -11,6 +11,10 @@ pub(crate) use scope::{with_file_admission, with_file_scope};
 pub(crate) use write_validation::validate_write_batch;
 
 mod capability;
+#[cfg(target_os = "linux")]
+mod descriptor;
+#[cfg(target_os = "linux")]
+pub(crate) use descriptor::outside_standard_streams;
 mod sync_batch;
 pub use sync_batch::NativeSyncBatch;
 mod durable;
