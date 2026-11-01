@@ -73,12 +73,15 @@ export function assertNativeCompletion(host,result,answer,selection) {
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
 // permission hook, which the owner's approval policy answers; Claude Code
 // approves the same coordination tools by its native allow list.
+export const nativeModel=(host,live)=>live?.model??(host==='claude-code'?'claude-haiku-5-5':'tiny');
+
 export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
+ const model=nativeModel(host,live);
  if(host==='codex') {
-  const provider=live?['--config','model_provider="openai"','--model',live.model]
+  const provider=live?['--config','model_provider="openai"','--model',model]
    :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
-   '--config','model_providers.mock.requires_openai_auth=false','--model','tiny'];
+   '--config','model_providers.mock.requires_openai_auth=false','--model',model];
   const policy=[...provider,
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
   return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
@@ -90,14 +93,14 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    ANTHROPIC_FOUNDRY_BASE_URL:url.replace(/\/v1$/,''),CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'});
   const settings=join(root,'claude-policy.json');
   await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
-  const policy=['--model',live?.model??'claude-haiku-5-5','--settings',settings,'--permission-mode','default',
+  const policy=['--model',model,'--settings',settings,'--permission-mode','default',
    ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
   return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
  if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
  const policy=live?['--no-extensions',...(installed?['--extension',extension]:[]),
-  '--provider',live.provider,'--model',live.model,'--session-dir',join(root,'native-sessions')]
-  :['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
+  '--provider',live.provider,'--model',model,'--session-dir',join(root,'native-sessions')]
+  :['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model',model];
  return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,...(input?[]:[prompt])]};
 }
 

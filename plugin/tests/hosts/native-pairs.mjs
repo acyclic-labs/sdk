@@ -10,7 +10,7 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {recordedRequests,requests} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
-import {assertNativeCompletion,installedHost,launchNativeHost,nativePackage} from './native-model.mjs';
+import {assertNativeCompletion,installedHost,launchNativeHost,nativeModel,nativePackage} from './native-model.mjs';
 import {ProcessPhases,pairOrders,pairPhases} from './process-phases.mjs';
 import {assertNativeResume} from './native-session-proof.mjs';
 
@@ -56,7 +56,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      host_version:version.stdout.trim(),
      host_lock_sha256:await digest(fileURLToPath(new URL('./package-lock.json',import.meta.url))),
      artifacts:{graphcoder:await digest(binary),mock:live?null:await digest(mock),plugin:await digest(plugin)},
-     provider:live?.provider??'mock',model:live?.model??'tiny',
+     provider:live?.provider??'mock',model:nativeModel(host,live),
      workspace,profile:live?.profile??settings,prompt_sha256:createHash('sha256').update(prompt).digest('hex'),
      policy:host==='codex'?'never/workspace-write':'default/Bash',effect:'PARENT',scenario_sha256:createHash('sha256').update(JSON.stringify(scenario)).digest('hex')};
     await json(join(output,'binding.json'),binding);
