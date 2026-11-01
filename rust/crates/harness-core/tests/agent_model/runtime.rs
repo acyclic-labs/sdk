@@ -50,6 +50,115 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> Result {
+    struct Frames(Vec<Out>);
+    impl TurnDriver for Frames {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            _: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: self.0.clone(),
+                    wait: Wait::Done(AgentOutcome::Succeeded { result: None }),
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    let maximum = acyclic_stream::MAX_RECORD_BYTES;
+    let done = |message: String| {
+        InboxRecord::ChildDone(ChildDone {
+            child: AgentPath::root(&id(3)),
+            outcome: AgentOutcome::Failed { message },
+        })
+    };
+    let envelope = done(String::new()).encode()?.len();
+    let exact = done("x".repeat(maximum - envelope));
+    assert_eq!(exact.encode()?.len(), maximum);
+    // The logical text fits; JSON escaping plus the original versioned header
+    // exceeds the physical frame. Counting only the text cannot protect it.
+    let escaped = done("\u{0001}".repeat(maximum / 3));
+    assert!(escaped.encode()?.len() > maximum);
+    let peer = AgentPath::root(&id(2));
+    for (out, admitted) in [
+        (Out::Conversation(vec![b'x'; maximum]), true),
+        (Out::Conversation(vec![b'x'; maximum + 1]), false),
+        (
+            Out::Send {
+                to: peer.clone(),
+                record: exact,
+            },
+            true,
+        ),
+        (
+            Out::Send {
+                to: peer.clone(),
+                record: escaped,
+            },
+            false,
+        ),
+    ] {
+        let provider = Arc::new(MemoryStream::default());
+        super::create(&provider, id(2)).await?;
+        let conversation = matches!(out, Out::Conversation(_));
+        let expected = out.clone();
+        let host = AgentHost::new(
+            provider.clone(),
+            Frames(vec![out]),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let mut adoption = adopted(id(1));
+        adoption.brief = Some(super::driver::file("frames")?);
+        let root = host.create(&intent("create"), adoption).await?;
+        host.drain(&root).await?;
+        let state = host.state(&root).await?;
+        assert_eq!(
+            state.phase,
+            Phase::Done {
+                outcome: if admitted {
+                    AgentOutcome::Succeeded { result: None }
+                } else {
+                    AgentOutcome::Failed {
+                        message: INADMISSIBLE_EFFECT.into(),
+                    }
+                }
+            }
+        );
+        let status = values(&provider, root.status()?).await?;
+        assert_eq!(
+            StatusRecord::decode(status.last().ok_or("missing terminal status")?)?.phase,
+            state.phase
+        );
+        let records = values(&provider, root.conversation()?).await?;
+        if admitted && conversation {
+            let Out::Conversation(bytes) = expected else {
+                unreachable!()
+            };
+            assert_eq!(records, vec![bytes]);
+        } else {
+            assert!(records.is_empty());
+        }
+        let sent = values(&provider, peer.inbox()?).await?;
+        assert_eq!(sent.len(), 1 + usize::from(admitted && !conversation));
+        if admitted && !conversation {
+            let Out::Send { record, .. } = expected else {
+                unreachable!()
+            };
+            assert_eq!(InboxRecord::decode(&sent[1])?, record);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn large_failure_publishes_complete_diagnostic_with_original_child_settlement() -> Result {
     use acyclic_actors::guest::CancellationToken;
     use acyclic_stream::{AppendRequest, StreamProvider as _, StreamProviderExt as _};
