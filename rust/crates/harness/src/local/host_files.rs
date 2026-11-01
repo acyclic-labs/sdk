@@ -129,6 +129,29 @@ struct Waiters {
     retirement: Option<Retirement>,
 }
 
+impl Waiters {
+    fn gone(&mut self) {
+        self.gone = true;
+        for (_, waiter) in std::mem::take(&mut self.waiting) {
+            let _ = waiter.delivery.try_send(Delivery::Gone);
+        }
+    }
+
+    fn failed(&mut self, failure: impl FnOnce() -> String) {
+        if self.gone || self.failure.is_some() {
+            return;
+        }
+        let failure = self.failure.insert(failure());
+        for (operation, waiter) in std::mem::take(&mut self.waiting) {
+            let _ = waiter
+                .delivery
+                .try_send(Delivery::Reply(Err(Error::Storage(format!(
+                    "operation={operation}; {failure}"
+                )))));
+        }
+    }
+}
+
 /// The waiters of one running owner, shared by its watcher callback and its
 /// liveness thread. Each lock is held only to change or read the index.
 struct Shared {
@@ -140,7 +163,7 @@ struct Shared {
 impl Shared {
     fn note(&self, event: notify::Result<notify::Event>) {
         if let Err(error) = &event {
-            self.failed(|| notification_failure(error));
+            lock(&self.waiters).failed(|| notification_failure(error));
             return;
         }
         if !projection_changed(&event) {
@@ -191,48 +214,22 @@ impl Shared {
         }
     }
 
-    fn gone(&self) {
+    fn owner_finished(&self, outcome: std::io::Result<acyclic_native_runtime::FileLock>) {
+        // Release any acquired native lock before taking the waiter lock.
+        let outcome = outcome.map(drop);
         let mut waiters = lock(&self.waiters);
-        waiters.gone = true;
-        for (_, waiter) in std::mem::take(&mut waiters.waiting) {
-            let _ = waiter.delivery.try_send(Delivery::Gone);
+        match outcome {
+            Ok(()) => waiters.gone(),
+            Err(error) => {
+                waiters.failed(|| owner_failure("observe native workspace owner exit", &error));
+            }
         }
+        // Both outcomes end the original observer. Retire outside its waiter
+        // lock, on this observer rather than the watcher's callback thread.
         let retirement = waiters.retirement.take();
         drop(waiters);
         if let Some(retirement) = retirement {
             retirement.retire();
-        }
-    }
-
-    fn failed(&self, failure: impl FnOnce() -> String) {
-        let mut waiters = lock(&self.waiters);
-        if waiters.gone || waiters.failure.is_some() {
-            return;
-        }
-        let Waiters {
-            failure: retained,
-            waiting,
-            ..
-        } = &mut *waiters;
-        let failure = retained.insert(failure());
-        for (operation, waiter) in std::mem::take(waiting) {
-            let _ = waiter
-                .delivery
-                .try_send(Delivery::Reply(Err(Error::Storage(format!(
-                    "operation={operation}; {failure}"
-                )))));
-        }
-    }
-
-    fn owner_finished(&self, outcome: std::io::Result<acyclic_native_runtime::FileLock>) {
-        match outcome {
-            Ok(lock) => {
-                drop(lock);
-                self.gone();
-            }
-            Err(error) => {
-                self.failed(|| owner_failure("observe native workspace owner exit", &error));
-            }
         }
     }
 }
@@ -530,11 +527,16 @@ impl Registry {
                     directory,
                 };
                 let mut waiters = lock(&bridge.shared.waiters);
-                if waiters.gone {
+                let terminal = waiters
+                    .failure
+                    .as_ref()
+                    .map(|failure| Error::Storage(failure.clone()))
+                    .or_else(|| waiters.gone.then(|| Error::NotFound(NO_OWNER.into())));
+                if let Some(error) = terminal {
                     drop(waiters);
                     drop(connected);
                     retirement.retire();
-                    return Err(Error::NotFound(NO_OWNER.into()));
+                    return Err(error);
                 }
                 waiters.retirement = Some(retirement);
                 drop(waiters);

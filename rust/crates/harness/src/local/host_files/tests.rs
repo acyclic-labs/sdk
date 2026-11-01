@@ -134,6 +134,77 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         &other
     ));
 
+    // A terminal observation error is not owner death. It must still release
+    // registry custody, while original callers retain its exact first cause.
+    let (_failed_checkout, failed_cwd, failed_lock) = owner()?;
+    let failed_child = failed_cwd.join("child");
+    std::fs::create_dir(&failed_child).map_err(storage)?;
+    let failed = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
+    let failed_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
+    let failed_observer = observer(&failed);
+    let retired = lock(&failed.shared.waiters).retirement.clone().unwrap();
+    let failed_connection = retired.connection.upgrade().unwrap();
+    let operation = OperationId::new();
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = failed.wait(operation, delivery)?;
+    failed
+        .shared
+        .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
+    let failure = lock(&failed.shared.waiters).failure.clone().unwrap();
+    assert!(matches!(response.try_recv(),
+        Ok(Delivery::Reply(Err(Error::Storage(error))))
+            if error == format!("operation={operation}; {failure}")));
+    assert!(!lock(&failed.shared.waiters).gone);
+    assert!(lock(&failed.shared.waiters).retirement.is_none());
+    assert_eq!(lock(&registry).bridges.len(), 1);
+    assert_eq!(lock(&registry).located.len(), 1);
+    assert!(lock(&failed_connection).retired);
+    let (delivery, _) = mpsc::sync_channel(1);
+    assert!(matches!(failed.wait(OperationId::new(), delivery),
+        Err(Error::Storage(error)) if error == failure));
+    drop(waiting);
+    assert!(!lock(&failed.watching).watched);
+    // This is a new caller's admission, not a retry of the failed operation.
+    let fresh = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
+    let fresh_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
+    assert!(!Arc::ptr_eq(&failed, &fresh));
+    assert!(Arc::ptr_eq(&fresh, &fresh_alias));
+    retired.retire();
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &failed_cwd).unwrap(),
+        &fresh
+    ));
+    let weak = Arc::downgrade(&failed);
+    drop((failed, failed_alias));
+    assert!(weak.upgrade().is_none());
+    let fresh_observer = observer(&fresh);
+    drop(failed_lock);
+    failed_observer
+        .join()
+        .expect("original native observer ends");
+    fresh_observer.join().expect("fresh native observer ends");
+    assert_eq!(lock(&registry).bridges.len(), 1);
+    assert_eq!(lock(&registry).located.len(), 1);
+
+    // A failure delivered before the registry can attach retirement cannot
+    // leave a connection or alias with no original observation producer.
+    let early_lock = ownership(&cwd)?;
+    let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
+        let bridge = Bridge::open(directory, endpoint)?;
+        bridge
+            .shared
+            .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
+        drop(early_lock);
+        observer(&bridge)
+            .join()
+            .expect("early native observer ends");
+        Ok(bridge)
+    });
+    assert!(matches!(result, Err(Error::Storage(ref error))
+        if error.contains("step=observe native workspace owner exit:")));
+    assert_eq!(lock(&registry).bridges.len(), 1);
+    assert_eq!(lock(&registry).located.len(), 1);
+
     let refused = Arc::new(Mutex::<Registry>::default());
     let failed = Registry::bridge(&refused, &other_cwd, |_, _| {
         Err(Error::Unsupported(
