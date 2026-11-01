@@ -154,7 +154,9 @@ impl Pool {
                                 break Err(error);
                             }
                             attempt = attempt.saturating_add(1);
-                            executor.sleep(10).await;
+                            if executor.sleep(10).await.is_err() {
+                                break Err(StreamError::Unavailable);
+                            }
                         }
                     }
                 };
@@ -413,12 +415,16 @@ impl Pool {
         );
         if registering && let Some(dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
+            let destination = destination.to_owned();
+            let epoch = self.dial_epoch;
             // Back off after EOF so a repeatedly disconnected transport yields
             // to cancellation and other work before opening another RPC.
             self.dials.insert(
-                destination.into(),
+                destination.clone(),
                 Box::pin(async move {
-                    executor.sleep(10).await;
+                    if executor.sleep(10).await.is_err() {
+                        return (destination, epoch, Err(StreamError::Unavailable));
+                    }
                     dial.await
                 }),
             );
