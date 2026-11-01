@@ -50,6 +50,211 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn large_failure_publishes_complete_diagnostic_with_original_child_settlement() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use acyclic_stream::{AppendRequest, StreamProvider as _, StreamProviderExt as _};
+    use futures::TryStreamExt as _;
+
+    #[derive(Clone)]
+    struct Failing(String);
+    impl TurnDriver for Failing {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            _: u64,
+            input: Option<Queued>,
+            _: CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                if agent.parent.is_some() {
+                    return Err(Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+                        self.0.clone(),
+                    ))));
+                }
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: if matches!(
+                        input,
+                        Some(Queued {
+                            input: TurnInput::Brief { .. },
+                            ..
+                        })
+                    ) {
+                        vec![Out::Spawn {
+                            intent: intent("large-failure"),
+                            brief: Some(
+                                super::driver::file("child")
+                                    .map_err(|error| Error::Turn(Box::new(error)))?,
+                            ),
+                            volumes: Vec::new(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    // Controls and multibyte text exercise both JSON expansion and chunk edges.
+    let driver = Failing(format!(
+        "{}complete suffix",
+        "\u{0001}\"é".repeat(acyclic_stream::MAX_RECORD_BYTES)
+    ));
+    let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+        driver.0.clone(),
+    )))
+    .to_string();
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        driver.clone(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let mut adoption = adopted(id(1));
+    adoption.brief = Some(super::driver::file("root")?);
+    let root = host.create(&intent("create"), adoption).await?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let child = root.child(&AgentId::derive(&root.id(), "large-failure"))?;
+    let snapshot = store(&provider)?.load(&host.actor(&child)?).await?;
+    let cursor = snapshot
+        .state()
+        .and_then(|state| state.cursor(INBOX))
+        .ok_or("missing child cursor")?;
+    let mut records = provider
+        .read(acyclic_stream::ReadRequest {
+            path: child.inbox()?,
+            from: cursor,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    let record = records.try_next().await?.ok_or("missing child adoption")?;
+    let step = step(
+        &driver,
+        &child,
+        None,
+        cursor + 1,
+        Wake::Inbox {
+            sequence: cursor,
+            record: InboxRecord::decode(&record.value)?,
+        },
+        CancellationToken::new(),
+    )
+    .await?;
+    let Out::Diagnostic { diagnostic, text } = step
+        .outs
+        .iter()
+        .find(|out| matches!(out, Out::Diagnostic { .. }))
+        .ok_or("missing diagnostic staging")?
+    else {
+        return Err("unexpected staging effect".into());
+    };
+    assert_eq!(text, &expected);
+    assert_eq!(diagnostic.bytes, expected.len() as u64);
+    let before = values(&provider, root.inbox()?).await?;
+    // Neither an absent payload nor an incomplete prefix may publish the status
+    // or notify the parent. A failed conditional leaves the same key unspent.
+    let request = lower(
+        &step,
+        cursor + 1,
+        intent_key("partial-diagnostic", &["one"])?,
+    )?;
+    for prefix in 0..2 {
+        if prefix == 1 {
+            let path = diagnostic.path()?;
+            provider
+                .append(AppendRequest {
+                    idempotency_key: intent_key("diagnostic", &[path.as_str(), "0"])?,
+                    path,
+                    records: vec![
+                        text.as_bytes()[..acyclic_stream::MAX_RECORD_BYTES]
+                            .to_vec()
+                            .into(),
+                    ],
+                    if_tail: Some(0),
+                })
+                .await?;
+        }
+        assert!(matches!(
+            submit(provider.as_ref(), request.clone()).await?,
+            Submitted::Conflict(_)
+        ));
+        assert_eq!(values(&provider, root.inbox()?).await?, before);
+    }
+    host.host(&child)?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&child).await?;
+    assert_eq!(
+        state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone()
+            }
+        }
+    );
+    assert!(host.state(&root).await?.open_children.is_empty());
+    let mut complete = Vec::new();
+    for from in 0..diagnostic.records() {
+        let page: Vec<_> = diagnostic
+            .page(provider.as_ref(), from, 1)
+            .await?
+            .try_collect()
+            .await?;
+        assert_eq!(page.len(), 1);
+        complete.extend_from_slice(&page[0].value);
+    }
+    assert_eq!(complete, expected.as_bytes());
+    assert_eq!(blake3::hash(&complete).as_bytes(), &diagnostic.digest);
+    let child_status = provider
+        .read(acyclic_stream::ReadRequest {
+            path: child.status()?,
+            from: state.status_tail - 1,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing terminal status")?;
+    let parent_done = provider
+        .read(acyclic_stream::ReadRequest {
+            path: root.inbox()?,
+            from: before.len() as u64,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing parent notification")?;
+    assert_eq!(child_status.commit_id, parent_done.commit_id);
+    assert_eq!(
+        StatusRecord::decode(&child_status.value)?.phase,
+        state.phase
+    );
+    assert_eq!(
+        InboxRecord::decode(&parent_done.value)?,
+        InboxRecord::ChildDone(ChildDone {
+            child,
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone()
+            },
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_input() -> Result {
     use acyclic_actors::guest::CancellationToken;
     use std::sync::Mutex;

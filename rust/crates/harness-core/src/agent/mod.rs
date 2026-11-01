@@ -13,8 +13,10 @@ mod children;
 pub mod codec_fuzz;
 pub use children::Children;
 mod commit;
+mod diagnostic;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
+pub use diagnostic::Diagnostic;
 mod driver;
 mod effects;
 pub use effects::{

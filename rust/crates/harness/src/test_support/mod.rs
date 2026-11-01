@@ -80,6 +80,15 @@ pub async fn prompt_settled(
                 Phase::Done {
                     outcome: AgentOutcome::Failed { message },
                 } => return Ok(PromptOutcome::Failed(message)),
+                Phase::Done {
+                    outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                } => {
+                    return Ok(PromptOutcome::Failed(format!(
+                        "diagnostic: {} ({} bytes)",
+                        diagnostic.path().map_err(agent)?,
+                        diagnostic.bytes
+                    )));
+                }
                 Phase::Done { outcome } => {
                     return Err(crate::Error::Conflict(format!(
                         "root agent ended before its prompt settled: {outcome:?}"

@@ -188,10 +188,20 @@ impl View {
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.checkpoints.retain(|inbox| *inbox >= status.cursor);
                 }
-                if let Phase::Done {
-                    outcome: AgentOutcome::Failed { message },
-                } = &status.phase
-                {
+                let failure = match &status.phase {
+                    Phase::Done {
+                        outcome: AgentOutcome::Failed { message },
+                    } => Some(message.clone()),
+                    Phase::Done {
+                        outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                    } => Some(format!(
+                        "diagnostic: {} ({} bytes)",
+                        diagnostic.path()?,
+                        diagnostic.bytes
+                    )),
+                    _ => None,
+                };
+                if let Some(message) = failure {
                     self.settle_pending()?;
                     self.ended = Some(format!("task {} failed: {message}", conversation.task()));
                     self.outcome = Outcome::Failed;

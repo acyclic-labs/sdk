@@ -392,7 +392,7 @@ test("hosted transactions preserve complete requests and selected deployment pol
     }
     expect((await transaction.commit()).status).toBe("committed");
     expect(requests).toHaveLength(1);
-    expect(requests[0].maximumConflicts).toBe(1);
+    expect(requests[0].maximumConflicts).toBeUndefined();
     expect(requests[0].mutations.map(item => item.mutation.value.path)).toEqual(
       Array.from({ length: count }, (_, index) => `/directory-${index}`),
     );
