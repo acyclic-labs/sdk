@@ -99,6 +99,17 @@ proptest! {
         let (provider, _) = crate::tests::provider(crate::Adapter::Responses, 200);
         let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
         let mut request = prepared.request().clone();
+        let profile = acyclic_harness_core::model::NativeToolProfile::Openai;
+        let originals = acyclic_harness_core::tools::defaults().unwrap();
+        let mut declarations = acyclic_harness_core::tools::native::NativeDeclarations::new(profile, None).unwrap();
+        for revision in profile.tools().unwrap() {
+            let original = if revision.capability == "edit" {
+                std::sync::Arc::new(acyclic_harness_core::tools::variants::apply_patch().unwrap())
+            } else {
+                originals.get_shared(&revision.capability, None, None).unwrap().unwrap().clone()
+            };
+            request.tools.push(declarations.bind_variant(&revision, original).unwrap().0.definition);
+        }
         let frames = [
             json!({"type":"response.output_item.added","output_index":1,"item":{
                 "type":"custom_tool_call","call_id":"patch_call","name":"apply_patch","input":""
@@ -106,7 +117,7 @@ proptest! {
             json!({"type":"response.custom_tool_call_input.delta","output_index":1,"delta":input}),
             json!({"type":"response.custom_tool_call_input.done","output_index":1,"input":input}),
             json!({"type":"response.output_item.done","output_index":0,"item":{
-                "type":"function_call","call_id":"shell_call","name":"shell","arguments":"{}"
+                "type":"function_call","call_id":"shell_call","name":"shell","arguments":r#"{"command":["echo","ok"]}"#
             }}),
             json!({"type":"response.completed","response":{"status":"completed"}}),
         ];
@@ -138,10 +149,17 @@ proptest! {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: call.call_id, name: call.name,
-                    content: ToolResultContent::Json { value: json!({"ok":true}) },
+                    content: ToolResultContent::Parts { parts: vec![
+                        acyclic_harness_core::model::ModelDataPart::Text { text: "ok".into() },
+                    ] },
                 }),
             });
         }
+        let mut unbound = request.clone();
+        unbound.tools.retain(|tool| tool.name != "apply_patch");
+        prop_assert!(acyclic_harness_core::model::PreparedModelRequest::prepare(
+            unbound, acyclic_harness_core::conversation::Limits::default(), None,
+        ).is_err(), "a successful result still requires the original tool binding");
         let prepared = acyclic_harness_core::model::PreparedModelRequest::prepare(
             request, acyclic_harness_core::conversation::Limits::default(), None,
         ).unwrap();
