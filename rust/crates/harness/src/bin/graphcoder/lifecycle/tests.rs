@@ -150,8 +150,10 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
             "deadline",
             "owner-lost",
             "producer-lost",
+            "sink-lost",
         ] {
             let (reader, writer) = full_diagnostic_pipe().await?;
+            let mut reader = Some(reader);
             let report = WaitReport::default();
             let dispatch = tracing::Dispatch::new(
                 subscriber(&report, Some("off".into()), || Ok(None))
@@ -209,6 +211,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
             };
             let original = observe(&report, Ok(Some(port)), shutdown, true, operation);
             let mut host = Box::pin(diagnostics(original, Some((receiver, writer))));
+            let mut sink_failure = None;
             let controller = async {
                 let mut owner = BufReader::new(owner);
                 let mut line = String::new();
@@ -218,6 +221,16 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     GENERATION
                 );
                 started.await.unwrap();
+                if case == "sink-lost" {
+                    drop(reader.take());
+                    let failure = text.failed().await;
+                    let OutputFailure::Write(error) = &failure else {
+                        panic!("reader loss must retain the original write error: {failure:?}")
+                    };
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                    assert!(!retired.load(Ordering::Acquire));
+                    sink_failure = Some(failure);
+                }
                 if case == "empty" {
                     release.take().unwrap().send(()).unwrap();
                     settlement.await.unwrap();
@@ -264,7 +277,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                 result = controller => result?,
             }
             assert_eq!(retired.load(Ordering::Acquire), case == "empty");
-            assert_eq!(text.stats().retained, 1);
+            assert_eq!(text.stats().retained, usize::from(case != "sink-lost"));
             terminate.send(()).unwrap();
             if case != "empty" {
                 poll_fn(|cx| {
@@ -290,7 +303,14 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                 assert_eq!(case, "owner-lost");
                 assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             }
-            assert!(failure.is_none());
+            if let Some(OutputFailure::Write(original)) = sink_failure {
+                let Some(OutputFailure::Write(retained)) = failure else {
+                    panic!("the original diagnostic failure was lost: {failure:?}")
+                };
+                assert!(Arc::ptr_eq(&original, &retained));
+            } else {
+                assert!(failure.is_none());
+            }
             if case == "producer-lost" {
                 assert_eq!(
                     result.unwrap_err().downcast::<io::Error>().unwrap().kind(),
@@ -306,6 +326,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
             assert_eq!(terminal.published, Some(1));
             assert_eq!(terminal.pending, 0);
             assert_eq!(terminal.writer_accepted, Some(0));
+            assert_eq!(terminal.discarded, Some(0));
             assert_eq!(terminal.incomplete, Some(1));
             drop(reader);
         }
