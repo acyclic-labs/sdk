@@ -900,19 +900,19 @@ where
         )
         .await?
         .context;
-        let from = self.limits.history_turns.map_or(0, |page| {
-            cut.tail.saturating_sub(page) / page.max(1) * page.max(1)
-        });
+        let window = self
+            .limits
+            .history_turns
+            .map_or(0, |page| cut.tail.saturating_sub(page) / page.max(1) * page.max(1));
+        let from = cut.checkpoint.map_or(window, |at| at.max(window));
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
             entries.extend(
-                (checkpoint..).zip(
-                    self.context_entries(&cut.path, checkpoint, checkpoint + 1)
-                        .await?,
-                ),
+                self.context_entries(&cut.path, checkpoint, checkpoint + 1)
+                    .await?,
             );
         }
-        entries.extend((from..).zip(self.context_entries(&cut.path, from, cut.tail).await?));
+        entries.extend(self.context_entries(&cut.path, from, cut.tail).await?);
         Ok(entries)
     }
 
