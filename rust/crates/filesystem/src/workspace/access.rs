@@ -19,7 +19,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             {
                 return Err(WorkspaceError::AccessDenied);
             }
-            self.atomic_policy_cut(&mut accounting, cancellation).await
+            self.atomic_policy_cut(&mut accounting).await
         }
         .await;
         work.finish(result, &accounting)
@@ -28,13 +28,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     async fn atomic_policy_cut(
         &self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<crate::PolicyCut, WorkspaceError> {
-        let mut authority_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            authority_work.original = accounting.native_work();
-        }
+        let mut authority_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let captured = self
             .volume
             .fs
@@ -42,12 +37,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .policy_cut(self.authority_id(), &mut authority_work)
             .await
             .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-        match accounting.standalone_parts() {
-            Some((_, spent, _, _)) => {
-                Ok(merge_workspace_backend(authority_work.receipt(captured), spent, 0)?.value)
-            }
-            None => captured,
-        }
+        crate::facade::finish_authority_work(authority_work)?;
+        captured
     }
 
     /// Authorize and publish under one backend-owned policy cut. The operation
@@ -73,9 +64,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             match self.volume.fs.authority().policy_owner() {
                 crate::PolicyOwner::Unsupported => return Err(WorkspaceError::AccessDenied),
                 crate::PolicyOwner::AtomicPublication => {
-                    let cut = self
-                        .atomic_policy_cut(&mut accounting, cancellation)
-                        .await?;
+                    let cut = self.atomic_policy_cut(&mut accounting).await?;
                     return Ok(cut.scope(operation()).await);
                 }
                 crate::PolicyOwner::ExclusiveProcess => {}

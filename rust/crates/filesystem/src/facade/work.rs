@@ -166,7 +166,7 @@ pub(crate) fn measured<T, E>(
         .map_err(|error| OperationFailure::new(error, work))
 }
 
-pub(super) fn finish_authority_work(
+pub(crate) fn finish_authority_work(
     authority: crate::async_storage::AuthorityFrame<'_>,
 ) -> Result<(), FsError> {
     #[cfg(not(target_arch = "wasm32"))]
