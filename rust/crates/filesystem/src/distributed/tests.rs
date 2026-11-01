@@ -190,6 +190,29 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
     let baseline = work.allocations.live_bytes();
     work.budget.peak_allocation_bytes = work.spent().peak_allocation_bytes.max(baseline + 8192);
     for _ in 0..32 {
+        // Admit the real epoch read, then refuse the record read on the same
+        // cumulative frame. Its temporary epoch backing must retire on error.
+        let before = work.spent().authority_records_read;
+        work.budget.authority_records_read = before + 1;
+        assert!(matches!(
+            store.policy_cut(authority, &mut work).await,
+            Err(AuthorityStoreError::Work(
+                crate::WorkError::BudgetExceeded {
+                    counter: "authority_records_read",
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(work.spent().authority_records_read, before + 1);
+        assert_eq!(
+            work.allocations.scratch_bytes(),
+            29,
+            "failed policy cut leaked epoch scratch"
+        );
+        work.budget.authority_records_read = BUDGET.authority_records_read;
+        store.policy_cut(authority, &mut work).await?;
+        assert_eq!(work.spent().authority_records_read, before + 3);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
         let head = store.head(authority, &mut work).await?;
         assert_eq!(head.sequence, Sequence::new(1));
         assert_eq!(

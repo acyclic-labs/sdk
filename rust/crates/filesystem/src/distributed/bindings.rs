@@ -46,6 +46,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PolicyCut, AuthorityStoreError> {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
         let snapshot = self.fork_snapshot(authority, work).await?;
         Ok(crate::PolicyCut::new(
             self.operation_claims().owner_identity(),
