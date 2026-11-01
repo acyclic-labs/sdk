@@ -365,7 +365,7 @@ impl LocalStream {
         };
         let write = move |file: &acyclic_native_runtime::FileLease,
                           (stream, frames, cursor): &mut (Self, I, u64)| {
-            let mut written = false;
+            let mut written = 0_u64;
             for mut frame in frames.by_ref() {
                 #[cfg(feature = "test-support")]
                 if let Some(cut) = &cut
@@ -373,7 +373,7 @@ impl LocalStream {
                 {
                     return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
                 }
-                let initial = if written {
+                let initial = if written != 0 {
                     None
                 } else {
                     Some(
@@ -387,7 +387,7 @@ impl LocalStream {
                 if frame.deadline.is_some_and(|deadline| {
                     stream.inner.commit_clock.source.now_unix_millis() >= deadline
                 }) {
-                    return Err(if written {
+                    return Err(if written != 0 {
                         // Earlier frames may already be durable. Only reopen
                         // and replay can resolve this partially published proposal.
                         stream.inner.fail(LocalStreamFailure::new(
@@ -433,12 +433,17 @@ impl LocalStream {
                     .lock()
                     .map_err(|_| stream.inner.poison())?
                     .complete_append(frame.encoded.len() as u64, required);
-                written = true;
+                written += 1;
                 #[cfg(feature = "test-support")]
                 if let Some(cut) = &cut {
                     stream.cut_after_write(cut.as_ref(), fail_cut_truncation)?;
                 }
-                stream.inner.published();
+            }
+            // The publication fence prevents an observer from admitting this
+            // proposal until every frame completes. Wake once at that boundary;
+            // completed prefixes remain available to concurrent flushes above.
+            if written != 0 {
+                stream.inner.published(written);
             }
             Ok(*cursor)
         };

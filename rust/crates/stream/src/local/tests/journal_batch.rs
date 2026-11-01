@@ -30,7 +30,41 @@ async fn owned_frame_batches_reopen_in_order_and_release_original_work()
         // then recover the canonical decisions from the resulting real file.
         let visibility = stream.inner.visibility.write().await;
         let publication = stream.inner.publication.write().await;
-        let cursor = stream.persist_frames(frames.into_iter()).await?;
+        let mut revision = stream.inner.revision.subscribe();
+        let (entered, prefix) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::sync_channel(0);
+        let mut entered = Some(entered);
+        let writing = tokio::spawn({
+            let stream = stream.clone();
+            async move {
+                let frames = frames.into_iter().enumerate().map(move |(index, frame)| {
+                    if index == 1 {
+                        let _ = entered.take().unwrap().send(());
+                        released.recv().expect("original proposal release lost");
+                    }
+                    frame
+                });
+                stream.persist_frames(frames).await
+            }
+        });
+        if count > 1 {
+            prefix.await?;
+            // The original first write is complete, but the next frame still
+            // holds publication. Its notification cannot admit an observation.
+            assert!(!revision.has_changed()?);
+            assert_eq!(*revision.borrow(), 0);
+            assert_eq!(stream.inner.required()?, 1);
+            stream.await_publication(1).await?;
+            assert_eq!(
+                stream.inner.journal.lock().unwrap().flushed_sequence,
+                Some(1)
+            );
+            release.send(())?;
+        }
+        let cursor = writing.await??;
+        revision.changed().await?;
+        assert_eq!(*revision.borrow_and_update(), count);
+        assert!(!revision.has_changed()?);
         assert_eq!(
             stream.inner.journal.lock().unwrap().append_admissions,
             1,

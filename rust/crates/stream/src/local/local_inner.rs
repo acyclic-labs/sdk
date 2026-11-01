@@ -62,9 +62,9 @@ impl LocalInner {
         StreamError::Unavailable
     }
 
-    fn published(&self) {
+    fn published(&self, frames: u64) {
         self.revision
-            .send_modify(|revision| *revision = revision.saturating_add(1));
+            .send_modify(|revision| *revision = revision.saturating_add(frames));
     }
 
     async fn unavailable(failed: &mut watch::Receiver<Option<LocalStreamFailure>>) -> StreamError {
