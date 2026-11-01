@@ -17,6 +17,9 @@ pub use recent::RecentIndex;
 mod persistent;
 pub use persistent::{PersistentIndex, PersistentPosition};
 
+mod keyed;
+pub use keyed::{BinaryKeyError, KeyedIndex, binary_key};
+
 /// Original admission for an allocation-free index read. The same issuing
 /// owner checks cancellation and accounts for every examined fixed-width key.
 pub trait IndexReadWork {
