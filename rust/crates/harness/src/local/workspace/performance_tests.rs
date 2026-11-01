@@ -10,8 +10,7 @@ async fn open(directory: &Path) -> Result<LocalHarness> {
             volume,
             Arc::new(ScriptedModelProvider::new([])),
         )?
-        .without_default_tools()
-        .compaction(crate::context::CompactionPolicy::Disabled),
+        .without_default_tools(),
     )
     .await
 }

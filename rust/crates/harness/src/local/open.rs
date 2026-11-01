@@ -117,7 +117,7 @@ impl Opening {
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let tools = installation.tools;
         let compaction = if let Some((model, provider)) = &config.model {
-            compaction::select(config.compaction.take(), model, provider.as_ref())?
+            compaction::select(model, provider.as_ref())?
         } else {
             crate::context::CompactionPolicy::Disabled
         };

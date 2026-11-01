@@ -63,7 +63,6 @@ pub struct LocalHarnessConfig {
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
-    pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     pub(crate) settings: Option<crate::native_settings::SettingsConfig>,
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -143,7 +142,6 @@ impl LocalHarnessConfig {
         config.default_tools.clear();
         config.hermetic = true;
         config.goal_continuations = None;
-        config.compaction = Some(crate::context::CompactionPolicy::Disabled);
         config
     }
 
@@ -170,7 +168,6 @@ impl LocalHarnessConfig {
             web_tools: false,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
-            compaction: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: None,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -411,12 +408,6 @@ impl LocalHarnessConfig {
         policy: Option<crate::goal::GoalContinuationPolicy>,
     ) -> Self {
         self.goal_continuations = policy;
-        self
-    }
-    /// Selects an explicit compaction policy, validated without changing its budgets.
-    #[must_use]
-    pub fn compaction(mut self, policy: crate::context::CompactionPolicy) -> Self {
-        self.compaction = Some(policy);
         self
     }
     /// Selects native settings locations and explicit project trust using the shared loader.

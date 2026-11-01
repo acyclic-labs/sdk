@@ -55,9 +55,7 @@ async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
         ),
     );
     crate::LocalHarness::open(
-        crate::test_support::local_harness_config(root, (model, provider))?
-            .state_directory(state)
-            .compaction(crate::context::CompactionPolicy::Disabled),
+        crate::test_support::local_harness_config(root, (model, provider))?.state_directory(state),
     )
     .await
 }

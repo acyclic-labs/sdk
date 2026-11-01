@@ -2,7 +2,7 @@ use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     agent::{AgentOutcome, Phase},
-    context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
+    context::{ModelContextCapacity, SkillMetadata},
     local::{
         Event,
         agent_conversation::{Conversation, Sent},
@@ -36,7 +36,6 @@ fn config(
     .hermetic()
     .state_directory(state)
     .without_default_tools()
-    .compaction(CompactionPolicy::Disabled)
     .goal_continuations(None)
     .settings(SettingsConfig::new(root, home).codex_home(home.join(".codex"))))
 }

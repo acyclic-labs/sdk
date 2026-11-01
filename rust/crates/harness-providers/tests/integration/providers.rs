@@ -5,7 +5,6 @@ use super::{
 };
 use acyclic_harness::{
     LocalHarness, OperationId,
-    context::CompactionPolicy,
     conversation::Limits,
     model::{
         ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider as _, ModelRequest,
@@ -228,7 +227,6 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let config = local_harness_config(&directory, (provider.model().clone(), provider))?
         .state_directory(temporary.path().join("state"))
         .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None)
         .tools(
             case.tools

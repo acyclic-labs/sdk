@@ -89,11 +89,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
-        .await?,
+        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?,
     );
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
@@ -141,7 +137,6 @@ async fn served_shared_interpreter_uses_original_session_and_journaled_file_call
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled)
                 .tool(crate::executor::code_tool()?),
         )
         .await?,
@@ -254,17 +249,14 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let (entered, entering) = oneshot::channel();
         let (producer, result) = oneshot::channel();
         let harness = Arc::new(
-            LocalHarness::open(
-                volume_config(
-                    directory.path(),
-                    project,
-                    Arc::new(ClosingModel {
-                        counts: text(),
-                        gate: Mutex::new(Some((entered, result))),
-                    }),
-                )?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-            )
+            LocalHarness::open(volume_config(
+                directory.path(),
+                project,
+                Arc::new(ClosingModel {
+                    counts: text(),
+                    gate: Mutex::new(Some((entered, result))),
+                }),
+            )?)
             .await?,
         );
         let connection = harness.connect().await?;
@@ -1141,10 +1133,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
+        LocalHarness::open(volume_config(
+            directory.path(),
+            project.clone(),
+            provider.clone(),
+        )?)
         .await?,
     );
     let project_workspace = crate::filesystem::workspace_ref(
@@ -1516,10 +1509,11 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
+        LocalHarness::open(volume_config(
+            directory.path(),
+            project.clone(),
+            provider.clone(),
+        )?)
         .await?,
     );
     let workspace = crate::filesystem::workspace_ref(
@@ -1602,10 +1596,11 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
-        LocalHarness::open(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
+        LocalHarness::open(volume_config(
+            directory.path(),
+            project.clone(),
+            provider.clone(),
+        )?)
         .await?,
     );
     let workspace = crate::filesystem::workspace_ref(
@@ -1688,12 +1683,12 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     ]);
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .compaction(crate::context::CompactionPolicy::Disabled)
-                .limits(crate::conversation::Limits {
+            volume_config(directory.path(), project.clone(), provider.clone())?.limits(
+                crate::conversation::Limits {
                     file_bytes: FILE_BYTES,
                     ..Default::default()
-                }),
+                },
+            ),
         )
         .await?,
     );

@@ -19,11 +19,7 @@ fn failed(error: impl std::fmt::Display) -> Error {
 async fn open(directory: &Path, provider: Arc<ScriptedModelProvider>) -> Result<Arc<LocalHarness>> {
     let project = volume(directory).await?;
     Ok(Arc::new(
-        LocalHarness::open(
-            volume_config(directory, project, provider)?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
-        .await?,
+        LocalHarness::open(volume_config(directory, project, provider)?).await?,
     ))
 }
 

@@ -7,7 +7,7 @@ use acyclic_harness::{
     LocalHarness,
     agent::{ConversationEntry, TurnInput},
     client::{DiffLimits, DiffPath, DiffPublication, DiffView},
-    context::{CompactionPolicy, ContextRoot, PinnedContextPath},
+    context::{ContextRoot, PinnedContextPath},
     conversation::{FileDescriptor, FileRef},
     model::{Model, ModelContentPart, ModelEvent, ModelRequest},
     native_settings::SettingsConfig,
@@ -404,7 +404,6 @@ async fn open_harness(
         .settings(SettingsConfig::new(directory, home).codex_home(home.join(".codex")))
         .state_directory(state)
         .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None);
     Ok(LocalHarness::open(config).await?)
 }
