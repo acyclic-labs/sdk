@@ -54,7 +54,7 @@ async fn hook_launch_keeps_the_host_grant_and_explicit_environment() -> Result<(
             matcher: String::new(),
             hooks: vec![HookSpec {
                 run,
-                timeout_ms: 1_000,
+                timeout_ms: Some(1_000),
                 failure: HookFailure::Block,
             }],
         }])?;
