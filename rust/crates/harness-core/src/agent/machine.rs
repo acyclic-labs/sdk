@@ -879,6 +879,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     if admitted.clear_queue {
         state.dropped_before = state.dropped_before.max(sequence);
         state.drop_queue();
+        state.pending_notices = None;
     }
     if !admitted.control.turn {
         state.turn = None;
