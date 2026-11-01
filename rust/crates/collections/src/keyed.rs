@@ -94,7 +94,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
             work.validate()?;
             return Ok(None);
         }
-        let Some(entry) = self.keys.predecessor(key, work)? else {
+        let Some(entry) = self.keys.predecessor_position(key, work)? else {
             return Ok(None);
         };
         work.examine(N as u64)?;
@@ -123,7 +123,7 @@ impl<V, A, const N: usize> KeyedIndex<V, A, N> {
         value: V,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let entries = match self.keys.predecessor(key, work)? {
+        let entries = match self.keys.predecessor_position(key, work)? {
             Some(entry)
                 if {
                     work.charge_items(N as u64)?;

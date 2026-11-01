@@ -48,7 +48,15 @@ fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
                             let actual = history
                                 .predecessor(query.to_be_bytes(), &mut work)
                                 .map_err(TestCaseError::fail)?
-                                .map(|entry| (u64::from_be_bytes(*entry.key), *entry.value));
+                                .map(
+                                    |PersistentPosition {
+                                         key,
+                                         value,
+                                         before: _,
+                                     }| {
+                                        (u64::from_be_bytes(*key), *value)
+                                    },
+                                );
                             prop_assert_eq!(
                                 actual,
                                 expected.range(..=query).next_back().map(|(k, v)| (*k, *v))

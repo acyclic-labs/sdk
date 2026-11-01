@@ -20,17 +20,54 @@ pub struct Tree<V, A, const N: usize, C> {
 
 /// One borrowed value and the exact inherited exclusive cut under which it
 /// was found. A range value must respect this cut even after a later insertion.
-pub type PersistentPosition<'a, V, const N: usize> = Position<'a, V, N, std::convert::Infallible>;
-
-/// Borrowed shared representation used by immutable index compositions.
-pub struct Position<'a, V, const N: usize, C> {
+pub struct PersistentPosition<'a, V, const N: usize> {
     /// The original retained key selected by the lookup.
     pub key: &'a [u8; N],
     /// The original immutable value, borrowed without a copy.
     pub value: &'a V,
     /// The effective exclusive prefix cut on the path to this value.
     pub before: Option<[u8; N]>,
+}
+
+pub(crate) struct Position<'a, V, const N: usize, C> {
+    pub(crate) key: &'a [u8; N],
+    pub(crate) value: &'a V,
+    pub(crate) before: Option<[u8; N]>,
     pub(crate) value_before: Option<C>,
+}
+
+impl<'a, V, const N: usize> Position<'a, V, N, std::convert::Infallible> {
+    fn unqualified(self) -> PersistentPosition<'a, V, N> {
+        PersistentPosition {
+            key: self.key,
+            value: self.value,
+            before: self.before,
+        }
+    }
+}
+
+impl<V, A, const N: usize> PersistentIndex<V, A, N> {
+    /// Borrows the greatest retained key at or below `key`. Checks the original
+    /// admission even on an empty view. It allocates and copies no values.
+    pub fn predecessor<W: IndexReadWork>(
+        &self,
+        key: [u8; N],
+        work: &mut W,
+    ) -> Result<Option<PersistentPosition<'_, V, N>>, W::Error> {
+        self.predecessor_position(key, work)
+            .map(|position| position.map(Position::unqualified))
+    }
+
+    /// Borrows the least retained key at or above `key`, without allocating.
+    /// The bounded search descends one path and at most one minimum path.
+    pub fn successor<W: IndexReadWork>(
+        &self,
+        key: [u8; N],
+        work: &mut W,
+    ) -> Result<Option<PersistentPosition<'_, V, N>>, W::Error> {
+        self.successor_position(key, work)
+            .map(|position| position.map(Position::unqualified))
+    }
 }
 
 struct Node<V, A, const N: usize, C>(Option<Arc<Body<V, A, N, C>>>);
@@ -211,9 +248,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
-    /// Borrows the greatest retained key at or below `key`. Checks the original
-    /// admission even on an empty view. It allocates and copies no values.
-    pub fn predecessor<W: IndexReadWork>(
+    pub(crate) fn predecessor_position<W: IndexReadWork>(
         &self,
         key: [u8; N],
         work: &mut W,
@@ -260,9 +295,7 @@ impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
         }
     }
 
-    /// Borrows the least retained key at or above `key`, without allocating.
-    /// The bounded search descends one path and at most one minimum path.
-    pub fn successor<W: IndexReadWork>(
+    fn successor_position<W: IndexReadWork>(
         &self,
         key: [u8; N],
         work: &mut W,
