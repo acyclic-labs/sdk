@@ -76,13 +76,15 @@ impl HostSession {
     }
 
     fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
-        let capacity = buffers.input.len();
-        let length = match self.io.receive(&mut buffers.input)? {
+        let capacity = self.protocol.packet_capacity();
+        // /dev/fuse needs the complete negotiated receive envelope.
+        let input = PacketBuffers::input_for(&mut buffers.input, capacity, capacity)?;
+        let length = match self.io.receive(input)? {
             Received::Closed => return Ok(false),
             Received::Wake => return Ok(true),
             Received::Packet(length) => length,
         };
-        let packet = buffers.input.get(..length).ok_or(libc::EPROTO)?;
+        let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());

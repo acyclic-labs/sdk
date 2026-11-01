@@ -298,11 +298,9 @@ pub(super) fn serve_vring_packet(
         else {
             return Ok(QueueProgress::Empty);
         };
-        let capacity = buffers.input.len().min(packet.writable);
-        let input = buffers
-            .input
-            .get_mut(..packet.readable)
-            .ok_or(libc::EMSGSIZE)?;
+        let maximum = session.packet_capacity();
+        let capacity = maximum.min(packet.writable);
+        let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
         packet.gather(input, work)?;
         let request = PacketRequest::parse(input)?;
         if hiprio != matches!(request.opcode, 2 | 36 | 42) {
