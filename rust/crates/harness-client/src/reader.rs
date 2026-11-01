@@ -1034,7 +1034,7 @@ impl Reader {
     /// Fold one op's outcome into the cache. Late or cancelled outcomes are
     /// ignored; malformed ones count as refusals.
     pub fn complete(&mut self, id: u64, outcome: Outcome, now: u64) {
-        let Some(flight) = self.inflight.remove(&id) else {
+        let Some(mut flight) = self.inflight.remove(&id) else {
             return;
         };
         self.keys.remove(&flight.key);
@@ -1076,13 +1076,15 @@ impl Reader {
                 return;
             }
             (_, Outcome::Failed(failure)) => {
+                if failure != Failure::Denied {
+                    self.demand
+                        .restore_paging(&flight.key, std::mem::take(&mut flight.paging));
+                }
                 if failure == Failure::Denied {
                     self.denied(flight.key.path());
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
                     self.refuse(flight.key.clone());
-                } else {
-                    self.demand.restore_paging(&flight.key, flight.paging);
                 }
                 self.fail(failure, now);
                 return;
@@ -1130,7 +1132,7 @@ impl Reader {
                     self.listed(
                         parent,
                         *index as u32,
-                        (flight.paging, tail),
+                        (std::mem::take(&mut flight.paging), tail),
                         children,
                         next,
                         protect,
@@ -1146,6 +1148,7 @@ impl Reader {
             self.demand.remove(&flight.key);
             self.recovered();
         } else {
+            self.demand.restore_paging(&flight.key, flight.paging);
             self.refuse(flight.key);
         }
     }
