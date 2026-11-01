@@ -119,6 +119,36 @@ proptest! {
             }
         }
     }
+
+    #[test]
+    fn freeform_grammar_uses_the_original_borrowed_format_once(grammar in ".{0,128}") {
+        let format = json!({"type":"grammar","syntax":"lark","definition":grammar});
+        let visits = Cell::new(0);
+        for family in [Family::Responses, Family::Chat, Family::Anthropic, Family::Gemini] {
+            for refuse in [false, true] {
+                let declaration = ToolDeclaration::Freeform {
+                    name:"apply_patch".into(), description:"native guidance",
+                    format:Schema {value:&format, visited:&visits, refuse},
+                };
+                let result = ToolDeclarations::new(family, vec![declaration]);
+                if family != Family::Responses {
+                    prop_assert!(result.is_err());
+                    prop_assert_eq!(visits.replace(0), 0, "unsupported families refuse before touching the format");
+                    continue;
+                }
+                let wire = serde_json::to_value(result.unwrap());
+                prop_assert_eq!(visits.replace(0), 1);
+                if refuse {
+                    prop_assert!(wire.is_err());
+                } else {
+                    let wire = wire.unwrap();
+                    prop_assert_eq!(&wire[0]["format"], &format);
+                    prop_assert_eq!(&wire[0]["type"], &json!("custom"));
+                    prop_assert!(wire[0].get("parameters").is_none());
+                }
+            }
+        }
+    }
 }
 
 #[test]

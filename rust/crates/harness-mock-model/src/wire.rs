@@ -17,6 +17,16 @@ pub(crate) fn events(
 ) -> Option<Vec<String>> {
     let mut output = Vec::new();
     let total_tokens = input_tokens.checked_add(2)?;
+    if step.gemini.is_some() && !gemini_path(path) {
+        return None;
+    }
+    if step
+        .gemini
+        .as_ref()
+        .is_some_and(|gemini| gemini.cached_tokens > input_tokens)
+    {
+        return None;
+    }
     let usage = json!({"input_tokens":input_tokens,"output_tokens":2,"total_tokens":total_tokens});
     if path != "responses"
         && (!step.custom_tools.is_empty() || step.tools.iter().any(|tool| tool.namespace.is_some()))
@@ -68,7 +78,14 @@ pub(crate) fn events(
                 output.push(sse(json!({"type":"message_stop"})));
             }
         }
-        path if gemini_path(path) => gemini(&mut output, step, input_tokens, total_tokens),
+        path if gemini_path(path) => {
+            let total_tokens = total_tokens.checked_add(
+                step.gemini
+                    .as_ref()
+                    .map_or(0, |gemini| gemini.thought_tokens),
+            )?;
+            gemini(&mut output, step, input_tokens, total_tokens);
+        }
         _ => return None,
     }
     Some(output)
@@ -91,25 +108,27 @@ fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &
         ));
         items.push(item);
     }
+    let tool_offset = usize::from(!step.text.is_empty() || completed_text.is_some());
     for (index, tool) in step.tools.iter().enumerate() {
+        let index = index + tool_offset;
         let arguments = tool.arguments.to_string();
         let mut item = json!({"type":"function_call","id":format!("fc_{}",tool.id),"call_id":tool.id,"name":tool.name,"arguments":""});
         if let Some(namespace) = &tool.namespace {
             item["namespace"] = json!(namespace);
         }
         output.push(sse(
-            json!({"type":"response.output_item.added","output_index":index+1,"item":item}),
+            json!({"type":"response.output_item.added","output_index":index,"item":item}),
         ));
-        output.push(sse(json!({"type":"response.function_call_arguments.delta","output_index":index+1,"delta":arguments})));
-        output.push(sse(json!({"type":"response.function_call_arguments.done","output_index":index+1,"arguments":arguments})));
+        output.push(sse(json!({"type":"response.function_call_arguments.delta","output_index":index,"item_id":item["id"],"delta":arguments})));
+        output.push(sse(json!({"type":"response.function_call_arguments.done","output_index":index,"item_id":item["id"],"arguments":arguments})));
         item["arguments"] = json!(arguments);
         output.push(sse(
-            json!({"type":"response.output_item.done","output_index":index+1,"item":item}),
+            json!({"type":"response.output_item.done","output_index":index,"item":item}),
         ));
         items.push(item);
     }
     for (index, tool) in step.custom_tools.iter().enumerate() {
-        let index = step.tools.len() + index + 1;
+        let index = step.tools.len() + index + tool_offset;
         let mut item = json!({"type":"custom_tool_call","id":format!("ctc_{}",tool.id),"call_id":tool.id,"name":tool.name,"input":""});
         if let Some(namespace) = &tool.namespace {
             item["namespace"] = json!(namespace);
@@ -145,7 +164,21 @@ fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens
     for tool in &step.tools {
         output.push(sse(json!({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":tool.id,"name":tool.name,"args":tool.arguments}}]}}]})));
     }
+    if let Some(gemini) = &step.gemini {
+        if !gemini.parts.is_empty() {
+            output.push(sse(
+                json!({"candidates":[{"content":{"role":"model","parts":gemini.parts}}]}),
+            ));
+        }
+    }
     if !step.hold {
-        output.push(sse(json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":input_tokens,"candidatesTokenCount":2,"totalTokenCount":total_tokens}})));
+        let mut usage = json!({"promptTokenCount":input_tokens,"candidatesTokenCount":2,"totalTokenCount":total_tokens});
+        if let Some(gemini) = &step.gemini {
+            usage["cachedContentTokenCount"] = json!(gemini.cached_tokens);
+            usage["thoughtsTokenCount"] = json!(gemini.thought_tokens);
+        }
+        output.push(sse(
+            json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":usage}),
+        ));
     }
 }

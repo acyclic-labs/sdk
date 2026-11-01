@@ -141,7 +141,7 @@ pub(crate) fn body_named<'a>(
             "request output reservation differs from its admitted profile",
         ));
     }
-    let call_ids = crate::call_ids::CallIds::new(request, adapter);
+    let call_ids = crate::call_ids::CallIds::new(request, adapter)?;
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut deferred_media = Vec::new();
     let mut system = Vec::new();
@@ -160,6 +160,8 @@ pub(crate) fn body_named<'a>(
         }
         let event = message.content.notice_parts();
         if let Some((notices, attachments)) = event {
+            // A notice is its own turn; retained Gemini parts cannot span it.
+            gemini.begin(message.role)?;
             let notice = acyclic_model_render::notice_block(
                 acyclic_model_render::Provenance {
                     family: adapter,
@@ -245,6 +247,7 @@ pub(crate) fn body_named<'a>(
             ));
         }
     }
+    gemini.finish()?;
     sequence::finish(adapter, &mut messages)?;
     let tools = request
         .tools
@@ -359,9 +362,10 @@ fn project_message<'a>(
     let mut results = Vec::new();
     let mut ordered = Vec::new();
     let mut tool_media = Vec::new();
-    gemini.begin(message.role);
+    gemini.begin(message.role)?;
     let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
+        gemini.finish()?;
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
     let parts = message
@@ -369,6 +373,12 @@ fn project_message<'a>(
         .notice_parts()
         .map_or(message.content.parts(), |(_, files)| files);
     for part in parts {
+        if !matches!(
+            part,
+            ModelContentPart::ToolCall(_) | ModelContentPart::Reasoning { .. }
+        ) {
+            gemini.finish()?;
+        }
         match part {
             ModelContentPart::Notices { .. } => {
                 return Err(invalid("notice batch must occupy one message"));
@@ -415,17 +425,24 @@ fn project_message<'a>(
                 metadata: _,
             }) => {
                 let name = names.wire(name)?;
-                let call_id = call_ids.wire(call_id)?;
+                let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
+                let native = if adapter == Adapter::Gemini {
+                    gemini.take_call(
+                        (!omit_gemini_id).then_some(call_id.as_ref()),
+                        &name,
+                        arguments,
+                    )?
+                } else {
+                    None
+                };
                 let call = call::Call {
                     adapter,
                     id: call_id.into_owned(),
                     name,
                     arguments,
-                    signature: if adapter == Adapter::Gemini {
-                        gemini.signature.take()
-                    } else {
-                        None
-                    },
+                    freeform,
+                    omit_gemini_id,
+                    native,
                 };
                 if adapter == Adapter::Chat {
                     calls.push(call);
@@ -448,8 +465,8 @@ fn project_message<'a>(
                             continuity,
                             block.outcome
                                 == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-                        ) {
-                            ordered.push(part);
+                        )? {
+                            ordered.push(Item::Native(part));
                         }
                     }
                     ProjectedReasoning::Native { continuity, .. } => {
@@ -468,13 +485,15 @@ fn project_message<'a>(
                 content,
             } => {
                 let name = names.wire(name)?;
-                let call_id = call_ids.wire(call_id)?;
+                let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
                 let result = Item::Result(result::ToolResult {
                     adapter,
                     id: call_id.into_owned(),
                     name,
                     payload: result_text(adapter, content, files, &mut tool_media)?,
                     error: matches!(content, ToolResultContent::Error { .. }),
+                    freeform,
+                    omit_gemini_id,
                 });
                 if adapter == Adapter::Chat {
                     results.push(result);

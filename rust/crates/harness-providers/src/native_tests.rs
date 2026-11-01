@@ -194,6 +194,78 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
 }
 
 #[tokio::test]
+async fn freeform_input_uses_original_native_stream_and_releases_custody() -> Result<()> {
+    // Generated protocol input, not a captured provider transcript. Include
+    // JSON-looking punctuation: freeform input must never enter JSON decoding.
+    let input = "*** Begin Patch\n*** Add File: literal.txt\n+{\\\"},:[] λ\n*** End Patch\n";
+    let step = harness_mock_model::Step {
+        custom_tools: vec![harness_mock_model::CustomTool {
+            id: "patch".into(),
+            name: "apply_patch".into(),
+            input: input.into(),
+            namespace: None,
+        }],
+        ..Default::default()
+    };
+    for interrupted in [false, true] {
+        let mut frames = harness_mock_model::events("responses", &step).unwrap();
+        if interrupted {
+            // The terminal producer is the only event that releases executable
+            // calls. Dropping it must settle with one typed interruption.
+            frames.retain(|frame| !frame.contains("response.completed"));
+        }
+        let fixture = Arc::new(Fixture {
+            response: Bytes::from(frames.concat()),
+            ..Fixture::new("")
+        });
+        let (mut provider, _) = provider(crate::Adapter::Responses, 200);
+        provider.transport =
+            crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
+        let (request, dispatch) = request(&provider)?;
+        let work = work(&CancellationToken::new())?;
+        let before = work.live_allocation_bytes();
+        let mut calls = 0;
+        let mut completed = 0;
+        let mut errors = 0;
+        {
+            let mut stream = provider
+                .generate_with_native_work(&request, dispatch, &work)?
+                .await?;
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok((event, custody)) => {
+                        assert!(custody.work().shares_allocation_context(&work));
+                        assert_eq!(custody.bytes(), event.logical_owned_bytes()?);
+                        match event {
+                            ModelEvent::ToolCall(call) => {
+                                calls += 1;
+                                assert_eq!(call.arguments, json!({"input":input}));
+                                assert_eq!(call.metadata["freeform"], true);
+                                assert_eq!(call.call_id, dispatch.tool_call_id(0));
+                            }
+                            ModelEvent::Completed { .. } => completed += 1,
+                            _ => {}
+                        }
+                    }
+                    Err(Error::ModelUnavailable {
+                        failure: acyclic_harness_core::ModelTransportFailure::Interrupted,
+                        ..
+                    }) if interrupted => errors += 1,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        assert_eq!(
+            (calls, completed, errors),
+            if interrupted { (0, 0, 1) } else { (1, 1, 0) }
+        );
+        assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
+        assert_eq!(work.live_allocation_bytes(), before);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies() -> Result<()> {
     for (status, pending_body, prefix) in [
         (200, false, None),

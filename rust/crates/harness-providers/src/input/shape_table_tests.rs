@@ -40,6 +40,7 @@ fn entries() -> Vec<(Position, &'static Shape)> {
     entries.extend([
         (Position::ChatCall, &shape::CHAT_CALL),
         (Position::ResponsesCall, &shape::RESPONSE_CALL),
+        (Position::ResponsesCall, &shape::RESPONSE_CUSTOM_CALL),
         (Position::Native(Adapter::Anthropic), &shape::THINKING),
         (Position::Native(Adapter::Anthropic), &shape::REDACTED),
         (Position::Native(Adapter::Responses), &shape::REASONING),
@@ -111,6 +112,9 @@ fn admitted(position: Position, part: &Value) -> bool {
         Position::ResponsesCall => {
             let mut body = fixtures()[1].1.clone();
             body["input"][1] = part.clone();
+            if part["type"] == "custom_tool_call" {
+                body["input"][2]["type"] = json!("custom_tool_call_output");
+            }
             (Adapter::Responses, body)
         }
         Position::Native(adapter) => {

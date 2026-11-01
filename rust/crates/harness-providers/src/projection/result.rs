@@ -25,6 +25,8 @@ pub(crate) struct ToolResult<'a> {
     pub name: Cow<'a, str>,
     pub payload: Payload<'a>,
     pub error: bool,
+    pub freeform: bool,
+    pub omit_gemini_id: bool,
 }
 
 impl Serialize for ToolResult<'_> {
@@ -42,7 +44,14 @@ impl Serialize for ToolResult<'_> {
             Adapter::Responses => {
                 map.serialize_entry("call_id", &self.id)?;
                 map.serialize_entry("output", &self.payload)?;
-                map.serialize_entry("type", "function_call_output")?;
+                map.serialize_entry(
+                    "type",
+                    if self.freeform {
+                        "custom_tool_call_output"
+                    } else {
+                        "function_call_output"
+                    },
+                )?;
             }
             Adapter::Chat => {
                 map.serialize_entry("content", &self.payload)?;
@@ -52,7 +61,8 @@ impl Serialize for ToolResult<'_> {
             Adapter::Gemini => {
                 #[derive(Serialize)]
                 struct Response<'a> {
-                    id: &'a str,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    id: Option<&'a str>,
                     name: &'a str,
                     response: Output<'a>,
                 }
@@ -70,7 +80,7 @@ impl Serialize for ToolResult<'_> {
                 map.serialize_entry(
                     "functionResponse",
                     &Response {
-                        id: &self.id,
+                        id: (!self.omit_gemini_id).then_some(self.id.as_str()),
                         name: &self.name,
                         response: Output(self),
                     },
