@@ -714,7 +714,12 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
     }}).await?;
     drop(storage);
     #[cfg(not(target_arch = "wasm32"))]
-    assert_eq!(range_work.live_allocation_bytes(), range_baseline);
+    {
+        // The final receipt retires the original shared accounting header after
+        // its cache owners drop, including when caller cancellation is set.
+        let _ = range_work.receipt();
+        assert_eq!(range_work.live_allocation_bytes(), range_baseline);
+    }
     Ok(())
 }
 
