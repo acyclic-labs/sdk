@@ -186,6 +186,8 @@ pub struct Sample<'a> {
     pub parent_id: Option<&'a Id>,
     /// Fixed native-attempt fields from the original durability producer.
     pub durability: Option<crate::DurabilityAttempt>,
+    /// Original native task admission and publication, when requested.
+    pub native_task: Option<crate::NativeTask>,
     /// Optional producer-declared semantic work, retained only when requested.
     pub work: Option<crate::WorkSummary>,
     /// Fixed original executor publication semantics, when requested.
@@ -214,6 +216,8 @@ pub struct OwnedSample {
     pub parent_id: Option<Id>,
     /// Original fixed physical-attempt evidence, with no dynamic field map.
     pub durability: Option<crate::DurabilityAttempt>,
+    /// Original native task admission and publication, when requested.
+    pub native_task: Option<crate::NativeTask>,
     /// Original producer's optional work totals, without reconstructing work.
     pub work: Option<crate::WorkSummary>,
     /// Fixed original executor publication semantics, when requested.
@@ -239,6 +243,7 @@ impl OwnedSample {
             span_id: &self.span_id,
             parent_id: self.parent_id.as_ref(),
             durability: self.durability,
+            native_task: self.native_task,
             work: self.work,
             publication: self.publication,
             binding: self.binding.as_ref(),
@@ -282,6 +287,10 @@ pub trait Sink: Clone + Send + Sync + 'static {
     fn publication_details(&self) -> bool {
         false
     }
+    /// Opt into fixed original native queue and terminal evidence.
+    fn native_task_details(&self) -> bool {
+        false
+    }
 }
 
 impl<A: Sink, B: Sink> Sink for (A, B) {
@@ -300,6 +309,9 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     }
     fn publication_details(&self) -> bool {
         self.0.publication_details() || self.1.publication_details()
+    }
+    fn native_task_details(&self) -> bool {
+        self.0.native_task_details() || self.1.native_task_details()
     }
     fn record_owned(&self, sample: OwnedSample) {
         self.0.record(&sample.sample());
@@ -693,6 +705,7 @@ struct Operation {
     metadata: &'static tracing::Metadata<'static>,
     parent_id: Option<Id>,
     durability: Option<crate::DurabilityAttempt>,
+    native_task: Option<crate::NativeTask>,
     work: Option<crate::WorkSummary>,
     publication: Option<crate::Publication>,
     rpc: Option<String>,
@@ -742,6 +755,7 @@ struct Terminal {
     outcome: Option<Outcome>,
     has_error_kind: bool,
     has_durability_fields: bool,
+    has_native_task: bool,
     has_work: bool,
     has_publication: bool,
 }
@@ -759,10 +773,16 @@ impl Visit for FirstCause<'_> {
 struct Fields {
     rpc: Option<String>,
     durability: Option<crate::DurabilityAttempt>,
+    native_task: Option<crate::NativeTask>,
     work: Option<crate::WorkSummary>,
     publication: Option<crate::Publication>,
 }
 impl Visit for Fields {
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        if let Some(task) = self.native_task.as_mut() {
+            task.record_bool(field, value);
+        }
+    }
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "rpc" {
             self.rpc = Some(value.to_owned());
@@ -772,6 +792,9 @@ impl Visit for Fields {
         if let Some(publication) = self.publication.as_mut() {
             publication.record_str(field, value);
         }
+        if let Some(task) = self.native_task.as_mut() {
+            task.record_str(field, value);
+        }
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
         if let Some(attempt) = self.durability.as_mut() {
@@ -780,21 +803,35 @@ impl Visit for Fields {
         if let Some(work) = self.work.as_mut() {
             work.record_u64(field, value);
         }
+        if let Some(task) = self.native_task.as_mut() {
+            task.record_u64(field, value);
+        }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
         if let Some(attempt) = self.durability.as_mut() {
             attempt.record_i64(field, value);
+        }
+        if let Some(task) = self.native_task.as_mut() {
+            task.record_i64(field, value);
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
 }
 
 impl Visit for Terminal {
+    fn record_bool(&mut self, field: &Field, _: bool) {
+        self.has_native_task |= matches!(
+            field.name(),
+            "native.queued" | "native.started" | "native.panicked"
+        );
+    }
     fn record_i64(&mut self, field: &Field, _: i64) {
         self.has_durability_fields |= field.name() == "error.os";
+        self.has_native_task |= field.name() == "error.os";
     }
     fn record_u64(&mut self, field: &Field, _: u64) {
         self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
+        self.has_native_task |= field.name() == "error.os";
         self.has_work |= matches!(
             field.name(),
             "work.items" | "work.bytes" | "work.durability"
@@ -814,6 +851,8 @@ impl Visit for Terminal {
             self.has_error_kind = true;
         } else if matches!(field.name(), "requested" | "syscall") {
             self.has_durability_fields = true;
+        } else if field.name() == "native.terminal" {
+            self.has_native_task = true;
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
@@ -862,6 +901,12 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 .then(crate::Publication::default),
             durability: (metadata.name() == "acyclic.runtime.durability")
                 .then(crate::DurabilityAttempt::default),
+            native_task: (self.0.native_task_details()
+                && matches!(
+                    metadata.name(),
+                    "acyclic.runtime.persistence" | "acyclic.runtime.blocking_io"
+                ))
+            .then(crate::NativeTask::default),
             work: (self.0.work_details()
                 && ["work.items", "work.bytes", "work.durability"]
                     .iter()
@@ -879,6 +924,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 attributes.parent().cloned()
             },
             durability: fields.durability,
+            native_task: fields.native_task,
             work: fields.work,
             publication: fields.publication,
             rpc: fields.rpc,
@@ -896,6 +942,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 span_id: id.clone(),
                 parent_id: operation.parent_id.take(),
                 durability: operation.durability.take(),
+                native_task: operation.native_task.take(),
                 work: operation.work.take(),
                 publication: operation.publication.take(),
                 binding: binding.clone(),
@@ -921,6 +968,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             && !terminal.has_durability_fields
             && !(terminal.has_work && self.0.work_details())
             && !(terminal.has_publication && self.0.publication_details())
+            && !(terminal.has_native_task && self.0.native_task_details())
         {
             return;
         }
@@ -943,6 +991,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if let Some(attempt) = operation.durability.as_mut() {
             values.record(attempt);
         }
+        if let Some(task) = operation.native_task.as_mut() {
+            values.record(task);
+        }
         if let Some(publication) = operation.publication.as_mut() {
             values.record(publication);
         }
@@ -959,6 +1010,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let metadata = operation.metadata;
         let parent_id = operation.parent_id.take();
         let durability = operation.durability.take();
+        let native_task = operation.native_task.take();
         let work = operation.work.take();
         let publication = operation.publication.take();
         let rpc = operation.rpc.take();
@@ -971,6 +1023,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             span_id: id.clone(),
             parent_id,
             durability,
+            native_task,
             work,
             publication,
             binding,
@@ -997,6 +1050,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 span_id: id,
                 parent_id: operation.parent_id,
                 durability: operation.durability,
+                native_task: operation.native_task,
                 work: operation.work,
                 publication: operation.publication,
                 binding: self.0.binding_details().then_some(binding).flatten(),

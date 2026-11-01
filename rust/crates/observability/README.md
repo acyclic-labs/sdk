@@ -172,3 +172,34 @@ requests detail. Metrics alone parse none of these fields. These semantic
 journal declarations do not count native calls, certify group membership or
 prove a device drain; use the original publication and native receipts for
 those guarantees.
+
+`Sink::native_task_details` opts into `Sample::native_task` for the existing
+host blocking operation and `acyclic.runtime.persistence`. The same span records
+successful queue transfer, worker entry and the original completion state's
+stored result or panic. A full or disconnected queue supplies no accepted-work
+evidence. Worker entry retains successful transfer even when publication races
+the submitting caller's callback. The original I/O cause is captured under the
+existing completion lock before an observing thread can take the result;
+subscriber callbacks run after releasing admission and completion locks.
+The `panicked` field is independent of the original stored result: when both
+are present, the I/O cause and native code remain intact alongside the panic.
+Known submission failures retain their original error without inventing queue
+acceptance, worker entry or a task terminal. Missing producer evidence remains
+incomplete, distinct from an observed submission failure.
+
+The stored successful result is the native completion carrier's success, not
+an interpretation of a generic returned value, device durability or a higher
+layer's publication. A lost producer or missing result produces incomplete
+evidence. Caller detachment does not cancel accepted work. Queue delay, final
+backing allocation retirement and authenticated authority/operation/generation
+remain unknown unless their actual owners supply them. No identifier or permit
+is reconstructed from a native task, descriptor or registry ID. Metrics alone
+retain none of these optional fields; Export uses its existing detail flag and
+record credit. Disabled observation adds no allocation, clock or observer lock
+to the original completion allocation and closure allocation.
+
+The deterministic original queue/worker/result and blocked-output witness is:
+
+```sh
+cargo test --locked -p acyclic-native-runtime --lib workers::job::observation_tests::original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_export -- --exact --nocapture
+```

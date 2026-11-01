@@ -196,7 +196,12 @@ pub(crate) fn poll_submission(
         workers(pool, false)
     } {
         Ok(workers) => workers,
-        Err(error) => return Poll::Ready(Err(error)),
+        Err(error) => {
+            if let Some(job) = pending.as_ref() {
+                job.record_submission_error(&error);
+            }
+            return Poll::Ready(Err(error));
+        }
     };
     poll_submission_with(workers, pending, waiter, context)
 }
@@ -214,9 +219,12 @@ pub(crate) fn poll_submission_with(
     if let Some(meter) = &meter
         && let Err(error) = meter.check()
     {
+        job.record_submission_error(&error);
         remove_capacity_waiter(workers, waiter.take());
         return Poll::Ready(Err(error));
     }
+    let observation = job.queue_observation();
+    job.stage(1);
     let mut admission = workers
         .admission
         .lock()
@@ -230,18 +238,21 @@ pub(crate) fn poll_submission_with(
     }
     // A job that never waits retires its prepaid waiter charge on admission.
     let prepaid = job.take_admission();
-    job.stage(1);
     match workers.sender.try_send(job) {
         Ok(()) => {
             admission.queued_jobs += 1;
             let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
+            if let Some(observation) = observation {
+                observation.record("native.queued", true);
+            }
             drop(prepaid);
             wake_capacity_waiter(next);
             Poll::Ready(Ok(()))
         }
-        Err(mpsc::TrySendError::Full(job)) => {
-            job.stage(0);
+        Err(mpsc::TrySendError::Full(mut job)) => {
+            // No acceptance callback for a failed candidate transfer.
+            job.restore_unqueued();
             if let Some(node) = waiter.as_ref() {
                 // The existing node already carries the job's charge.
                 debug_assert!(prepaid.is_none(), "admission waiter paid twice");
@@ -256,15 +267,20 @@ pub(crate) fn poll_submission_with(
             } else {
                 *waiter = Some(admission.register(context.waker(), prepaid));
             }
+            drop(admission);
+            job.stage(0);
             *pending = Some(job);
             Poll::Pending
         }
-        Err(mpsc::TrySendError::Disconnected(_)) => {
+        Err(mpsc::TrySendError::Disconnected(job)) => {
             let next = waiter.take().and_then(|node| admission.retire_owner(node));
             drop(admission);
+            let error = io::Error::from(io::ErrorKind::BrokenPipe);
+            job.record_submission_error(&error);
+            drop(job);
             drop(prepaid);
             wake_capacity_waiter(next);
-            Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
+            Poll::Ready(Err(error))
         }
     }
 }
