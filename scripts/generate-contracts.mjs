@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContractTargets, runContractTarget } from "./contract-targets.mjs";
+import { buildContractTargets, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
@@ -77,7 +77,9 @@ try {
   const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
   const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
   const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
-  const executed = new Map();
+  const rawTargets = new Set(generators.filter(generator => generator.rustPayload === undefined)
+    .flatMap(generator => (generator.rust ?? []).map(target => targetIndex.get(JSON.stringify(target)))));
+  const outputFor = contractTargetOutputs(root, executables, rawTargets);
 
   const stale = [];
   for (const [index, generator] of generators.entries()) {
@@ -86,16 +88,7 @@ try {
     saveReport();
     const stdout = (generator.rust ?? []).map(target => {
       const targetSlot = targetIndex.get(JSON.stringify(target));
-      if (!executed.has(targetSlot)) executed.set(targetSlot, runContractTarget(root, executables[targetSlot]));
-      const output = executed.get(targetSlot);
-      if (generator.rustPayload === undefined) return output;
-      let payloads;
-      try { payloads = JSON.parse(output); }
-      catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle for ${modules[index]}; recovery: bun scripts/generate-contracts.mjs check`); }
-      if (!payloads || !Object.hasOwn(payloads, generator.rustPayload) || typeof payloads[generator.rustPayload] !== "string") {
-        throw new Error(`STEP_FAILED contract-payload: missing ${generator.rustPayload}; recovery: bun scripts/generate-contracts.mjs check`);
-      }
-      return payloads[generator.rustPayload];
+      return outputFor(targetSlot, generator.rustPayload);
     });
     const execute_ms = performance.now() - executionStart;
     const renderStart = performance.now();
