@@ -239,7 +239,10 @@ impl Drop for OwnedCredit {
 }
 
 async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::Result<()> {
-    for disposition in ["drain", "cancel", "close"] {
+    for (detach, close) in [false, true]
+        .into_iter()
+        .flat_map(|detach| [false, true].map(|close| (detach, close)))
+    {
         let (mut reader, original) = std::os::unix::net::UnixStream::pair()?;
         let original: File = std::os::fd::OwnedFd::from(original).into();
         let original_flags = flags(&original)?;
@@ -278,24 +281,26 @@ async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::
         assert_eq!(credit.available_permits(), 0);
         assert_eq!(flags(&original)?, original_flags);
         assert_eq!(crate::run_blocking_io(|| 17, None)?.await?, 17);
-        if disposition == "close" {
+        if detach {
+            drop(delivery.take());
+            // The accepted worker still owns the original bytes and
+            // credit through either the peer's drain or its failure.
+            assert_eq!(credit.available_permits(), 0);
+        }
+        if close {
             drop(reader);
-            let error = match delivery.take().unwrap().await {
-                Ok(_) => panic!("a withdrawn reader cannot accept a full-socket write"),
-                Err(error) => error,
-            };
-            assert!(matches!(
-                error.kind(),
-                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
-            ));
-            assert!(error.raw_os_error().is_some());
-        } else {
-            if disposition == "cancel" {
-                drop(delivery.take());
-                // The accepted worker still owns the original bytes and
-                // credit; observer destruction is not write completion.
-                assert_eq!(credit.available_permits(), 0);
+            if let Some(delivery) = delivery.take() {
+                let error = match delivery.await {
+                    Ok(_) => panic!("a withdrawn reader cannot accept a full-socket write"),
+                    Err(error) => error,
+                };
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                ));
+                assert!(error.raw_os_error().is_some());
             }
+        } else {
             drop(original);
             let mut read = Box::pin(crate::run_blocking_io(
                 move || {
@@ -313,8 +318,8 @@ async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::
                 })
             })
             .await;
-            if disposition == "drain" {
-                let (output, buffer) = delivery.take().unwrap().await?;
+            if let Some(delivery) = delivery.take() {
+                let (output, buffer) = delivery.await?;
                 assert_eq!(buffer.bytes.as_ptr() as usize, pointer);
                 assert_eq!(credit.available_permits(), 0);
                 drop(output);
