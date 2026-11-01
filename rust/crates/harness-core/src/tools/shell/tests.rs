@@ -6,7 +6,7 @@ proptest! {
     // and contains no parent component, regardless of host path syntax.
     #[test]
     fn command_round_trip_preserves_the_selected_directory(
-        command in ".{0,200}", cwd in proptest::option::of(".{0,100}"),
+        command in prop_oneof![".{0,200}".prop_map(ShellCommand::Source), proptest::collection::vec(".{0,80}", 0..8).prop_map(ShellCommand::Argv)], cwd in proptest::option::of(".{0,100}"),
         timeout_ms in proptest::option::of(any::<u32>()),
     ) {
         let input = ShellInput { command, cwd, timeout_ms, target: None };
@@ -17,8 +17,7 @@ proptest! {
             let cwd = Path::new(input.cwd.as_deref().unwrap_or(""));
             prop_assert!(!cwd.is_absolute());
             prop_assert!(cwd.components().all(|part| matches!(part, Component::CurDir | Component::Normal(_))));
-            prop_assert!(!input.command.is_empty());
-            prop_assert!(!input.command.contains('\0'));
+            prop_assert!(input.command.valid());
             let timeout = input.timeout_ms().map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert!(timeout.is_none_or(|timeout| timeout > 0));
             prop_assert_eq!(timeout, input.timeout_ms);

@@ -631,3 +631,132 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn atomic_patch_uses_the_checkout_publisher_and_recovers_its_original_cut() -> Result<()> {
+    let (directory, _state, harness, publisher) = native_fixture().await?;
+    let publisher = Arc::new(publisher);
+    let task_for = |grants| {
+        let runtime = crate::runtime::Bindings {
+            targets: Some(crate::local::agents::home(publisher.tools.clone())?),
+            scope: RuntimeScope::new(grants, harness.limits.clone())?,
+            content: Some(crate::runtime::ContentBindings {
+                volume: harness.project.clone(),
+                reader: harness.client_reader()?,
+                writer: Some(publisher.clone() as Arc<dyn ContentPublisher>),
+            }),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        Ok::<_, Error>(Arc::new(runtime.agent_context(
+            &Capabilities::default(),
+            crate::runtime::ContentBindings {
+                volume: harness.journal.clone(),
+                reader: harness.client_reader()?,
+                writer: Some(Publisher::new(
+                    harness.files.clone(),
+                    &harness.journal,
+                    &harness.verifier,
+                    &harness.signed,
+                    harness.limits.file_bytes,
+                    None,
+                )?),
+            },
+        )?))
+    };
+    let create_only = Capabilities::new([
+        "tool:call:edit".into(),
+        acyclic_fs::access::Capability::whole_volume(None, &[acyclic_fs::access::Action::Create])
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+    ]);
+    let task = task_for(create_only.clone())?;
+    let tool = crate::tools::variants::apply_patch()?;
+    let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-patch")?;
+    let invocation = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Add File: one\n+first\n*** Add File: nested/two\n+second\n*** End Patch\n"}),
+    };
+    tool.executor
+        .authorize(None, Some(&context), &invocation, None)?;
+    let result = tool
+        .executor
+        .execute(invocation.clone(), Some(context.clone()))
+        .await?;
+    assert_eq!(result.value["files"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("nested/two")).map_err(storage)?,
+        b"second\n"
+    );
+    let recovered_operation = invocation.operation_id;
+    let recovered = tool
+        .executor
+        .reconcile(invocation, Some(context))
+        .await?
+        .unwrap();
+    assert_eq!(result.value, recovered.value);
+    // Recovery and direct publication use the same action-aware policy boundary.
+    let (receipt, _) = publisher
+        .observe_changes(
+            &harness.project,
+            recovered_operation,
+            harness.limits.file_bytes,
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?
+        .await?;
+    let receipt = receipt.unwrap();
+    let source = receipt.files().next().unwrap();
+    let denied = publisher
+        .stage_changes(
+            &harness.project,
+            OperationId::new(),
+            &[crate::conversation::ContentChange::DeleteExpected { source }],
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?
+        .await;
+    assert!(matches!(denied, Err(Error::Unauthorized(_))));
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    let task = task_for(harness.signed.capabilities().clone())?;
+    let context = ToolContext::new(task.clone(), OperationId::new(), "atomic-refusal")?;
+    let invalid = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Update File: one\n@@\n-first\n+changed\n*** Update File: nested/two\n@@\n-absent\n+wrong\n*** End Patch\n"}),
+    };
+    assert!(tool.executor.execute(invalid, Some(context)).await.is_err());
+    assert_eq!(
+        std::fs::read(directory.path().join("one")).map_err(storage)?,
+        b"first\n"
+    );
+    let context = ToolContext::new(task, OperationId::new(), "atomic-move")?;
+    let moving = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: context.call_id().into(),
+        name: tool.definition.name.clone(),
+        arguments: serde_json::json!({"patch": "*** Begin Patch\n*** Update File: one\n*** Move to: moved\n@@\n-first\n+changed\n*** Delete File: nested/two\n*** End Patch\n"}),
+    };
+    tool.executor.execute(moving, Some(context)).await?;
+    assert!(!directory.path().join("one").exists());
+    assert!(!directory.path().join("nested/two").exists());
+    assert_eq!(
+        std::fs::read(directory.path().join("moved")).map_err(storage)?,
+        b"changed\n"
+    );
+    Ok(())
+}

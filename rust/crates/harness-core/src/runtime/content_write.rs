@@ -383,7 +383,7 @@ pub(super) fn publication_destination<'a>(
     Ok((writer, volume, relative))
 }
 
-fn authorize_volume_write(
+pub(super) fn authorize_volume_write(
     volume: &VolumeRef,
     scope: &RuntimeScope,
     io: Option<&ContentIo>,

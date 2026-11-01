@@ -4,7 +4,7 @@ use crate::executor::stock_boundary;
 use crate::{
     IdempotencyKey, OperationId, Result,
     conversation::{
-        BoundedContentFuture, ContentGrant, ContentHold, ContentPublisher, FileRef,
+        BoundedContentFuture, ContentChanges, ContentGrant, ContentHold, ContentPublisher, FileRef,
         VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, Scope},
@@ -74,6 +74,42 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
     for FilesystemContentPublisher<A, O>
 {
+    fn observe_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        maximum: u64,
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
+        if volume != &self.volume {
+            return Err(stock_boundary(
+                access.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "conditional publication differs from bound volume",
+            ));
+        }
+        BoundedContentFuture::new(access.io, || async move {
+            let key = changes_key(operation, access.io)?;
+            let files = self
+                .host
+                .observe_changes(&self.volume, &self.grant, &key, maximum, access)?
+                .await?;
+            let owned = files
+                .as_ref()
+                .map_or(Ok(0), ContentChanges::logical_owned_bytes)?;
+            let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
+            Ok((files, hold))
+        })
+    }
+    fn stage_changes<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'io>,
+    ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
+        self.stage_changes_checked(volume, operation, changes, access, None)
+    }
     fn volume(&self) -> &VolumeRef {
         &self.volume
     }
@@ -330,6 +366,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     }
 }
 
+fn changes_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
+    crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("filesystem-changes:{operation}"), work)
+    })
+    .map(IdempotencyKey)
+}
+
 pub(super) fn once_key(
     operation: OperationId,
     io: Option<&PreparationIo>,
@@ -495,5 +538,47 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
             .await?;
         Ok(observed.map(|(file, _)| file))
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentPublisher<A, O>
+{
+    /// Uses the same conditional publisher with a task mount's additional policy.
+    /// The callback sees every file action and every directory actually created.
+    #[doc(hidden)]
+    pub fn stage_changes_checked<'a, 'io: 'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        operation: OperationId,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'io>,
+        check: Option<&'a (dyn Fn(acyclic_fs::access::Action, &str) -> Result<()> + Send + Sync)>,
+    ) -> Result<BoundedContentFuture<'a, (ContentChanges, Option<ContentHold<'io>>)>> {
+        if volume != &self.volume {
+            return Err(stock_boundary(
+                access.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "conditional publication differs from bound volume",
+            ));
+        }
+        BoundedContentFuture::new(access.io, || async move {
+            let key = changes_key(operation, access.io)?;
+            let files = self
+                .host
+                .put_changes(
+                    &self.volume,
+                    &self.grant,
+                    changes,
+                    &key,
+                    self.maximum_bytes,
+                    access,
+                    check,
+                )?
+                .await?;
+            let owned = files.logical_owned_bytes()?;
+            let hold = access.io.map(|io| io.guard_owned(owned)).transpose()?;
+            Ok((files, hold))
+        })
     }
 }

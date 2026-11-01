@@ -57,6 +57,32 @@ async fn retained_content_comparisons_recheck_current_read_authority()
             .await?
             .value
     );
+    assert!(
+        original
+            .matches_optional_file_payload(&original, "/absent", WorkBudget::UNBOUNDED, &cancel,)
+            .await?
+            .value
+    );
+    assert!(
+        !recreated
+            .matches_optional_file_payload(&original, "/entry", WorkBudget::UNBOUNDED, &cancel,)
+            .await?
+            .value
+    );
+    owner.write_text("/absent", "new metadata").await?;
+    let introduced = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    assert!(
+        !introduced
+            .matches_optional_file_payload(&original, "/absent", WorkBudget::UNBOUNDED, &cancel,)
+            .await?
+            .value
+    );
+    assert!(
+        !original
+            .matches_optional_file_payload(&introduced, "/absent", WorkBudget::UNBOUNDED, &cancel,)
+            .await?
+            .value
+    );
     let foreign = workspace()
         .await?
         .head(WorkBudget::UNBOUNDED, &cancel)

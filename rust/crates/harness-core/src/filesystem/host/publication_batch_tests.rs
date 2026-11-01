@@ -527,3 +527,140 @@ async fn internal_publication_has_one_metadata_and_recovery_record_for_every_ada
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn conditional_changes_publish_once_with_action_and_parent_authority() -> Result<()> {
+    use crate::conversation::{ContentAccess, ContentChange};
+    use acyclic_fs::access::{Action, Capability};
+    let provider = ProviderRef::new(
+        "conditional".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let agent = AgentId::from_bytes([39; 16]);
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    host.create_volume(&volume).await?;
+    let (write, read) = publication_grants(&volume, agent)?;
+    let actions = |actions: &[Action]| -> Result<crate::Capabilities> {
+        Ok(crate::Capabilities::new([Capability::whole_volume(
+            None, actions,
+        )
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]))
+    };
+    let create = actions(&[Action::Create])?;
+    let create_access = ContentAccess {
+        ceiling: Some(&create),
+        io: None,
+    };
+    let add = |path| ContentChange::CreateAbsent {
+        path,
+        bytes: b"first",
+        media_type: "text/plain",
+        display_name: "file",
+    };
+    let changes = [add("nested/first"), add("second")];
+    let key = IdempotencyKey::new("conditional-create")?;
+    let original = host
+        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+        .await?;
+    let first = original.files().next().unwrap();
+    assert_eq!(
+        host.read_content(first, &read, 64, None).await?.as_ref(),
+        b"first"
+    );
+    let replay = host
+        .put_changes(&volume, &write, &changes, &key, 64, create_access, None)?
+        .await?;
+    assert_eq!(replay.generation, original.generation);
+    assert_eq!(
+        replay.files().collect::<Vec<_>>(),
+        original.files().collect::<Vec<_>>()
+    );
+    let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+    let before = host.resolve(&workspace, None).await?;
+    // The first member is valid; an existing later destination refuses the whole cut.
+    assert!(
+        host.put_changes(
+            &volume,
+            &write,
+            &[add("unpublished"), add("second")],
+            &IdempotencyKey::new("conditional-conflict")?,
+            64,
+            create_access,
+            None
+        )?
+        .await
+        .is_err()
+    );
+    assert_eq!(host.resolve(&workspace, None).await?, before);
+    let deny_parent = |action, path: &str| {
+        if action == Action::Create && path == "forbidden" {
+            Err(Error::Unauthorized("directory creation denied".into()))
+        } else {
+            Ok(())
+        }
+    };
+    assert!(
+        host.put_changes(
+            &volume,
+            &write,
+            &[add("valid"), add("forbidden/file")],
+            &IdempotencyKey::new("conditional-parent")?,
+            64,
+            create_access,
+            Some(&deny_parent)
+        )?
+        .await
+        .is_err()
+    );
+    assert_eq!(host.resolve(&workspace, None).await?, before);
+    assert!(
+        host.put_changes(
+            &volume,
+            &write,
+            &[ContentChange::UpdateExpected {
+                source: first,
+                bytes: b"denied"
+            }],
+            &IdempotencyKey::new("conditional-write-denied")?,
+            64,
+            create_access,
+            None
+        )?
+        .await
+        .is_err()
+    );
+    assert_eq!(host.resolve(&workspace, None).await?, before);
+    let delete = actions(&[Action::Delete])?;
+    let removed = host
+        .put_changes(
+            &volume,
+            &write,
+            &[ContentChange::DeleteExpected { source: first }],
+            &IdempotencyKey::new("conditional-delete")?,
+            64,
+            ContentAccess {
+                ceiling: Some(&delete),
+                io: None,
+            },
+            None,
+        )?
+        .await?;
+    assert_eq!(removed.members.len(), 1);
+    assert_eq!(removed.files().count(), 0);
+    // The original immutable source remains readable after deletion.
+    assert_eq!(
+        host.read_content(first, &read, 64, None).await?.as_ref(),
+        b"first"
+    );
+    Ok(())
+}

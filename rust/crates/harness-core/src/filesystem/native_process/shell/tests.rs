@@ -386,3 +386,59 @@ async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
     assert!(!temp.path().join("should-not-exist").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn literal_argv_uses_the_original_capture_without_shell_expansion() -> Result<()> {
+    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let mounts = table(
+        temp.path()
+            .canonicalize()
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )?;
+    let literal = "$(touch injected); * $HOME ' ";
+    let output = run(
+        ShellInput {
+            command: crate::tools::ShellCommand::Argv(vec![
+                "/usr/bin/printf".into(),
+                "%s\n".into(),
+                literal.into(),
+                "".into(),
+            ]),
+            cwd: None,
+            timeout_ms: None,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .ok_or_else(|| Error::Storage("literal capture was indeterminate".into()))?;
+    assert_eq!(output.exit_code, Some(0));
+    assert_eq!(output.stdout, format!("{literal}\n\n").as_bytes());
+    assert!(!temp.path().join("injected").exists());
+    let source = run(
+        ShellInput {
+            command: "printf '%s' expanded > source-result".into(),
+            cwd: None,
+            timeout_ms: None,
+            target: None,
+        },
+        &mounts,
+        invocation(&mounts.root),
+        1,
+        None,
+        || Ok(()),
+    )
+    .await?
+    .ok_or_else(|| Error::Storage("source capture was indeterminate".into()))?;
+    assert_eq!(source.exit_code, Some(0));
+    assert_eq!(
+        std::fs::read(temp.path().join("source-result"))
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        b"expanded"
+    );
+    Ok(())
+}

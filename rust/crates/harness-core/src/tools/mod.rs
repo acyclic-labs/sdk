@@ -7,7 +7,8 @@ pub use agents::{
     definitions as agent_tool_definitions, spawned_child,
 };
 pub mod shell;
-pub use shell::ShellInput;
+pub mod variants;
+pub use shell::{ShellCommand, ShellInput};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod code_mode;
 mod defaults;

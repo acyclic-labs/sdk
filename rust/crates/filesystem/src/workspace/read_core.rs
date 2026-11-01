@@ -123,6 +123,7 @@ pub(super) async fn matches_content<
     original: GenerationId,
     path: &str,
     exact_payload: bool,
+    allow_absent: bool,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<bool, WorkspaceError> {
@@ -173,6 +174,7 @@ pub(super) async fn matches_content<
                 )
                 .await?
             }
+            (None, None) => allow_absent,
             _ => false,
         };
         original.retire(&mut accounting)?;

@@ -246,3 +246,5 @@ impl<A, O> FilesystemHost<A, O> {
 type PublicationPause = dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()> + Send + Sync;
 #[cfg(all(test, target_arch = "wasm32"))]
 type PublicationPause = dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()>;
+
+mod content_changes;
