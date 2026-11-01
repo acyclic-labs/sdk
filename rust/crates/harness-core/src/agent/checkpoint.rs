@@ -194,7 +194,7 @@ mod tests {
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
         MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-        MAX_WAKING_NOTICE_BYTES, Message, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
+        Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
         VolumeBinding,
     };
     use crate::conversation::{
@@ -298,21 +298,24 @@ mod tests {
         ]
     }
 
-    /// The widest admitted waking notice: a control-character body, which JSON
-    /// escapes to six bytes, filling [`MAX_WAKING_NOTICE_BYTES`].
-    fn widest_notice() -> crate::conversation::wire::Notice {
-        let notice = |n| crate::conversation::wire::Notice {
-            source: widest(MAX_INTENT_BYTES),
-            kind: widest(MAX_INTENT_BYTES),
-            body: serde_json::Value::String(widest_text(n)),
-            wake: true,
-            // A key requires an object body; the body fills the bound alone.
-            coalesce_key: None,
-        };
-        let width = |n| serde_json::to_vec(&notice(n)).expect("notice").len();
-        let n = (MAX_WAKING_NOTICE_BYTES - width(0)) / 6;
-        assert!(width(n) <= MAX_WAKING_NOTICE_BYTES && width(n + 1) > MAX_WAKING_NOTICE_BYTES);
-        notice(n)
+    /// A maximal reference, independent of the staged event's logical size.
+    fn widest_notice() -> NoticePayload {
+        NoticePayload::Waking(Box::new(
+            FileRef::new(
+                volume(),
+                widest(MAX_PATH_BYTES),
+                widest(MAX_LABEL_BYTES),
+                FileDescriptor::new(
+                    [0xff; 32],
+                    MAX_EXACT_JS_INTEGER,
+                    crate::agent::NOTICE_MEDIA_TYPE.into(),
+                )
+                .expect("descriptor"),
+                widest(MAX_LABEL_BYTES),
+                &mut None,
+            )
+            .expect("notice file"),
+        ))
     }
 
     /// The widest adoption: deepest parent, every volume, brief and policy.
@@ -436,17 +439,22 @@ mod tests {
         for record in inbox_records() {
             record.encode().expect("every inbox record fits");
         }
-        // One byte past the waking reserve is refused at admission, before
-        // its turn could run and fail to settle.
-        let mut oversized = widest_notice();
-        if let serde_json::Value::String(body) = &mut oversized.body {
-            body.push(' ');
-        }
-        let oversized = InboxRecord::Notice {
+        // Waking payload bytes never enter the settlement record. The largest
+        // exact file length still has a fixed-width descriptor, unlike inline
+        // JSON, whose escaping alone could overflow the record.
+        let waking = InboxRecord::Notice {
             id: intent(),
-            notice: oversized,
+            notice: widest_notice(),
         };
-        assert!(oversized.encode().is_err());
+        let InboxRecord::Notice {
+            notice: NoticePayload::Waking(file),
+            ..
+        } = &waking
+        else {
+            unreachable!()
+        };
+        assert_eq!(file.descriptor().byte_length(), MAX_EXACT_JS_INTEGER);
+        assert!(waking.encode().expect("fixed-size waking reference").len() < MAX_RECORD_BYTES);
         for by in senders() {
             Closed { by, id: intent() }
                 .encode()
@@ -666,7 +674,7 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "1", "2", "unknown"] {
+        for version in ["0", "1", "2", "3", "4", "5", "unknown"] {
             for bytes in [valid.bytes.clone(), Vec::new().into()] {
                 let mut checkpoint = valid.clone();
                 checkpoint.codec.version = version.into();

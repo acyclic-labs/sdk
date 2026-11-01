@@ -63,6 +63,9 @@ pub struct OpenTurn {
 /// private volume. The inbox retains its immutable file, never an inline body.
 pub const USER_INPUT_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.user-input.v1+json";
 
+/// The complete primitive waking event, staged through the input publisher.
+pub const NOTICE_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.notice.v1+json";
+
 /// Encodes ordered user content for the original input publisher. Validation
 /// rejects model/tool/configuration content before any publication.
 pub fn encode_user_input(content: &ModelContent) -> crate::Result<Vec<u8>> {
@@ -89,6 +92,27 @@ pub async fn expand_attachments(
     content: ModelContent,
     reader: &dyn crate::conversation::ContentResidencyVerifier,
 ) -> crate::Result<ModelContent> {
+    if let ModelContent::Part(ModelContentPart::File { file, .. }) = &content
+        && file.descriptor().media_type() == NOTICE_MEDIA_TYPE
+    {
+        let bytes = reader
+            .read(file, file.descriptor().byte_length(), None, None)?
+            .await?;
+        file.descriptor().verify(&bytes, &mut None)?;
+        let notice: crate::conversation::wire::Notice = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        notice
+            .validate()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        if !notice.wake {
+            return Err(crate::Error::Invalid(
+                "staged waking notice does not wake".into(),
+            ));
+        }
+        return Ok(ModelContent::Part(ModelContentPart::Notices {
+            notices: vec![notice],
+        }));
+    }
     let content = if let ModelContent::Part(ModelContentPart::File { file, .. }) = &content
         && file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE
     {
@@ -416,9 +440,7 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
         }],
     };
     Ok(match input {
-        TurnInput::Notice { notice, .. } => ModelContent::Part(ModelContentPart::Notices {
-            notices: vec![notice.clone()],
-        }),
+        TurnInput::Notice { notice, .. } => ModelContent::Part(body(notice)),
         TurnInput::Message {
             body: file,
             attachments: Some(manifest),

@@ -18,8 +18,9 @@ pub enum TurnInput {
         /// Original producer event identity.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
-        /// Event payload retained at the original inbox position.
-        notice: crate::conversation::wire::Notice,
+        /// Complete event staged at the original immutable version.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
+        notice: Box<FileRef>,
     },
     /// The adoption brief.
     Brief {
@@ -122,9 +123,14 @@ pub struct Progress {
 /// The turn input an inbox record at `sequence` carries.
 pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
     let input = match record {
-        InboxRecord::Notice { id, notice } => {
-            notice.wake.then_some(TurnInput::Notice { id, notice })
-        }
+        InboxRecord::Notice {
+            id,
+            notice: super::NoticePayload::Waking(notice),
+        } => Some(TurnInput::Notice { id, notice }),
+        InboxRecord::Notice {
+            notice: super::NoticePayload::Quiet(_),
+            ..
+        } => None,
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,

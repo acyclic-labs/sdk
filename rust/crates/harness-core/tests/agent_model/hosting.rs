@@ -303,6 +303,130 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
     Ok(())
 }
 
+#[tokio::test]
+async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result {
+    use acyclic_harness_core::{
+        conversation::wire::Notice,
+        filesystem::{FilesystemContentVerifier, agent_authority},
+        model::ModelContentPart,
+    };
+    let stream = Arc::new(MemoryStream::default());
+    let mut capacity = turns()?;
+    capacity.limits.maximum_bytes = 1 << 20;
+    let bound = Bound::local_root(
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        ),
+        placement(&stream)?,
+        capacity,
+    )?;
+    let RootSubmission::Created(agent) = bound
+        .create_root(
+            &intent("root"),
+            root(id(1), vec![volume(PRIVATE_VOLUME, id(1))?]),
+        )
+        .await?
+    else {
+        return Err("uncertain root".into());
+    };
+    let event = |body| Notice {
+        source: "filesystem".into(),
+        kind: "files.changed".into(),
+        body: serde_json::Value::String(body),
+        wake: true,
+        coalesce_key: None,
+    };
+    // Escaping makes this payload larger than an entire persisted record.
+    let notice = event("\0".repeat(32 * 1024));
+    let original = acyclic_harness_core::contract::canonical_json_bytes(&notice)?;
+    assert!(original.len() > MAX_RECORD_BYTES);
+    let request = intent("notice");
+    let staged = bound
+        .stage_notice(&agent, &super::user(), &request, &notice)
+        .await?;
+    assert_eq!(
+        staged,
+        bound
+            .stage_notice(&agent, &super::user(), &request, &notice)
+            .await?
+    );
+    assert!(
+        bound
+            .stage_notice(&agent, &super::user(), &request, &event("changed".into()))
+            .await
+            .is_err()
+    );
+    assert!(
+        InboxRecord::Notice {
+            id: request.clone(),
+            notice: NoticePayload::Quiet(notice.clone())
+        }
+        .encode()
+        .is_err(),
+        "an inline waking body must not reenter the queue"
+    );
+    let InboxRecord::Notice {
+        notice: NoticePayload::Waking(file),
+        ..
+    } = &staged
+    else {
+        return Err("waking notice was not staged".into());
+    };
+    assert_eq!(
+        bound
+            .read_file(&agent, file, 0, original.len() as u64)
+            .await?
+            .0,
+        original
+    );
+    let input = TurnInput::Notice {
+        id: request,
+        notice: file.clone(),
+    };
+    let entry = ConversationEntry {
+        inbox: 1,
+        input: input.clone(),
+        output: file.as_ref().clone(),
+        outcome: TurnOutcome::Completed,
+        goal: None,
+        targets: None,
+        tool_results: None,
+        notices: None,
+    };
+    assert!(staged.encode()?.len() < 4096);
+    assert!(entry.encode()?.len() < 8192);
+    assert_eq!(ConversationEntry::decode(&entry.encode()?)?, entry);
+    let state = bound.agents().state(&agent).await?;
+    let authority = agent_authority(
+        bound.issuer(),
+        bound.admission(),
+        &agent,
+        &state.volumes,
+        &[],
+    )
+    .await?;
+    let reader = FilesystemContentVerifier::new(
+        bound.volumes().clone(),
+        &authority.verifier,
+        &authority.scope,
+        1 << 20,
+        None,
+    )?;
+    let expanded = expand_attachments(model_input(&input)?, reader.as_ref()).await?;
+    assert_eq!(
+        expanded,
+        ModelContent::Part(ModelContentPart::Notices {
+            notices: vec![notice]
+        })
+    );
+    Ok(())
+}
+
 /// A provider that admits a write only with valid evidence: it counts
 /// publications, records each presented attestation, and can lose the
 /// first commit's acknowledgement after applying it.

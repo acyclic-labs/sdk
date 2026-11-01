@@ -40,6 +40,7 @@ enum StagedInput<'a> {
         text: Option<&'a str>,
     },
     Content(&'a crate::model::ModelContent),
+    Notice(&'a crate::conversation::wire::Notice),
 }
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
@@ -930,6 +931,38 @@ where
             .ok_or(Error::Record("a staged input is missing its file"))
     }
 
+    /// Prepares one primitive event under its original sender and intent.
+    /// Waking content uses the same immutable input publication as a message;
+    /// only that file reference enters the inbox, queue and settled entry.
+    ///
+    /// # Errors
+    /// Invalid Notice content, missing authority, changed intent or store failure.
+    pub async fn stage_notice(
+        &self,
+        agent: &AgentPath,
+        by: &Sender,
+        intent: &IntentId,
+        notice: &crate::conversation::wire::Notice,
+    ) -> Result<crate::agent::InboxRecord, Error> {
+        notice
+            .validate()
+            .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
+        let notice = if notice.wake {
+            let file = self
+                .staged_input(agent, "notice", by, intent, StagedInput::Notice(notice))
+                .await?
+                .ok_or(Error::Record("a staged notice is missing its file"))?;
+            crate::agent::NoticePayload::Waking(Box::new(file))
+        } else {
+            self.admit_path(agent)?;
+            crate::agent::NoticePayload::Quiet(notice.clone())
+        };
+        Ok(crate::agent::InboxRecord::Notice {
+            id: intent.clone(),
+            notice,
+        })
+    }
+
     /// Stages `text` once, or with `None` only observes what was staged.
     async fn staged_input(
         &self,
@@ -946,6 +979,15 @@ where
             .map_err(turn)?;
         let encoded;
         let (source, payload, extension) = match input {
+            StagedInput::Notice(notice) => {
+                encoded = crate::contract::canonical_json_bytes(notice)
+                    .map_err(|error| turn(crate::Error::Invalid(error.to_string())))?;
+                (
+                    encoded.as_slice(),
+                    Some((encoded.as_slice(), crate::agent::NOTICE_MEDIA_TYPE)),
+                    "json",
+                )
+            }
             StagedInput::Text { source, text } => (
                 source.as_bytes(),
                 text.map(|text| (text.as_bytes(), "text/plain")),

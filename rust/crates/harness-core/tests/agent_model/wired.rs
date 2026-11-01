@@ -289,6 +289,32 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         ScriptedTurn::Text("second".into()),
     ]));
     let (filesystem, binding) = private(&path).await?;
+    let notice_issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "agents".into(),
+        },
+    )
+    .into();
+    let notice_authority = acyclic_harness_core::filesystem::agent_authority(
+        &notice_issuer,
+        &TurnAdmission::LocalRoot,
+        &path,
+        std::slice::from_ref(&binding),
+        &[],
+    )
+    .await?;
+    let notice_publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &binding.volume,
+        &notice_authority.verifier,
+        &notice_authority.scope,
+        acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    drop(notice_authority);
     let clock = Arc::new(EventClock(AtomicU64::new(0)));
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
@@ -320,37 +346,71 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     adoption.volumes = vec![binding];
     assert_eq!(host.create(&intent("notice-root"), adoption).await?, path);
     host.drain(&path).await?;
-    let event = |name: &str, wake| InboxRecord::Notice {
-        id: intent(name),
-        notice: Notice {
-            source: "filesystem".into(),
-            kind: "files.changed".into(),
-            body: serde_json::json!({"paths": [name], "revision": name}),
-            wake,
-            coalesce_key: Some("workspace".into()),
-        },
+    let event = |name: &str, wake| Notice {
+        source: "filesystem".into(),
+        kind: "files.changed".into(),
+        body: serde_json::json!({"paths": [name], "revision": name}),
+        wake,
+        coalesce_key: Some("workspace".into()),
     };
     for name in ["wide-first", "wide-second"] {
         let wide = InboxRecord::Notice {
             id: intent(name),
-            notice: Notice {
+            notice: NoticePayload::Quiet(Notice {
                 source: "filesystem".into(),
                 kind: "files.changed".into(),
                 body: serde_json::json!({"name": name, "details": "x".repeat(2300)}),
                 wake: false,
                 coalesce_key: None,
-            },
+            }),
         };
         host.send(&path, &super::user(), &wide).await?;
         host.drain(&path).await?;
     }
     for name in ["alpha", "beta"] {
-        host.send(&path, &super::user(), &event(name, false))
-            .await?;
+        host.send(
+            &path,
+            &super::user(),
+            &InboxRecord::Notice {
+                id: intent(name),
+                notice: NoticePayload::Quiet(event(name, false)),
+            },
+        )
+        .await?;
         host.drain(&path).await?;
     }
     assert!(model.requests().is_empty());
-    let waking = event("run", true);
+    let stage_waking = |name: &str| {
+        let notice_publisher = notice_publisher.clone();
+        let notice = event(name, true);
+        let id = intent(name);
+        async move {
+            use acyclic_harness_core::conversation::{ContentAccess, ContentPublisher};
+            let bytes = acyclic_harness_core::contract::canonical_json_bytes(&notice)?;
+            let operation = OperationId::from_bytes(
+                *blake3::hash(id.as_str().as_bytes())
+                    .as_bytes()
+                    .first_chunk::<16>()
+                    .ok_or("short digest")?,
+            );
+            let file = notice_publisher
+                .stage_once(
+                    operation,
+                    &format!("inputs/{}.json", id.as_str()),
+                    &bytes,
+                    NOTICE_MEDIA_TYPE,
+                    "notice",
+                    ContentAccess::default(),
+                )?
+                .await?
+                .0;
+            Ok::<_, Box<dyn std::error::Error>>(InboxRecord::Notice {
+                id,
+                notice: NoticePayload::Waking(Box::new(file)),
+            })
+        }
+    };
+    let waking = stage_waking("run").await?;
     host.send(&path, &super::user(), &waking).await?;
     host.drain(&path).await?;
     let frozen = host.state(&path).await?;
@@ -364,8 +424,15 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     host.send(&path, &super::user(), &waking).await?;
     host.drain(&path).await?;
     assert_eq!(host.state(&path).await?.turn, frozen.turn);
-    host.send(&path, &super::user(), &event("gamma", false))
-        .await?;
+    host.send(
+        &path,
+        &super::user(),
+        &InboxRecord::Notice {
+            id: intent("gamma"),
+            notice: NoticePayload::Quiet(event("gamma", false)),
+        },
+    )
+    .await?;
     host.drain(&path).await?;
     assert_eq!(
         turn_notices(&host.state(&path).await?)?,
@@ -401,7 +468,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             .value,
     )?;
     assert_eq!(entry.notices, Some(selected.clone()));
-    host.send(&path, &super::user(), &event("again", true))
+    host.send(&path, &super::user(), &stage_waking("again").await?)
         .await?;
     host.drain(&path).await?;
     assert_eq!(host.state(&path).await?.pending_notices, None);
