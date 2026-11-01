@@ -21,7 +21,7 @@ function run(command, args, options = {}) {
   return result;
 }
 
-export function metadata(releaseVersion) {
+export function localCargoPackages() {
   const result = run("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]);
   if (result.status !== 0) fail(result.stderr || "cargo metadata failed");
   const packages = JSON.parse(result.stdout).packages;
@@ -37,6 +37,11 @@ export function metadata(releaseVersion) {
       }
     }
   }
+  return packages;
+}
+
+export function metadata(releaseVersion) {
+  const packages = localCargoPackages();
   const publishable = packages.filter(item => item.source === null && (item.publish === null || item.publish.includes("crates-io")));
   const byName = new Map(publishable.map(item => [item.name, item]));
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {

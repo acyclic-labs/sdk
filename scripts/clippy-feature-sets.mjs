@@ -8,6 +8,12 @@
 // build unifies dev-dependency features, so only a library-only run proves
 // that the library itself builds without them.
 import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { localCargoPackages } from "./publish-cargo-crates.mjs";
+import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const fs = ["-p", "acyclic-fs"];
 const fsOnly = features => [...fs, "--no-default-features", ...(features ? ["--features", features] : [])];
@@ -20,7 +26,7 @@ const withTests = [
   fsOnly("memory"),
   // The local Filesystem Harness adapter.
   fsOnly("memory,local"),
-  // The Windows lane's portable test set.
+  // The Windows portable test set.
   fsOnly("local,memory,native-watch"),
   // Objects and Stream with and without their default gRPC client, as
   // acyclic-fs and the browser build use them, and with `local`.
@@ -54,31 +60,44 @@ const libraryOnly = [
   fsOnly("s3-http"),
 ];
 
-// Each set is its own Cargo invocation, so `clippy-feature-sets.mjs WORKERS`
-// may lint several at once. Every extra worker gets its own target directory
-// so Cargo's build lock never serializes them; a shared compiler cache still
-// deduplicates their dependencies.
-const workers = Number(process.argv[2] ?? 1);
-if (process.argv.length > 3 || !Number.isSafeInteger(workers) || workers < 1) {
-  throw new Error("STEP_FAILED clippy-workers: WORKERS must be a positive safe integer; recovery: node scripts/clippy-feature-sets.mjs 1");
+// Explicit shipped combinations share defining-package admission with the
+// generated matrix. They remain independent compiler invocations.
+export function clippySelections(inventory) {
+  return [...withTests.map(set => [set, "all-targets"]), ...libraryOnly.map(set => [set, undefined])]
+    .map(([set, targets]) => {
+      const names = [];
+      let index = 0;
+      while (set[index] === "-p") { names.push(set[index + 1]); index += 2; }
+      return { selection: selectCargoFeatures(inventory, names, set.slice(index)), targets };
+    });
 }
-const sets = [...withTests.map(set => [...set, "--all-targets"]), ...libraryOnly];
-let failed = 0;
 
-async function worker(index) {
-  const target = `${process.env.CARGO_TARGET_DIR ?? "target"}-clippy-${index}`;
-  const env = index === 0 ? process.env : { ...process.env, CARGO_TARGET_DIR: target };
-  for (let set = sets.shift(); set && !failed; set = sets.shift()) {
-    const command = ["clippy", ...set, "--locked", "--", "-D", "warnings"];
-    const child = spawn("cargo", command, { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    child.stdout.on("data", chunk => (output += chunk));
-    child.stderr.on("data", chunk => (output += chunk));
-    const status = await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
-    process.stderr.write(`cargo ${command.join(" ")}\n${output}`);
-    if (status !== 0) failed ||= status ?? 1;
+async function main() {
+  // Each extra worker gets its own target directory; Cargo owns cache freshness.
+  const workers = Number(process.argv[2] ?? 1);
+  if (process.argv.length > 3 || !Number.isSafeInteger(workers) || workers < 1) {
+    throw new Error("STEP_FAILED clippy-workers: WORKERS must be a positive safe integer; recovery: node scripts/clippy-feature-sets.mjs 1");
   }
+  const sets = clippySelections(new Map(localCargoPackages().map(item => [item.name, item])));
+  let failed = 0;
+
+  async function worker(index) {
+    const target = `${process.env.CARGO_TARGET_DIR ?? "target"}-clippy-${index}`;
+    const env = index === 0 ? process.env : { ...process.env, CARGO_TARGET_DIR: target };
+    for (let set = sets.shift(); set && !failed; set = sets.shift()) {
+      const command = ["clippy", ...cargoFeatureArguments(set.selection, { targets: set.targets }), "--locked", "--", "-D", "warnings"];
+      const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", chunk => (output += chunk));
+      child.stderr.on("data", chunk => (output += chunk));
+      const status = await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
+      process.stderr.write(`cargo ${command.join(" ")}\n${output}`);
+      if (status !== 0) failed ||= status ?? 1;
+    }
+  }
+
+  await Promise.all(Array.from({ length: workers }, (_, index) => worker(index)));
+  process.exitCode = failed;
 }
 
-await Promise.all(Array.from({ length: workers }, (_, index) => worker(index)));
-process.exitCode = failed;
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
