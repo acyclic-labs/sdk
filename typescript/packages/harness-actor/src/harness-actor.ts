@@ -70,7 +70,7 @@ const empty = new Uint8Array();
 /** Durable host state lives in the actor state binding, flushed before effects. The Actor
  * checkpoint carries none of it, so restore always reopens from that storage. */
 const codec: CheckpointCodec<Opened> = {
-  identity, readable: [identity],
+  identity,
   encode: () => empty,
   decode: () => {
     throw new Error("STEP harness-actor-checkpoint failed: state is retained in the actor state binding; recovery: restore the actor");

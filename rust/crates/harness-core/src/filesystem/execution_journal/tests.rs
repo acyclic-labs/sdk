@@ -146,12 +146,32 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
             _ => unreachable!("enumerated envelope mutation"),
         }
         let journal = open(target, turn)?;
+        // Preserve the actual writer's version-first envelope while mutating
+        // payload fields; map key sorting must not mask the field controls.
+        #[derive(Serialize)]
+        struct Envelope<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            version: Option<&'a serde_json::Value>,
+            #[serde(flatten)]
+            fields: std::collections::BTreeMap<&'a str, &'a serde_json::Value>,
+        }
+        let object = wire
+            .as_object()
+            .ok_or_else(|| Error::Invalid("envelope".into()))?;
+        let envelope = Envelope {
+            version: object.get("version"),
+            fields: object
+                .iter()
+                .filter(|(key, _)| key.as_str() != "version")
+                .map(|(key, value)| (key.as_str(), value))
+                .collect(),
+        };
         journal
             .path(target)?
             .append_batch(
                 vec![
                     Bytes::from(
-                        serde_json::to_vec(&wire)
+                        serde_json::to_vec(&envelope)
                             .map_err(|error| Error::Invalid(error.to_string()))?,
                     )
                     .into(),
@@ -160,13 +180,30 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
                 crate::test_support::fresh_key()?,
             )
             .await?;
-        assert!(
-            matches!(
-                open(target, turn)?.replay(target, 0, 1, None)?.await,
-                Err(Error::Storage(_) | Error::Conflict(_))
-            ),
-            "accepted {mutation}"
-        );
+        let refusal = open(target, turn)?
+            .replay(target, 0, 1, None)?
+            .await
+            .err()
+            .ok_or_else(|| Error::Invalid(format!("accepted {mutation}")))?;
+        if matches!(
+            mutation,
+            "missing_version"
+                | "old_version"
+                | "old_refusal"
+                | "unknown_version"
+                | "wrong_version_type"
+        ) {
+            assert_eq!(
+                refusal.code(),
+                crate::wire::ErrorCode::Unsupported,
+                "{mutation}"
+            );
+        } else {
+            assert!(
+                matches!(refusal, Error::Storage(_) | Error::Conflict(_)),
+                "{mutation}: {refusal}"
+            );
+        }
     }
     Ok(())
 }

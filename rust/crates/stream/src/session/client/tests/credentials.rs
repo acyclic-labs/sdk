@@ -31,7 +31,8 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
             0,
             0,
             Body::Hello(wire::SessionHello {
-                version: 1,
+                interest: None,
+                version: crate::session::VERSION,
                 client_id: bytes::Bytes::from_static(b"credential-owner"),
                 destination_node: "node".into(),
                 receive_bytes: crate::MAX_COMMAND_BYTES as u64,

@@ -39,6 +39,14 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
             "proto/stream/v1/session.proto",
         ],
     ),
+    (
+        "harness-core",
+        "harness-v2.bin",
+        &[
+            "proto/harness/v2/harness.proto",
+            "proto/protocol/v1/protocol.proto",
+        ],
+    ),
 ];
 
 /// Configure the pinned compiler and the public Objects metadata map shape.
@@ -130,3 +138,6 @@ pub fn descriptor(
 
 #[cfg(test)]
 mod tests;
+
+/// Shared golden-frame lookup for persisted and wire codec tests.
+pub mod golden;

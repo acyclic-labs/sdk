@@ -2,7 +2,7 @@
 import { ActorReference } from "@acyclic-labs/auth/addressing";
 import { ActorActivation } from "./activation.js";
 import { GUEST_ABI_VERSION } from "./generated/guest.js";
-import type { ActorDefinition, ActorRuntime, Checkpoint, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
+import type { ActorDefinition, ActorRuntime, Checkpoint, CodecIdentity, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
 
 const encoder = new TextEncoder();
 let mutating = false;
@@ -25,6 +25,13 @@ function reference(actor: ActorRuntime): ActorReference | null {
     encoder.encode(actor.namespace ?? "__default"), encoder.encode(actor.id ?? ""));
 }
 
+function admitCheckpoint(value: Checkpoint | null, identity: CodecIdentity): void {
+  if (identity.name.length === 0 || identity.version.length === 0 ||
+      value !== null && (value.codec.name !== identity.name || value.codec.version !== identity.version)) {
+    throw Object.assign(new Error("incompatible checkpoint codec"), { type: "incompatibleCodec" as const });
+  }
+}
+
 function checkpointCopy(value: Checkpoint): Checkpoint {
   if (!(value.bytes instanceof Uint8Array)) throw new TypeError("checkpoint bytes must be Uint8Array");
   return { codec: { ...value.codec }, bytes: new Uint8Array(value.bytes) };
@@ -41,6 +48,7 @@ export class GuestActivation<State, Bindings> {
   readonly #reference: ActorReference | null;
   constructor(definition: ActorDefinition<State, Bindings>, checkpoint: Checkpoint | null, context: GuestContext<Bindings>) {
     if (definition.abiVersion !== GUEST_ABI_VERSION) throw new Error("unsupported guest ABI");
+    admitCheckpoint(checkpoint, definition.codec.identity);
     this.#definition = definition;
     this.#context = context;
     this.#reference = reference(context.actor);
@@ -69,7 +77,11 @@ export class GuestActivation<State, Bindings> {
   }
   /** Capture is host work; it cannot be invoked from one of this activation's handlers. */
   checkpoint(): Promise<Checkpoint> {
-    return this.#activation.quiesce(async state => checkpointCopy(await this.#definition.checkpoint(state, this.#context)));
+    return this.#activation.quiesce(async state => {
+      const checkpoint = await this.#definition.checkpoint(state, this.#context);
+      admitCheckpoint(checkpoint, this.#definition.codec.identity);
+      return checkpointCopy(checkpoint);
+    });
   }
   /** Original host authority/cancellation permanently discards this heap. */
   fence(): void { this.#activation.fence(); }

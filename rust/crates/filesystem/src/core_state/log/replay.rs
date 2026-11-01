@@ -311,7 +311,7 @@ fn read_log_bytes(
     })
 }
 
-fn checked_log_frame<'a>(
+pub(in crate::core_state) fn checked_log_frame<'a>(
     bytes: &'a [u8],
     line_start: &mut usize,
     work: Option<&crate::NativeMaterializationWork>,

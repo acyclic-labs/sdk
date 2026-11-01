@@ -121,7 +121,7 @@ impl Pending {
             let reader = writer.reader();
             let previous = reader.get(root, &key).await?.map(|read| read.reference());
             let value = encode(entry, previous);
-            root = Some(writer.set(root, key, value.as_slice()).await?);
+            root = Some(writer.set(root, key, value.as_slice(), false).await?);
         }
         Ok(root)
     }
@@ -222,6 +222,86 @@ fn decode(
     Ok((entry, previous))
 }
 
+#[cfg(feature = "test-support")]
+pub(super) mod codec_fuzz {
+    use super::*;
+
+    pub(in crate::filesystem::execution_journal) fn check(value: &[u8]) {
+        // The original authenticated node and checkpoint own the schema and
+        // selected step. This pure cell parser grants neither of those facts.
+        for sequence in [0, u64::MAX] {
+            let reference = NodeRef {
+                sequence,
+                digest: [9; 32],
+            };
+            for step in [None, Some(u32::MAX)] {
+                if let Ok((entry, previous)) = decode(value, reference, step, None) {
+                    assert_eq!(entry.step, step);
+                    let encoded = encode(&entry, previous);
+                    assert_eq!(encoded.as_slice(), value);
+                    for length in 0..113 {
+                        assert!(decode(&value[..length], reference, step, None).is_err());
+                    }
+                    let mut invalid_sequence = value.to_vec();
+                    invalid_sequence[..8].fill(0);
+                    assert!(decode(&invalid_sequence, reference, step, None).is_err());
+                    let mut invalid_flags = value.to_vec();
+                    invalid_flags[72] |= 128;
+                    assert!(decode(&invalid_flags, reference, step, None).is_err());
+                    let mut invalid_previous = value.to_vec();
+                    if previous.is_some() {
+                        invalid_previous[73..81].copy_from_slice(&sequence.to_le_bytes());
+                    } else {
+                        invalid_previous[73] = 1;
+                    }
+                    assert!(decode(&invalid_previous, reference, step, None).is_err());
+                    let mut trailing = value.to_vec();
+                    trailing.push(0);
+                    assert!(decode(&trailing, reference, step, None).is_err());
+                }
+            }
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
+    {
+        let mut seeds = Vec::new();
+        for (name, previous, tool) in [
+            ("execution-step-first", false, None),
+            ("execution-step-linked", true, None),
+            ("execution-step-tool-pending", false, Some(false)),
+            ("execution-step-linked-tool-pending", true, Some(false)),
+            ("execution-step-tool-settled", false, Some(true)),
+            ("execution-step-linked-tool-settled", true, Some(true)),
+        ] {
+            let entry = Entry {
+                step: Some(u32::MAX),
+                sequence: u64::MAX,
+                retry: [1; 32],
+                digest: [2; 32],
+                tool: tool.map(|settled| ([3; 32], settled)),
+            };
+            let previous = previous.then_some(NodeRef {
+                sequence: u64::MAX - 1,
+                digest: [4; 32],
+            });
+            let encoded = encode(&entry, previous);
+            decode(
+                encoded.as_slice(),
+                NodeRef {
+                    sequence: u64::MAX,
+                    digest: [9; 32],
+                },
+                entry.step,
+                None,
+            )?;
+            check(encoded.as_slice());
+            seeds.push((name, encoded.as_slice().to_vec()));
+        }
+        Ok(seeds)
+    }
+}
+
 /// Tool admission is part of the step chain, rather than a second durable map
 /// of the same observations. Newest matching state wins; strictly decreasing
 /// record positions prevent cycles and keep recovery within this one step.
@@ -236,7 +316,12 @@ pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     let mut read = reader.get(root, &key(Some(step))).await?;
     let mut sequence = tail.checked_add(1).ok_or_else(|| invalid(io))?;
     while let Some(node) = read {
-        let Node::Leaf { key: found, value } = node.node(io)? else {
+        let Node::Leaf {
+            key: found,
+            value,
+            segmented: false,
+        } = node.node(io)?
+        else {
             return Err(invalid(io));
         };
         if found != key(Some(step)) {
@@ -445,7 +530,12 @@ async fn collect_step<P: crate::store::JournalProvider + ?Sized>(
         if count > maximum {
             return Err(invalid(io));
         }
-        let Node::Leaf { key: found, value } = node.node(io)? else {
+        let Node::Leaf {
+            key: found,
+            value,
+            segmented: false,
+        } = node.node(io)?
+        else {
             return Err(invalid(io));
         };
         if found != key(step) {

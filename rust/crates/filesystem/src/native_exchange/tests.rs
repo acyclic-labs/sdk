@@ -193,6 +193,11 @@ fn journal_rejections_preserve_the_original_request_and_roots() -> TestResult {
         assert!(
             matches!(recover_native_exchange(&f.journal), Err(NativeExchangeError::UnsupportedJournalVersion(v)) if v == version)
         );
+        // A cut, semantically invalid body cannot hide an unsupported version.
+        fs::write(&f.journal, format!("{{\"version\":{version},\"live\":["))?;
+        assert!(
+            matches!(recover_native_exchange(&f.journal), Err(NativeExchangeError::UnsupportedJournalVersion(v)) if v == version)
+        );
     }
     let invalid_paths = vec![
         PathBuf::new(),

@@ -5,7 +5,7 @@ struct JournalFrame {
 }
 
 /// Reads the frame at the file's cursor, `remaining` bytes before its end,
-fn read_frame(file: &File, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
+fn read_frame(file: impl Read, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
     let Some(command) = JOURNAL_FRAME.read(file, remaining)? else {
         return Ok(None);
     };

@@ -207,6 +207,7 @@ struct Route {
     observation: super::runtime::OperationSpan,
 }
 struct Link {
+    opening_subscription: Option<wire::SessionChannel>,
     opening_credentials: BTreeMap<u32, Bytes>,
     observation: Option<Observation>,
     epoch: u64,

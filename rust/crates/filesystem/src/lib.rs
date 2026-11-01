@@ -138,6 +138,13 @@ pub mod native_exchange;
 pub mod native_host;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_identity;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(all(windows, feature = "native-mount"), feature = "test-support", kani)
+))]
+mod native_ownership;
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub use native_ownership::codec_fuzz as native_ownership_codec;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub mod native_mount;
 #[cfg(not(target_arch = "wasm32"))]
@@ -172,6 +179,12 @@ pub use acyclic_fs_base::text_merge;
 pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 mod windows_usn;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, feature = "test-support", all(feature = "native-watch", windows))
+))]
+#[doc(hidden)]
+pub mod windows_usn_codec;
 pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;

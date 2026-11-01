@@ -69,7 +69,7 @@ test("guest gRPC body serves canonical ActorCall while upload remains open and c
     return fromBinary(SessionFrameSchema, bytes.subarray(5));
   };
   try {
-    const hello = envelope({ body: { case: "hello", value: { version: 1, clientId: crypto.getRandomValues(new Uint8Array(16)),
+    const hello = envelope({ body: { case: "hello", value: { version: 2, clientId: crypto.getRandomValues(new Uint8Array(16)),
       receiveBytes: 1048576n, receiveFrames: 16, credentials: [f.credential] } } });
     // Exercise actual split headers and coalesced input, not a transport fixture.
     upload.enqueue(hello.subarray(0, 2)); upload.enqueue(hello.subarray(2));
@@ -129,7 +129,7 @@ test("guest gRPC Session distinguishes complete upload EOF from truncated envelo
     const response = await serveGrpcSession({ grpcSession: next => Promise.resolve(f.host.grpcSession(next)) }, request(input));
     const reader = response.body.getReader();
     try {
-      upload.enqueue(envelope({ body: { case: "hello", value: { version: 1, clientId: crypto.getRandomValues(new Uint8Array(16)),
+      upload.enqueue(envelope({ body: { case: "hello", value: { version: 2, clientId: crypto.getRandomValues(new Uint8Array(16)),
         receiveBytes: 1048576n, receiveFrames: 16, credentials: [f.credential] } } }));
       const welcome = await reader.read();
       expect(welcome.done).toBe(false);

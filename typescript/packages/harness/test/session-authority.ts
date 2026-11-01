@@ -1,6 +1,7 @@
 /** Ephemeral test runtime: roots stay here; clients receive one workload tip. */
 import { create, toBinary } from "@bufbuild/protobuf";
-import { BirthSchema, BlockSchema, CapabilitySchema, CertifiedKeySchema, PrincipalKind } from "../../auth/generated/proto/auth/v1/auth_pb.js";
+import { BirthSchema, BlockSchema, SignedBlockSchema, CertifiedKeySchema, PrincipalKind } from "../../auth/generated/proto/auth/v1/auth_pb.js";
+import { encodeCapability } from "../../auth/src/wasm.js";
 import { WasmSessionAuthority, type WasmStream } from "../src/client-query.js";
 
 const encoder = new TextEncoder();
@@ -41,10 +42,11 @@ export async function localSessionAuthority(resources = [{ name: "streams:/", pr
     nextPublicKey: tip.publicBytes,
   });
   const payload = toBinary(BlockSchema, block);
-  const signature = await sign(runtime.privateKey, joined(encoder.encode("acyclic.auth.v1/block\0"), integer(0n, 8), integer(1n, 4), new Uint8Array(32), integer(BigInt(payload.length), 8), payload));
+  const signature = await sign(runtime.privateKey, joined(encoder.encode("acyclic.auth.v1/block\0"), integer(0n, 8), integer(2n, 4), new Uint8Array(32), integer(BigInt(payload.length), 8), payload));
   const privateTip = new Uint8Array(await crypto.subtle.exportKey("pkcs8", tip.privateKey));
-  const credential = toBinary(CapabilitySchema, create(CapabilitySchema, { blocks: [{ payload, signature }], proof: { case: "secret", value: privateTip.slice(-32) }, version: 1 }));
-  privateTip.fill(0);
+  let credential: Uint8Array;
+  try { credential = encodeCapability([toBinary(SignedBlockSchema, create(SignedBlockSchema, { payload, signature }))], privateTip.subarray(-32), false); }
+  finally { privateTip.fill(0); }
   const authority = new WasmSessionAuthority(JSON.stringify({ environment: "fixture", environment_keys: [Array.from(environment.publicBytes)], account: "account", issuer_keys: [Array.from(account.publicBytes)], minimum_key_epoch: 1, revoked_key_ids: [], revoked_block_ids: [] }), "workers:/test", "account");
   return { authority, credential };
 }

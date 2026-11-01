@@ -11,6 +11,50 @@ fn error(value: VerifyError) -> JsValue {
     error.into()
 }
 
+/// Encode public signed blocks and a guarded proof with the shared Rust writer.
+/// This does not sign, authenticate or admit a capability. The caller owns and
+/// clears its JavaScript proof and output buffers.
+#[wasm_bindgen(js_name = encodeCapability)]
+pub fn encode_capability_bytes(
+    blocks: Array,
+    proof: Uint8Array,
+    sealed: bool,
+) -> Result<Uint8Array, JsValue> {
+    let length = if sealed { 64 } else { 32 };
+    if proof.length() as usize != length {
+        return Err(error(VerifyError::Malformed));
+    }
+    let mut bytes = Zeroizing::new(vec![0; length]);
+    proof.copy_to(&mut bytes);
+    let blocks = blocks
+        .iter()
+        .map(|block| {
+            let block = block
+                .dyn_into::<Uint8Array>()
+                .map_err(|_| error(VerifyError::Malformed))?;
+            SignedBlockProto::decode(block.to_vec().as_slice())
+                .map_err(|_| error(VerifyError::Malformed))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let proof = if sealed {
+        TipProofRef::Sealed(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| error(VerifyError::Malformed))?,
+        )
+    } else {
+        TipProofRef::Secret(
+            bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| error(VerifyError::Malformed))?,
+        )
+    };
+    let encoded = encode_capability(&blocks, proof);
+    Ok(Uint8Array::from(encoded.as_slice()))
+}
+
 /// Trust supplied by the application from an authenticated current source.
 #[wasm_bindgen]
 pub struct TrustSnapshot(Snapshot);

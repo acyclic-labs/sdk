@@ -31,12 +31,17 @@ impl StreamSessionService for PausedPeer {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("missing hello"))?;
-        assert!(matches!(hello.body, Some(Body::Hello(_))));
+        let Some(Body::Hello(hello)) = hello.body else {
+            return Err(Status::invalid_argument("expected admission"));
+        };
+        let interest = hello
+            .interest
+            .ok_or_else(|| Status::invalid_argument("missing first interest"))?;
         let welcome = frame(
             0,
             0,
             Body::Welcome(wire::SessionWelcome {
-                version: 1,
+                version: crate::session::VERSION,
                 node_id: "paused".into(),
                 receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                 receive_frames: u32::try_from(crate::MAX_ITEMS)
@@ -45,22 +50,15 @@ impl StreamSessionService for PausedPeer {
         );
         let guard = Closed(Arc::clone(&self.closed));
         let following = stream::try_unfold(
-            (input, false, guard, Arc::clone(&self.resume)),
-            |(mut input, moved, guard, resume)| async move {
-                if moved {
+            (input, Some(interest), guard, Arc::clone(&self.resume)),
+            |(mut input, interest, guard, resume)| async move {
+                let Some(interest) = interest else {
                     // Retain the request and response while consuming no more
                     // controls. HTTP/2 eventually exhausts its receive window.
                     resume.notified().await;
                     while input.message().await?.is_some() {}
                     drop(guard);
                     return Ok(None);
-                }
-                let interest = input
-                    .message()
-                    .await?
-                    .ok_or_else(|| Status::invalid_argument("missing interest"))?;
-                let Some(Body::Interest(interest)) = interest.body else {
-                    return Err(Status::invalid_argument("expected interest"));
                 };
                 let channel = interest
                     .upsert
@@ -79,7 +77,7 @@ impl StreamSessionService for PausedPeer {
                         resume: None,
                     }),
                 );
-                Ok(Some((moved, (input, true, guard, resume))))
+                Ok(Some((moved, (input, None, guard, resume))))
             },
         );
         Ok(Reply::new(

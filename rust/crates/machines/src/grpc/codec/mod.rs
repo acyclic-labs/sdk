@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(feature = "test-support")]
+/// On-demand semantic checks against the production gRPC conversions.
+pub mod codec_fuzz;
 mod error;
 mod image;
 mod observation;

@@ -22,9 +22,6 @@ mod mcp {
 mod codec;
 
 fuzz_target!(|input: &[u8]| {
-    if input.len() > 4096 {
-        return;
-    }
     for maximum in [1, 16, 128, 4096] {
         let bound = Arc::new(AtomicU32::new(maximum));
         let mut decoder = codec::BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&bound));

@@ -185,3 +185,5 @@ pub(super) fn crash_point(_label: &str, _flushed: u64) {}
 mod checkpoint;
 mod commit;
 mod replay;
+#[cfg(feature = "test-support")]
+pub(super) use replay::checked_log_frame;

@@ -4,6 +4,10 @@ use crate::kernel::{
     Encoder, ReadAllocationStep,
 };
 const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v1\0";
+#[cfg(feature = "test-support")]
+#[path = "directory_cursor_fuzz.rs"]
+/// On-demand checks of the funded directory continuation codec.
+pub mod codec_fuzz;
 impl LazyDirectoryCursor {
     /// Encodes a frozen continuation on its original native ledger.
     pub fn encode(

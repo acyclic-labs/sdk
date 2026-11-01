@@ -48,11 +48,11 @@ use crate::{
     SystemUnixMillisClock, UnixMillisClock,
 };
 
-const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
+const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V2\0";
 /// The magic, the limits, then the journal's epoch.
 const HEADER_BYTES: usize = HEADER_MAGIC.len() + LIMITS_BYTES + 8;
 const LIMITS_BYTES: usize = 6 * 8 + 2 * 8;
-const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V01\0";
+const SNAPSHOT_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-SNAP-V02\0";
 /// The magic, limits and journal epoch; state and checksum follow.
 const SNAPSHOT_HEADER_BYTES: usize = SNAPSHOT_MAGIC.len() + LIMITS_BYTES + 8;
 /// A frame's sampled Unix commit time, before its command.
@@ -61,6 +61,7 @@ const LOCK_FILE: &str = "stream.lock";
 const JOURNAL_FILE: &str = "stream.journal";
 const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
+const INCARNATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-INCARNATION-V1\0";
 const INCARNATION_FILE: &str = "stream.incarnation";
 const INCARNATION_TEMPORARY: &str = "stream.incarnation.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
@@ -151,6 +152,8 @@ include!("local_stream.rs");
 
 include!("persistence_cut.rs");
 
+#[cfg(feature = "test-support")]
+pub(crate) mod codec_fuzz;
 mod port;
 
 include!("provider.rs");

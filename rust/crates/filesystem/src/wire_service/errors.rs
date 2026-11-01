@@ -374,6 +374,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
     use crate::NativeTreeMaterializationError as E;
     match error {
         E::InvalidLayout => Code::DataLoss,
+        E::UnsupportedFormat => Code::FailedPrecondition,
         E::MissingEntry => Code::NotFound,
         E::ExternalMutation | E::PreimageConflict | E::AllocationChanged { .. } => Code::Aborted,
         E::UnexpectedBackup => Code::FailedPrecondition,
@@ -419,7 +420,7 @@ fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
     match error {
         E::IncompleteFrame | E::Corrupt => Code::DataLoss,
         E::Io(error) => io_code(error),
-        E::AlreadyOpen | E::UnsupportedPreRevisionStore => Code::FailedPrecondition,
+        E::AlreadyOpen | E::UnsupportedVersion { .. } => Code::FailedPrecondition,
         E::InvalidLimits => Code::InvalidArgument,
         E::Replay(error) => stream_code(error),
         E::Executor => Code::Unavailable,

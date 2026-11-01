@@ -74,49 +74,8 @@ fn is_context_overflow(code: Option<&str>, kind: Option<&str>, message: Option<&
         && message.is_some_and(|message| message.starts_with("prompt is too long:")))
 }
 
-/// Borrow only the known refusal fields from the admitted HTTP JSON body.
-/// Building an arbitrary JSON tree here would escape the native diagnostic ledger.
-pub(crate) fn context_overflow_bytes(bytes: &[u8]) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Envelope<'a> {
-        #[serde(borrow)]
-        error: Option<&'a serde_json::value::RawValue>,
-        #[serde(borrow)]
-        response: Option<&'a serde_json::value::RawValue>,
-    }
-    #[derive(serde::Deserialize)]
-    struct Fields<'a> {
-        #[serde(borrow)]
-        code: Option<&'a serde_json::value::RawValue>,
-        #[serde(rename = "type", borrow)]
-        kind: Option<&'a serde_json::value::RawValue>,
-        #[serde(borrow)]
-        message: Option<&'a serde_json::value::RawValue>,
-    }
-    let Ok(envelope) = serde_json::from_slice::<Envelope<'_>>(bytes) else {
-        return false;
-    };
-    let error = envelope.error.or_else(|| {
-        serde_json::from_str::<Envelope<'_>>(envelope.response?.get())
-            .ok()?
-            .error
-    });
-    let bytes = error.map_or(bytes, |raw| raw.get().as_bytes());
-    let Ok(fields) = serde_json::from_slice::<Fields<'_>>(bytes) else {
-        return false;
-    };
-    fn discriminant(raw: Option<&serde_json::value::RawValue>) -> Option<&str> {
-        serde_json::from_str::<&str>(raw?.get()).ok()
-    }
-    // Only the literal documented prefix matters. Escapes later in an untrusted
-    // message must not prevent recognizing a known code or length refusal.
-    let message = fields.message.and_then(|raw| raw.get().strip_prefix('"'));
-    is_context_overflow(
-        discriminant(fields.code),
-        discriminant(fields.kind),
-        message,
-    )
-}
+mod http;
+pub(crate) use http::context_overflow_bytes;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

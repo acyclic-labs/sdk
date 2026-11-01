@@ -571,13 +571,22 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     let snapshot_path = directory.path().join(SNAPSHOT_FILE);
     let mut obsolete = encode_header(limits, 0)?;
     *obsolete.get_mut(22).ok_or(StreamError::InvalidArgument)? = b'4';
-    for header in [obsolete, vec![0; HEADER_BYTES], encode_header(limits, 2)?] {
+    for (header, unsupported) in [
+        (obsolete, true),
+        (vec![0; HEADER_BYTES], false),
+        (encode_header(limits, 2)?, false),
+    ] {
         std::fs::write(&journal_path, &header)?;
         for _ in 0..2 {
-            assert!(matches!(
-                LocalStream::open(directory.path(), limits).await,
-                Err(LocalStreamError::Corrupt)
-            ));
+            let result = LocalStream::open(directory.path(), limits).await;
+            assert!(if unsupported {
+                matches!(
+                    result,
+                    Err(LocalStreamError::UnsupportedVersion { format: "journal" })
+                )
+            } else {
+                matches!(result, Err(LocalStreamError::Corrupt))
+            });
             assert_eq!(std::fs::read(&journal_path)?, header);
         }
     }
@@ -585,7 +594,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     let header = encode_header(limits, 0)?;
     std::fs::write(&journal_path, &header)?;
     let state = MemoryStream::new(limits.memory).encode_state().await;
-    for version in *b"024" {
+    for version in *b"0134" {
         let mut obsolete = encode_snapshot(limits, 1, &state)?;
         *obsolete
             .get_mut(SNAPSHOT_MAGIC.len() - 2)
@@ -604,7 +613,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
         for _ in 0..2 {
             assert!(matches!(
                 LocalStream::open(directory.path(), limits).await,
-                Err(LocalStreamError::Corrupt)
+                Err(LocalStreamError::UnsupportedVersion { format: "snapshot" })
             ));
             assert_eq!(std::fs::read(&journal_path)?, header);
             assert_eq!(std::fs::read(&snapshot_path)?, obsolete);

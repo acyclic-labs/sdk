@@ -12,6 +12,8 @@ mod client;
 pub use client::{Pool, Publication};
 mod package;
 pub use package::{Package, codec, initial_checkpoint};
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz;
 
 /// Companion creation for a lazy reservation actor. Its empty initialization
 /// record creates the inbox in the same commit as state and discovery, so a

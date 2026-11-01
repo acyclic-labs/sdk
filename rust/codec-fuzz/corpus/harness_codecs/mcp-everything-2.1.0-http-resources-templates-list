@@ -1,0 +1,7 @@
+id: 0fb1021d-bcd6-4d20-bf17-80c301ad185e
+data: 
+
+event: message
+id: 58c39539-8968-46a3-86e1-ad699a43b7b0
+data: {"result":{"resourceTemplates":[{"name":"Dynamic Text Resource","uriTemplate":"demo://resource/dynamic/text/{resourceId}","mimeType":"text/plain","description":"Plaintext dynamic resource fabricated from the {resourceId} variable, which must be an integer."},{"name":"Dynamic Blob Resource","uriTemplate":"demo://resource/dynamic/blob/{resourceId}","mimeType":"application/octet-stream","description":"Binary (base64) dynamic resource fabricated from the {resourceId} variable, which must be an integer."}]},"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707"}
+

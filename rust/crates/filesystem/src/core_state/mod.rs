@@ -807,6 +807,8 @@ mod collection;
 mod lazy_log;
 mod records;
 use records::*;
+#[cfg(feature = "test-support")]
+pub mod codec_fuzz;
 mod native_records;
 #[cfg(test)]
 mod tests;

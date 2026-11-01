@@ -1,0 +1,163 @@
+[package]
+name = "acyclic-codec-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+storage-schedules = ["acyclic-objects/local", "acyclic-native-runtime/test-support", "dep:tempfile", "dep:tokio"]
+
+[dependencies]
+acyclic-actors = { path = "../crates/actors", features = ["test-support"] }
+acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
+acyclic-fs = { path = "../crates/filesystem", default-features = false, features = ["distributed", "local", "test-support", "s3-http"] }
+acyclic-fs-wire = { path = "../crates/filesystem-wire" }
+acyclic-harness-core = { path = "../crates/harness-core", default-features = false, features = ["test-support", "filesystem"] }
+acyclic-inference = { path = "../crates/inference", default-features = false, features = ["http-codec"] }
+acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support", "grpc"] }
+acyclic-native-runtime = { path = "../crates/native-runtime" }
+acyclic-objects = { path = "../crates/objects", default-features = false, features = ["binary", "json", "test-support"] }
+acyclic-protobuf-json = { path = "../crates/protobuf-json" }
+acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support", "local", "session"] }
+libfuzzer-sys = "0.4"
+futures = "0.3.31"
+ed25519-dalek = "=3.0.0"
+prost = "0.14.4"
+sha2 = "0.11.0"
+hex = "0.4.3"
+bytes = "1.11.0"
+prost-reflect = { version = "0.16.3", features = ["serde"] }
+serde_json = "1.0"
+tempfile = { version = "3.27.0", optional = true }
+tokio = { version = "1.48.0", default-features = false, features = ["rt"], optional = true }
+
+[dev-dependencies]
+acyclic-proto-build = { path = "../../compatibility" }
+
+[build-dependencies]
+acyclic-proto-build = { path = "../../compatibility" }
+heck = "0.5"
+prost = "0.14.4"
+prost-types = "0.14.4"
+
+[[bin]]
+name = "protobuf"
+path = "fuzz_targets/protobuf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protobuf_json"
+path = "fuzz_targets/protobuf_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_frames"
+path = "fuzz_targets/session_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_protocol"
+path = "fuzz_targets/session_protocol.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stream_persistence"
+path = "fuzz_targets/stream_persistence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "object_persistence"
+path = "fuzz_targets/object_persistence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ids"
+path = "fuzz_targets/ids.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "auth"
+path = "fuzz_targets/auth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "actor_codecs"
+path = "fuzz_targets/actor_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filesystem_codecs"
+path = "fuzz_targets/filesystem_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identities"
+path = "fuzz_targets/identities.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filesystem_pages"
+path = "fuzz_targets/filesystem_pages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "machine_journal"
+path = "fuzz_targets/machine_journal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "harness_codecs"
+path = "fuzz_targets/harness_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inference_http"
+path = "fuzz_targets/inference_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "object_schedule"
+path = "fuzz_targets/object_schedule.rs"
+required-features = ["storage-schedules"]
+test = false
+doc = false
+bench = false
+
+[[example]]
+name = "object_schedules"
+required-features = ["storage-schedules"]

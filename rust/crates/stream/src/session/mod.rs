@@ -14,6 +14,9 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
+/// Session admission version. Checked before credentials or the first request.
+pub const VERSION: u32 = 2;
+
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
@@ -446,9 +449,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             let Body::Hello(hello) = body else {
                 return Err(StreamError::InvalidArgument);
             };
+            if hello.version != VERSION {
+                return Err(StreamError::Unsupported);
+            }
             if input.channel_id != 0
                 || input.generation != 0
-                || hello.version != 1
                 || hello.client_id.is_empty()
                 || (!hello.destination_node.is_empty() && hello.destination_node != self.node)
             {
@@ -475,14 +480,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 0,
                 0,
                 Body::Welcome(wire::SessionWelcome {
-                    version: 1,
+                    version: VERSION,
                     node_id: self.node.clone(),
                     receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                     receive_frames: u32::try_from(crate::MAX_ITEMS)
                         .map_err(|_| StreamError::Capacity)?,
                 }),
             ));
-            return Ok(());
+            return match hello.interest {
+                Some(interest) => self.interest(interest),
+                None => Ok(()),
+            };
         }
         if input.channel_id != 0 && matches!(body, Body::Window(_) | Body::Ack(_)) {
             match self.channels.get(&input.channel_id) {
