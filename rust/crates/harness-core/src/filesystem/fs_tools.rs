@@ -208,6 +208,22 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             })
             .await?
         };
+        let root_cut = if workspace.id() != root.id() {
+            Some(
+                read_before_effect(&mut cancellation, async {
+                    root.capture_policy_cut(
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| Error::from(failure.error))
+                })
+                .await?,
+            )
+        } else {
+            None
+        };
         drop(cancellation);
         let output = crate::tools::git::run_volume_with_guard(
             crate::tools::git::Workspace {
@@ -230,7 +246,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 .map_err(|_| Error::Invalid("filesystem author time overflow".into()))?,
                 request: Some(request),
             },
-            &root,
+            root_cut,
             &parsed.arguments,
             || async {
                 read_before_effect(

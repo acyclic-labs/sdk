@@ -408,7 +408,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     };
     crate::tools::git::run_volume_with_guard(
         command_workspace(&root),
-        &root,
+        None,
         &["commit".into(), "-m".into(), "base".into()],
         || async { access.require(&root).await },
     )
@@ -463,7 +463,11 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     ];
     let refused = crate::tools::git::run_volume_with_guard(
         command_workspace(&child),
-        &root,
+        Some(
+            root.capture_policy_cut(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value,
+        ),
         &arguments,
         || async {
             access.require(&root).await?;
@@ -494,7 +498,11 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
     // A new explicit command captures the new cut and can make progress.
     crate::tools::git::run_volume_with_guard(
         command_workspace(&child),
-        &root,
+        Some(
+            root.capture_policy_cut(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value,
+        ),
         &arguments,
         || async { access.require(&root).await },
     )
