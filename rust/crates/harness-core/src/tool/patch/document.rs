@@ -258,9 +258,15 @@ mod tests {
         ));
         let change = parse_document(patch, &mut None).unwrap()[0];
         assert_eq!(
-            change.materialize("unchanged\n", Some(4096), &mut None).unwrap(),
+            change
+                .materialize("unchanged\n", Some(4096), &mut None)
+                .unwrap(),
             Some("unchanged\n".into())
         );
-        assert!(change.materialize("unchanged\n", Some(1), &mut None).is_err());
+        assert!(
+            change
+                .materialize("unchanged\n", Some(1), &mut None)
+                .is_err()
+        );
     }
 }
