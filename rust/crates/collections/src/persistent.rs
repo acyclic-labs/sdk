@@ -7,7 +7,12 @@ use std::sync::Arc;
 /// predecessor lookup makes at most eight branch decisions per key byte,
 /// inspecting each branch's child minimum before visiting one leaf.
 /// Neither operation depends on fork depth or the retained population.
-pub struct PersistentIndex<V, A, const N: usize = 8, C = std::convert::Infallible> {
+pub type PersistentIndex<V, A, const N: usize = 8> = Tree<V, A, N, std::convert::Infallible>;
+
+pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64>;
+
+/// Shared immutable tree representation; public compositions select the cut type.
+pub struct Tree<V, A, const N: usize, C> {
     root: Option<Node<V, A, N, C>>,
     before: Option<[u8; N]>,
     value_before: Option<C>,
@@ -15,8 +20,11 @@ pub struct PersistentIndex<V, A, const N: usize = 8, C = std::convert::Infallibl
 
 /// One borrowed value and the exact inherited exclusive cut under which it
 /// was found. A range value must respect this cut even after a later insertion.
-pub struct PersistentPosition<'a, V, const N: usize, C = std::convert::Infallible> {
-    /// The original retained key at or below the query.
+pub type PersistentPosition<'a, V, const N: usize> = Position<'a, V, N, std::convert::Infallible>;
+
+/// Borrowed shared representation used by immutable index compositions.
+pub struct Position<'a, V, const N: usize, C> {
+    /// The original retained key selected by the lookup.
     pub key: &'a [u8; N],
     /// The original immutable value, borrowed without a copy.
     pub value: &'a V,
@@ -38,8 +46,8 @@ enum Kind<V, A, const N: usize, C> {
     Leaf(V),
     Branch {
         bit: Bit,
-        low: PersistentIndex<V, A, N, C>,
-        high: PersistentIndex<V, A, N, C>,
+        low: Tree<V, A, N, C>,
+        high: Tree<V, A, N, C>,
     },
 }
 
@@ -102,7 +110,7 @@ impl<V, A, const N: usize, C> Drop for Node<V, A, N, C> {
     }
 }
 
-impl<V, A, const N: usize, C: Copy> Clone for PersistentIndex<V, A, N, C> {
+impl<V, A, const N: usize, C: Copy> Clone for Tree<V, A, N, C> {
     fn clone(&self) -> Self {
         Self {
             root: self.root.clone(),
@@ -112,7 +120,7 @@ impl<V, A, const N: usize, C: Copy> Clone for PersistentIndex<V, A, N, C> {
     }
 }
 
-impl<V, A, const N: usize, C> Default for PersistentIndex<V, A, N, C> {
+impl<V, A, const N: usize, C> Default for Tree<V, A, N, C> {
     fn default() -> Self {
         Self {
             root: None,
@@ -122,7 +130,7 @@ impl<V, A, const N: usize, C> Default for PersistentIndex<V, A, N, C> {
     }
 }
 
-impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
+impl<V, A, const N: usize, C: Copy + Ord> Tree<V, A, N, C> {
     /// Pins the original keys strictly before this exclusive cut. Repeated
     /// prefixing keeps the earlier cut, without a chain of historical views.
     pub fn prefix(&self, before: [u8; N]) -> Self {
@@ -209,7 +217,7 @@ impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<PersistentPosition<'_, V, N, C>>, W::Error> {
+    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = self.before;
@@ -224,7 +232,7 @@ impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
             }
             match &body.kind {
                 Kind::Leaf(value) => {
-                    return Ok(Some(PersistentPosition {
+                    return Ok(Some(Position {
                         key: &body.minimum,
                         value,
                         before,
@@ -258,7 +266,7 @@ impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
         &self,
         key: [u8; N],
         work: &mut W,
-    ) -> Result<Option<PersistentPosition<'_, V, N, C>>, W::Error> {
+    ) -> Result<Option<Position<'_, V, N, C>>, W::Error> {
         work.validate()?;
         let mut cursor = self;
         let mut before = None;
@@ -279,7 +287,7 @@ impl<V, A, const N: usize, C: Copy + Ord> PersistentIndex<V, A, N, C> {
                     kind: Kind::Leaf(value),
                     ..
                 }) if *minimum >= key => {
-                    return Ok(Some(PersistentPosition {
+                    return Ok(Some(Position {
                         key: minimum,
                         value,
                         before,

@@ -1,4 +1,5 @@
 //! Exact keys with immutable, globally capped sequence ranges.
+use super::persistent::QualifiedIndex;
 use super::{IndexReadWork, IndexWork, PersistentIndex};
 
 /// An original admission failure or an exact binary-key encoding refusal.
@@ -52,13 +53,13 @@ pub fn binary_key<const N: usize, W: IndexReadWork>(
 /// every new physical node funded by the original `IndexWork` issuer. No value
 /// clone, backend request, task, wait or second search algorithm is introduced.
 pub struct KeyedIndex<V, A, const N: usize> {
-    keys: PersistentIndex<PersistentIndex<V, A>, A, N, u64>,
+    keys: QualifiedIndex<PersistentIndex<V, A>, A, N>,
 }
 
 impl<V, A, const N: usize> Default for KeyedIndex<V, A, N> {
     fn default() -> Self {
         Self {
-            keys: PersistentIndex::default(),
+            keys: QualifiedIndex::default(),
         }
     }
 }

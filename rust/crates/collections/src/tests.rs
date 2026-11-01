@@ -237,12 +237,13 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
     drop((old, corrected));
     assert_eq!(work.live.get(), 0);
 
-    for population in [1_u64, 100_000] {
+    let mut indexed_work = [[0; 3]; 2];
+    for (run, population) in [1_u64, 100_000].into_iter().enumerate() {
         let mut work = Work {
             observe_retirement: true,
             ..Work::default()
         };
-        let mut result = Ok(());
+        let mut result: Result<(), &'static str> = Ok(());
         let measured = acyclic_test_support::measure(|| {
             result = (|| {
                 let mut index = KeyedIndex::<_, _, 8>::default();
@@ -259,13 +260,14 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                 let capped = index.cap(7);
                 let fork = capped.clone();
                 assert_eq!(work.claims, claims);
-                for key in [0, population - 1, u64::MAX] {
+                for (query, key) in [0, population - 1, u64::MAX].into_iter().enumerate() {
                     let items = work.items;
                     let actual = index.seek(key.to_be_bytes(), 0, 8, &mut work)?;
                     assert_eq!(
                         actual.map(|(s, v)| (s, *v)),
                         (key < population).then_some((7, key))
                     );
+                    indexed_work[run][query] = work.items - items;
                     assert!(work.items - items <= 3 * 65 * 60);
                     assert_eq!(work.claims, claims);
                     assert_eq!(fork.seek(key.to_be_bytes(), 0, 8, &mut work)?, None);
@@ -303,6 +305,44 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
             "keyed physical backing outlived original funding"
         );
     }
+
+    #[derive(Clone)]
+    struct OrderedKey(u64, Rc<Cell<u64>>);
+    impl PartialEq for OrderedKey {
+        fn eq(&self, other: &Self) -> bool {
+            self.0 == other.0
+        }
+    }
+    impl Eq for OrderedKey {}
+    impl PartialOrd for OrderedKey {
+        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl Ord for OrderedKey {
+        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+            self.1.set(self.1.get() + 1);
+            self.0.cmp(&other.0)
+        }
+    }
+    let mut old_work = [0; 2];
+    for (run, population) in [1_u64, 100_000].into_iter().enumerate() {
+        let comparisons = Rc::new(Cell::new(0));
+        let mut old = BTreeMap::new();
+        for key in 0..population {
+            old.insert(OrderedKey(key, comparisons.clone()), key);
+        }
+        comparisons.set(0);
+        assert_eq!(old.get(&OrderedKey(0, comparisons.clone())), Some(&0));
+        old_work[run] = comparisons.get();
+    }
+    assert!(
+        old_work[1] > old_work[0],
+        "the actual ordered-map negative must expose population growth"
+    );
+    println!(
+        "population=[1,100000] indexed_items={indexed_work:?} ordered_comparisons={old_work:?}; seek/cap allocations=0"
+    );
 
     let mut work = Work::default();
     let inputs: &[&[u8]] = &[
@@ -350,7 +390,7 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
         observe_retirement: true,
         ..Work::default()
     };
-    let mut result = Ok(());
+    let mut result: Result<(), &'static str> = Ok(());
     let measured = acyclic_test_support::measure(|| {
         result = (|| {
             let zero = binary_key::<1032, _>(&[0; 1024], &mut work).unwrap();
