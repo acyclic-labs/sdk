@@ -10,11 +10,17 @@ use tracing_subscriber::{EnvFilter, Layer, Registry, layer::SubscriberExt as _};
 type Failure = Box<dyn std::error::Error>;
 pub(super) type Shutdown = Shared<BoxFuture<'static, Result<u8, Arc<io::Error>>>>;
 
+/// Refusal to admit explicitly configured diagnostic text before dispatch.
+/// Its display names the configuration recovery without writing to a sink.
 #[derive(Debug)]
 pub enum DiagnosticConfigurationError {
+    /// Logging is enabled without caller-owned buffers or a CLI reservation.
     StorageRequired,
+    /// Both the caller and CLI supplied diagnostic storage.
     ConflictingStorage,
+    /// The explicit storage extent or allocation was refused.
     Storage(io::Error),
+    /// The configured tracing filter could not be parsed.
     Filter(tracing_subscriber::filter::ParseError),
 }
 
