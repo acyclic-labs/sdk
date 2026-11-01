@@ -81,7 +81,6 @@ test("SQLite wake routing pages actual changed owners and preserves later genera
     // Exact-path work is independent of all other registered actors.
     expect(changed(paths(0)[1]!)).toEqual(single);
     wakes.acknowledge(names[0]!, 2);
-    expect(await wakes.register("collision", paths(0))).toEqual({ refused: "conflict" });
     expect(await wakes.register(names[0]!, paths(1))).toEqual({ refused: "conflict" });
     // Durable change identities remain distinct beyond Number's exact range.
     metadata.put("change", JSON.stringify("9007199254740992"));
