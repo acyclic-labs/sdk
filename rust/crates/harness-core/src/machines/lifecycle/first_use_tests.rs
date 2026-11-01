@@ -11,6 +11,7 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct HeldInspection {
     inner: SimulatedMachines,
     ready: watch::Receiver<bool>,
+    entered: tokio::sync::Notify,
     creates: AtomicUsize,
     inspections: AtomicUsize,
 }
@@ -31,6 +32,7 @@ macro_rules! forward {
             async fn inspect_machine(&self, machine: MachineId) -> std::result::Result<MachineObservation, ProviderError> {
                 self.inspections.fetch_add(1, Ordering::Relaxed);
                 let observed = self.inner.inspect_machine(machine).await?;
+                self.entered.notify_one();
                 let mut ready = self.ready.clone();
                 if !*ready.borrow_and_update() {
                     ready.changed().await.map_err(|_| ProviderError::Unavailable)?;
@@ -115,6 +117,7 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             let provider = Arc::new(HeldInspection {
                 inner: SimulatedMachines::default(),
                 ready,
+                entered: tokio::sync::Notify::new(),
                 creates: AtomicUsize::new(0),
                 inspections: AtomicUsize::new(0),
             });
@@ -155,7 +158,10 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 executors.clone(),
             )?;
             let mut first = Box::pin(target.executor());
-            assert!(futures::poll!(&mut first).is_pending());
+            tokio::select! {
+                () = provider.entered.notified() => {},
+                result = &mut first => panic!("first use ended before original inspection: {:?}", result.err()),
+            }
             let mut waiting = (0..callers)
                 .map(|_| Box::pin(target.executor()))
                 .collect::<Vec<_>>();
@@ -172,7 +178,10 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             assert!(unrelated.list_machines(None, 1).await?.machines.is_empty());
             if drop_first {
                 drop(first);
-                assert!(futures::poll!(&mut waiting[0]).is_pending());
+                tokio::select! {
+                    () = provider.entered.notified() => {},
+                    result = &mut waiting[0] => panic!("reentry ended before original inspection: {:?}", result.err()),
+                }
                 assert_eq!(
                     provider.creates.load(Ordering::Relaxed),
                     1,
