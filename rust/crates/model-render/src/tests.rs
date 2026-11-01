@@ -21,18 +21,27 @@ fn item(family: Family, kind: ItemKind, text: &str) -> WireItem {
 }
 fn item_for(family: Family, kind: ItemKind, text: &str, provider: &str) -> WireItem {
     // Generated IR inputs, not claims of captured provider fixtures.
-    let wire = format!("{{ \"text\" : {} }}", serde_json::to_string(text).unwrap());
+    let wire = if kind == ItemKind::GuardedMessage {
+        format!(
+            "{{ \"text\" : {}, \"calls\":[{{\"id\":\"call\",\"name\":\"tool\",\"args\":{{}}}}], \"results\":[{{\"id\":\"call\",\"text\":\"answer\"}}], \"continuation\":\"private\" }}",
+            serde_json::to_string(text).unwrap()
+        )
+    } else {
+        format!("{{ \"text\" : {} }}", serde_json::to_string(text).unwrap())
+    };
     let projections = if kind == ItemKind::Reasoning {
         BTreeMap::new()
     } else {
         FAMILIES
             .into_iter()
-            .filter(|target| *target != family)
+            .filter(|target| *target != family || kind == ItemKind::GuardedMessage)
             .map(|target| {
-                (
-                    target,
-                    raw(serde_json::to_string(&json!({"text": text, "target":target})).unwrap()),
-                )
+                let mut visible = json!({"text": text, "target":target});
+                if kind == ItemKind::GuardedMessage {
+                    visible["calls"] = json!([{"id":"call","name":"tool","args":{}}]);
+                    visible["results"] = json!([{"id":"call","text":"answer"}]);
+                }
+                (target, raw(serde_json::to_string(&visible).unwrap()))
             })
             .collect()
     };
@@ -84,15 +93,16 @@ fn reference(target: Family, provider: &str, items: &[WireItem]) -> Value {
     let mut inputs = Vec::new();
     for item in items {
         let record = serde_json::to_value(item).unwrap();
-        if record.get("kind").unwrap() == "reasoning"
-            && (item.provenance().family != target
-                || item.provenance().provider != provider
-                || item.provenance().endpoint != "https://example.invalid/v1"
-                || item.provenance().credential_scope != Some([9; 32]))
-        {
+        let same_owner = item.provenance().family == target
+            && item.provenance().provider == provider
+            && item.provenance().endpoint == "https://example.invalid/v1"
+            && item.provenance().credential_scope == Some([9; 32]);
+        if record.get("kind").unwrap() == "reasoning" && !same_owner {
             continue;
         }
-        let stored = if item.provenance().family == target {
+        let stored = if item.provenance().family == target
+            && (record.get("kind").unwrap() != "guarded_message" || same_owner)
+        {
             record.get("wire").unwrap()
         } else {
             let key = serde_json::to_value(target).unwrap();
@@ -119,16 +129,16 @@ fn reference(target: Family, provider: &str, items: &[WireItem]) -> Value {
 proptest! {
     #[test]
     fn append_fork_and_alloy_schedules_match_reference(
-        schedule in prop::collection::vec((prop::sample::select(&FAMILIES), any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
+        schedule in prop::collection::vec((prop::sample::select(&FAMILIES), 0..3_u8, any::<bool>(), any::<bool>(), any::<bool>(), ".{0,80}"), 0..100),
     ) {
         let mut branches = [Vec::new(), Vec::new()];
-        for (family, reasoning, fork, child, other_provider, text) in schedule {
+        for (family, kind, fork, child, other_provider, text) in schedule {
             let [parent, child_branch] = &mut branches;
             if fork { *child_branch = parent.clone(); }
             let branch = if child { child_branch } else { parent };
             let targets: Vec<_> = FAMILIES.into_iter().flat_map(|family| ["producing-provider", "other-provider"].map(move |provider| (family, provider))).collect();
             let old: Vec<_> = targets.iter().map(|(family, provider)| bytes(&header_for(*family, provider), branch)).collect();
-            let kind = if reasoning { ItemKind::Reasoning } else { ItemKind::Message };
+            let kind = match kind { 0 => ItemKind::Message, 1 => ItemKind::Reasoning, _ => ItemKind::GuardedMessage };
             branch.push(item_for(family, kind, &text, if other_provider { "other-provider" } else { "producing-provider" }));
             // Serialization is the actual persisted representation. Reopening
             // validates the raw bytes again without normalizing them.
@@ -172,6 +182,63 @@ proptest! {
             }
         }
     }
+
+    #[test]
+    fn guarded_messages_keep_visible_grouping_and_exact_native_bytes(text in ".{0,160}") {
+        for family in FAMILIES {
+            let source = item(family, ItemKind::GuardedMessage, &text);
+            let stored = serde_json::to_vec(&source).unwrap();
+            let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
+            prop_assert_eq!(reopened.wire().get(), source.wire().get());
+            let original: Value = serde_json::from_str(source.wire().get()).unwrap();
+            let matching = self::target(family, "producing-provider");
+            prop_assert!(std::ptr::eq(seg(&matching, &reopened).unwrap().unwrap(), reopened.wire()));
+            for target_family in FAMILIES {
+                for changed in [
+                    self::target(target_family, "other-provider"),
+                    Provenance { endpoint: "https://other.invalid".into(), ..self::target(target_family, "producing-provider") },
+                    Provenance { credential_scope: Some([8;32]), ..self::target(target_family, "producing-provider") },
+                    Provenance { credential_scope: None, ..self::target(target_family, "producing-provider") },
+                ] {
+                    let selected = seg(&changed, &reopened).unwrap().unwrap();
+                    prop_assert!(std::ptr::eq(selected, reopened.projection(target_family).unwrap()));
+                    let visible: Value = serde_json::from_str(selected.get()).unwrap();
+                    for field in ["text", "calls", "results"] {
+                        prop_assert_eq!(&visible[field], &original[field]);
+                    }
+                    prop_assert!(visible.get("continuation").is_none());
+                    let mut output = Vec::new();
+                    let header = Header::new(changed, [7;32], RENDERER_VERSION, json!({"model":"target-model"}).as_object().unwrap()).unwrap();
+                    render(&header, [&reopened], Tail, &mut output).unwrap();
+                    let output: Value = serde_json::from_slice(&output).unwrap();
+                    let field = match target_family {Family::Responses => "input", Family::Gemini => "contents", _ => "messages"};
+                    prop_assert_eq!(output[field].as_array().unwrap().len(), 1);
+                    prop_assert_eq!(&output[field][0], &visible);
+                }
+                if target_family != family {
+                    let changed = self::target(target_family, "producing-provider");
+                    prop_assert!(std::ptr::eq(seg(&changed, &reopened).unwrap().unwrap(), reopened.projection(target_family).unwrap()));
+                }
+            }
+            let unknown_origin = Provenance { credential_scope: None, ..source.provenance().clone() };
+            let unowned = WireItem::capture(unknown_origin.clone(), ItemKind::GuardedMessage,
+                raw(source.wire().get().into()), source.projections().map(|(family, wire)| (family, raw(wire.get().into()))).collect()).unwrap();
+            prop_assert!(std::ptr::eq(seg(&unknown_origin, &unowned).unwrap().unwrap(), unowned.projection(family).unwrap()));
+            // The original two classifications cannot represent this boundary:
+            // Message exposes native continuity, while Reasoning loses visible text.
+            for old_kind in [ItemKind::Message, ItemKind::Reasoning] {
+                let old = WireItem::capture(source.provenance().clone(), old_kind,
+                    raw(source.wire().get().into()), BTreeMap::new()).unwrap();
+                let changed = self::target(family, "other-provider");
+                let selected = seg(&changed, &old).unwrap();
+                if old_kind == ItemKind::Message {
+                    prop_assert!(selected.unwrap().get().contains("continuation"));
+                } else {
+                    prop_assert!(selected.is_none());
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -179,7 +246,9 @@ fn admission_refuses_corrupt_storage_and_reasoning_replacement() {
     let source = item(Family::Responses, ItemKind::Reasoning, "opaque");
     let record = serde_json::to_value(&source).unwrap();
     for (field, value) in [
-        ("version", json!(2)),
+        ("version", json!(1)),
+        ("version", json!(3)),
+        ("kind", json!("guarded_message")),
         (
             "provenance",
             json!({"family":"responses","model":"","endpoint":"x"}),
@@ -203,7 +272,7 @@ fn admission_refuses_corrupt_storage_and_reasoning_replacement() {
     }
     let provenance = serde_json::to_string(source.provenance()).unwrap();
     let prefix = format!(
-        "{{\"version\":1,\"provenance\":{provenance},\"kind\":\"message\",\"wire\":\"{{}}\",\"projections\":"
+        "{{\"version\":2,\"provenance\":{provenance},\"kind\":\"message\",\"wire\":\"{{}}\",\"projections\":"
     );
     let ordinary = format!("{prefix}{{\"chat\":\"{{}}\"}}}}");
     let duplicate = format!("{prefix}{{\"chat\":\"{{}}\",\"chat\":\"{{}}\"}}}}");
@@ -221,6 +290,31 @@ fn admission_refuses_corrupt_storage_and_reasoning_replacement() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn gemini_summary_admission_uses_the_selected_guarded_projection_role() {
+    for (native, visible) in [("model", "user"), ("user", "model")] {
+        let source = WireItem::capture(target(Family::Gemini, "producing-provider"), ItemKind::GuardedMessage,
+            raw(format!("{{\"role\":\"{native}\",\"parts\":[{{\"text\":\"visible\"}},{{\"text\":\"private\",\"thought\":true}}]}}")),
+            BTreeMap::from([(Family::Gemini, raw(format!("{{\"role\":\"{visible}\",\"parts\":[{{\"text\":\"visible\"}}]}}")))]),
+        ).unwrap();
+        let stored = serde_json::to_vec(&source).unwrap();
+        let reopened: WireItem = serde_json::from_slice(&stored).unwrap();
+        for (provider, role) in [("producing-provider", native), ("other-provider", visible)] {
+            let mut output = Vec::new();
+            assert_eq!(
+                render_summary(
+                    &header_for(Family::Gemini, provider),
+                    [&reopened],
+                    "summarize",
+                    &mut output
+                )
+                .is_ok(),
+                role == "model"
+            );
+        }
+    }
 }
 
 #[test]

@@ -47,10 +47,13 @@ pub struct Provenance {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
-    /// User or assistant message, call, result, or context update.
+    /// Visible message, call, result, or context update without guarded continuity.
     Message,
     /// Native reasoning, signature, encrypted or redacted continuation.
     Reasoning,
+    /// A complete message mixing visible content with provider-owned continuity.
+    /// Its original-family projection retains only the admitted visible content.
+    GuardedMessage,
 }
 
 /// Versioned durable IR item. Storage encodes each raw JSON body as an exact
@@ -61,7 +64,7 @@ pub enum ItemKind {
 /// conversation, agent count or number of models in an alloy.
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
-pub struct WireItem(Record, #[serde(skip)] Option<bool>);
+pub struct WireItem(Record, #[serde(skip)] [Option<bool>; 2]);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,7 +82,11 @@ impl WireItem {
     /// Ingress boundary: validate without normalizing and retain exact bytes.
     ///
     /// `projections` are native message shapes chosen once by the capability
-    /// binder for other families. Reasoning may never have foreign projections.
+    /// binder. A guarded message requires a visible-only projection for its own
+    /// family as well: the binder preserves its visible calls, results and text
+    /// together in that one message, excluding provider-owned continuity.
+    /// Reasoning may never have projections. Ordinary messages may only have
+    /// projections for other families.
     ///
     /// # Errors
     /// Refuses malformed JSON, missing provenance, or a rewritten native or
@@ -91,7 +98,7 @@ impl WireItem {
         projections: BTreeMap<Family, Box<RawValue>>,
     ) -> Result<Self, super::RenderError> {
         Self::admit(Record {
-            version: 1,
+            version: 2,
             provenance,
             kind,
             wire,
@@ -100,7 +107,7 @@ impl WireItem {
     }
 
     fn admit(record: Record) -> Result<Self, super::RenderError> {
-        if record.version != 1 {
+        if record.version != 2 {
             return Err(super::RenderError::InvalidItem("unsupported item version"));
         }
         if record.provenance.provider.trim().is_empty()
@@ -109,11 +116,17 @@ impl WireItem {
         {
             return Err(super::RenderError::InvalidItem("missing wire provenance"));
         }
-        if record.projections.contains_key(&record.provenance.family)
+        let own_projection = record.projections.contains_key(&record.provenance.family);
+        if (own_projection && record.kind != ItemKind::GuardedMessage)
             || (record.kind == ItemKind::Reasoning && !record.projections.is_empty())
         {
             return Err(super::RenderError::InvalidItem(
                 "native continuity cannot be replaced",
+            ));
+        }
+        if record.kind == ItemKind::GuardedMessage && !own_projection {
+            return Err(super::RenderError::InvalidItem(
+                "guarded message needs its visible projection",
             ));
         }
         if !super::strict::object(record.wire.get())
@@ -128,24 +141,23 @@ impl WireItem {
         }
         // Derive this fixed semantic fact once at ingress, never by decoding
         // the selected history during rendering.
-        let gemini = if record.provenance.family == Family::Gemini {
-            Some(record.wire.as_ref())
-        } else {
-            record.projections.get(&Family::Gemini).map(AsRef::as_ref)
-        };
         #[derive(Deserialize)]
         struct Role<'a> {
             #[serde(borrow)]
             role: Option<&'a str>,
         }
-        let role = gemini
-            .and_then(|wire| serde_json::from_str::<Role<'_>>(wire.get()).ok())
-            .and_then(|role| match role.role {
-                Some("model") => Some(true),
-                Some("user") => Some(false),
-                _ => None,
-            });
-        Ok(Self(record, role))
+        let role = |wire: Option<&RawValue>| {
+            wire.and_then(|wire| serde_json::from_str::<Role<'_>>(wire.get()).ok())
+                .and_then(|role| match role.role {
+                    Some("model") => Some(true),
+                    Some("user") => Some(false),
+                    _ => None,
+                })
+        };
+        let native =
+            role((record.provenance.family == Family::Gemini).then_some(record.wire.as_ref()));
+        let projected = role(record.projections.get(&Family::Gemini).map(AsRef::as_ref));
+        Ok(Self(record, [native, projected]))
     }
 
     /// Original nonsecret wire origin.
@@ -161,8 +173,8 @@ impl WireItem {
         &self.0.wire
     }
 
-    /// Borrow the fixed set of admitted foreign projections without decoding.
-    /// There are at most three entries, independent of conversation length.
+    /// Borrow the fixed set of admitted visible projections without decoding.
+    /// There are at most four entries, independent of conversation length.
     pub fn projections(&self) -> impl ExactSizeIterator<Item = (Family, &RawValue)> {
         self.0
             .projections
@@ -170,8 +182,8 @@ impl WireItem {
             .map(|(family, wire)| (*family, wire.as_ref()))
     }
 
-    pub(crate) fn gemini_model_turn(&self) -> Option<bool> {
-        self.1
+    pub(crate) fn gemini_model_turn(&self, selected: &RawValue) -> Option<bool> {
+        self.1[usize::from(!std::ptr::eq(selected, self.wire()))]
     }
 
     pub(crate) fn projection(&self, family: Family) -> Option<&RawValue> {
