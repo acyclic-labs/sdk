@@ -23,7 +23,7 @@ use futures::StreamExt as _;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError, Weak, mpsc};
@@ -126,6 +126,7 @@ struct Waiters {
     failure: Option<String>,
     registered: usize,
     waiting: HashMap<OperationId, ReplyWaiter>,
+    retirement: Option<Retirement>,
 }
 
 /// The waiters of one running owner, shared by its watcher callback and its
@@ -196,6 +197,11 @@ impl Shared {
         for (_, waiter) in std::mem::take(&mut waiters.waiting) {
             let _ = waiter.delivery.try_send(Delivery::Gone);
         }
+        let retirement = waiters.retirement.take();
+        drop(waiters);
+        if let Some(retirement) = retirement {
+            retirement.retire();
+        }
     }
 
     fn failed(&self, failure: impl FnOnce() -> String) {
@@ -240,6 +246,9 @@ struct Bridge {
     workspace: PathBuf,
     shared: Arc<Shared>,
     watching: Mutex<Watching>,
+    // Tests join the original observer, rather than polling registry cleanup.
+    #[cfg(test)]
+    observer: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 struct Watching {
@@ -280,7 +289,7 @@ impl Bridge {
         })
         .map_err(storage)?;
         let exited = Arc::clone(&shared);
-        std::thread::Builder::new()
+        let observer = std::thread::Builder::new()
             .name("acyclic-host-files-owner".into())
             .spawn(move || {
                 // Blocks until the owner's exclusive lock is released.
@@ -290,6 +299,8 @@ impl Bridge {
                 ));
             })
             .map_err(storage)?;
+        #[cfg(not(test))]
+        drop(observer);
         Ok(Self {
             directory: directory.to_path_buf(),
             session: endpoint.session,
@@ -299,6 +310,8 @@ impl Bridge {
                 watcher,
                 watched: false,
             }),
+            #[cfg(test)]
+            observer: Mutex::new(Some(observer)),
         })
     }
 
@@ -397,9 +410,75 @@ struct Registry {
     bridges: HashMap<PathBuf, Connection>,
 }
 
-type Connection = Arc<Mutex<Option<Arc<Bridge>>>>;
+type Connection = Arc<Mutex<Connected>>;
 
-static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
+#[derive(Default)]
+struct Connected {
+    bridge: Option<Arc<Bridge>>,
+    /// A connector that already borrowed this slot cannot reuse it after loss.
+    retired: bool,
+    aliases: HashSet<PathBuf>,
+}
+
+#[cfg_attr(test, derive(Clone))]
+struct Retirement {
+    registry: Weak<Mutex<Registry>>,
+    connection: Weak<Mutex<Connected>>,
+    bridge: Weak<Bridge>,
+    directory: PathBuf,
+}
+
+impl Retirement {
+    fn retire(self) {
+        let (Some(registry), Some(connection)) =
+            (self.registry.upgrade(), self.connection.upgrade())
+        else {
+            return;
+        };
+        let (bridge, aliases) = {
+            let mut connected = lock(&connection);
+            if connected
+                .bridge
+                .as_ref()
+                .is_none_or(|bridge| !Weak::ptr_eq(&Arc::downgrade(bridge), &self.bridge))
+            {
+                return;
+            }
+            connected.retired = true;
+            (
+                connected.bridge.take(),
+                std::mem::take(&mut connected.aliases),
+            )
+        };
+        {
+            let mut registry = lock(&registry);
+            if registry
+                .bridges
+                .get(&self.directory)
+                .is_some_and(|current| Arc::ptr_eq(current, &connection))
+            {
+                registry.bridges.remove(&self.directory);
+            }
+        }
+        // Only this connection's indexed aliases; each short section checks
+        // identity so a late original terminal cannot remove its replacement.
+        for alias in aliases {
+            let mut registry = lock(&registry);
+            if registry
+                .located
+                .get(&alias)
+                .is_some_and(|current| Weak::ptr_eq(current, &self.bridge))
+            {
+                registry.located.remove(&alias);
+            }
+        }
+        // Dropping a watcher may join its callback. Never do that under an
+        // index, connection or waiter lock needed by another producer.
+        drop(bridge);
+    }
+}
+
+static REGISTRY: LazyLock<Arc<Mutex<Registry>>> = LazyLock::new(Arc::default);
 
 impl Registry {
     fn live(registry: &Mutex<Self>, cwd: &Path) -> Option<Arc<Bridge>> {
@@ -408,7 +487,7 @@ impl Registry {
     }
 
     fn bridge(
-        registry: &Mutex<Self>,
+        registry: &Arc<Mutex<Self>>,
         cwd: &Path,
         open: impl FnOnce(&Path, Endpoint) -> Result<Bridge>,
     ) -> Result<Arc<Bridge>> {
@@ -421,17 +500,53 @@ impl Registry {
         // Discovery, watcher registration and owner-exit observation never hold
         // the registry; the connection guard releases on either result.
         let mut connected = lock(&connection);
-        let bridge = match connected.as_ref().filter(|bridge| bridge.live()) {
-            Some(bridge) => Arc::clone(bridge),
+        if connected.retired {
+            return Err(Error::NotFound(NO_OWNER.into()));
+        }
+        let bridge = match connected.bridge.as_ref() {
+            Some(bridge) if bridge.live() => Arc::clone(bridge),
+            Some(_) => return Err(Error::NotFound(NO_OWNER.into())),
             None => {
-                let bridge = Arc::new(open(&directory, endpoint)?);
-                *connected = Some(Arc::clone(&bridge));
+                let bridge = match open(&directory, endpoint) {
+                    Ok(bridge) => Arc::new(bridge),
+                    Err(error) => {
+                        connected.retired = true;
+                        let mut registry = lock(registry);
+                        if registry
+                            .bridges
+                            .get(&directory)
+                            .is_some_and(|current| Arc::ptr_eq(current, &connection))
+                        {
+                            registry.bridges.remove(&directory);
+                        }
+                        return Err(error);
+                    }
+                };
+                connected.bridge = Some(Arc::clone(&bridge));
+                let retirement = Retirement {
+                    registry: Arc::downgrade(registry),
+                    connection: Arc::downgrade(&connection),
+                    bridge: Arc::downgrade(&bridge),
+                    directory,
+                };
+                let mut waiters = lock(&bridge.shared.waiters);
+                if waiters.gone {
+                    drop(waiters);
+                    drop(connected);
+                    retirement.retire();
+                    return Err(Error::NotFound(NO_OWNER.into()));
+                }
+                waiters.retirement = Some(retirement);
+                drop(waiters);
                 bridge
             }
         };
-        lock(registry)
+        let mut registry = lock(registry);
+        let alias = cwd.to_path_buf();
+        registry
             .located
-            .insert(cwd.to_path_buf(), Arc::downgrade(&bridge));
+            .insert(alias.clone(), Arc::downgrade(&bridge));
+        connected.aliases.insert(alias);
         Ok(bridge)
     }
 }
@@ -442,12 +557,12 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     request_with(&REGISTRY, cwd, action)
 }
 
-fn request_with(registry: &Mutex<Registry>, cwd: &Path, action: HostAction) -> Result<Value> {
+fn request_with(registry: &Arc<Mutex<Registry>>, cwd: &Path, action: HostAction) -> Result<Value> {
     request_operation(registry, cwd, OperationId::new(), action)
 }
 
 fn request_operation(
-    registry: &Mutex<Registry>,
+    registry: &Arc<Mutex<Registry>>,
     cwd: &Path,
     operation: OperationId,
     action: HostAction,
