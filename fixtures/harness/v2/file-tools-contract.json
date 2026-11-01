@@ -831,9 +831,129 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
+        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
         "input_schema": {
           "$defs": {
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "TextRange": {
               "additionalProperties": false,
               "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
@@ -862,7 +982,7 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
               "description": "Public path relative to the agent's project volume.",
@@ -877,7 +997,18 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line, cell or native media projection. Mutually exclusive with `range`."
             },
             "version": {
               "description": "Opaque version from a prior read or publication. Omission reads the\ncurrent path under the original directory read grant.",
@@ -1023,6 +1154,68 @@
               "$ref": "#/$defs/ResourceRef",
               "description": "Reference to an immutable Filesystem generation."
             },
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "NotebookOutput": {
+              "additionalProperties": false,
+              "description": "A retained native notebook output and its exact original JSON provenance.",
+              "properties": {
+                "cell_index": {
+                  "description": "Zero-based source cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "end": {
+                  "description": "Exclusive end of that original MIME value.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Immutable decoded media, retained by the original private-volume writer."
+                },
+                "output_index": {
+                  "description": "Zero-based output within that cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "First byte of the original MIME value, including JSON framing.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "file",
+                "cell_index",
+                "output_index",
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -1046,6 +1239,150 @@
                 "version"
               ],
               "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "ResourceKind": {
               "description": "Semantic kind of a provider-owned reference.",
@@ -1239,6 +1576,35 @@
               "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
+            "media": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native media selection; the immutable file supplies its bytes."
+            },
+            "outputs": {
+              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+              "items": {
+                "$ref": "#/$defs/NotebookOutput"
+              },
+              "type": "array"
+            },
+            "page": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadPage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
+            },
             "text": {
               "description": "Exact selected UTF-8 text.",
               "type": "string"
@@ -1253,9 +1619,80 @@
         },
         "projection_schema": {
           "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -1274,12 +1711,217 @@
                 "version"
               ],
               "type": "object"
+            },
+            "MediaPart": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "file": {
+                      "$ref": "#/$defs/FileRef"
+                    },
+                    "kind": {
+                      "const": "file",
+                      "type": "string"
+                    },
+                    "policy": true
+                  },
+                  "required": [
+                    "kind",
+                    "file",
+                    "policy"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "additionalProperties": false,
               "properties": {
                 "kind": {
                   "const": "json",
@@ -1294,53 +1936,192 @@
                 "value"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/MediaPart"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
             }
           ],
-          "title": "JsonProjection"
+          "title": "ReadProjection"
         },
-        "revision": "portable-8"
+        "revision": "portable-10"
       },
       "definition_digest": [
-        73,
-        212,
-        250,
-        222,
-        148,
-        204,
-        41,
-        42,
-        232,
+        135,
+        172,
+        75,
+        255,
+        245,
+        173,
+        70,
+        1,
         166,
-        234,
-        39,
-        164,
-        230,
-        41,
-        103,
-        131,
-        248,
-        151,
-        82,
-        0,
+        154,
+        211,
+        24,
+        75,
+        71,
+        161,
+        24,
+        27,
+        207,
+        79,
+        136,
+        192,
+        85,
         155,
-        105,
-        185,
-        14,
-        104,
-        143,
-        131,
+        11,
+        47,
         139,
-        58,
-        175,
-        125
+        83,
+        208,
+        178,
+        126,
+        25,
+        46
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
+        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
         "input_schema": {
           "$defs": {
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "TextRange": {
               "additionalProperties": false,
               "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
@@ -1369,7 +2150,7 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
               "description": "Public path relative to the agent's project volume.",
@@ -1384,7 +2165,18 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line, cell or native media projection. Mutually exclusive with `range`."
             },
             "version": {
               "description": "Opaque version from a prior read or publication. Omission reads the\ncurrent path under the original directory read grant.",
@@ -1530,6 +2322,68 @@
               "$ref": "#/$defs/ResourceRef",
               "description": "Reference to an immutable Filesystem generation."
             },
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "NotebookOutput": {
+              "additionalProperties": false,
+              "description": "A retained native notebook output and its exact original JSON provenance.",
+              "properties": {
+                "cell_index": {
+                  "description": "Zero-based source cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "end": {
+                  "description": "Exclusive end of that original MIME value.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Immutable decoded media, retained by the original private-volume writer."
+                },
+                "output_index": {
+                  "description": "Zero-based output within that cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "First byte of the original MIME value, including JSON framing.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "file",
+                "cell_index",
+                "output_index",
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -1553,6 +2407,150 @@
                 "version"
               ],
               "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "ResourceKind": {
               "description": "Semantic kind of a provider-owned reference.",
@@ -1746,6 +2744,35 @@
               "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
+            "media": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native media selection; the immutable file supplies its bytes."
+            },
+            "outputs": {
+              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+              "items": {
+                "$ref": "#/$defs/NotebookOutput"
+              },
+              "type": "array"
+            },
+            "page": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadPage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
+            },
             "text": {
               "description": "Exact selected UTF-8 text.",
               "type": "string"
@@ -1824,6 +2851,16 @@
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -1885,6 +2922,46 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
               ],
               "type": "object"
             },
@@ -2076,41 +3153,41 @@
             }
           ]
         },
-        "revision": "portable-8"
+        "revision": "portable-10"
       },
       "definition_digest": [
-        68,
-        199,
-        170,
-        50,
-        38,
-        146,
-        29,
-        249,
-        225,
-        243,
-        56,
-        25,
-        156,
-        147,
-        66,
-        115,
-        210,
-        119,
+        224,
+        111,
+        103,
+        233,
+        150,
+        139,
+        222,
+        237,
+        251,
+        81,
+        85,
+        167,
+        8,
+        244,
+        81,
+        19,
+        178,
+        97,
+        126,
+        47,
+        150,
+        33,
+        245,
+        195,
+        43,
         83,
-        133,
-        11,
-        89,
-        188,
+        39,
+        48,
         118,
-        175,
-        200,
-        180,
-        132,
-        23,
-        160,
-        107,
-        99
+        10,
+        235,
+        45
       ],
       "variant": "exact_read_reference"
     },
@@ -2351,6 +3428,16 @@
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -2367,6 +3454,46 @@
               "required": [
                 "path",
                 "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
               ],
               "type": "object"
             }
@@ -2396,38 +3523,38 @@
         "revision": "portable-6"
       },
       "definition_digest": [
-        149,
-        128,
-        10,
-        109,
-        175,
-        180,
-        152,
-        115,
-        169,
-        187,
-        161,
-        75,
-        19,
-        213,
-        237,
-        159,
-        197,
-        102,
-        255,
+        138,
         148,
-        156,
-        173,
-        110,
-        160,
-        213,
-        168,
-        20,
-        27,
-        183,
-        87,
-        70,
-        75
+        55,
+        204,
+        94,
+        85,
+        194,
+        24,
+        121,
+        195,
+        79,
+        5,
+        218,
+        217,
+        84,
+        34,
+        242,
+        15,
+        126,
+        207,
+        14,
+        140,
+        65,
+        21,
+        107,
+        47,
+        58,
+        196,
+        101,
+        227,
+        158,
+        174
       ],
       "variant": "write_full"
     },
@@ -2970,24 +4097,144 @@
     },
     {
       "definition": {
-        "description": "Replace one exact UTF-8 match in a project path. Reuse a prior read's opaque version to reject an edit against a changed source",
+        "description": "Replace one exact UTF-8 match, all non-overlapping matches when replace_all is true, or edit a notebook cell. Reuse a read's opaque version to reject edits against a changed source",
         "input_schema": {
+          "$defs": {
+            "NotebookEdit": {
+              "description": "A cell operation on an nbformat v4 notebook; metadata and other cells survive.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Replace the source of a cell identified by index and optionally stable ID.",
+                  "properties": {
+                    "id": {
+                      "description": "Expected stable ID, when the caller has one.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "index": {
+                      "description": "Zero-based position.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "replace",
+                      "type": "string"
+                    },
+                    "source": {
+                      "description": "New cell source; code outputs and execution count are cleared.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "index",
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Insert before `index` (the cell count appends).",
+                  "properties": {
+                    "cell_type": {
+                      "description": "One of `code`, `markdown`, or `raw`.",
+                      "type": "string"
+                    },
+                    "id": {
+                      "description": "New nbformat cell ID, unique within this notebook.",
+                      "type": "string"
+                    },
+                    "index": {
+                      "description": "Zero-based insertion position; the cell count appends.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "insert",
+                      "type": "string"
+                    },
+                    "source": {
+                      "description": "Initial cell source.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "index",
+                    "id",
+                    "cell_type",
+                    "source"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Delete exactly the selected cell.",
+                  "properties": {
+                    "id": {
+                      "description": "Expected stable ID, when the caller has one.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "index": {
+                      "description": "Zero-based position.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "kind": {
+                      "const": "delete",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "index"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
           "description": "Exact replacement against one pinned file generation.",
           "properties": {
             "new_text": {
+              "default": "",
               "description": "Exact replacement, including an empty deletion.",
               "type": "string"
             },
+            "notebook": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotebookEdit"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Cell edit against this same versioned file, exclusive with text replacement."
+            },
             "old_text": {
-              "description": "One exact nonempty unambiguous needle.",
-              "minLength": 1,
+              "default": "",
+              "description": "Exact nonempty needle; one unambiguous match unless `replace_all` is set.",
               "type": "string"
             },
             "path": {
               "description": "Public path relative to the agent's project volume.",
               "type": "string"
+            },
+            "replace_all": {
+              "description": "Replace every non-overlapping occurrence; omission requires one unique match.",
+              "type": "boolean"
             },
             "version": {
               "description": "Opaque version from a prior read or publication. Omission resolves the\ncurrent path under the original directory read grant.",
@@ -2998,9 +4245,7 @@
             }
           },
           "required": [
-            "path",
-            "old_text",
-            "new_text"
+            "path"
           ],
           "title": "EditFileInput",
           "type": "object"
@@ -3218,6 +4463,16 @@
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -3234,6 +4489,46 @@
               "required": [
                 "path",
                 "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
               ],
               "type": "object"
             }
@@ -3260,41 +4555,41 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        249,
-        186,
-        120,
-        43,
-        53,
-        245,
-        244,
-        93,
-        174,
-        225,
-        204,
-        9,
-        179,
-        88,
-        42,
         61,
-        245,
-        41,
-        98,
-        3,
-        172,
+        45,
         139,
-        172,
+        143,
+        16,
+        32,
+        116,
+        103,
         179,
-        166,
-        225,
-        227,
-        193,
-        142,
-        34,
-        36,
-        134
+        211,
+        218,
+        71,
+        110,
+        177,
+        189,
+        232,
+        41,
+        60,
+        123,
+        203,
+        214,
+        118,
+        118,
+        124,
+        127,
+        93,
+        89,
+        111,
+        209,
+        81,
+        206,
+        224
       ],
       "variant": "exact_edit_full"
     },
@@ -3731,6 +5026,16 @@
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -3747,6 +5052,46 @@
               "required": [
                 "path",
                 "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
               ],
               "type": "object"
             }
@@ -3776,46 +5121,166 @@
         "revision": "portable-patch-4"
       },
       "definition_digest": [
-        46,
-        210,
-        213,
-        113,
-        212,
-        35,
-        74,
-        149,
-        101,
-        86,
-        48,
-        74,
-        23,
-        113,
-        39,
-        141,
-        27,
-        204,
-        31,
+        51,
+        40,
+        98,
+        91,
+        44,
         32,
-        200,
-        254,
-        207,
-        10,
-        105,
-        182,
-        77,
-        142,
-        105,
-        83,
+        215,
+        102,
+        118,
+        223,
+        165,
+        164,
+        14,
+        47,
+        152,
+        11,
+        228,
+        231,
+        80,
+        138,
+        99,
+        63,
+        78,
+        212,
+        6,
+        168,
+        163,
+        7,
+        29,
         67,
-        95
+        212,
+        117
       ],
       "variant": "patch_edit_full"
     },
     {
       "definition": {
-        "description": "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
+        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
         "input_schema": {
           "$defs": {
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "TextRange": {
               "additionalProperties": false,
               "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
@@ -3844,7 +5309,7 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
               "description": "Public path relative to the agent's project volume.",
@@ -3859,7 +5324,18 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line, cell or native media projection. Mutually exclusive with `range`."
             },
             "version": {
               "description": "Opaque version from a prior read or publication. Omission reads the\ncurrent path under the original directory read grant.",
@@ -4005,6 +5481,68 @@
               "$ref": "#/$defs/ResourceRef",
               "description": "Reference to an immutable Filesystem generation."
             },
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "NotebookOutput": {
+              "additionalProperties": false,
+              "description": "A retained native notebook output and its exact original JSON provenance.",
+              "properties": {
+                "cell_index": {
+                  "description": "Zero-based source cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "end": {
+                  "description": "Exclusive end of that original MIME value.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Immutable decoded media, retained by the original private-volume writer."
+                },
+                "output_index": {
+                  "description": "Zero-based output within that cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "First byte of the original MIME value, including JSON framing.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "file",
+                "cell_index",
+                "output_index",
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -4028,6 +5566,150 @@
                 "version"
               ],
               "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "ResourceKind": {
               "description": "Semantic kind of a provider-owned reference.",
@@ -4221,6 +5903,35 @@
               "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
+            "media": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native media selection; the immutable file supplies its bytes."
+            },
+            "outputs": {
+              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+              "items": {
+                "$ref": "#/$defs/NotebookOutput"
+              },
+              "type": "array"
+            },
+            "page": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadPage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
+            },
             "text": {
               "description": "Exact selected UTF-8 text.",
               "type": "string"
@@ -4235,9 +5946,80 @@
         },
         "projection_schema": {
           "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -4256,12 +6038,217 @@
                 "version"
               ],
               "type": "object"
+            },
+            "MediaPart": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "file": {
+                      "$ref": "#/$defs/FileRef"
+                    },
+                    "kind": {
+                      "const": "file",
+                      "type": "string"
+                    },
+                    "policy": true
+                  },
+                  "required": [
+                    "kind",
+                    "file",
+                    "policy"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "additionalProperties": false,
               "properties": {
                 "kind": {
                   "const": "json",
@@ -4276,53 +6263,192 @@
                 "value"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/MediaPart"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
             }
           ],
-          "title": "JsonProjection"
+          "title": "ReadProjection"
         },
-        "revision": "portable-8"
+        "revision": "portable-10"
       },
       "definition_digest": [
-        73,
-        212,
-        250,
-        222,
-        148,
-        204,
-        41,
-        42,
-        232,
+        135,
+        172,
+        75,
+        255,
+        245,
+        173,
+        70,
+        1,
         166,
-        234,
-        39,
-        164,
-        230,
-        41,
-        103,
-        131,
-        248,
-        151,
-        82,
-        0,
+        154,
+        211,
+        24,
+        75,
+        71,
+        161,
+        24,
+        27,
+        207,
+        79,
+        136,
+        192,
+        85,
         155,
-        105,
-        185,
-        14,
-        104,
-        143,
-        131,
+        11,
+        47,
         139,
-        58,
-        175,
-        125
+        83,
+        208,
+        178,
+        126,
+        25,
+        46
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read UTF-8 from a project path. Reuse the returned opaque version to pin a later read or edit; optionally select [start, end) byte offsets",
+        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
         "input_schema": {
           "$defs": {
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "TextRange": {
               "additionalProperties": false,
               "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
@@ -4351,7 +6477,7 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
               "description": "Public path relative to the agent's project volume.",
@@ -4366,7 +6492,18 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+            },
+            "selection": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A line, cell or native media projection. Mutually exclusive with `range`."
             },
             "version": {
               "description": "Opaque version from a prior read or publication. Omission reads the\ncurrent path under the original directory read grant.",
@@ -4512,6 +6649,68 @@
               "$ref": "#/$defs/ResourceRef",
               "description": "Reference to an immutable Filesystem generation."
             },
+            "ImageDetail": {
+              "description": "Common image quality intent.",
+              "oneOf": [
+                {
+                  "const": "auto",
+                  "description": "Adapter-selected detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "low",
+                  "description": "Low detail.",
+                  "type": "string"
+                },
+                {
+                  "const": "high",
+                  "description": "High detail.",
+                  "type": "string"
+                }
+              ]
+            },
+            "NotebookOutput": {
+              "additionalProperties": false,
+              "description": "A retained native notebook output and its exact original JSON provenance.",
+              "properties": {
+                "cell_index": {
+                  "description": "Zero-based source cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "end": {
+                  "description": "Exclusive end of that original MIME value.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Immutable decoded media, retained by the original private-volume writer."
+                },
+                "output_index": {
+                  "description": "Zero-based output within that cell.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "First byte of the original MIME value, including JSON framing.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "file",
+                "cell_index",
+                "output_index",
+                "start",
+                "end"
+              ],
+              "type": "object"
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -4535,6 +6734,150 @@
                 "version"
               ],
               "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
+              ],
+              "type": "object"
+            },
+            "ReadSelection": {
+              "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Text lines, with an optional byte cursor returned by a previous page.",
+                  "properties": {
+                    "kind": {
+                      "const": "lines",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of lines; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First line to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Notebook cells, including their outputs, from the same JSON file.",
+                  "properties": {
+                    "kind": {
+                      "const": "cells",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "default": null,
+                      "description": "Number of cells; omission means no count ceiling.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "offset": {
+                      "default": 0,
+                      "description": "First cell to return.",
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "offset",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native image input, preserving the requested provider detail.",
+                  "properties": {
+                    "detail": {
+                      "$ref": "#/$defs/ImageDetail",
+                      "description": "Provider image detail."
+                    },
+                    "kind": {
+                      "const": "image",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "detail"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Native PDF input.",
+                  "properties": {
+                    "kind": {
+                      "const": "pdf",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "ResourceKind": {
               "description": "Semantic kind of a provider-owned reference.",
@@ -4728,6 +7071,35 @@
               "$ref": "#/$defs/FileReadSource",
               "description": "Original immutable source, used for grant and replay validation."
             },
+            "media": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadSelection"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native media selection; the immutable file supplies its bytes."
+            },
+            "outputs": {
+              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+              "items": {
+                "$ref": "#/$defs/NotebookOutput"
+              },
+              "type": "array"
+            },
+            "page": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReadPage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
+            },
             "text": {
               "description": "Exact selected UTF-8 text.",
               "type": "string"
@@ -4806,6 +7178,16 @@
             "FileView": {
               "description": "Model-visible file identity; the version is opaque and grants no authority.",
               "properties": {
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "path": {
                   "type": "string"
                 },
@@ -4867,6 +7249,46 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "ReadPage": {
+              "additionalProperties": false,
+              "description": "Exact provenance and continuation for a projected read.",
+              "properties": {
+                "end": {
+                  "description": "Exclusive end of the selected interval.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "next": {
+                  "description": "Next byte offset for `range`, absent at end of source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "offset": {
+                  "description": "First zero-based line/cell in this view.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "start": {
+                  "description": "Selected byte interval in the original source, including notebook JSON.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "start",
+                "end",
+                "next",
+                "offset"
               ],
               "type": "object"
             },
@@ -5058,41 +7480,41 @@
             }
           ]
         },
-        "revision": "portable-8"
+        "revision": "portable-10"
       },
       "definition_digest": [
-        68,
-        199,
-        170,
-        50,
-        38,
-        146,
-        29,
-        249,
-        225,
-        243,
-        56,
-        25,
-        156,
-        147,
-        66,
-        115,
-        210,
-        119,
+        224,
+        111,
+        103,
+        233,
+        150,
+        139,
+        222,
+        237,
+        251,
+        81,
+        85,
+        167,
+        8,
+        244,
+        81,
+        19,
+        178,
+        97,
+        126,
+        47,
+        150,
+        33,
+        245,
+        195,
+        43,
         83,
-        133,
-        11,
-        89,
-        188,
+        39,
+        48,
         118,
-        175,
-        200,
-        180,
-        132,
-        23,
-        160,
-        107,
-        99
+        10,
+        235,
+        45
       ],
       "variant": "range_read_reference"
     },
