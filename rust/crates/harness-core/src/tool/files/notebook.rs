@@ -183,6 +183,15 @@ fn encoded<T: Serialize>(
 
 type Substitutions<'a> = [Option<(usize, usize, &'a str)>; 6];
 
+#[derive(Clone, Copy)]
+struct CellField {
+    key: usize,
+    start: usize,
+    end: usize,
+    previous: Option<usize>,
+    next: Option<usize>,
+}
+
 /// Type conversion uses the codec's existing lexical cursor to retain field
 /// boundaries. No cell values or unselected outputs become an owned JSON graph.
 fn convert_cell(
@@ -203,7 +212,10 @@ fn convert_cell(
     if cell.cell_type == kind {
         return Ok(());
     }
-    let _hold = edit::allocation(work, std::mem::size_of::<JsonSpans>())?;
+    let _hold = edit::allocation(
+        work,
+        std::mem::size_of::<JsonSpans>() + std::mem::size_of::<[Option<CellField>; 4]>(),
+    )?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let owned_io = work
         .map(crate::executor::PreparationIo::from_native_work)
@@ -213,8 +225,10 @@ fn convert_cell(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let io = None;
     let origin = span(source, raw).0;
-    let mut fields = [None; 4];
+    let mut fields: [Option<CellField>; 4] = [None; 4];
     let mut key = None;
+    let mut previous_end = None;
+    let mut last_field: Option<usize> = None;
     let mut cursor = JsonSpans::default();
     let mut event = |event| -> Result<bool> {
         match event {
@@ -223,6 +237,11 @@ fn convert_cell(
                 start,
                 end,
             } => {
+                if let Some(last) = last_field.take()
+                    && let Some(field) = fields[last].as_mut()
+                {
+                    field.next = Some(origin + start as usize);
+                }
                 let label = decode(
                     std::marker::PhantomData::<crate::executor::json::BorrowedText<'_>>,
                     &raw.get()[start as usize..end as usize],
@@ -247,8 +266,16 @@ fn convert_cell(
                     if fields[field].is_some() {
                         return Err(executor::rejection(work, "duplicate notebook cell field"));
                     }
-                    fields[field] = Some((key, origin + start as usize, origin + end as usize));
+                    fields[field] = Some(CellField {
+                        key,
+                        start: origin + start as usize,
+                        end: origin + end as usize,
+                        previous: previous_end,
+                        next: None,
+                    });
+                    last_field = Some(field);
                 }
+                previous_end = Some(origin + end as usize);
             }
             _ => {}
         }
@@ -278,30 +305,19 @@ fn convert_cell(
         )?;
         cursor.finish(Some(crate::wire::ErrorCode::Invalid), &mut event)
     })?;
-    let (_, start, end) =
+    let field =
         fields[0].ok_or_else(|| executor::rejection(work, "notebook cell type is missing"))?;
-    substitutions[3] = Some((start, end, encoded_kind));
-    let remove = |(key, _, end): (usize, usize, usize)| {
-        let following = source.as_bytes()[end..]
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-            .map(|offset| end + offset);
-        if following.is_some_and(|at| source.as_bytes()[at] == b',') {
-            (key, following.unwrap() + 1, "")
-        } else {
-            let preceding = source.as_bytes()[..key]
-                .iter()
-                .rposition(|byte| !byte.is_ascii_whitespace());
-            let start = preceding
-                .filter(|at| source.as_bytes()[*at] == b',')
-                .unwrap_or(key);
-            (start, end, "")
-        }
+    substitutions[3] = Some((field.start, field.end, encoded_kind));
+    let remove = |field: CellField| {
+        field.next.map_or(
+            (field.previous.unwrap_or(field.key), field.end, ""),
+            |next| (field.key, next, ""),
+        )
     };
     if kind == "code" {
         for (slot, field, replacement) in [(1, fields[1], "[]"), (2, fields[2], "null")] {
-            if let Some((_, start, end)) = field {
-                substitutions[slot] = Some((start, end, replacement));
+            if let Some(field) = field {
+                substitutions[slot] = Some((field.start, field.end, replacement));
             }
         }
         let missing = match (fields[1].is_none(), fields[2].is_none()) {
@@ -316,8 +332,24 @@ fn convert_cell(
         }
         substitutions[4] = fields[3].map(remove);
     } else {
-        substitutions[1] = fields[1].map(remove);
-        substitutions[2] = fields[2].map(remove);
+        let mut removed = [fields[1], fields[2]];
+        removed.sort_unstable_by_key(|field| field.map_or(usize::MAX, |field| field.key));
+        if let [Some(first), Some(last)] = removed
+            && first.next == Some(last.key)
+        {
+            // One run owns both the leading and trailing comma decision. In
+            // particular, a removed final run consumes its preceding comma.
+            removed = [
+                Some(CellField {
+                    end: last.end,
+                    next: last.next,
+                    ..first
+                }),
+                None,
+            ];
+        }
+        substitutions[1] = removed[0].map(remove);
+        substitutions[2] = removed[1].map(remove);
     }
     Ok(())
 }
@@ -544,11 +576,6 @@ pub(super) fn edit(
     edit::charge(&hold, (source.len() + extra) as u64, 1)?;
     let mut cursor = 0;
     for (start, end, replacement) in substitutions.into_iter().flatten() {
-        if start < cursor && replacement.is_empty() {
-            // Adjacent removed fields can share the comma between them.
-            cursor = cursor.max(end);
-            continue;
-        }
         text.push_str(
             source
                 .get(cursor..start)
