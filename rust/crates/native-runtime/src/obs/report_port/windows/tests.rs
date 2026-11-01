@@ -14,19 +14,28 @@ const TEST: &str = "obs::report_port::windows::tests::native_pipe_keeps_request_
 // through acknowledgement or transport loss. No readiness deadline is used.
 #[test]
 fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
+    // The actual original endpoint is owned before runtime construction.
+    let admission = std::env::var(CHILD)
+        .ok()
+        .map(|_| ReportAdmission::from_environment());
     let runtime = crate::coordination_runtime().unwrap();
     let report = WaitReport::default();
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         if let Ok(mode) = std::env::var(CHILD) {
-            let port = ReportPort::from_environment();
+            let port = admission.unwrap().and_then(|endpoint| endpoint.map(ReportAdmission::into_port).transpose());
             if mode == "foreign" {
                 assert!(matches!(port, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
                 return;
             }
             let mut port = port.unwrap().expect("selected launch must expose its port");
             assert!(matches!(ReportPort::from_environment(), Err(error) if error.kind() == io::ErrorKind::AlreadyExists));
+            if mode == "reject" {
+                let cause = super::super::tests::native_read_refusal();
+                port.reject_startup("setup", &cause).await.unwrap();
+                return;
+            }
             let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
             let _wait = (mode == "live")
                 .then(|| crate::obs::waiting("channel-close", "report-control", completion));
@@ -40,7 +49,7 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             }
             return;
         }
-        for mode in ["ack", "live", "wrong-generation", "expired", "withdrawn", "foreign"] {
+        for mode in ["ack", "live", "wrong-generation", "expired", "withdrawn", "foreign", "reject"] {
             let mut random = [0; 16];
             getrandom::fill(&mut random).unwrap();
             let generation = format!("{:032x}", u128::from_ne_bytes(random));
@@ -73,6 +82,16 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             let mut pipe = BufReader::new(pipe);
             let mut line = String::new();
             if mode == "foreign" {
+                assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
+            } else if mode == "reject" {
+                assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);
+                let rejection: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let original = super::super::tests::native_read_refusal();
+                assert_eq!(rejection["generation"], generation);
+                assert_eq!(rejection["rejected"]["phase"], "setup");
+                assert_eq!(rejection["rejected"]["cause"], original.to_string());
+                assert_eq!(rejection["rejected"]["raw_os_error"], original.raw_os_error().unwrap());
+                line.clear();
                 assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
             } else {
                 assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);

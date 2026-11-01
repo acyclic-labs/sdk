@@ -161,6 +161,36 @@ async function ready(running) {
   })]);
 }
 
+test("original native startup rejection retains cause before physical close and refuses a foreign generation", { skip: process.platform === "win32" }, async () => {
+  for (const owned of [false, true]) for (const mode of ["reject", "reject-foreign", "no-runtime"]) {
+    const scope = new Processes();
+    const running = launch(scope, owned, mode);
+    let physicallyClosed = false;
+    running.child.once("close", () => { physicallyClosed = true; });
+    try {
+      const refusal = await running.reportReady.then(() => assert.fail("setup rejection cannot announce executable work"), error => error);
+      const result = await running.closed;
+      assert.equal(physicallyClosed, true);
+      assert.equal(result.code, 0, result.stderr);
+      if (mode === "reject") {
+        assert.equal(refusal.code, "PROCESS_STARTUP_REJECTED");
+        assert.equal(refusal.cause.phase, "setup");
+        assert.equal(typeof refusal.cause.cause, "string");
+        assert.notEqual(refusal.cause.cause, "");
+        assert.ok(Number.isInteger(refusal.cause.raw_os_error) && refusal.cause.raw_os_error !== 0);
+        assert.deepEqual(result.termination.startup_rejection, refusal.cause);
+        assert.equal(result.termination.generation, refusal.generation);
+        assert.equal(result.termination.report_requested, false);
+        assert.equal(result.termination.report_acknowledged, false);
+      } else {
+        assert.equal(refusal.code, "REPORT_CONTROL_ENDED");
+        assert.equal(result.termination, undefined, "source loss or a foreign cause cannot prove a selected startup rejection");
+      }
+      assert.equal(scope.children.size, 0);
+    } finally { await scope.close(); }
+  }
+});
+
 test("selected report acknowledgement distinguishes live, empty, refusal and producer loss before physical drain", { skip: process.platform === "win32" }, async () => {
   for (const owned of [false, true]) for (const [mode, expected] of [
     ["live", "report"], ["1", "empty"], ["expired", "unsupported"],

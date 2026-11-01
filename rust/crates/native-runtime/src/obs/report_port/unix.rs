@@ -1,4 +1,4 @@
-use super::ReportPort;
+use super::ReportAdmission;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     io,
@@ -7,7 +7,7 @@ use std::{
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
-pub(super) fn open() -> io::Result<Option<ReportPort>> {
+pub(super) fn open() -> io::Result<Option<ReportAdmission>> {
     let Some(descriptor) = std::env::var_os("ACYCLIC_REPORT_FD") else {
         return Ok(None);
     };
@@ -22,6 +22,12 @@ pub(super) fn open() -> io::Result<Option<ReportPort>> {
             )
         })?;
     let generation = std::env::var("ACYCLIC_REPORT_GENERATION").map_err(io::Error::other)?;
+    if !super::identity(&generation) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid report generation",
+        ));
+    }
     if TAKEN.swap(true, Ordering::AcqRel) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -70,5 +76,8 @@ pub(super) fn open() -> io::Result<Option<ReportPort>> {
         stream
     };
     stream.set_nonblocking(true)?;
-    ReportPort::new(generation, tokio::net::UnixStream::from_std(stream)?).map(Some)
+    Ok(Some(ReportAdmission {
+        generation,
+        channel: stream,
+    }))
 }
