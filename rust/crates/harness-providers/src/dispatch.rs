@@ -44,7 +44,7 @@ pub(crate) fn generate_encoded<'a>(
             let (failure, retry_after) = match send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await {
                 Err(error) => (Some(error), None),
                 Ok(response) if !(200..300).contains(&response.status) => {
-                    attempt.refuse();
+                    attempt.refuse(response.status);
                     let retry_after = response.retry_after;
                     (Some(crate::diagnostic::rejection(crate::http_failure(response, provider.config.max_event_bytes, None).await)), retry_after)
                 }
@@ -203,7 +203,7 @@ pub(crate) struct GenerationAttempt {
 #[derive(Clone, Copy, PartialEq)]
 enum Admission {
     Unknown,
-    Refused,
+    Refused(u16),
     Accepted,
 }
 
@@ -221,9 +221,9 @@ impl GenerationAttempt {
         self.admission = Admission::Accepted;
     }
 
-    pub(crate) fn refuse(&mut self) {
+    pub(crate) fn refuse(&mut self, status: u16) {
         if self.admission != Admission::Accepted {
-            self.admission = Admission::Refused;
+            self.admission = Admission::Refused(status);
         }
     }
 
@@ -265,21 +265,23 @@ impl GenerationAttempt {
     ) -> Option<std::time::Duration> {
         // A timeout or disconnect before headers can still lose an accepted
         // request's reply. Only a failed connection or explicit HTTP refusal
-        // proves there was no successful response to preserve.
-        if self.admission == Admission::Unknown
-            && !matches!(
+        // proves there was no successful response to preserve. A failed error
+        // body cannot turn a final HTTP status into a retryable refusal.
+        let retryable = match self.admission {
+            Admission::Unknown => matches!(
                 error,
                 acyclic_harness_core::Error::ModelUnavailable {
                     failure: acyclic_harness_core::ModelTransportFailure::Connect,
                     ..
                 }
-            )
-        {
+            ),
+            Admission::Refused(status) => matches!(status, 408 | 429 | 500..=599),
+            Admission::Accepted => false,
+        };
+        if !retryable {
             return None;
         }
-        let wait = self
-            .redelivery
-            .next(error, retry_after, self.admission == Admission::Accepted);
+        let wait = self.redelivery.next(error, retry_after, false);
         if wait.is_some() {
             self.admission = Admission::Unknown;
         }
@@ -289,7 +291,7 @@ impl GenerationAttempt {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refresh(&mut self, error: &acyclic_harness_core::Error) -> bool {
         if error.code() != acyclic_harness_core::wire::ErrorCode::Unauthorized
-            || self.admission != Admission::Refused
+            || self.admission != Admission::Refused(401)
             || self.retried
         {
             return false;
