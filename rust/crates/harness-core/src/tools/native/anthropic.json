@@ -216,5 +216,48 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "name": "NotebookEdit",
+    "description": "Edits cells in Jupyter notebook files.",
+    "parametersJsonSchema": {
+      "type": "object",
+      "properties": {
+        "notebook_path": {
+          "type": "string",
+          "description": "The absolute path to the Jupyter notebook file to edit (must be absolute, not relative)"
+        },
+        "cell_id": {
+          "type": "string",
+          "description": "The ID of the cell to edit. When inserting a new cell, the new cell will be inserted after the cell with this ID, or at the beginning if not specified."
+        },
+        "new_source": {
+          "type": "string",
+          "description": "The new source for the cell"
+        },
+        "cell_type": {
+          "type": "string",
+          "enum": [
+            "code",
+            "markdown"
+          ],
+          "description": "The type of the cell (code or markdown). If not specified, it defaults to the current cell type. If using edit_mode=insert, this is required."
+        },
+        "edit_mode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "insert",
+            "delete"
+          ],
+          "description": "The type of edit to make (replace, insert, delete). Defaults to replace."
+        }
+      },
+      "required": [
+        "notebook_path",
+        "new_source"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

@@ -68,9 +68,10 @@ impl NativeDeclarations {
         original: Arc<Tool>,
     ) -> Result<(Tool, NativeCustody)> {
         let profile = self.profile;
-        let capability = arguments::Capability::parse(&revision.capability)?;
+        let capability = arguments::Capability::parse(&revision.capability, &revision.variant)?;
         let core_capability = match capability {
             arguments::Capability::Glob | arguments::Capability::Search => "shell",
+            arguments::Capability::Notebook => "edit",
             _ => revision.capability.as_str(),
         };
         if original.definition.capability() != core_capability {

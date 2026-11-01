@@ -145,8 +145,8 @@ impl ModelProfile {
                     nonempty(&tool.capability)?;
                     nonempty(&tool.variant)?;
                     nonempty(&tool.revision)?;
-                    if !seen.insert(&tool.capability) {
-                        return Err(invalid("duplicate capability declaration"));
+                    if !seen.insert(&tool.variant) {
+                        return Err(invalid("duplicate tool variant declaration"));
                     }
                 }
             }

@@ -28,14 +28,16 @@ pub(super) enum Capability {
     Read,
     Write,
     Edit,
+    Notebook,
     Shell,
     Glob,
     Search,
 }
 
 impl Capability {
-    pub(super) fn parse(name: &str) -> Result<Self> {
+    pub(super) fn parse(name: &str, variant: &str) -> Result<Self> {
         match name {
+            "edit" if variant == "NotebookEdit" => Ok(Self::Notebook),
             "read" => Ok(Self::Read),
             "write" => Ok(Self::Write),
             "edit" => Ok(Self::Edit),
@@ -64,6 +66,10 @@ enum Arguments<'a> {
         new_text: &'a str,
         replace_all: bool,
     },
+    Notebook {
+        path: &'a str,
+        notebook: Notebook<'a>,
+    },
     Shell {
         command: &'a Value,
         cwd: Option<&'a str>,
@@ -72,6 +78,35 @@ enum Arguments<'a> {
     Patch {
         patch: &'a str,
     },
+}
+
+// Borrow native arguments directly into the one canonical argument value.
+// Cell IDs for insertion derive from the admitted operation, including replay.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Notebook<'a> {
+    Replace {
+        cell: Cell<'a>,
+        source: &'a str,
+        cell_type: Option<&'a str>,
+    },
+    Insert {
+        cell: Cell<'a>,
+        after: bool,
+        id: crate::OperationId,
+        cell_type: &'a str,
+        source: &'a str,
+    },
+    Delete {
+        cell: Cell<'a>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Cell<'a> {
+    Index { index: u64 },
+    Id { id: &'a str },
 }
 
 pub(super) struct Adapted {
@@ -175,6 +210,39 @@ impl adapter::Adapter {
                 new_text: text(fields, "new_string")?,
                 replace_all: boolean(fields, if cc { "replace_all" } else { "allow_multiple" })?,
             },
+            Capability::Notebook => {
+                let source = text(fields, "new_source")?;
+                let id = optional_text(fields, "cell_id")?;
+                let cell_type = optional_text(fields, "cell_type")?;
+                if cell_type.is_some_and(|kind| !matches!(kind, "code" | "markdown")) {
+                    return Err(Error::Invalid(
+                        "NotebookEdit: invalid cell_type; recovery: use code or markdown".into(),
+                    ));
+                }
+                let mode = optional_text(fields, "edit_mode")?.unwrap_or("replace");
+                let cell = match id {
+                    Some("") => return Err(Error::Invalid("NotebookEdit: empty cell_id; recovery: use the cell ID from Read".into())),
+                    Some(id) => Cell::Id { id },
+                    None if mode == "insert" => Cell::Index { index: 0 },
+                    None => return Err(Error::Invalid("NotebookEdit: cell_id is required for replace or delete; recovery: use the cell ID from Read".into())),
+                };
+                let notebook = match mode {
+                    "replace" => Notebook::Replace { cell, source, cell_type },
+                    "insert" => Notebook::Insert {
+                        cell,
+                        after: id.is_some(),
+                        id: invocation.operation_id,
+                        cell_type: cell_type.ok_or_else(|| Error::Invalid("NotebookEdit: cell_type is required for insert; recovery: choose code or markdown".into()))?,
+                        source,
+                    },
+                    "delete" => Notebook::Delete { cell },
+                    _ => return Err(Error::Invalid("NotebookEdit: invalid edit_mode; recovery: use replace, insert or delete".into())),
+                };
+                Arguments::Notebook {
+                    path: text(fields, "notebook_path")?,
+                    notebook,
+                }
+            }
             Capability::Shell => {
                 if boolean(
                     fields,

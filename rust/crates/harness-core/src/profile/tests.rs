@@ -78,6 +78,25 @@ fn executable_bindings_retain_original_tools_and_refuse_stale_requests() -> Resu
     )?;
     let missing = resolve(&missing, &role, &project, &agent)?;
     assert!(missing.bind_tools(&registry, None).is_err());
+    // Distinct native shapes can share one capability and its role grant.
+    let shared = family.replace("capability: edit", "capability: read");
+    let shared_model = profile(&shared, Some(200))?;
+    let shared = resolve(&shared_model, &role, &project, &agent)?;
+    assert!(
+        shared
+            .bind_tools(&registry, None)?
+            .declarations()
+            .iter()
+            .all(ToolBinding::available)
+    );
+    assert!(
+        profile(
+            &family.replace("variant: first", "variant: second"),
+            Some(200)
+        )
+        .is_err(),
+        "two capabilities cannot claim one model-visible name"
+    );
     Ok(())
 }
 

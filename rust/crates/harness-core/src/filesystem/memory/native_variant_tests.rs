@@ -130,6 +130,45 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
             tools[0].definition.validate_projection(&projected,limits,None)?;
             assert!(matches!(call(&task,&tools[0],json!({"file_path":"absent.pdf","pages":"1-2"})).await,
                 Err(Error::Unsupported(_))));
+            if cc {
+                let revision = revisions.iter().find(|revision| revision.variant == "NotebookEdit").expect("native notebook");
+                let original = originals.get_shared("edit",None,None)?.expect("stock edit").clone();
+                let notebook = contracts.bind_variant(revision,original)?.0;
+                assert_eq!(notebook.definition.capability(), "edit");
+                let source = r#"{"nbformat":4,"cells":[{"id":"a","cell_type":"code","source":"old","outputs":[],"execution_count":1}],"metadata":{"keep":true}}"#;
+                call(&task,&tools[1],json!({"file_path":"cells.ipynb","content":source})).await?;
+                let (inserted,result) = call(&task,&notebook,json!({"notebook_path":"cells.ipynb","cell_id":"a","edit_mode":"insert","cell_type":"markdown","new_source":"inserted"})).await?;
+                let read = call(&task,&tools[0],json!({"file_path":"cells.ipynb"})).await?.1;
+                let inserted_text = read.value["text"].as_str().expect("cell text");
+                assert!(inserted_text.contains("old"));
+                assert!(inserted_text.contains("inserted"));
+                let inserted_id = inserted.operation_id.to_string();
+                assert!(inserted_text.contains(&inserted_id));
+                call(&task,&notebook,json!({"notebook_path":"cells.ipynb","cell_id":"a","new_source":"changed","cell_type":"markdown"})).await?;
+                let context = crate::runtime::ToolContext::new(Arc::new(task.clone()),inserted.operation_id,&inserted.call_id)?;
+                assert_eq!(notebook.executor.reconcile(inserted,Some(context)).await?,Some(result));
+                call(&task,&notebook,json!({"notebook_path":"cells.ipynb","cell_id":inserted_id,"edit_mode":"delete","new_source":""})).await?;
+                call(&task,&notebook,json!({"notebook_path":"cells.ipynb","edit_mode":"insert","cell_type":"code","new_source":"first"})).await?;
+                let read = call(&task,&tools[0],json!({"file_path":"cells.ipynb"})).await?.1;
+                let text = read.value["text"].as_str().expect("cell text");
+                assert!(text.find("first").unwrap() < text.find("changed").unwrap());
+                assert!(!text.contains("inserted"));
+                let before = read.value["file"].clone();
+                for arguments in [
+                    json!({"notebook_path":"cells.ipynb","new_source":"wrong"}),
+                    json!({"notebook_path":"cells.ipynb","edit_mode":"insert","new_source":"wrong"}),
+                    json!({"notebook_path":"cells.ipynb","cell_id":"absent","new_source":"wrong"}),
+                ] {
+                    assert!(call(&task,&notebook,arguments).await.is_err());
+                }
+                assert_eq!(call(&task,&tools[0],json!({"file_path":"cells.ipynb"})).await?.1.value["file"],before);
+                let mut refusing = originals.get("edit",None,None)?.expect("stock edit").clone();
+                refusing.executor = Arc::new(Refuses);
+                let mut contracts = NativeDeclarations::new(profile,None)?;
+                let refusing = contracts.bind_variant(revision,Arc::new(refusing))?.0;
+                assert!(matches!(call(&task,&refusing,json!({"notebook_path":"cells.ipynb","cell_id":"a","new_source":"wrong"})).await,
+                    Err(Error::Conflict(reason)) if reason == "original producer refused"));
+            }
         }
         Ok(())
     }).await
