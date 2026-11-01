@@ -10,7 +10,7 @@ impl crate::runtime::Executor for Executor {
     fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
         self.0.lock().unwrap().push(future);
     }
-    fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {
+    fn sleep(&self, _: u64) -> BoxProviderFuture<'static, Result<(), crate::runtime::SleepError>> {
         Box::pin(futures::future::pending())
     }
 }
