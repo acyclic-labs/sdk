@@ -1,8 +1,8 @@
 """Probe-only scale proof through each production MCP host adapter.
 
-Run on Linux (or ivar): python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
+Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
-the separate plugin-e2e lane owns the real sandbox/model matrix. GraphCoder
+the separate real-host suite owns the real sandbox/model matrix. GraphCoder
 must enable test-support for the shared resource sampler/oracle request.
 """
 import json
@@ -16,7 +16,7 @@ import tempfile
 import time
 import traceback
 from native_events import native_event_fixture
-from native_fixture import fixture_environment
+from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 
 
 def interrupted(signum, frame):
@@ -86,19 +86,12 @@ sys.exit(17)
 ''')
         executable.chmod(0o755)
         with (root / 'owner.log').open('w+') as owner_log, (root / 'bridge.log').open('w+') as bridge_log:
-            owner = subprocess.Popen([graphcoder, '--host-workspace', '--host-state-directory',
-                                      str(root / 'state'), '--workspace', str(workspace)],
-                                     cwd=workspace, env=env, stdout=owner_log, stderr=owner_log)
+            owner = start_workspace_owner(graphcoder, workspace, root / 'state', root, env, owner_log)
             bridge = None
             gates = []
             try:
-                deadline = time.monotonic() + 2
-                while not (workspace / '.acyclic-sdk/host-files/owner.json').is_file():
-                    assert owner.poll() is None, (root / 'owner.log').read_text()[-2000:]
-                    assert time.monotonic() < deadline, 'owner readiness'
-                    time.sleep(.001)
                 launch = subprocess.run([binary, 'host', host, '--', *flags], cwd=workspace,
-                                        env=env, capture_output=True, text=True, timeout=2)
+                                        env=env, capture_output=True, text=True)
                 assert launch.returncode == 0, launch.stderr
                 parent = json.loads((workspace / 'root.json').read_text())
                 task = parent['task']
@@ -107,7 +100,7 @@ sys.exit(17)
                     print(json.dumps({'host': host, 'step': 'workspace command', 'action': action}), flush=True)
                     result = subprocess.run([binary, '__workspace'], cwd=workspace, env=env,
                                             input=json.dumps(action), text=True,
-                                            capture_output=True, timeout=2)
+                                            capture_output=True)
                     assert result.returncode == 0, result.stderr
                     return json.loads(result.stdout)
 
@@ -184,9 +177,9 @@ sys.exit(17)
                     assert (workspace / (reference + '.txt')).read_text() == reference
                     assert (path / (reference + '.txt')).read_text() == reference
                 bridge.stdin.close()
-                assert bridge.wait(timeout=2) == 0
-                owner.terminate()
-                assert owner.wait(timeout=2) == 0
+                assert bridge.wait() == 0
+                previous, owner = owner, None
+                stop_workspace_owner(previous)
                 elapsed = time.monotonic() - started
                 assert elapsed < 10, elapsed
                 print(json.dumps({'host': host, 'samples': samples, 'seconds': elapsed,
@@ -197,10 +190,13 @@ sys.exit(17)
             finally:
                 for gate in gates:
                     gate.close()
-                for process in (bridge, owner):
-                    if process is not None and process.poll() is None:
-                        process.terminate()
-                        process.wait(timeout=2)
+                try:
+                    if bridge is not None:
+                        bridge.terminate()
+                        bridge.wait()
+                finally:
+                    if owner is not None:
+                        stop_workspace_owner(owner)
 
 
 if __name__ == '__main__':

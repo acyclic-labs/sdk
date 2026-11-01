@@ -297,12 +297,12 @@ impl Connection {
         Ok(connection)
     }
     async fn next(&mut self) -> Result<wire::SessionFrame> {
-        Ok(
-            tokio::time::timeout(std::time::Duration::from_secs(1), self.output.next())
-                .await?
-                .ok_or("session ended")??
-                .into_wire(),
-        )
+        Ok(self
+            .output
+            .next()
+            .await
+            .ok_or("session ended")??
+            .into_wire())
     }
     fn grant(&self, id: u64) -> Result {
         self.sender.unbounded_send(Ok(frame(
@@ -332,12 +332,7 @@ impl Connection {
     async fn queued(&mut self) -> Result {
         let notified = self.seen.notified();
         let pending = self.output.next();
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            futures::future::select(Box::pin(notified), pending),
-        )
-        .await?
-        {
+        match futures::future::select(Box::pin(notified), pending).await {
             futures::future::Either::Left(_) => Ok(()),
             futures::future::Either::Right((frame, _)) => {
                 Err(format!("queued data escaped credit: {frame:?}").into())

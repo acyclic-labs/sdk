@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
+import { runShellFixture } from "./shell-fixture.mjs";
 
-test("Linux joins Harness packaging and generated checks before conformance, including failures", () => {
+test("Linux joins Harness packaging and generated checks before conformance, including failures", async () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    background harness-package bash");
   const end = source.indexOf("    background harness-conformance bun", start);
@@ -14,42 +14,58 @@ test("Linux joins Harness packaging and generated checks before conformance, inc
   assert.ok(end > start);
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"))
-    .replace("finish() {", 'finish() {\n  touch "$SDK_TEMP_DIR/finish-entered"');
+    .replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5')
+    .replace('  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"',
+      '  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"\n  exec 3>&-');
+  assert.ok(helpers.includes("exec 3>&-"));
   const bash = process.platform === "win32"
     ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
   mkdirSync(".tools", { recursive: true });
   for (const harnessStatus of [0, 13]) for (const generatedStatus of [0, 21]) {
     const directory = mkdtempSync(".tools/linux-overlap-");
     try {
-      const result = spawnSync(bash, ["-c", `set -euo pipefail
+      let generated = false, finishing = false, released = false;
+      const result = await runShellFixture(bash, `set -euo pipefail
+exec 5>&1
 SDK_TEMP_DIR="$SDK_OVERLAP_FIXTURE"
 SDK_ARTIFACT_DIR="$SDK_TEMP_DIR/artifacts"
 bash() {
+  exec 4>&-
   [[ "$#" == 2 && "$1" == scripts/check-harness-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
-  touch "$SDK_TEMP_DIR/harness-started"
-  while [[ ! -f "$SDK_TEMP_DIR/generated-done" || ! -f "$SDK_TEMP_DIR/finish-entered" ]]; do sleep 0.01; done
+  printf 'fixture:harness-started\\n' >&5
+  IFS= read -r event <&3 && [[ "$event" == generated-and-finish ]] || { echo 'step=await original generated/finish event: producer closed or invalid record; recovery command: node --test scripts/test-qualify-linux-package-overlap.mjs' >&2; return 98; }
   echo harness-complete
   touch "$SDK_TEMP_DIR/harness-done"
   return ${harnessStatus}
 }
 bun() {
   [[ "$#" == 2 && "$1" == run && "$2" == check:baselines ]]
-  while [[ ! -f "$SDK_TEMP_DIR/harness-started" ]]; do sleep 0.01; done
+  IFS= read -r event <&4 && [[ "$event" == harness-started ]] || { echo 'step=await original harness start: producer closed or invalid record; recovery command: node --test scripts/test-qualify-linux-package-overlap.mjs' >&2; return 98; }
   [[ ! -f "$SDK_TEMP_DIR/harness-done" ]]
   echo generated-complete
   touch "$SDK_TEMP_DIR/generated-done"
+  printf 'fixture:generated-done\\n' >&5
   return ${generatedStatus}
 }
 ${helpers}
 ${commands}
 [[ -f "$SDK_TEMP_DIR/harness-done" && -f "$SDK_TEMP_DIR/generated-done" ]]
 echo conformance-ready
-`], {
-        encoding: "utf8", timeout: 60000,
+`, {
+        gates: 2, recovery: "node --test scripts/test-qualify-linux-package-overlap.mjs",
         env: { ...process.env, SDK_OVERLAP_FIXTURE: directory.replaceAll("\\", "/") },
+        event(line, release) {
+          if (line === "fixture:harness-started") release(1, "harness-started");
+          if (line === "fixture:generated-done") generated = true;
+          if (line === "fixture:finish-entered") finishing = true;
+          if (generated && finishing && !released) {
+            released = true;
+            release(0, "generated-and-finish");
+          }
+        },
       });
-      assert.equal(result.error, undefined);
+      assert.equal(released, true, result.stderr);
       assert.equal(result.status, harnessStatus || generatedStatus, result.stderr);
       assert.match(result.stdout, /generated-complete/);
       assert.match(result.stdout, /harness-complete/);

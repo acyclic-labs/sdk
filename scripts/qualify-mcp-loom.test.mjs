@@ -44,9 +44,10 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
         target = crate.replaceAll("-", "_");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
       }
-      assert.equal(options.timeout, undefined);
       executed++;
-      const passed = suites.find(([prefix]) => prefix === args[0])[1];
+      const suite = suites.find(([prefix]) => prefix === args[0]);
+      assert.ok(suite, "execution must name an original suite");
+      const passed = suite[1];
       return { status: 0, stdout: summary(missing === args[0] ? 0 : passed, 0, 10) };
     };
     qualifyOrReject(missing, () => {
@@ -62,13 +63,16 @@ test("checkout qualification requires all nine tests including nested fencing", 
   assert.deepEqual(harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === "local::checkout_tools::tests::"),
     ["local::checkout_tools::tests::", 9]);
   for (const checkoutCount of [8, 9, 10]) {
-    const run = command => command === "cargo"
-      ? { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) }
-      : undefined;
-    const execute = (command, args) => command === "cargo" ? run(command) : {
-      status: 0,
-      stdout: summary(args[0] === "local::checkout_tools::tests::" ? checkoutCount
-        : harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === args[0])[1], 0, 100),
+    const execute = (command, args) => {
+      if (command === "cargo") return {
+        status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }),
+      };
+      const suite = harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === args[0]);
+      assert.ok(suite, "execution must name an original suite");
+      return {
+        status: 0,
+        stdout: summary(args[0] === "local::checkout_tools::tests::" ? checkoutCount : suite[1], 0, 100),
+      };
     };
     if (checkoutCount === 9) qualifyHarnessModelsLoom(undefined, execute);
     else assert.throws(() => qualifyHarnessModelsLoom(undefined, execute), /requires a nonzero/);
@@ -91,7 +95,6 @@ test("skill materializer qualification requires the production owner model and i
       }
       assert.equal(args[0], ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"][models]);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
     };
     if (missing === null) { qualifySkillMaterializerLoom(run); assert.equal(models, 2); }
@@ -111,6 +114,7 @@ test("gate rejects every trailing argument before starting a build", () => {
 
 function assertGateStep(args) {
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(gate, "the original qualification must retain its gate branch");
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --gate/);
   assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
 }
@@ -124,13 +128,13 @@ test("ownership qualification requires every dedicated real-lock model and compi
         return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
       assert.deepEqual(args, ["ownership::model::"]);
-      assert.equal(options.timeout, 9500);
       return {status: 0, stderr: "", stdout: summary(passed, 0, 50)};
     };
     if (passed === 8) qualifyOwnershipLoom(run);
     else assert.throws(() => qualifyOwnershipLoom(run), /requires a nonzero/);
   }
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(gate, "the original qualification must retain its gate branch");
   const requireProofs = text => {
     assert.match(text, /^    node scripts\/check-hermetic-clippy\.mjs$/m);
     assertGateStep(["--ownership"]);
@@ -190,7 +194,6 @@ test("fs Session qualification instruments real provider and Session locks and r
       }
       assert.match(args[0], /^session_fs_model::change_resume_exhausts_/);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 2) };
     };
@@ -201,7 +204,9 @@ test("fs Session qualification instruments real provider and Session locks and r
 });
 
 test("hook qualification requires every retained checkout and projection model", () => {
-  for (const [qualify, target, count] of [[qualifyHookLifecycleLoom, "acyclic_harness", 10]]) {
+  /** @type {Array<[typeof qualifyHookLifecycleLoom, string, number]>} */
+  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 10]];
+  for (const [qualify, target, count] of hooks) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
       const run = (command, args, options) => {
@@ -212,7 +217,6 @@ test("hook qualification requires every retained checkout and projection model",
         }
         assert.match(args[0], /(?:cancelled_bash_retains_projection|local::workspace::projection::tests::)/);
         assert.equal(args[1], "--exact");
-        assert.equal(options.timeout, 9500);
         models++;
         return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
       };
@@ -226,7 +230,11 @@ test("hook qualification requires every retained checkout and projection model",
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];
   qualifyMcpLoom(["--all-features"], (command, args, options) => {
-    if (command === "cargo") assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+    if (command === "cargo") {
+      const wrapper = options.env?.RUSTC_WORKSPACE_WRAPPER;
+      assert.ok(typeof wrapper === "string");
+      assert.match(wrapper, /loom-rustc\.(?:sh|cmd)$/);
+    }
     calls.push([command, args]);
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
@@ -239,6 +247,7 @@ test("qualification opts into the crate cfg only for the model build and execute
   assertGateStep(["--timer"]);
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(policy, "the original qualification must retain its policy branch");
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
 
@@ -269,7 +278,9 @@ test("guest qualification selects every guest model in the instrumented main tar
 });
 
 test("qualification rejects zero, skipped, filtered and failed model execution", () => {
-  for (const [status, output] of [[0, summary(0)], [0, summary(5, 1)], [0, summary(5, 0, 1)], [1, summary(6)]]) {
+  /** @type {Array<[number, string]>} */
+  const executions = [[0, summary(0)], [0, summary(5, 1)], [0, summary(5, 0, 1)], [1, summary(6)]];
+  for (const [status, output] of executions) {
     assert.throws(() => qualifyMcpLoom(undefined, command => ({
       status: command === "cargo" ? 0 : status,
       stdout: command === "cargo" ? JSON.stringify(artifact) : output,
@@ -279,7 +290,9 @@ test("qualification rejects zero, skipped, filtered and failed model execution",
 });
 
 test("qualification rejects failed builds and missing or ambiguous artifacts", () => {
-  for (const [status, stdout] of [[1, ""], [0, ""], [0, `${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}`]]) {
+  /** @type {Array<[number, string]>} */
+  const builds = [[1, ""], [0, ""], [0, `${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}`]];
+  for (const [status, stdout] of builds) {
     assert.throws(() => qualifyMcpLoom(undefined, () => ({ status, stdout, stderr: "" })),
       /MCP Loom build (failed|must produce)/);
   }
@@ -311,7 +324,6 @@ test("registry gate instruments real native locks and rejects either omitted pro
       }
       assert.match(args[0], /native_mount::fence::models::/);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
     };

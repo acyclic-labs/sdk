@@ -209,7 +209,7 @@ export class Suite extends DurableObject {
       append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) {
         return journal.append(index, () => { atAcceptance(); return admit(); }, changes);
       },
-    })), retry);
+    }), retry);
   }
 
   async wakeIsolation(): Promise<void> {

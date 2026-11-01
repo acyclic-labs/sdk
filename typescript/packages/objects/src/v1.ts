@@ -87,6 +87,7 @@ export function objectsStreamRequest(input: Uint8Array, start: (input: Uint8Arra
       pulling = true;
       try {
         if (source === undefined) {
+          // The caller explicitly selected this request's optional opening deadline.
           if (timeoutMs !== undefined && timeoutMs > 0) timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), timeoutMs);
           source = start(bytes, controller, opened)[Symbol.asyncIterator]();
         }

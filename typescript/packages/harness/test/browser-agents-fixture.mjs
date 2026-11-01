@@ -1,4 +1,4 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeAgentRecord, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
@@ -12,7 +12,7 @@ export async function agentsFixture(id, reply, initialize = init) {
   const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];
-  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1", options: {} },
+  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1" },
     async function* (bytes, dispatch, signal, files) {
       const request = JSON.parse(new TextDecoder().decode(bytes));
       const texts = files.map(file => new TextDecoder().decode(file));
@@ -59,15 +59,17 @@ export const modelTokenCount = (bytes, request_digest) => ({
 // The canonical replay-to-live cursor owns registration and cancellation.
 // These fixed fixture histories are retained only for their parallel assertions.
 export async function untilRecords(fixture, agents, agent, stream, test) {
+  const completed = agents.completion();
+  completed.catch(() => {});
   const cursor = await agents.follow(agent, stream, 0n);
   const records = [];
   try {
     for (;;) {
-      const bytes = await Promise.race([cursor.next(), fixture.failed]);
+      const bytes = await Promise.race([cursor.next(), fixture.failed, completed]);
       if (bytes === null) throw new Error("agent stream closed before its required record");
       const frame = fromBinary(ReadResponseSchema, bytes);
       const batch = fromBinary(RecordBatchSchema, decodeReadResponse(frame.codec, frame.data, frame.decodedLength));
-      for (const record of batch.records) records.push({ sequence: record.sequence, value: JSON.parse(new TextDecoder().decode(record.value)) });
+      for (const record of batch.records) records.push({ sequence: record.sequence, value: decodeAgentRecord(record.value) });
       if (test(records)) return records;
     }
   } finally { cursor.close(); cursor.free(); }

@@ -2,6 +2,12 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** @typedef {(command: string, args: string[], options: {
+ * encoding: 'utf8', maxBuffer?: number, env?: NodeJS.ProcessEnv
+ * }) => {status: number | null, stdout: string, stderr?: string, error?: Error}} RunCommand */
+/** @type {RunCommand} */
+const runCommand = spawnSync;
+
 // The gate and its offline preflight consume this same ordered step list.
 export const gateQualifications = [
   { args: ["--all-features"] },
@@ -32,34 +38,25 @@ export function qualificationGatePlans() {
 }
 
 function qualifyGate(run) {
-  return gateQualifications.map(step => {
-    const previous = process.env.RUSTFLAGS;
-    try {
-      if (step.rustflags) process.env.RUSTFLAGS = `${previous ?? ""} ${step.rustflags}`;
-      return dispatch(step.args, run);
-    } finally {
-      if (previous === undefined) delete process.env.RUSTFLAGS;
-      else process.env.RUSTFLAGS = previous;
-    }
-  });
+  return gateQualifications.map(step => dispatch(step.args, run));
 }
 
-export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
+export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
   });
 }
 
-export function qualifySkillMaterializerLoom(run = spawnSync) {
+export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
-      targetCfg: ["--", "--cfg", "loom"], timeout: 9500,
+      targetCfg: ["--", "--cfg", "loom"],
       filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
     });
 }
 
 // Checkout and projection models retain physical cleanup custody.
-export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
+export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
@@ -72,22 +69,22 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
       "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
-    ], timeout: 9500,
+    ],
     env: loomEnvironment(), targetCfg: [],
   });
 }
 
-export function qualifyNativeRegistryLoom(run = spawnSync) {
+export function qualifyNativeRegistryLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", ["--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
-    ], timeout: 9500,
+    ],
     env: loomEnvironment(), targetCfg: [],
   });
 }
 
-export function qualifyTimerLoom(run = spawnSync) {
+export function qualifyTimerLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
   ], run, {
@@ -95,22 +92,21 @@ export function qualifyTimerLoom(run = spawnSync) {
   });
 }
 
-export function qualifyGuestLoom(run = spawnSync) {
+export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 4]],
   });
 }
 
-export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
+export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"],
     filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
       "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability", "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"],
-    timeout: 9500,
   });
 }
 
-export function qualifyNativeProgressLoom(run = spawnSync) {
+export function qualifyNativeProgressLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
     env: loomEnvironment(),
@@ -133,17 +129,17 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
       "testing::queue_model::premature_cancelled_waiter_refund_is_detected",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
       "testing::queue_model::head_only_capacity_wake_is_detected",
-    ], timeout: 9500,
+    ],
   });
 }
 
-export function qualifyFsBindingLoom(features = [], run = spawnSync) {
+export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
   });
 }
 
-export function qualifyFsPolicyLoom(run = spawnSync) {
+export function qualifyFsPolicyLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", [
     "--no-default-features", "--features", "memory,model-checking",
   ], run, {
@@ -153,25 +149,26 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
   });
 }
 
-export function qualifySessionFsLoom(run = spawnSync) {
+export function qualifySessionFsLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
     env: loomEnvironment(),
-    targetCfg: [], timeout: 9500,
+    targetCfg: [],
     filters: ["session_fs_model::change_resume_exhausts_append_registration_and_wakeup",
       "session_fs_model::change_resume_exhausts_independent_history_replacement"],
   });
 }
 
-export function qualifyOwnershipLoom(run = spawnSync) {
+export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8, timeout: 9500,
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8,
     env: loomEnvironment(), targetCfg: [],
   });
 }
 
 // Retained workspace suites, including every negative control.
+/** @type {Record<string, Array<[string, number]>>} */
 export const harnessModelSuites = {
   "acyclic-harness": [
     ["local::workspace::bootstrap::loom_tests::", 1],
@@ -179,7 +176,7 @@ export const harnessModelSuites = {
   ],
 };
 
-export function qualifyHarnessModelsLoom(features = ["--all-features"], run = spawnSync) {
+export function qualifyHarnessModelsLoom(features = ["--all-features"], run = runCommand) {
   return qualifyHarnessSuite("acyclic-harness", "acyclic_harness", features, run, {
     kind: "--lib", suites: harnessModelSuites["acyclic-harness"],
   });
@@ -224,7 +221,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
   for (const test of tests) {
-    const result = run(binaries[0], test.args, { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
+    const result = run(binaries[0], test.args, { encoding: "utf8" });
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
@@ -263,13 +260,14 @@ function featureSelection(args) {
   return args.length ? args : undefined;
 }
 
+/** @param {string[]} args */
 function dispatch([name, ...rest], run) {
   if (Object.hasOwn(fixedModels, name) && rest.length === 0) return fixedModels[name](run);
   if (Object.hasOwn(selectableModels, name)) return selectableModels[name](featureSelection(rest), run);
   return qualifyMcpLoom(featureSelection(name === undefined ? [] : [name, ...rest]), run);
 }
 
-export function qualificationMain(args, run = spawnSync) {
+export function qualificationMain(args, run = runCommand) {
   if (args[0] === "--gate") {
     if (args.length !== 1) throw new Error(`unknown qualification argument: ${args[1]}`);
     qualifyGate(run);

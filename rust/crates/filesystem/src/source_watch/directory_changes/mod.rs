@@ -101,6 +101,16 @@ struct Shared {
     #[cfg(test)]
     native_wait_cancellation: Mutex<Option<crate::CancellationToken>>,
     delivery: Arc<Delivery>,
+    /// Last: disconnects only after the original payload and work owners drop.
+    #[cfg(test)]
+    drop_complete: super::DataDrop,
+}
+
+#[cfg(test)]
+impl NativeSourceWatch {
+    pub(super) fn data_drop(&self) -> &super::DataDrop {
+        &self.shared.drop_complete
+    }
 }
 struct Reads {
     overlapped: Box<OVERLAPPED>,

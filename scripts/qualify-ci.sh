@@ -324,6 +324,7 @@ case "$lane" in
     # Warm the three isolated WASM targets concurrently; the complete workspace
     # test still runs its normal build and validates every resulting package.
     node scripts/build-wasm-groups.mjs
+    bash scripts/build-host-fixture.sh
     bun run test
     bun scripts/check-typescript-tarballs.mjs
     background harness-package bash scripts/check-harness-package.sh "$SDK_ARTIFACT_DIR/packages/harness"

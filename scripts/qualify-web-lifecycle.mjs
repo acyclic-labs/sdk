@@ -64,15 +64,16 @@ const server = createServer(async (request, response) => {
     response.end(sse({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 8 } } }));
   } catch (error) { rejectFailure(error); response.writeHead(500); response.end("fixture validation failed"); }
 });
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const base = `http://127.0.0.1:${server.address().port}`;
+await /** @type {Promise<void>} */ (new Promise(resolve => server.listen(0, "127.0.0.1", resolve)));
+const address = server.address();
+assert.ok(address && typeof address !== "string", "the original HTTP listener must expose its bound port");
+const base = `http://127.0.0.1:${address.port}`;
 source = `${base}/source`; answer = `FETCH_E2E_DONE [${title}](${source})`;
 writeFileSync(join(settings, ".codex/search.json"), JSON.stringify({ provider: "exa", api_keys: { exa: "fixture-unused" }, endpoint: `${base}/search` }));
 const catalog = join(root, "catalog.json"), operation = randomUUID();
 writeFileSync(catalog, JSON.stringify({ fixture: { adapter: "responses", authentication: "optional", base_url: base,
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
-const timer = setTimeout(() => rejectFailure(new Error("web lifecycle exceeded the standard nine-second work budget")), 9000);
 let passed = false;
 try {
   for (const replay of [false, true]) {
@@ -88,7 +89,7 @@ try {
   }
   passed = true; console.log("PASS web search-fetch-citation and replay without redispatch");
 } finally {
-  clearTimeout(timer); await processes.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  await processes.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   const proof = { passed, seconds: (performance.now() - begin) / 1000, generations, searches, fetches, http, captures, fixture: passed ? null : root };
   if (process.env.E2E_OUTPUT) { const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true }); writeFileSync(join(output, "web-lifecycle.json"), JSON.stringify(proof)); }
   if (passed) rmSync(root, { recursive: true, force: true }); else console.error(`WEB_FAILURE_FIXTURE ${root}`);

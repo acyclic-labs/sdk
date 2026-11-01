@@ -112,28 +112,22 @@ fn a_second_producer_does_not_block_the_callback_needed_by_the_first() -> TestRe
     let mut name = path("creator");
     std::thread::scope(|scope| {
         with_creating_name(&slot, &mut name, 7, |borrowed| -> TestResult {
-            let (sent, received) = std::sync::mpsc::sync_channel(1);
             let slot = &slot;
             let producer = scope.spawn(move || -> TestResult {
                 let mut other = path("other");
                 with_creating_name(slot, &mut other, 8, |fallback| {
                     assert_eq!(fallback, &path("other"));
                 });
-                sent.send(())?;
                 Ok(())
             });
-            received.recv_timeout(std::time::Duration::from_secs(2))?;
-            let (sent, received) = std::sync::mpsc::sync_channel(1);
+            producer.join().map_err(|_| "producer panicked")??;
             let callback = scope.spawn(move || -> TestResult {
                 let callback = slot.read().map_err(|_| "slot poisoned")?;
                 assert_eq!(*callback, (path("creator"), Some(7)));
-                sent.send(())?;
                 Ok(())
             });
-            received.recv_timeout(std::time::Duration::from_secs(2))?;
-            assert_eq!(borrowed, &path("creator"));
-            producer.join().map_err(|_| "producer panicked")??;
             callback.join().map_err(|_| "callback panicked")??;
+            assert_eq!(borrowed, &path("creator"));
             Ok(())
         })
     })?;

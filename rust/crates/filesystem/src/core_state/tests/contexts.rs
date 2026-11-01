@@ -61,11 +61,7 @@ async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
     )
     .await;
     let registry = crate::WorkspaceContextRegistry::new(store);
-    let removed = tokio::time::timeout(
-        Duration::from_secs(2),
-        registry.remove_root(target_id, removed_root),
-    )
-    .await;
+    let removed = registry.remove_root(target_id, removed_root).await;
     for (path, before) in files {
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
@@ -74,9 +70,9 @@ async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
             && matches!(swapped.as_ref(), Err(LocalCoreStateStoreError::Integrity))
             && matches!(
                 removed.as_ref(),
-                Ok(Err(crate::WorkspaceContextError::Store(
+                Err(crate::WorkspaceContextError::Store(
                     LocalCoreStateStoreError::Integrity
-                )))
+                ))
             ),
         "corrupt discovery must fail closed, not retry: list={listed:?}, cas={swapped:?}, removal={removed:?}"
     );

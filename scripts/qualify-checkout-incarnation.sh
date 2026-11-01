@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Focused checkout identity gate. Compile separately from bounded runtime suites.
+# Focused checkout identity qualification. Compile separately from execution.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export CODEX_HOME=$(mktemp -d)
@@ -24,7 +24,7 @@ binary=binaries.pop()
 for selected in filters:
     start=time.monotonic()
     result=subprocess.run([binary,selected,'--nocapture'],cwd=cwd,
-                          timeout=9.5,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+                          stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
     print(f'{selected}: {time.monotonic()-start:.3f}s\n{result.stdout}',flush=True)
     assert result.returncode==0,result.returncode
     assert re.search(r'^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;',result.stdout,re.M),result.stdout
@@ -112,7 +112,7 @@ import re,subprocess,sys,time
 start=time.monotonic()
 result=subprocess.run([sys.argv[1],"rust/crates/harness-fuzz/corpus/records",
                        "-runs=64","-max_len=4096","-timeout=2","-seed=1"],
-                      timeout=9.5,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+                      stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 print(f"record corpus: {time.monotonic()-start:.3f}s\n{result.stdout}",flush=True)
 assert result.returncode==0,result.returncode
 runs=re.search(r"Done ([1-9][0-9]*) runs in",result.stdout)

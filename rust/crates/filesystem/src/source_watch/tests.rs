@@ -584,13 +584,12 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         "a terminal watch cannot deliver another callback"
     );
     drop(callbacks);
+    let (complete, completed) = std::sync::mpsc::channel();
+    watch.observe_data_drop(complete)?;
     drop(watch);
     // Managed-driver retirement need not attest native thread exit. The same
     // original ledger remains alive until its actual final SDK data alias drops.
-    let data_drop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while meter.upgrade().is_some() && std::time::Instant::now() < data_drop_deadline {
-        std::thread::yield_now();
-    }
+    assert!(completed.recv().is_err(), "all original watch data dropped");
     assert!(meter.upgrade().is_none());
     assert!(resource.upgrade().is_none());
     // This proves watch callbacks/payload retirement, not SourceReader drain.
@@ -657,11 +656,10 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
         meter.upgrade().is_some(),
         "actual watch data still keeps its original ledger alive"
     );
+    let (complete, completed) = std::sync::mpsc::channel();
+    watch.observe_data_drop(complete)?;
     drop(watch);
-    let data_drop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while meter.upgrade().is_some() && std::time::Instant::now() < data_drop_deadline {
-        std::thread::yield_now();
-    }
+    assert!(completed.recv().is_err(), "all original watch data dropped");
     assert!(meter.upgrade().is_none());
     assert!(resource.upgrade().is_none());
     Ok(())

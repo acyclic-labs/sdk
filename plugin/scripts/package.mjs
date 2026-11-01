@@ -76,7 +76,7 @@ if (existsSync(out)) {
     fail(`refusing to replace unowned package output: ${out}`);
   }
 }
-rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+rmSync(out, { recursive: true, force: true });
 const plugin = join(out, "plugin");
 mkdirSync(join(plugin, "bin"), { recursive: true });
 for (const script of ["acyclic", "install.js", "verify.js", "targets.json"]) {

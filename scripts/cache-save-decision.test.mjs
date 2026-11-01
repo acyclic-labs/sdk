@@ -42,7 +42,7 @@ test("only current-day snapshots with complete zero-miss statistics suppress sav
     const output = join(root, "output");
     writeFileSync(output, "");
     const result = spawnSync(process.execPath, ["scripts/cache-save-decision.mjs", "today", "today", snapshot], {
-      encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: output }, timeout: 10_000,
+      encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: output },
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(output, "utf8"), "save=false\n");
@@ -84,12 +84,12 @@ GITHUB_EVENT_NAME=workflow_dispatch
 RUNNER_OS=Linux
 date() { [[ "$*" == '-u +%Y%m%d' ]] || return 1; printf '${day}\\n'; }
 ${step.run}`;
-        const result = spawnSync(bash, ["-c", command], { encoding: "utf8", timeout: 60_000 });
+        const result = spawnSync(bash, ["-c", command], { encoding: "utf8" });
         assert.ifError(result.error);
         assert.equal(result.status, 0, result.stderr);
         assert.match(readFileSync(join(root, "output"), "utf8"), new RegExp(`^day=${day}$`, "m"));
         writeFileSync(join(root, "output"), "");
-        const localDate = spawnSync(bash, ["-c", command.replace("date -u ", "date ")], { encoding: "utf8", timeout: 60_000 });
+        const localDate = spawnSync(bash, ["-c", command.replace("date -u ", "date ")], { encoding: "utf8" });
         assert.ifError(localDate.error);
         assert.equal(localDate.status, 0, localDate.stderr);
         assert.doesNotMatch(readFileSync(join(root, "output"), "utf8"), /^day=[0-9]{8}$/m);

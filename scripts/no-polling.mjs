@@ -4,7 +4,7 @@ import ts from 'typescript-parser';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_timeout|park_timeout|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
+const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b');
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
@@ -18,6 +18,14 @@ const classes = new Set([
  'caller-deadline', 'transient-transport-backoff', 'retryable-tool', 'retryable-model',
  'idempotent-identity', 'event-wait', 'finite-work', 'negative-control',
 ]);
+
+export class SourceSyntaxError extends Error {
+ constructor(file, diagnostic, parsed) {
+  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
+  super(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+  this.name = 'SourceSyntaxError';
+ }
+}
 
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
 
@@ -35,7 +43,7 @@ function escapedSpelling(source) {
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+ return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
@@ -58,7 +66,7 @@ function scriptTokens(file, source) {
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
- if (diagnostics.length) throw new Error(file + ': ' + ts.flattenDiagnosticMessageText(diagnostics[0].messageText, '\n'));
+ if (diagnostics.length) throw new SourceSyntaxError(file, diagnostics[0], parsed);
  /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];
@@ -105,6 +113,7 @@ function scriptTokens(file, source) {
 function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const python = file.endsWith('.py');
+ const powershell = file.endsWith('.ps1');
  const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
  const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
  const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
@@ -114,6 +123,7 @@ function nativeTokens(source, file) {
  const out = [];
  let at = 0;
  let line = 1;
+ const malformed = message => new Error(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
   const value = source.slice(at, end);
   if (kind) out.push({value: spelling ?? value, kind, line, start: at});
@@ -133,30 +143,42 @@ function nativeTokens(source, file) {
     else if (source.startsWith('*/', end)) { depth--; end += 2; }
     else end++;
    }
-   if (depth) throw new Error('unterminated block comment');
+   if (depth) throw malformed('unterminated block comment');
    emit(end); continue;
   }
   const raw = rust && tail.match(/^(?:b|c)?r(#*)"/);
   if (raw) {
    const close = '"' + raw[1];
    const end = source.indexOf(close, at + raw[0].length);
-   if (end < 0) throw new Error('unterminated raw string');
+   if (end < 0) throw malformed('unterminated raw string');
    emit(end + close.length, 'literal'); continue;
+  }
+  const here = powershell && tail.match(/^@(['"])\r?\n/);
+  if (here) {
+   const terminator = new RegExp('^' + here[1] + '@', 'gm');
+   terminator.lastIndex = at + here[0].length;
+   const end = terminator.exec(source);
+   if (!end) throw malformed('unterminated PowerShell here-string');
+   emit(end.index + end[0].length, 'literal'); continue;
   }
   const quote = tail[0];
   if (python && (tail.startsWith('"""') || tail.startsWith("'''"))) {
    const delimiter = tail.slice(0, 3);
    let end = at + 3;
    while (end < source.length && !source.startsWith(delimiter, end)) end += source[end] === '\\' ? 2 : 1;
-   if (end >= source.length) throw new Error('unterminated Python triple-quoted string');
+   if (end >= source.length) throw malformed('unterminated Python triple-quoted string');
    emit(end + 3, 'literal'); continue;
   }
   const character = rust && quote === "'" && tail.match(/^'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\r\n])'/u);
   if (character) { emit(at + character[0].length, 'literal'); continue; }
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + 1;
-   while (end < source.length && source[end] !== quote) end += source[end] === '\\' ? 2 : 1;
-   if (end >= source.length) throw new Error('unterminated quoted string');
+   while (end < source.length) {
+    if (powershell && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
+    if (source[end] === quote) break;
+    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1) : (source[end] === '\\' ? 2 : 1);
+   }
+   if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
   }
   const word = tail.match(wordPattern);
@@ -169,11 +191,17 @@ function nativeTokens(source, file) {
 export function pollingUnit(file, source) {
  const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
+ // A direct Rust Future::poll advances one state machine. Other poll/select
+ // spellings remain conservative candidates, including native imports/aliases.
+ const rust = file.endsWith('.rs');
+ const futurePoll = i => rust && stream[i]?.value === 'poll'
+  && stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':'
+  && stream[i - 3]?.value === 'Future';
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  const aliases = new Map();
- const forbidden = new Set(stream.filter(t => t.kind === 'word' && (temporal.test(t.value) || policyName.test(t.value))).map(t => t.value));
+ const forbidden = new Set(stream.filter((t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value))).map(t => t.value));
  const edge = (from, to) => {
   if (!from || !to) return;
   if (!aliases.has(from)) aliases.set(from, new Set());
@@ -192,7 +220,7 @@ export function pollingUnit(file, source) {
    bindings.pop();
   }
   if (t.kind === 'word') {
-   if (bindings.length) edge(t.value, bindings[bindings.length - 1].name);
+   if (bindings.length && !futurePoll(i)) edge(t.value, bindings[bindings.length - 1].name);
    if (stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
    if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') edge(t.value, stream[i + 2].value);
    if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, line: t.line});
@@ -212,7 +240,7 @@ export function pollingUnit(file, source) {
   const spelling = t.kind === 'literal' ? escapedSpelling(t.value) : t.value;
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
-   : t.kind === 'word' && forbidden.has(t.value) ? 'timer-or-readiness'
+   : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
    : t.kind === 'literal' && (embeddedTemporal.test(spelling) || policyName.test(spelling)) ? 'embedded-timer-or-retry'
    : undefined;
   if (!kind) continue;

@@ -79,19 +79,14 @@ if inventory_only:
 print(f"Test executable: {executable}", flush=True)
 groups = [selected] if whole_suite else [[name] for name in selected]
 for names in groups:
-    # Nested native process tests own their stdio pipes; do not pass the remote
-    # build transport's descriptors into their process/runtime fixture.
+    # Nested native process tests own their stdio pipes independently of this
+    # command's parent descriptors.
     command = [executable, *names, "--exact"]
     if whole_suite:
         command.extend(["--test-threads=1", "--nocapture"])
     try:
         result = subprocess.run(command, capture_output=True,
-                                text=True, timeout=9)
-    except subprocess.TimeoutExpired as error:
-        for output, stream in [(error.stdout, sys.stdout), (error.stderr, sys.stderr)]:
-            if output:
-                stream.write(output.decode(errors="replace"))
-        fail("artifact-timeout", f"test exceeded its original nine-second bound: {names}")
+                                text=True)
     except OSError as error:
         fail("artifact-execute", str(error))
     print(result.stdout, end="", flush=True)

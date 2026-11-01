@@ -221,12 +221,27 @@ impl Collection {
             state.retiring.clone()
         };
         for retired in retiring {
-            // A retired generation with no publication in flight drains at once.
-            if retired.try_write().is_err() {
-                #[cfg(test)]
-                self.draining.notify_one();
-                drop(retired.write().await);
-            }
+            let drain = retired.write();
+            #[cfg(test)]
+            let drained = {
+                // A cooperative-budget yield is not gate registration.
+                let mut drain = std::pin::pin!(tokio::task::unconstrained(drain));
+                let mut first = true;
+                std::future::poll_fn(|context| {
+                    let result = std::future::Future::poll(drain.as_mut(), context);
+                    // Observe the original gate's actual waiter registration,
+                    // after it has retained this task's waker.
+                    if first && result.is_pending() {
+                        self.draining.notify_one();
+                    }
+                    first = false;
+                    result
+                })
+                .await
+            };
+            #[cfg(not(test))]
+            let drained = drain.await;
+            drop(drained);
         }
         self.state().retiring.clear();
         // Before marking: a proof cached under an earlier epoch is never reused.

@@ -46,7 +46,7 @@ for suffix,oracle in [
  tests=[line.removesuffix(': test') for line in listed.splitlines() if line.endswith(suffix+': test')]
  assert len(tests)==1,tests
  start=time.monotonic()
- result=subprocess.run([paths[0],tests[0],'--exact','--test-threads=1','--nocapture'],capture_output=True,text=True,timeout=9)
+ result=subprocess.run([paths[0],tests[0],'--exact','--test-threads=1','--nocapture'],capture_output=True,text=True)
  output=result.stdout+result.stderr;(root/(suffix+'.log')).write_text(output)
  print(output,flush=True)
  assert result.returncode!=0 and oracle in output,(suffix,result.returncode,output)

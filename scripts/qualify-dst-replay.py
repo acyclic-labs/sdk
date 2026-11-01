@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every DST test and the cross-process controls within one nine-second bound."""
+"""Run every DST test and join the original cross-process replay controls."""
 import itertools
 import os
 import re
@@ -17,12 +17,11 @@ started = time.monotonic()
 trace_directory = tempfile.mkdtemp(prefix="dst-trace-")
 environment = {**os.environ, "DST_TRACE_DIR": trace_directory}
 
-# Exercise the same in-process concurrency as the main gate before splitting
+# Exercise the same in-process concurrency as normal execution before splitting
 # independent trace peers. Shared registries must not make another runtime's
 # wake delivery look like elapsed simulated time.
 parallel = subprocess.run([executable, "dst::", "--nocapture"], env=environment,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          timeout=max(0, 9 - (time.monotonic() - started)))
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 sys.stdout.buffer.write(parallel.stdout)
 sys.stderr.buffer.write(parallel.stderr)
 sys.stdout.flush()
@@ -41,15 +40,13 @@ def run_pair():
     try:
         # Independent cases retain the same test concurrency as the main gate.
         # Each replay polls its own original tasks on one seeded runtime thread;
-        # serializing unrelated crash cases would consume the shared deadline
-        # without increasing schedule coverage. Both peers keep the same bound.
+        # serializing unrelated crash cases would not increase schedule coverage.
         for arguments in commands:
             processes.append(subprocess.Popen([executable, *arguments], env=environment,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE))
         outputs = []
         for process in processes:
-            remaining = max(0, 9 - (time.monotonic() - started))
-            output, error = process.communicate(timeout=remaining)
+            output, error = process.communicate()
             sys.stdout.buffer.write(output)
             sys.stderr.buffer.write(error)
             sys.stdout.flush()
@@ -58,18 +55,17 @@ def run_pair():
                 raise subprocess.CalledProcessError(process.returncode, process.args)
             outputs.append(output)
         return outputs
-    except subprocess.TimeoutExpired as error:
-        sys.stdout.buffer.write(error.stdout or b"")
-        sys.stderr.buffer.write(error.stderr or b"")
-        raise
     finally:
-        for process in processes:
-            if process.poll() is None:
+        try:
+            for process in processes:
                 process.kill()
-        for process in processes:
-            process.wait()
-            process.stdout.close()
-            process.stderr.close()
+        finally:
+            for process in processes:
+                try:
+                    process.wait()
+                finally:
+                    process.stdout.close()
+                    process.stderr.close()
 
 
 def equal(left, right, locate=lambda: ""):

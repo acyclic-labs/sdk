@@ -266,7 +266,7 @@ function consumer(bun, buildReceipt) {
     }
     const command = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(bun) ? "cmd" : bun;
     const commandArgs = command === "cmd" ? ["/d", "/c", bun, ...args] : args;
-    const result = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8", timeout: 90_000 });
+    const result = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8" });
     if (result.error || result.status !== 0) return { schema: 1, passed: false, elapsed_ms: Math.trunc(performance.now() - started), error: String(result.error ?? `${result.stderr}${result.stdout}`).slice(-2000) };
     if (args[0] === "x" && args[2] === "--version" && !/^Version \d+\.\d+\.\d+/.test(result.stdout.trim())) fail("TypeScript compiler version was not observed");
     if (args.includes("-b")) {

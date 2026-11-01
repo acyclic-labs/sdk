@@ -164,9 +164,39 @@ pub struct StoreClaim {
 /// Once a claim has given out handles and every one has dropped, the claim
 /// is closing: an acquire of the same store in this process waits for the
 /// claim's release instead of failing, so a store reopened after its last
-/// handle drops always opens, however long its close takes.
+/// handle drops can wait through its close. A failed release returns its
+/// original error to the waiting acquire instead of admitting a handoff.
 pub struct StoreHandle {
     handles: crate::sync::Arc<protocol::Handles>,
+}
+
+/// The retained release result of one exact store claim.
+///
+/// This observer does not keep the claim open or count as a store handle.
+/// Dropping the claim publishes its original release result, including a
+/// failed release or an unwinding release producer.
+#[derive(Clone)]
+pub struct StoreClaimRelease {
+    handles: crate::sync::Arc<protocol::Handles>,
+}
+
+impl StoreClaimRelease {
+    /// Blocks on this claim's release event. A release before this call is
+    /// retained; all observers receive the same original error allocation.
+    /// Success follows the physical release attempt and exact-token table
+    /// removal. An error does not assert physical release.
+    pub fn wait(&self) -> Result<(), std::sync::Arc<io::Error>> {
+        self.handles.wait()
+    }
+
+    /// Observes an actual waiter registered under this release producer's
+    /// mutex. It does not register a release waiter itself. A release that
+    /// finishes before any registration terminates this observation with an
+    /// error, so a missing waiter cannot be mistaken for readiness.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_registered(&self) -> Result<(), std::sync::Arc<io::Error>> {
+        self.handles.wait_registered()
+    }
 }
 
 impl StoreHandle {
@@ -251,6 +281,13 @@ impl StoreClaim {
     /// is gone the claim is closing; see [`StoreHandle`].
     pub fn handle(&self) -> StoreHandle {
         StoreHandle::new(self._claim.handles())
+    }
+
+    /// Observes this exact claim's release without extending its lifetime.
+    pub fn release_observer(&self) -> StoreClaimRelease {
+        StoreClaimRelease {
+            handles: crate::sync::Arc::clone(self._claim.handles()),
+        }
     }
 
     /// The path this claim releases by.

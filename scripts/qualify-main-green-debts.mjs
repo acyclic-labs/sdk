@@ -51,11 +51,22 @@ export function testExecutable(entry, output) {
   return artifacts[0].executable;
 }
 
-// Compilation owns no test budget. Once a binary starts, its process group and
-// output pipes belong to this invocation, including when the test never exits.
+// The original leader exit retires its process group before inherited output
+// can keep pipe closure pending. Qualification still joins the actual output.
+/**
+ * @typedef {{pid?: number, stdout: import('node:stream').Readable,
+ * stderr: import('node:stream').Readable,
+ * on(event: string, listener: (...args: any[]) => void): unknown}} QualificationChild
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {{launch?: (command: string, args: string[], options:
+ * import('node:child_process').SpawnOptionsWithStdioTuple<import('node:child_process').StdioNull,
+ * import('node:child_process').StdioPipe, import('node:child_process').StdioPipe>) => QualificationChild,
+ * terminate?: (child: QualificationChild) => void}} options
+ */
 export function executeTest(executable, args, {
-  launch = spawn, arm = setTimeout, disarm = clearTimeout,
-  terminate = child => process.kill(-child.pid, 'SIGKILL'),
+  launch = spawn,
+  terminate = child => { process.kill(-/** @type {number} */ (child.pid), 'SIGKILL'); },
 } = {}) {
   return new Promise((accept, reject) => {
     const child = launch(executable, args, {
@@ -67,14 +78,19 @@ export function executeTest(executable, args, {
     child.stdout.on('data', chunk => { output += chunk; process.stdout.write(chunk); });
     child.stderr.pipe(process.stderr);
     let settled = false;
+    let retired = false;
+    const retire = () => {
+      if (retired) return;
+      retired = true;
+      if (child.pid !== undefined) terminate(child);
+    };
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
-      disarm(timer);
       try {
         // The group belongs to this execution even after its leader exits
         // and descendants close their output pipes. A failed spawn has no PID.
-        if (child.pid !== undefined) terminate(child);
+        retire();
       } catch (cleanupError) {
         if (cleanupError.code !== 'ESRCH') error = cleanupError;
       } finally {
@@ -84,12 +100,15 @@ export function executeTest(executable, args, {
       if (error) reject(error);
       else accept(result);
     };
-    const timer = arm(() => {
-      // Finish independently of close: an inherited pipe cannot stall the
-      // debt queue after its owning test has exceeded the execution budget.
-      finish(new Error('test execution exceeded the fixed 10-second budget; debt remains unqualified'));
-    }, 10_000);
     child.on('error', error => finish(error));
+    child.on('exit', () => {
+      try { retire(); }
+      catch (error) {
+        if (error.code !== 'ESRCH') finish(new Error(
+          `step=retire original test group ${child.pid}: ${error.message}; recovery command: node scripts/qualify-main-green-debts.mjs`,
+          { cause: error }));
+      }
+    });
     child.on('close', status => finish(null, { status, output }));
   });
 }
@@ -119,7 +138,7 @@ async function run(entry) {
 }
 
 export async function main(selected = process.argv.slice(2)) {
-  if (process.platform !== 'linux') throw new Error('run main debt qualification on Linux Linux');
+  if (process.platform !== 'linux') throw new Error('step=admit process-group qualification: Linux is required; recovery command: node scripts/qualify-main-green-debts.mjs');
   process.chdir(fileURLToPath(new URL('../', import.meta.url)));
   const entries = JSON.parse(await readFile(new URL('./main-green-debts.json', import.meta.url), 'utf8'));
   const names = new Set(entries.map(entry => entry.regression));

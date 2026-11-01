@@ -32,7 +32,6 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
             process = subprocess.Popen([binary, "__mcp", host], cwd=root, env=env,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
-            client = None
             try:
                 if case in ("initialized", "invalid-frame", "closed-producer"):
                     recovery = f"python3 plugin/tests/hosts/mcp-framing.py {binary} --host {host} --case {case}"
@@ -97,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                 # Framing/decoding failures emit -32700 and terminate with an
                 # error; the shipping CLI propagates that error as exit 1.
                 expected_exit = 0 if case in ("framed", "initialized", "uninitialized", "closed-producer") else 1
-                actual_exit = process.wait(timeout=2)
+                actual_exit = process.wait()
                 diagnostic = process.stderr.read().decode()
                 assert actual_exit == expected_exit, (
                     f"step=verify MCP {host}/{case} termination: exit {actual_exit}, "
@@ -106,10 +105,9 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                 )
                 results.append({"host": host, "case": case, "passed": True})
             finally:
-                if client is not None:
-                    client.close()
-                if process.poll() is None:
+                try:
                     process.kill()
+                finally:
                     process.wait()
                 for pipe in (process.stdin, process.stdout, process.stderr):
                     try:

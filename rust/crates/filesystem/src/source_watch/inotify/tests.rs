@@ -361,7 +361,7 @@ fn removal_admits_the_native_write_before_forgetting_the_live_registration()
 
 #[cfg(feature = "native-mount")]
 #[test]
-fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
+fn original_cleanup_wait_precancel_and_contention_preserve_cleanup_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let host =
@@ -408,7 +408,8 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
         assert!(descriptor.load(Ordering::Acquire) >= 0);
     }
     drop(paused);
-    // Withhold the already-owned join cursor, then restore that exact cursor. Neither denial nor retry creates additional native credit.
+    // Withhold the already-owned join cursor, then restore that exact cursor.
+    // Neither refusal nor the explicit cleanup join creates native credit.
     let reads = {
         let mut cleanup = watch
             .shared
@@ -430,18 +431,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(!watch.is_stopped());
 
     let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     assert!(
@@ -464,6 +454,10 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
 #[test]
 fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
 -> Result<(), Box<dyn std::error::Error>> {
+    enum StopEvent {
+        Started,
+        Finished(Result<(), DemandError>),
+    }
     let root = tempfile::tempdir()?;
     let host =
         crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
@@ -486,22 +480,37 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let caller_wait = wait.clone();
     let (finished, received) = std::sync::mpsc::channel();
     let stopper = std::thread::spawn(move || {
+        let started = finished.clone();
+        BEFORE_UNSUBSCRIBE_RECORD.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                started
+                    .send(StopEvent::Started)
+                    .expect("live stop observer");
+            }));
+        });
         let result = stopping.stop_with_cleanup_wait(&caller_wait);
-        assert!(finished.send(result).is_ok(), "live test controller");
+        assert!(
+            finished.send(StopEvent::Finished(result)).is_ok(),
+            "live test controller"
+        );
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.stopping.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    let started = watch.shared.stopping.load(Ordering::Acquire);
+    let observed = received.recv();
+    let started = matches!(&observed, Ok(StopEvent::Started));
     wait.cancel();
     let premature = received.try_recv();
     let terminal_before_release = watch.is_stopped();
     drop(state);
-    let result = match premature {
-        Ok(result) => result,
-        Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
-        Err(error) => return Err(error.into()),
+    let terminal = if started {
+        match premature {
+            Ok(terminal) => terminal,
+            Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        observed?
+    };
+    let StopEvent::Finished(result) = terminal else {
+        return Err("native stop repeated its admission event".into());
     };
     stopper
         .join()
@@ -526,11 +535,26 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
 #[test]
 fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Eq, PartialEq)]
+    enum CallbackEvent {
+        Entered,
+        Lost,
+    }
     struct PanicsAfterRelease {
-        entered: std::sync::mpsc::Sender<()>,
-        lost: std::sync::mpsc::Sender<()>,
+        events: std::sync::mpsc::Sender<CallbackEvent>,
         release: Mutex<bool>,
         changed: Condvar,
+    }
+    struct ReleaseCallback<'a>(&'a PanicsAfterRelease);
+    impl Drop for ReleaseCallback<'_> {
+        fn drop(&mut self) {
+            *self
+                .0
+                .release
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = true;
+            self.0.changed.notify_all();
+        }
     }
     impl HostChangeSink for PanicsAfterRelease {
         fn logical_owned_bytes(&self) -> u64 {
@@ -548,7 +572,9 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
                 items_returned: 1,
                 ..WorkCounters::UNCHARGED
             })?;
-            assert!(self.entered.send(()).is_ok(), "live callback controller");
+            self.events
+                .send(CallbackEvent::Entered)
+                .expect("live callback controller");
             let mut release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
             while !*release {
                 release = self
@@ -559,7 +585,9 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
             panic!("controlled native callback unwind");
         }
         fn delivery_lost(&self) {
-            self.lost.send(()).expect("live loss observer");
+            self.events
+                .send(CallbackEvent::Lost)
+                .expect("live loss observer");
             panic!("controlled terminal callback unwind");
         }
     }
@@ -572,17 +600,17 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         ORIGINAL_BUDGET,
         &cancellation,
     )));
-    let (entered, receive) = std::sync::mpsc::channel();
-    let (lost, receive_loss) = std::sync::mpsc::channel();
+    let (events, receive) = std::sync::mpsc::channel();
     let sink = Arc::new(PanicsAfterRelease {
-        entered,
-        lost,
+        events,
         release: Mutex::new(false),
         changed: Condvar::new(),
     });
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
+    // Release the original callback before watch cleanup on every error path.
+    let release = ReleaseCallback(&sink);
     let retained_control = {
         let mut state = original.lock();
         // Startup's temporary failure custody has retired. Reconcile its gauge
@@ -591,32 +619,27 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         state.live_allocation_bytes() - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
     };
     std::fs::write(root.path().join("reported"), b"changed")?;
-    receive.recv_timeout(std::time::Duration::from_secs(5))?;
+    if receive.recv()? != CallbackEvent::Entered {
+        return Err("native delivery ended before callback entry".into());
+    }
     cancellation.cancel();
 
     let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
     let pending_terminal = watch.is_stopped();
-    *sink.release.lock().unwrap_or_else(PoisonError::into_inner) = true;
-    sink.changed.notify_all();
+    drop(release);
     assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
     assert!(!pending_terminal);
 
-    receive_loss.recv_timeout(std::time::Duration::from_secs(5))?;
-    // Loss alone does not prove physical retirement. The same service pass
-    // must finish before the controller is allowed to join its completion.
+    assert_eq!(receive.recv()?, CallbackEvent::Lost);
+    // Loss is emitted while the original service holds the read cursor. Its
+    // unlock joins that service's retirement attempt, including failure; the
+    // controller must not take over cleanup before checking its result.
     let reading = watch
         .shared
         .reading
         .raw
         .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let (reading, _) = watch
-        .shared
-        .reading_changed
-        .wait_timeout_while(reading, std::time::Duration::from_secs(5), |_| {
-            !watch.shared.completed.load(Ordering::Acquire)
-        })
-        .unwrap_or_else(PoisonError::into_inner);
+        .map_err(|_| "the original native reader failed during retirement")?;
     assert!(
         watch.is_stopped(),
         "the original service retires its resources"
@@ -628,10 +651,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         "callback unwind is not itself terminal evidence"
     );
     watch.delivery_lost();
-    assert!(
-        receive_loss.try_recv().is_err(),
-        "one terminal notification"
-    );
+    assert!(receive.try_recv().is_err(), "one terminal notification");
     assert!(watch.shared.physically_cleared());
     assert!(
         watch
@@ -736,19 +756,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         Ok(()) | Err(DemandError::Cancelled)
     ));
     assert_eq!(original.lock().receipt(), prefix);
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
 
     assert_eq!(original.lock().receipt().items_returned, 1);
@@ -839,11 +847,7 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
     let reader = Arc::downgrade(&watch.shared);
     let (complete, completed) = std::sync::mpsc::channel();
-    *watch
-        .shared
-        .drop_complete
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(complete);
+    watch.observe_data_drop(complete)?;
     let (entered, dropping) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     *sink
@@ -865,6 +869,13 @@ fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     // Negative control for the former inference: Shared's weak pointer is
     // already expired, but its Delivery field still owns the original here.
     assert!(lifetime.upgrade().is_some());
+    assert!(
+        matches!(
+            completed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "the data-drop event follows the retained physical payload"
+    );
     release.send(())?;
     assert!(
         completed.recv().is_err(),

@@ -23,7 +23,7 @@ if mode in ('negative', 'deadline'):
              else 'git_environment_discovery_shares_the_summary_deadline')
     args = [paths[0], name, '--exact', '--test-threads=1', '--nocapture']
 start = time.monotonic()
-result = subprocess.run(args, capture_output=True, text=True, timeout=9)
+result = subprocess.run(args, capture_output=True, text=True)
 elapsed = time.monotonic() - start
 output = result.stdout + result.stderr
 (root / (mode + '.log')).write_text(output)

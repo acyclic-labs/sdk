@@ -54,10 +54,10 @@ def dependencies(target):
 subprocess.run(["cargo", f"+{toolchain}", "check", "--locked", "-p",
                 "acyclic-harness", "--all-features", "--tests"],
                cwd=repository, check=True)
-# Build time is separate from the bounded compiler proof, as with test suites.
+# Build time is measured separately from the compiler proof.
 native_dependencies = dependencies(None)
 wasm_dependencies = dependencies("wasm32-unknown-unknown")
-deadline = time.monotonic() + 8
+proof_started = time.monotonic()
 
 with tempfile.TemporaryDirectory(prefix="catalog-target-") as directory:
     root = pathlib.Path(directory)
@@ -147,11 +147,9 @@ pub fn exercise() -> Result<()> {
         if wasm:
             command += ["--target", "wasm32-unknown-unknown"]
         command += wasm_dependencies if wasm else native_dependencies
-        remaining = deadline - time.monotonic()
-        assert remaining > 0, "catalog target proof exceeded eight seconds"
         start = time.monotonic()
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=remaining)
+                                stderr=subprocess.STDOUT)
         print(label, time.monotonic() - start, result.returncode, result.stdout, flush=True)
         assert (result.returncode == 0) == (error is None)
         if error:
@@ -189,4 +187,4 @@ pub fn model() -> acyclic_harness_providers::ModelSpec {
     model_contract.write_text(model_source.replace("max_context_tokens: None,", ""))
     compile("missing catalog maximum fixture negative", False,
             "missing field `max_context_tokens`", contract=model_contract)
-    assert time.monotonic() < deadline, "catalog target proof exceeded eight seconds"
+    assert time.monotonic() - proof_started < 8, "catalog target proof exceeded eight seconds"

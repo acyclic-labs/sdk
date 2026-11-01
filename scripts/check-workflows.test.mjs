@@ -14,7 +14,7 @@ test("workflow validation requires ShellCheck, forwards scoped/default files and
   writeFileSync(binary, '#!/bin/sh\nprintf "%s\\n" "$@"\nexit "${FIXTURE_STATUS:-0}"\n');
   chmodSync(binary, 0o755);
   const run = (files, status = 0) => spawnSync(bash, ["scripts/check-workflows.sh", binary, ...files], {
-    env: { ...process.env, PATH: resolve(`${root}/bin`), FIXTURE_STATUS: String(status) }, encoding: "utf8", timeout: 60_000,
+    env: { ...process.env, PATH: resolve(`${root}/bin`), FIXTURE_STATUS: String(status) }, encoding: "utf8",
   });
   try {
     const missing = run([]);

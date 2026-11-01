@@ -416,14 +416,16 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
     let hold = collection.admit(&[object(1)], |_| false, 0).await?;
-    let begun = tokio::spawn({
-        let collection = Arc::clone(&collection);
-        async move { drop(collection.begin().await) }
-    });
-    tokio::task::yield_now().await;
-    assert!(!begun.is_finished(), "the collection waits for the record");
+    let begun = collection.begin();
+    futures::pin_mut!(begun);
+    // This poll reaches the original retired gate while its publication
+    // hold is live; a collection that skips the gate is immediately Ready.
+    assert!(
+        futures::poll!(begun.as_mut()).is_pending(),
+        "the collection waits for the record"
+    );
     drop(hold);
-    begun.await?;
+    drop(begun.await);
     Ok(())
 }
 

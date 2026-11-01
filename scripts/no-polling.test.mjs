@@ -4,7 +4,7 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {newPollingSites, pollingSites, sourceInScope, validateDispositions} from './no-polling.mjs';
+import {newPollingSites, pollingSites, SourceSyntaxError, sourceInScope, validateDispositions} from './no-polling.mjs';
 import {newProjectPollingSites, projectPollingSites} from './no-polling-project.mjs';
 
 const rust = 'rust/crates/example/src/lib.rs';
@@ -27,6 +27,23 @@ test('Python comments and multiline strings preserve executable timer detection'
  assert.deepEqual(newPollingSites('scripts/graphcoder-e2e/owned-process.py', owned, owned), []);
 });
 
+test('PowerShell here-strings retain embedded child waits without consuming later code', () => {
+ const file = 'scripts/control.ps1';
+ for (const quote of ["'", '"']) {
+  const source = `Add-Type @${quote}\n// the user's buffer\nstring text = "ordinary";\n${quote}@\n`;
+  assert.deepEqual(pollingSites(file, source), []);
+  assert.ok(pollingSites(file, source.replace('ordinary', 'Thread.Sleep(1)'))
+   .some(site => site.kind === 'embedded-timer-or-retry'));
+  assert.ok(pollingSites(file, source + 'Start-Sleep 1')
+   .some(site => site.kind === 'timer-or-readiness'));
+  assert.throws(() => pollingSites(file, source.replace(`${quote}@`, '')),
+   /control.ps1:1: unterminated PowerShell here-string/);
+ }
+ assert.doesNotThrow(() => pollingSites('scripts/test-terminal-region-screen.ps1',
+  readFileSync(new URL('./test-terminal-region-screen.ps1', import.meta.url), 'utf8')));
+ assert.deepEqual(pollingSites(file, 'Write-Output "a`"b"; Write-Output \'it\'\'s here\''), []);
+});
+
 test('new direct and indirect readiness mutations are rejected', () => {
  // These are intentional bad source edits, not external-tool/provider captures.
  for (const source of [
@@ -38,7 +55,21 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'async fn wait() { tokio::task::yield_now().await; }',
   'fn wait() { child.try_wait(); }',
   'fn wait() { changed.wait_timeout(state, duration); }',
+  'fn wait() { changed.wait_timeout_while(state, duration, |_| !ready()); }',
+  'fn wait() { receiver.recv_deadline(deadline); }',
+  'fn wait() { let receive = Receiver::recv_deadline; receive(receiver, deadline); }',
+  'fn wait() { changed.wait_timeout_ms(state, 25); }',
+  'fn wait() { std::thread::park_timeout_ms(25); }',
   'fn wait() { unsafe { libc::pthread_cond_timedwait(condition, mutex, deadline); } }',
+  'fn wait() { unsafe { libc::epoll_wait(queue, events, count, 25); } }',
+  'fn wait() { unsafe { libc::poll(descriptors, count, 25); } }',
+  'use libc::{c_int, poll as probe}; fn wait() { unsafe { probe(descriptors, count, 25); } }',
+  'fn wait() { let probe = libc::select; unsafe { probe(count, reads, writes, errors, deadline); } }',
+  'use libc::epoll_pwait2 as probe; fn wait() { unsafe { probe(queue, events, count, deadline, mask); } }',
+  'fn wait() { let probe = libc::ppoll; unsafe { probe(descriptors, count, deadline, mask); } }',
+  'fn wait() { unsafe { libc::pselect(count, reads, writes, errors, deadline, mask); } }',
+  'fn wait() { unsafe { libc::kevent(queue, changes, change_count, events, count, deadline); } }',
+  'fn wait() { unsafe { libc::kevent64(queue, changes, change_count, events, count, flags, deadline); } }',
   'const FLUSH_INTERVAL: u64 = 10;',
  ]) assert.ok(newPollingSites(rust, '', source).length, source);
  for (const source of [
@@ -125,7 +156,9 @@ test('a producer edit reopens unchanged callers through recursive dependencies',
  assert.deepEqual(newProjectPollingSites(before, before), []);
  assert.deepEqual(newProjectPollingSites(before, new Map(before).set(second, '// retained source comment\n' + before.get(second))), []);
  assert.deepEqual(newProjectPollingSites(before, new Map(before).set(unrelated, 'export const value = 2;')), []);
- const changed = new Map(before).set(second, before.get(second).replace('ready()', 'otherReady()'));
+ const originalSecond = before.get(second);
+ assert.ok(originalSecond);
+ const changed = new Map(before).set(second, originalSecond.replace('ready()', 'otherReady()'));
  assert.ok(newProjectPollingSites(before, changed).some(site => site.file === script && site.kind === 'polling-helper-reference'));
  const accepted = projectPollingSites(before).map(site => disposition(site, 'event-wait', 'original producer', 'original producer loss', 'suppress the original event'));
  assert.ok(newProjectPollingSites(before, changed, accepted).some(site => site.file === script));
@@ -144,7 +177,9 @@ test('a legitimate helper requires an exact caller disposition rather than a hel
   assert.ok(added.some(site => site.file === script && site.kind === 'polling-helper-reference'));
   const accepted = added.map(site => disposition(site, classification, event, terminal, 'remove or suppress the original event and require the original terminal result'));
   assert.deepEqual(newProjectPollingSites(before, after, accepted), []);
-  assert.ok(newProjectPollingSites(before, new Map(after).set(script, after.get(script).replace('pause(original)', 'pause(replacement)')), accepted).length);
+  const originalCaller = after.get(script);
+  assert.ok(originalCaller);
+  assert.ok(newProjectPollingSites(before, new Map(after).set(script, originalCaller.replace('pause(original)', 'pause(replacement)')), accepted).length);
  }
 });
 
@@ -163,6 +198,33 @@ test('module side effects and missing local producers remain reviewable dependen
  assert.deepEqual(newProjectPollingSites(new Map(), cyclicModules), []);
 });
 
+test('malformed historical source cannot authorize current waits or hide malformed current source', () => {
+ const helper = 'typescript/packages/example/test/helper.ts';
+ const caller = "import {settle} from './helper.js'; export function operation() { return settle(); }";
+ // Deliberately malformed source input; no external compiler output is fabricated.
+ const before = new Map([[helper, 'export function settle() { return originalEvent; }}'], [script, caller]]);
+ const repaired = new Map(before).set(helper, 'export function settle() { return originalEvent; }');
+ assert.deepEqual(newProjectPollingSites(before, repaired), []);
+ const polling = new Map(repaired).set(helper, 'export function settle() { return Bun.sleep(10); }');
+ const refused = newProjectPollingSites(before, polling);
+ assert.ok(refused.some(site => site.file === helper && site.kind === 'timer-or-readiness'));
+ assert.ok(refused.some(site => site.file === script && site.kind === 'polling-helper-reference'));
+ assert.throws(() => newProjectPollingSites(before, before), SourceSyntaxError);
+ const malformed = new Map(before).set(helper, 'export function settle() { return Bun.sleep(10); }}');
+ assert.throws(() => newProjectPollingSites(before, malformed), SourceSyntaxError);
+ const brokenNative = new Map([
+  ['scripts/broken.py', '\n"unclosed'],
+  ['rust/crates/example/src/broken.rs', '\n/* unclosed'],
+ ]);
+ assert.throws(() => projectPollingSites(brokenNative), error => {
+  assert.ok(error instanceof AggregateError);
+  assert.equal(error.errors.length, 2);
+  assert.match(error.message, /scripts\/broken.py:2: unterminated quoted string/);
+  assert.match(error.message, /rust\/crates\/example\/src\/broken.rs:2: unterminated block comment/);
+  return true;
+ });
+});
+
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {
  for (const declaration of [
   "import {setTimeout as pause} from 'node:timers/promises';",
@@ -177,8 +239,10 @@ test('comments and Future polling remain distinct from time and readiness rechec
  assert.deepEqual(pollingSites(rust, `
  // while sleep timeout retry
  /* outer /* nested sleep */ while */
- fn drive<'a>(future: &'a mut Future) { future.poll(context); }
+ fn drive<'a>(future: &'a mut Future) { Future::poll(future, context); }
  `), []);
+ assert.ok(pollingSites(rust, 'fn drive(future: &mut Source) { future.poll(context); }')
+  .some(site => site.kind === 'timer-or-readiness'), 'a receiver name cannot prove the Future trait');
  assert.deepEqual(pollingSites(script, '// setTimeout retry while\nconst pattern = /[//]sleep/;'), []);
  assert.deepEqual(pollingSites(script, 'const name = globalThis["crypto"]; name.getRandomValues(bytes);'), []);
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));
@@ -265,6 +329,33 @@ test('legitimate deadline and transport sites require exact typed dispositions',
   assert.ok(newPollingSites(script, source, source.repeat(4), accepted).length);
   assert.ok(newPollingSites(script, '', source.replace('deadline', 'otherDeadline').replace('failure', 'otherFailure'), accepted).length);
  }
+ const source = 'fn receive() { receiver.recv_deadline(caller_deadline)?; }';
+ const sites = pollingSites(rust, source);
+ assert.ok(sites.length);
+ const accepted = sites.map(site => disposition(site, 'caller-deadline',
+  'original caller chooses caller_deadline', 'RecvTimeoutError::Disconnected or caller deadline',
+  'drop the original sender before receive and require Disconnected'));
+ assert.deepEqual(newPollingSites(rust, '', source, accepted), []);
+ assert.ok(newPollingSites(rust, '', source.replace('caller_deadline', 'readiness_deadline'), accepted).length);
+ // An untimed OS queue wait still needs its exact producer and failure terminal.
+ const event = 'fn receive() { unsafe { libc::epoll_wait(queue, events, count, -1); } }';
+ const eventSites = pollingSites(rust, event);
+ assert.ok(eventSites.length);
+ const native = eventSites.map(site => disposition(site, 'event-wait',
+  'registered original descriptor completion', 'original queue failure or descriptor cancellation',
+  'invalidate the original queue and require its native error'));
+ assert.deepEqual(newPollingSites(rust, '', event, native), []);
+ assert.ok(newPollingSites(rust, '', event.replace('-1', '25'), native).length);
+ assert.deepEqual(pollingSites(rust, 'fn drive(future: Pin<&mut F>, cx: &mut Context) { Future::poll(future, cx); }'), []);
+ assert.deepEqual(pollingSites(rust, 'fn drive(future: Pin<&mut F>, cx: &mut Context) { let advance = std::future::Future::poll; advance(future, cx); }'), []);
+ const mixed = 'fn receive(future: Pin<&mut F>, cx: &mut Context) { let advance = Future::poll; advance(future, cx); unsafe { libc::poll(descriptors, count, -1); } }';
+ const mixedSites = pollingSites(rust, mixed);
+ assert.equal(mixedSites.length, 1);
+ const mixedDisposition = mixedSites.map(site => disposition(site, 'event-wait',
+  'original descriptor event', 'native poll error or original descriptor cancellation',
+  'invalidate the original descriptor and require its native error'));
+ assert.deepEqual(newPollingSites(rust, '', mixed, mixedDisposition), []);
+ assert.ok(newPollingSites(rust, '', mixed.replace('-1', '25'), mixedDisposition).length);
 });
 
 test('event and finite-work loops have no file or helper exemption', () => {
@@ -281,8 +372,8 @@ test('event and finite-work loops have no file or helper exemption', () => {
  assert.throws(() => newPollingSites(rust, '', source, [...accepted, ...accepted]), /duplicate/);
 });
 
-test('scope covers native adapters and scripts as well as both language packages', () => {
- for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json']) assert.ok(sourceInScope(file));
+test('scope covers native adapters, plugins and scripts as well as both language packages', () => {
+ for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json', 'plugin/identity/src/lib.rs', 'plugin/tests/hosts/readiness.py', 'plugin/tests/hosts/wait.mjs', 'plugin/package.json']) assert.ok(sourceInScope(file));
  assert.equal(sourceInScope('docs/no-polling.md'), false);
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
  assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);
@@ -296,9 +387,9 @@ test('the entry point compares real Git objects and rejects modified and untrack
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent, GIT_CONFIG_COUNT: '0'};
  const git = args => execFileSync('git', args, {cwd: root, env, maxBuffer: Infinity});
  const write = (file, source) => { mkdirSync(dirname(join(root, file)), {recursive: true}); writeFileSync(join(root, file), source); };
- const check = base => {
+ const check = (...args) => {
   try {
-   return {status: 0, output: execFileSync(process.execPath, [checker, base], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
+   return {status: 0, output: execFileSync(process.execPath, [checker, ...args], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
   } catch (error) {
    return {status: error.status, output: String(error.stdout) + String(error.stderr)};
   }
@@ -312,10 +403,46 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const beforeCaller = "import {settle} from './helper.js'; export async function operation() {}\n";
   write(helper, 'export async function settle() { await Bun.sleep(10); }\n');
   write(caller, beforeCaller);
+  const plugin = 'plugin/tests/ready.mjs';
+  const beforePlugin = 'export async function ready() {}\n';
+  write(plugin, beforePlugin);
   write('scripts/no-polling-dispositions.json', '[]\n');
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
   assert.equal(check('HEAD').status, 0);
+  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n');
+  const pluginTimer = check('HEAD');
+  assert.notEqual(pluginTimer.status, 0);
+  assert.match(pluginTimer.output, /file=plugin\/tests\/ready.mjs:1/);
+  write(plugin, "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function ready() { await settle(); }\n");
+  const pluginHelper = check('HEAD');
+  assert.notEqual(pluginHelper.status, 0);
+  assert.match(pluginHelper.output, /file=plugin\/tests\/ready.mjs:1 kind=polling-helper-reference/);
+  write(plugin, beforePlugin);
+  const pluginChild = 'plugin/tests/hosts/child.py';
+  write(pluginChild, 'import time\nwhile not ready():\n time.sleep(.01)\n');
+  const pluginUntracked = check('HEAD');
+  assert.notEqual(pluginUntracked.status, 0);
+  assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
+  const censusPath = join(root, 'census.json');
+  const inventoried = check('--inventory', censusPath);
+  assert.equal(inventoried.status, 0, inventoried.output);
+  const census = JSON.parse(readFileSync(censusPath, 'utf8'));
+  assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
+  assert.equal(census.files, 5);
+  const siteOrder = (a, b) => a.file.localeCompare(b.file) || a.fingerprint.localeCompare(b.fingerprint);
+  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map([
+   [rust, readFileSync(join(root, rust), 'utf8')],
+   [helper, readFileSync(join(root, helper), 'utf8')],
+   [caller, readFileSync(join(root, caller), 'utf8')],
+   [plugin, beforePlugin],
+   [pluginChild, readFileSync(join(root, pluginChild), 'utf8')],
+  ])).sort(siteOrder));
+  assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
+  const preserved = readFileSync(censusPath, 'utf8');
+  assert.notEqual(check('--inventory', censusPath).status, 0);
+  assert.equal(readFileSync(censusPath, 'utf8'), preserved);
+  rmSync(join(root, pluginChild));
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
   const modified = check('HEAD');
   assert.notEqual(modified.status, 0);

@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {posix} from 'node:path';
 import ts from 'typescript-parser';
-import {pollingUnit, temporalModule, validateDispositions} from './no-polling.mjs';
+import {pollingUnit, SourceSyntaxError, temporalModule, validateDispositions} from './no-polling.mjs';
 
 /** @typedef {{id: string, unit: string, edges: Set<Dependency>, hazardous: boolean, callable: boolean}} Dependency */
 /** @typedef {{members: Dependency[], edges: Set<Component>, parents: Set<Component>, remaining: number, hazardous: boolean, fingerprint: string}} Component */
@@ -86,17 +86,28 @@ function dependencyComponents(nodes) {
 }
 
 /** @param {Map<string, string>} sources */
-export function projectPollingSites(sources) {
+export function projectPollingSites(sources, {historical = false} = {}) {
  /** @type {Map<string, ReturnType<typeof pollingUnit>>} */
  const units = new Map();
  /** @type {ReturnType<typeof pollingUnit>['sites']} */
  const sites = [];
+ const errors = [];
  for (const [file, source] of sources) {
-  const unit = pollingUnit(file, source);
+  let unit;
+  try { unit = pollingUnit(file, source); }
+  catch (error) {
+   // An unparseable predecessor cannot authorize any current executable site.
+   // Current source is always strict, including unchanged malformed files.
+   if (historical && error instanceof SourceSyntaxError) continue;
+   errors.push(error);
+   continue;
+  }
   for (const site of unit.sites) sites.push(site);
   if (script(file)) units.set(file, unit);
  }
- const scripts = new Map([...sources].filter(([file]) => script(file)).map(([file, source]) => ['/' + file, source]));
+ if (errors.length === 1) throw errors[0];
+ if (errors.length) throw new AggregateError(errors, errors.map(error => error.message).join('\n'));
+ const scripts = new Map([...units.keys()].map(file => ['/' + file, sources.get(file)]));
  const resolveModule = (name, containingFile) => {
   if (!name.startsWith('.')) return undefined;
   const base = posix.resolve(posix.dirname(containingFile), name);
@@ -300,7 +311,7 @@ export function projectPollingSites(sources) {
 export function newProjectPollingSites(before, after, dispositions = []) {
  validateDispositions(dispositions);
  const retained = new Map();
- for (const site of projectPollingSites(before)) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
+ for (const site of projectPollingSites(before, {historical: true})) retained.set(site.file + ':' + site.fingerprint, (retained.get(site.file + ':' + site.fingerprint) ?? 0) + 1);
  for (const item of dispositions) retained.set(item.file + ':' + item.fingerprint, Math.max(1, retained.get(item.file + ':' + item.fingerprint) ?? 0));
  return projectPollingSites(after).filter(site => {
   const key = site.file + ':' + site.fingerprint;

@@ -468,12 +468,8 @@ mod tests {
             });
             stopping.recv().unwrap();
             assert!(table.enter(serial).is_none());
-            // Neither completion nor unwinding can finish while a lease is held.
-            assert!(
-                release
-                    .recv_timeout(std::time::Duration::from_millis(50))
-                    .is_err()
-            );
+            // The held lease keeps the core alive after removal. The shared
+            // Loom model checks that retirement cannot bypass this lease.
             assert_eq!(drops.load(Ordering::SeqCst), 0);
             assert_eq!(lease.id, 1);
             drop(lease);

@@ -61,7 +61,7 @@ test("the product Cargo invocation preserves the configured compiler wrapper", (
     };
     syncBuiltinESMExports();
     await import('./scripts/build-product.mjs');
-  `], { encoding: "utf8", timeout: 60_000,
+  `], { encoding: "utf8",
     env: { ...process.env, CARGO: "fixture-cargo", RUSTC_WRAPPER: "fixture-sccache",
       RUSTFLAGS: "", CARGO_ENCODED_RUSTFLAGS: "" } });
   assert.ifError(result.error);
@@ -134,7 +134,7 @@ test("native restore summary prints exact requested and matched keys, including 
       const path = join(root, "summary.md");
       writeFileSync(path, "");
       const result = spawnSync(bash, ["-c", summary.run], {
-        encoding: "utf8", timeout: 60_000,
+        encoding: "utf8",
         env: { ...process.env, GITHUB_STEP_SUMMARY: resolve(path).replaceAll("\\", "/"),
           DOWNLOAD_REQUESTED: "downloads-requested", DOWNLOAD_MATCHED: "downloads-restored",
           COMPILER_REQUESTED: "compiler-current", COMPILER_MATCHED: matched },
@@ -186,7 +186,7 @@ sccache() {
 }
 ${trap}
 exit ${buildStatus}
-`], { encoding: "utf8", timeout: 60_000 });
+`], { encoding: "utf8" });
       assert.ifError(result.error);
       assert.equal(result.status, buildStatus, result.stderr);
       assert.equal(JSON.parse(readFileSync(`${root}/native-build-timings/sccache.json`, "utf8")).stats.compile_requests, 5);

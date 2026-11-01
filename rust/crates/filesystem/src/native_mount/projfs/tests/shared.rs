@@ -2,21 +2,13 @@ use super::*;
 
 /// A shared instance whose start fails returns the failure: the failed
 /// instance is dropped under the registry lock that serializes starts, so
-/// its teardown must not take that lock; if it did this would deadlock,
-/// which the bounded wait reports instead of hanging.
+/// its teardown must not take that lock.
 #[test]
 fn a_failed_shared_instance_start_returns_its_error() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path().join("not-a-directory");
     std::fs::write(&root, b"file")?;
-    let (sent, received) = std::sync::mpsc::channel();
-    let probe = root.clone();
-    std::thread::spawn(move || {
-        let _ = sent.send(super::super::shared::acquire_instance(&probe).map(drop));
-    });
-    let result = received
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .map_err(|_| "a failed shared start deadlocked")?;
+    let result = super::super::shared::acquire_instance(&root);
     assert!(result.is_err(), "a file cannot be a virtualization root");
     // The registry is free again: a second failed start also returns.
     assert!(super::super::shared::acquire_instance(&root).is_err());

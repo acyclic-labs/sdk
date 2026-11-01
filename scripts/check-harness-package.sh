@@ -67,6 +67,17 @@ for fixture in client-query.test.ts session-authority.ts actor-records.fixture.t
     exit 1
   }
 done
+authority_fixture="$root/rust/crates/conformance/cloudflare"
+[[ -s "$authority_fixture/fixture-authority.mjs" ]] || {
+  echo "CLIENT_PACKAGE_INPUT step=fixture-authority-source; recovery: git ls-files -- rust/crates/conformance/cloudflare/fixture-authority.mjs" >&2
+  exit 1
+}
+for generated in acyclic_cloudflare_conformance.js acyclic_cloudflare_conformance_bg.wasm; do
+  [[ -s "$authority_fixture/generated/$generated" ]] || {
+    echo "CLIENT_PACKAGE_INPUT step=fixture-authority missing=$generated; recovery: bash scripts/build-host-fixture.sh" >&2
+    exit 1
+  }
+done
 
 npm_stage="$work/npm-package"
 mkdir -p "$npm_stage/generated"
@@ -89,6 +100,11 @@ install -m 0644 "$root/scripts/fixtures/installed-harness/test/"*.test.ts test/
 for family in auth stream; do
   mkdir -p "test/fixtures/$family"
   cp -R "$root/typescript/packages/$family/generated/proto/." "test/fixtures/$family/"
+done
+mkdir -p test/fixtures/authority/generated
+install -m 0644 "$authority_fixture/fixture-authority.mjs" test/fixtures/authority/
+for generated in acyclic_cloudflare_conformance.js acyclic_cloudflare_conformance_bg.wasm; do
+  install -m 0644 "$authority_fixture/generated/$generated" test/fixtures/authority/generated/
 done
 for fixture in client-query.test.ts session-authority.ts actor-records.fixture.ts; do
   fixture_source="$root/typescript/packages/harness/test/$fixture"

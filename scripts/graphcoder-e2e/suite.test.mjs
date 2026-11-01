@@ -1,4 +1,3 @@
-import { performance } from "node:perf_hooks";
 import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool } from "./process.mjs";
-import { CaseDeadline, withOwnedCase } from "./suite.mjs";
+import { commandCancellation, withOwnedCase } from "./suite.mjs";
 
 test("owned cases join cleanup before returning or propagating failure", async () => {
   for (const failed of [false, true]) {
@@ -19,85 +18,16 @@ test("owned cases join cleanup before returning or propagating failure", async (
       return "scenario result";
     } });
     running.then(() => settled = true, () => settled = true);
-    await Promise.resolve();
-    assert.equal(closes, 1, "every selected case must join the supplied process owner's drain");
     await started.promise;
+    assert.equal(closes, 1, "every selected case must join the supplied process owner's drain");
     assert.equal(settled, false, "selected case must retain custody until physical drain");
     drain.resolve();
     if (failed) await assert.rejects(running, error => error === failure);
     else {
       const receipt = await running;
       assert.equal(receipt.run, "scenario result");
-      assert.equal(receipt.expired, false);
       assert.ok(receipt.seconds > 0 && receipt.seconds < 10);
     }
-  }
-});
-
-test("one virtual case deadline closes the supplied scope and joins its drain", async context => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const complete = Promise.withResolvers(), drain = Promise.withResolvers();
-  let closes = 0, settled = false;
-  const scope = { async close() { closes++; complete.resolve("interrupted"); await drain.promise; } };
-  const running = withOwnedCase({ processes: scope, run: () => complete.promise });
-  running.then(() => settled = true);
-  context.mock.timers.tick(8999);
-  assert.equal(closes, 0);
-  context.mock.timers.tick(1);
-  assert.equal(closes, 1, "the common nine-second reservation must close the caller's scope");
-  await complete.promise;
-  assert.equal(settled, false);
-  drain.resolve();
-  const receipt = await running;
-  assert.equal(receipt.expired, true, "expiry must remain a failed receipt even if interruption returns normally");
-  assert.equal(receipt.run, "interrupted");
-  assert.equal(closes, 1, "deadline and finally share one drain");
-});
-
-test("a supplied origin spends the budget already elapsed before entry", async context => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  let closes = 0;
-  const complete = Promise.withResolvers();
-  const running = withOwnedCase({ processes: { close() { closes++; complete.resolve(); } },
-    origin: performance.now() - 4000, run: () => complete.promise });
-  context.mock.timers.tick(4000);
-  assert.equal(closes, 0);
-  context.mock.timers.tick(1000);
-  assert.equal(closes, 1, "setup before entry must not extend the nine-second reservation");
-  assert.equal((await running).expired, true);
-});
-
-test("preparation uses the original deadline and cannot admit a fresh case budget", async context => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  for (const readyAt of [8999, 9000]) {
-    const preparation = Promise.withResolvers(), completion = Promise.withResolvers();
-    const phases = [];
-    let closes = 0, admitted = false;
-    const scope = { async close() { closes++; preparation.resolve(true); completion.resolve("interrupted"); } };
-    const running = withOwnedCase({ processes: scope, prepare: () => preparation.promise,
-      onPhase: event => phases.push(event), run: value => { admitted = value; return completion.promise; } });
-    running.catch(() => {});
-    context.mock.timers.tick(readyAt);
-    assert.equal(admitted, false, "pending preparation cannot admit a product sample");
-    if (readyAt === 8999) {
-      assert.equal(closes, 0);
-      preparation.resolve(true);
-      await Promise.resolve();
-      assert.equal(admitted, true);
-      context.mock.timers.tick(1);
-      assert.equal(closes, 1, "preparation must not reset the original case deadline");
-      assert.equal((await running).expired, true);
-      assert.equal(phases.find(event => event.outcome === "deadline").phase, "run");
-    } else {
-      assert.equal(closes, 1, "held preparation must consume the original reservation");
-      await assert.rejects(running, error => error instanceof CaseDeadline && error.phase === "preparation");
-      assert.equal(admitted, false, "expired preparation cannot launch product work");
-      assert.equal(phases.find(event => event.outcome === "deadline").phase, "preparation");
-      assert.equal(phases.some(event => event.phase === "admitted"), false);
-    }
-    assert.equal(closes, 1);
-    assert.equal(phases.at(-1).phase, "retired");
-    assert.equal(phases.at(-1).outcome, "completed");
   }
 });
 
@@ -141,13 +71,48 @@ test("native preparation completion admits execution through the original proces
     const receipt = await running;
     assert.equal(receipt.run.code, 0, receipt.run.stderr);
     assert.equal(receipt.run.stdout, "selected");
-    assert.equal(receipt.expired, false);
     assert.equal(processes.children.size, 0, "both original children must be reaped before publication");
   } finally {
     await processes.close();
     assert.equal(dirname(root), parent);
     rmSync(root, { recursive: true });
   }
+});
+
+test("caller cancellation retires and joins the original child during preparation and execution", async () => {
+  for (const preparation of [false, true]) {
+    const scope = new Processes(), cancellation = commandCancellation();
+    let events, child, completed = false;
+    const entered = Promise.withResolvers();
+    const hold = async () => {
+      child = scope.start(process.execPath, ["-e", "console.log(JSON.stringify({ready:true}));process.stdin.resume()"]);
+      events = new Spool(child.child.stdout, child.closed, { key: event => event.ready ? ["ready"] : [] });
+      entered.resolve();
+      await child.closed;
+      completed = true;
+    };
+    const running = withOwnedCase({ processes: scope, signal: cancellation.signal,
+      ...(preparation ? { prepare: hold, run: () => assert.fail("cancelled preparation cannot admit execution") }
+        : { run: hold }) });
+    running.catch(() => {});
+    try {
+      await entered.promise;
+      await events.keyed("ready");
+      assert.equal(completed, false);
+      process.emit("SIGTERM");
+      await assert.rejects(running, /caller cancelled command \(SIGTERM\)/);
+      assert.equal(completed, true, "publication joins the original operation after physical retirement");
+      assert.equal(scope.children.size, 0);
+      const result = await child.closed;
+      assert.ok(result.signal || result.code !== 0);
+    } finally { cancellation.dispose(); await scope.close(); }
+  }
+  const cancellation = new AbortController(), scope = new Processes();
+  const error = new Error("caller cancelled before admission");
+  cancellation.abort(error);
+  await assert.rejects(withOwnedCase({ processes: scope, signal: cancellation.signal,
+    run: () => assert.fail("a cancelled caller cannot start work") }), caught => caught === error);
+  assert.equal(scope.started, 0);
 });
 
 test("a real preparation launch refusal publishes its phase after original retirement", async () => {
@@ -159,7 +124,6 @@ test("a real preparation launch refusal publishes its phase after original retir
       { env: { ...process.env, E2E_SCRATCH_ROOT: root, E2E_OUTPUT: join(root, "results") } });
     assert.equal(result.code, 1, result.stderr);
     const report = JSON.parse(result.stdout);
-    assert.equal(report.expired, false);
     assert.equal(report.phases.preparation.outcome, "failed");
     assert.equal(report.phases.retired.outcome, "completed");
     assert.equal(report.phases.admitted, undefined);

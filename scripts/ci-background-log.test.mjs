@@ -61,7 +61,7 @@ background second fixture_child second 0
 result=0
 finish first second || result=$?
 printf 'result=%s\\n' "$result"
-`], { encoding: "utf8", timeout: 60000, env: { ...process.env, SDK_LOG_FIXTURE: directory.replaceAll("\\", "/") } });
+`], { encoding: "utf8", env: { ...process.env, SDK_LOG_FIXTURE: directory.replaceAll("\\", "/") } });
       assert.equal(result.error, undefined);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(result.stdout.includes("child-first-complete"), !missingLog);

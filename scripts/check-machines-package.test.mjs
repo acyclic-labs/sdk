@@ -18,6 +18,7 @@ test("Machines source tests and packaging share one verified checkout and reject
     const directory = mkdtempSync(".tools/machines-package-");
     try {
       const result = spawnSync(bash, ["-c", `set -euo pipefail
+trap 'printf "step=Machines package fixture line=%s command=%s; recovery=node --test scripts/check-machines-package.test.mjs\\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 work="$SDK_FIXTURE"
 root="$work/original"
 head=recorded-source
@@ -56,14 +57,14 @@ cargo() {
       [[ "$*" == "test --locked -p acyclic-machines -p acyclic-harness --manifest-path $manifest --target-dir $package_target_argument" ]]
       if [[ "$SDK_MUTATE_SOURCE" == true ]]; then touch "$package_root/Cargo.toml.dirty"; fi ;;
     package)
-      [[ "$*" == "package --locked --no-verify -p acyclic-grpc-observability -p acyclic-machines --manifest-path $manifest --target-dir $package_target_argument" ]] ;;
+      [[ "$*" == "package --locked --no-verify -p acyclic-proto-build -p acyclic-grpc-observability -p acyclic-machines --manifest-path $manifest --target-dir $package_target_argument" ]] ;;
     *) return 33 ;;
   esac
 }
 ${commands}
 echo packaged-verified-source
 `], {
-        encoding: "utf8", timeout: 60000,
+        encoding: "utf8",
         env: { ...process.env, SDK_FIXTURE: directory.replaceAll("\\", "/"), SDK_MUTATE_SOURCE: String(mutate) },
       });
       assert.equal(result.error, undefined);

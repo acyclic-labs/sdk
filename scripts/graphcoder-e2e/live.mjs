@@ -138,7 +138,6 @@ async function runCase(binary, login, root, name) {
           && /\bmerge\s+['\"]?agents\//.test(hook.tool_input?.command ?? "")), "missing completed child merge");
       } else assert.fail(`unknown case ${name}`);
     } });
-    assert.equal(receipt.expired, false, "case expired");
     assert.ok(receipt.seconds < 10, "case exceeded ten seconds");
     return { case: name, platform: process.platform, status: "pass", seconds: receipt.seconds, captures, hooks: childHooks };
   } catch (error) {

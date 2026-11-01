@@ -100,6 +100,8 @@ impl NativeSourceWatch {
                 #[cfg(test)]
                 native_wait_cancellation: Mutex::new(None),
                 delivery,
+                #[cfg(test)]
+                drop_complete: Mutex::new(None),
             }));
             let state = shared.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
             state.directory.store(

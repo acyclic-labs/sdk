@@ -10,7 +10,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import selectors
 import shlex
 import shutil
 import subprocess
@@ -21,7 +20,7 @@ import time
 
 def checked(argv, *, cwd, env, payload=None):
     result = subprocess.run(argv, cwd=cwd, env=env, input=payload, text=True,
-                            capture_output=True, timeout=8)
+                            capture_output=True)
     assert result.returncode == 0, (argv, result.stdout[-2000:], result.stderr[-2000:])
     return result.stdout
 
@@ -67,7 +66,7 @@ def inside(config):
     for args in [['agents'], ['log'], ['discard', 'agents/sandbox-child'],
                  ['fs', 'merge', 'agents/sandbox-child'], ['capture']]:
         result = subprocess.run([binary, '--task', parent, *args], cwd=negative,
-                                text=True, capture_output=True, timeout=2)
+                                text=True, capture_output=True)
         assert result.returncode != 0, ('external data endpoint admitted', args)
     rejected = json.loads(cli(['__hook', cfg['host'], 'Stop'], cwd=negative,
                               payload=json.dumps({'cwd': str(negative), 'task': parent})))
@@ -95,33 +94,29 @@ def pi_command(binary, command, *, cwd, env, log, prefix=()):
     try:
         native.stdin.write((json.dumps({'id': 'sandbox', 'type': 'bash', 'command': command}) + '\n').encode())
         native.stdin.flush()
-        with selectors.DefaultSelector() as ready:
-            ready.register(native.stdout, selectors.EVENT_READ)
-            deadline = time.monotonic() + 8
-            pending = b''
-            completed = False
-            while not completed:
-                remaining = deadline - time.monotonic()
-                assert remaining > 0 and ready.select(remaining), 'Pi command did not complete'
-                data = os.read(native.stdout.fileno(), 65536)
-                assert data, 'Pi exited without command result'
-                pending += data
-                while b'\n' in pending:
-                    line, pending = pending.split(b'\n', 1)
-                    if not line:
-                        continue
-                    message = json.loads(line)
-                    if message.get('id') != 'sandbox' or message.get('type') != 'response':
-                        continue
-                    assert message.get('command') == 'bash', message
-                    assert message.get('success'), message
-                    assert message['data']['exitCode'] == 0, message
-                    completed = True
+        pending = b''
+        completed = False
+        while not completed:
+            data = os.read(native.stdout.fileno(), 65536)
+            assert data, 'Pi exited without command result'
+            pending += data
+            while b'\n' in pending:
+                line, pending = pending.split(b'\n', 1)
+                if not line:
+                    continue
+                message = json.loads(line)
+                if message.get('id') != 'sandbox' or message.get('type') != 'response':
+                    continue
+                assert message.get('command') == 'bash', message
+                assert message.get('success'), message
+                assert message['data']['exitCode'] == 0, message
+                completed = True
         native.stdin.close()
-        assert native.wait(timeout=2) == 0
+        assert native.wait() == 0
     finally:
-        if native.poll() is None:
+        try:
             native.kill()
+        finally:
             native.wait()
 
 
@@ -229,8 +224,10 @@ def main():
                 assert result['seconds'] < 10, result
                 print(json.dumps(result), flush=True)
             finally:
-                owner.stdin.close()
-                owner.wait(timeout=2)
+                try:
+                    owner.stdin.close()
+                finally:
+                    assert owner.wait() == 0, 'workspace owner failed during retirement'
 
 
 if __name__ == '__main__':
