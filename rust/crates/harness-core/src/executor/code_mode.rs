@@ -86,7 +86,7 @@ impl StockExecution<'_> {
         #[cfg(feature = "filesystem")]
         let funded = self
             .io
-            .map(|io| io.encode(&tools, u64::MAX, false))
+            .map(|io| io.encode(&tools, None, false))
             .transpose()?;
         #[cfg(not(feature = "filesystem"))]
         let funded: Option<acyclic_stream::OwnedBytes> = None;
@@ -102,15 +102,19 @@ impl StockExecution<'_> {
         crate::model::charge_items(self.io, table.len() as u64)?;
         // Charge actual JSON escaping, with worst-case offset and completion
         // framing. A schema larger than one part is split without truncation.
-        let overhead = with_history_io(self.io, |work| {
-            json::json_byte_length(&content("", usize::MAX, false), u64::MAX, work)
-        })?;
         let maximum = self
             .stock
             .limits
             .render_bytes
-            .checked_sub(overhead)
-            .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))?;
+            .map(|maximum| {
+                let overhead = with_history_io(self.io, |work| {
+                    json::json_byte_length(&content("", usize::MAX, false), None, work)
+                })?;
+                maximum
+                    .checked_sub(overhead)
+                    .ok_or_else(|| invalid("render allowance cannot frame a tool notice"))
+            })
+            .transpose()?;
         let index = context
             .current_input_index
             .map_or(context.messages.len(), |index| index as usize + 1);
@@ -127,7 +131,7 @@ impl StockExecution<'_> {
                     character if character < '\u{20}' => 6,
                     character => character.len_utf8() as u64,
                 };
-                if size > maximum - bytes {
+                if maximum.is_some_and(|maximum| size > maximum - bytes) {
                     break;
                 }
                 bytes += size;
@@ -140,7 +144,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&notice, u64::MAX, false))
+                .map(|io| io.encode(&notice, None, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
