@@ -19,6 +19,14 @@ const classes = new Set([
  'idempotent-identity', 'event-wait', 'finite-work', 'negative-control',
 ]);
 
+export class SourceSyntaxError extends Error {
+ constructor(file, diagnostic, parsed) {
+  const {line, character} = parsed.getLineAndCharacterOfPosition(diagnostic.start ?? 0);
+  super(`${file}:${line + 1}:${character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+  this.name = 'SourceSyntaxError';
+ }
+}
+
 export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(name);
 
 // Host identifiers and quoted child programs can spell the same operation with
@@ -58,7 +66,7 @@ function scriptTokens(file, source) {
  // in resolving a source binding, and the dependency pass reuses this AST.
  const parsed = ts.createSourceFile('/' + file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript-parser').Diagnostic[]}} */ (parsed).parseDiagnostics;
- if (diagnostics.length) throw new Error(file + ': ' + ts.flattenDiagnosticMessageText(diagnostics[0].messageText, '\n'));
+ if (diagnostics.length) throw new SourceSyntaxError(file, diagnostics[0], parsed);
  /** @type {import('typescript-parser').Node[]} */
  const stack = [parsed];
  const out = [];

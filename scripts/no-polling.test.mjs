@@ -4,7 +4,7 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
-import {newPollingSites, pollingSites, sourceInScope, validateDispositions} from './no-polling.mjs';
+import {newPollingSites, pollingSites, SourceSyntaxError, sourceInScope, validateDispositions} from './no-polling.mjs';
 import {newProjectPollingSites, projectPollingSites} from './no-polling-project.mjs';
 
 const rust = 'rust/crates/example/src/lib.rs';
@@ -175,6 +175,22 @@ test('module side effects and missing local producers remain reviewable dependen
   [script, "import {first} from './helper.js'; export const result = first;"],
  ]);
  assert.deepEqual(newProjectPollingSites(new Map(), cyclicModules), []);
+});
+
+test('malformed historical source cannot authorize current waits or hide malformed current source', () => {
+ const helper = 'typescript/packages/example/test/helper.ts';
+ const caller = "import {settle} from './helper.js'; export function operation() { return settle(); }";
+ // Deliberately malformed source input; no external compiler output is fabricated.
+ const before = new Map([[helper, 'export function settle() { return originalEvent; }}'], [script, caller]]);
+ const repaired = new Map(before).set(helper, 'export function settle() { return originalEvent; }');
+ assert.deepEqual(newProjectPollingSites(before, repaired), []);
+ const polling = new Map(repaired).set(helper, 'export function settle() { return Bun.sleep(10); }');
+ const refused = newProjectPollingSites(before, polling);
+ assert.ok(refused.some(site => site.file === helper && site.kind === 'timer-or-readiness'));
+ assert.ok(refused.some(site => site.file === script && site.kind === 'polling-helper-reference'));
+ assert.throws(() => newProjectPollingSites(before, before), SourceSyntaxError);
+ const malformed = new Map(before).set(helper, 'export function settle() { return Bun.sleep(10); }}');
+ assert.throws(() => newProjectPollingSites(before, malformed), SourceSyntaxError);
 });
 
 test('aliases cannot use an unchanged timer import to conceal a new call', () => {
