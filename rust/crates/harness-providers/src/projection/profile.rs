@@ -4,6 +4,14 @@ use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Reasoning};
 use serde_json::{Map, Value, json};
 
+fn prefix_cache_key(prefix: [u8; 32]) -> String {
+    let digest = blake3::Hash::from(prefix).to_hex();
+    let mut key = String::with_capacity("profile-v1:".len() + digest.len());
+    key.push_str("profile-v1:");
+    key.push_str(digest.as_str());
+    key
+}
+
 pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
     if binding.fixed_effort().is_some() && adapter != Adapter::Responses {
         return Err(invalid(
@@ -47,10 +55,7 @@ pub(super) fn project(
             // append to the conversation instead of replacing its prefix.
             fields.insert(
                 "prompt_cache_key".into(),
-                json!(format!(
-                    "profile-v1:{}",
-                    blake3::Hash::from(binding.prefix_digest()).to_hex()
-                )),
+                Value::String(prefix_cache_key(binding.prefix_digest())),
             );
         }
         Adapter::Anthropic => {
@@ -109,9 +114,62 @@ mod tests {
     use super::*;
     use acyclic_harness_core::{
         approvals::ApprovalPolicy,
-        model::ModelProvider,
+        model::{ModelProvider, PreparedModelRequest},
         profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
     };
+
+    // Exercise the same protocol projection and encoding as dispatch, without a
+    // transport or a second Value projection inside the measured region.
+    fn measured_projection(
+        provider: &crate::ResolvedModel,
+        prepared: &PreparedModelRequest,
+        phase: &str,
+    ) -> Result<(Value, Vec<u8>)> {
+        let mut encoded = None;
+        let started = std::time::Instant::now();
+        let allocation = acyclic_test_support::measure(|| {
+            encoded = Some((|| {
+                let request = prepared.request();
+                let names = crate::tool_names::Names::new(request);
+                let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+                let mut files = crate::files::FileText::default();
+                let projected =
+                    crate::projection::body_named(provider, request, &names, &origin, &mut files)?;
+                serde_json::to_vec(&projected)
+                    .map_err(|_| invalid("cannot encode measured profile projection"))
+            })());
+        });
+        let elapsed = started.elapsed().as_nanos();
+        let encoded = encoded.unwrap()?;
+        let binding = provider.profile_binding().unwrap();
+        println!(
+            "{}",
+            json!({
+                "version": 1,
+                "task": "admitted-profile-projection",
+                "input_kind": "generated_profile_and_request",
+                "phase": phase,
+                "adapter": provider.config.adapter,
+                "model": provider.model(),
+                "prefix_digest": binding.prefix_digest(),
+                "prepared_request": std::str::from_utf8(prepared.bytes()).unwrap(),
+                "request": std::str::from_utf8(&encoded).unwrap(),
+                "request_bytes": encoded.len(),
+                "projection_elapsed_ns": elapsed,
+                "allocation_count": allocation.count_total,
+                "allocated_bytes": allocation.bytes_total,
+                "peak_bytes": allocation.bytes_max,
+                "model_calls": 0,
+                "tokens": Value::Null,
+                "cache_hits": Value::Null,
+                "tool_execution": Value::Null,
+                "terminal_quality": Value::Null,
+            })
+        );
+        let decoded = serde_json::from_slice(&encoded)
+            .map_err(|_| invalid("cannot decode measured projection"))?;
+        Ok((decoded, encoded))
+    }
 
     #[test]
     fn parsed_profiles_bind_original_selection_capacity_and_protocol_controls() -> Result<()> {
@@ -177,7 +235,9 @@ mod tests {
                 4096
             );
             let (prepared, _) = crate::tests::request(&provider)?;
-            let body = crate::projection::body(&provider, prepared.request())?;
+            let (body, first_bytes) = measured_projection(&provider, &prepared, "first")?;
+            let (_, repeated) = measured_projection(&provider, &prepared, "repeat")?;
+            assert_eq!(repeated, first_bytes);
             assert_eq!(body.pointer(pointer), Some(&json!("high")));
             let adaptive_role = RoleFile::parse(
                 "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: adaptive\nmax_output_tokens: 64\n---\n",
@@ -333,6 +393,38 @@ mod tests {
             }
             if adapter == Adapter::Responses {
                 let key = body["prompt_cache_key"].clone();
+                let prefix = profile.prefix_digest();
+                let mut exact = None;
+                let exact_cost = acyclic_test_support::measure(|| {
+                    exact = Some(prefix_cache_key(prefix));
+                });
+                // Restoring the original formatter preserves every byte but
+                // must regress the same one-allocation oracle.
+                let mut formatted = None;
+                let formatted_cost = acyclic_test_support::measure(|| {
+                    formatted = Some(format!(
+                        "profile-v1:{}",
+                        blake3::Hash::from(prefix).to_hex()
+                    ));
+                });
+                assert_eq!(exact, formatted);
+                assert_eq!(exact_cost.count_total, 1);
+                assert!(formatted_cost.count_total > exact_cost.count_total);
+                assert!(formatted_cost.bytes_total > exact_cost.bytes_total);
+                assert_eq!(key, json!(exact));
+                println!(
+                    "{}",
+                    json!({
+                        "version": 1,
+                        "task": "prefix-cache-key-allocation",
+                        "prefix_digest": prefix,
+                        "key": key,
+                        "exact_allocations": exact_cost.count_total,
+                        "formatted_allocations": formatted_cost.count_total,
+                        "exact_bytes": exact_cost.bytes_total,
+                        "formatted_bytes": formatted_cost.bytes_total,
+                    })
+                );
                 let reviewer = RoleFile::parse(
                     "---\nversion: 1\nname: reviewer\nmodel: fixture/model\ncontext: fresh\nmay_spawn: []\nmax_output_tokens: 64\n---\n",
                 )?;
@@ -342,10 +434,8 @@ mod tests {
                 let (fresh, _) = crate::tests::provider(adapter, 200);
                 let fresh = fresh.with_profile(&reviewer)?;
                 let (request, _) = crate::tests::request(&fresh)?;
-                assert_eq!(
-                    crate::projection::body(&fresh, request.request())?["prompt_cache_key"],
-                    key
-                );
+                let (reviewed, _) = measured_projection(&fresh, &request, "role_change")?;
+                assert_eq!(reviewed["prompt_cache_key"], key);
 
                 let changed_family = format!("{family}Changed frozen instructions.\n");
                 let changed = ModelProfile::parse(
@@ -358,10 +448,8 @@ mod tests {
                 let (fresh, _) = crate::tests::provider(adapter, 200);
                 let fresh = fresh.with_profile(&changed)?;
                 let (request, _) = crate::tests::request(&fresh)?;
-                assert_ne!(
-                    crate::projection::body(&fresh, request.request())?["prompt_cache_key"],
-                    key
-                );
+                let (changed, _) = measured_projection(&fresh, &request, "prefix_change")?;
+                assert_ne!(changed["prompt_cache_key"], key);
             }
         }
         Ok(())
