@@ -2,6 +2,14 @@
 
 use zeroize::Zeroizing;
 
+/// Transfers collected bytes into protected storage. Reclaims the original
+/// backing when `Bytes` can transfer it, and copies otherwise. Only the returned
+/// allocation is scrubbed; other transport owners retain their own backing.
+/// This supplies neither authority nor allocation credit.
+pub fn protect_bytes(bytes: bytes::Bytes) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(bytes.into())
+}
+
 /// An owned operation payload, scrubbed when its final transport owner retires.
 ///
 /// Moving this value transfers the original allocation. It supplies neither

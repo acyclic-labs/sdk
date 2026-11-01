@@ -698,6 +698,36 @@ mod http {
     #[tokio::test]
     async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
     -> TestResult {
+        // The shared response transfer reclaims transferable backing. Sharing
+        // the original Bytes requires a copy: protecting one owner must never
+        // mutate the other transport's bytes.
+        for length in [1024, 1024 * 1024] {
+            let original = Bytes::from(vec![7; length]);
+            let pointer = original.as_ptr();
+            let mut protected = None;
+            let transfer = acyclic_test_support::measure(|| {
+                protected = Some(acyclic_auth::operation::protect_bytes(original));
+            });
+            let protected = protected.ok_or("protected response missing")?;
+            assert_eq!(protected.as_ptr(), pointer);
+            assert_eq!(protected.len(), length);
+            assert_eq!((transfer.count_total, transfer.bytes_total), (0, 0));
+            drop(protected);
+
+            let original = Bytes::from(vec![7; length]);
+            let shared = original.clone();
+            let mut protected = None;
+            let copy = acyclic_test_support::measure(|| {
+                protected = Some(acyclic_auth::operation::protect_bytes(shared));
+            });
+            let protected = protected.ok_or("protected shared response missing")?;
+            assert_ne!(protected.as_ptr(), original.as_ptr());
+            assert_eq!(protected.as_slice(), original.as_ref());
+            assert!(copy.bytes_total >= length as u64);
+            drop(protected);
+            assert!(original.iter().all(|byte| *byte == 7));
+        }
+
         // The original bearer allocation survives the actual HTTP and gRPC
         // metadata constructors and clones. The old Vec route is a full-copy
         // negative control, measured independently of encoding the credential.

@@ -563,18 +563,13 @@ impl Transport for HttpTransport {
             // Never consume an error body: even a malicious provider cannot
             // attach a planted value to a propagated error or source chain.
             let body = if (200..300).contains(&status) {
-                response
-                    .bytes()
-                    .await
-                    .map_err(|_| Error::Transport)?
-                    .to_vec()
+                crate::operation::protect_bytes(
+                    response.bytes().await.map_err(|_| Error::Transport)?,
+                )
             } else {
-                Vec::new()
+                Zeroizing::new(Vec::new())
             };
-            Ok(Response {
-                status,
-                body: Zeroizing::new(body),
-            })
+            Ok(Response { status, body })
         })
     }
 }
