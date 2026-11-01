@@ -16,12 +16,8 @@ pub use lifecycle::DiagnosticConfigurationError;
 
 use acyclic_harness::{
     OperationId,
-    local::{
-        Connection, LocalHarness, LocalHarnessConfig, ModelResolver,
-        agent_conversation::Conversation,
-    },
+    local::{Connection, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
     native_settings::SettingsConfig,
-    preset::Preset,
     server::ServerConfig,
 };
 use acyclic_harness_providers::{Credentials, Registry};
@@ -103,17 +99,12 @@ fn configure(
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
     }
-    let models = ModelResolver::new(registry.default_model().to_owned(), move |selection| {
-        let provider = Arc::new(registry.resolve(selection)?);
-        Ok((provider.model().clone(), provider as _))
-    });
-    let mut preset = Preset::graphcoder();
+    let mut config = registry
+        .graphcoder(&args.workspace, args.model.clone())
+        .working_directory(&std::env::current_dir()?)?;
     if let Some(path) = &args.approval_policy {
-        preset.approval_policy = serde_json::from_slice(&std::fs::read(path)?)?;
+        config = config.approval_policy(serde_json::from_slice(&std::fs::read(path)?)?);
     }
-    let mut config =
-        LocalHarnessConfig::resolving(&args.workspace, Arc::new(models), args.model.clone())
-            .working_directory(&std::env::current_dir()?)?;
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
@@ -123,7 +114,7 @@ fn configure(
         config = config
             .settings(SettingsConfig::new(&args.workspace, root).codex_home(root.join(".codex")));
     }
-    Ok(config.preset(&preset))
+    Ok(config)
 }
 
 // Own native phase futures separately from the CLI orchestration frame.
