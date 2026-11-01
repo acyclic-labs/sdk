@@ -1,5 +1,7 @@
 use super::*;
 
+const SCRATCH_PREFIX: &str = ".volumes/scratch/";
+
 impl TaskContext {
     /// Retains complete tool output through the existing volume publisher.
     pub(crate) async fn spill_tool_output(
@@ -12,7 +14,7 @@ impl TaskContext {
             crate::conversation::derived_operation_id(operation, b"tool-output-spill-v1");
         let path = crate::executor::with_history_io(io, |history| {
             crate::executor::preparation_format(
-                format_args!(".volumes/scratch/tool-output/{operation}.json"),
+                format_args!("{SCRATCH_PREFIX}tool-output/{operation}.json"),
                 history,
             )
         })?;
@@ -20,7 +22,7 @@ impl TaskContext {
             .stage_private_file_once(
                 self.private_summaries(io)?,
                 operation,
-                &path,
+                &path[SCRATCH_PREFIX.len()..],
                 bytes,
                 ("application/json", "tool-output.json"),
                 io,
@@ -622,6 +624,19 @@ impl ToolContext {
         if let Some(targets) = self.task().harness.targets.as_ref() {
             return targets.read_path(path, work).map_err(Error::tool_input);
         }
+        // Match the scratch mount's public path when no execution target is
+        // bound. Keep the same private reader and ordinary directory grants.
+        if let Some(relative) = path.strip_prefix(SCRATCH_PREFIX) {
+            let binding = self
+                .task()
+                .harness
+                .artifacts
+                .as_ref()
+                .unwrap_or(&self.task().output_content);
+            if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
+                return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
+            }
+        }
         Ok((
             &self.task().tool_read_content().volume,
             std::borrow::Cow::Borrowed(path),
@@ -667,7 +682,10 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
-        let content = self.task().tool_read_content();
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?;
         self.task()
             .read_bound_path(
                 content,
@@ -699,7 +717,8 @@ impl ToolContext {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
         let (selected, bytes, hold) = self
             .task()
-            .tool_read_content()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?
             .reader
             .read_private_range(
                 volume,

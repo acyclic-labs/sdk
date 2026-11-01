@@ -712,6 +712,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
                 source.read_capability.clone(),
                 private.read_capability.clone(),
                 private.write_capability.clone(),
+                "tool:call:read".into(),
             ]),
             Limits {
                 file_bytes: 65_536,
@@ -741,13 +742,82 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
     .unwrap();
     assert_eq!(spill_file.volume(), &private.volume);
     assert!(serde_json::to_vec(&spilled).unwrap().len() <= 4096);
-    assert_eq!(
-        serde_json::from_slice::<Value>(
-            &runtime.block_on(spill_task.read_file(&spill_file, None))?
-        )
-        .unwrap(),
-        complete
+    let spill_path = spilled["value"]["output_spill"]["path"].as_str().unwrap();
+    let spill_version = spilled["value"]["output_spill"]["version"]
+        .as_str()
+        .unwrap();
+    let tool = crate::tool::files::read()?;
+    let read_spill = |task: &TaskContext, path: &str, start: u64, pinned: bool| -> Result<Value> {
+        let mut arguments = json!({
+            "path":path,
+            "range":{"start":start,"end":spill_file.descriptor().byte_length()}
+        });
+        if pinned {
+            arguments["version"] = json!(spill_version);
+        }
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read-spilled-output".into(),
+            name: tool.definition.name.clone(),
+            arguments,
+        };
+        let context = ToolContext::new(
+            Arc::new(task.clone()),
+            invocation.operation_id,
+            &invocation.call_id,
+        )?;
+        let result = runtime.block_on(tool.executor.execute(invocation.clone(), Some(context)))?;
+        let projection = tool.projection.project(&invocation, &result, None)?.0;
+        tool.definition
+            .validate_projection(&projection, task.scope().limits(), None)?;
+        Ok(result.value)
+    };
+    assert!(
+        read_spill(&spill_task, spill_path, 0, false)?["text"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
     );
+    let mut recovered = String::new();
+    loop {
+        let page = read_spill(&spill_task, spill_path, recovered.len() as u64, true)?;
+        let text = page["text"].as_str().unwrap();
+        assert!(!text.is_empty());
+        recovered.push_str(text);
+        match page["page"]["next"].as_u64() {
+            Some(next) => assert_eq!(next, recovered.len() as u64),
+            None => break,
+        }
+    }
+    assert_eq!(serde_json::from_str::<Value>(&recovered).unwrap(), complete);
+    assert!(read_spill(&spill_task, "another-output.json", 0, true).is_err());
+    let unreadable = spill_task.scoped(
+        Capabilities::new([
+            source.read_capability.clone(),
+            private.write_capability.clone(),
+            "tool:call:read".into(),
+        ]),
+        spill_task.scope().limits(),
+    )?;
+    assert_eq!(
+        read_spill(&unreadable, spill_path, 0, true)
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        read_spill(&unreadable, spill_path, 0, false)
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    let unbound = Bindings {
+        scope: spill_task.scope().clone(),
+        content: Some(source.content_bindings()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), source.content_bindings())?;
+    assert!(read_spill(&unbound, spill_path, 0, true).is_err());
     let denied = spill_task.scoped(
         Capabilities::new([
             source.read_capability.clone(),
