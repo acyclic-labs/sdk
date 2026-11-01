@@ -28,12 +28,17 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
                 assert_eq!(inherited.namespace().as_str(), DEFAULT_ACTOR_NAMESPACE);
                 assert_eq!(request.reference(&[]), Err(IdentityError::EmptyAccount));
 
-                let mut bound = None;
-                let allocations = acyclic_test_support::measure(|| {
-                    bound = Some(request.with_reference(&address));
-                });
-                assert_eq!(allocations.count_total, 3);
-                let bound = bound.ok_or("binding did not complete")??;
+                #[cfg(not(target_arch = "wasm32"))]
+                let bound = {
+                    let mut bound = None;
+                    let allocations = acyclic_test_support::measure(|| {
+                        bound = Some(request.with_reference(&address));
+                    });
+                    assert_eq!(allocations.count_total, 3);
+                    bound.ok_or("binding did not complete")??
+                };
+                #[cfg(target_arch = "wasm32")]
+                let bound = request.with_reference(&address)?;
                 assert_eq!(bound.reference(b"wrong-account")?, address);
                 assert_eq!(bound.namespace(), "Class_One");
                 let mut expected = raw;
@@ -76,11 +81,14 @@ fn scoped_operations_preserve_addresses_and_copy_only_owned_fields()
         assert_eq!(child.id(), "child");
         assert_ne!(parent, child);
 
-        // Negative control: reparsing a validated namespace allocates twice.
-        let reparsing = acyclic_test_support::measure(|| {
-            assert!(ActorNamespace::new(address.namespace().as_str().to_owned()).is_ok());
-        });
-        assert_eq!(reparsing.count_total, 2);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Negative control: reparsing a validated namespace allocates twice.
+            let reparsing = acyclic_test_support::measure(|| {
+                assert!(ActorNamespace::new(address.namespace().as_str().to_owned()).is_ok());
+            });
+            assert_eq!(reparsing.count_total, 2);
+        }
     }
     Ok(())
 }
