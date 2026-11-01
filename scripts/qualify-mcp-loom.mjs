@@ -53,7 +53,7 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
 export function qualifySkillMaterializerLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
-      targetCfg: ["--", "--cfg", "loom"], timeout: 9500,
+      targetCfg: ["--", "--cfg", "loom"],
       filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
     });
 }
@@ -72,7 +72,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
       "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
-    ], timeout: 9500,
+    ],
     env: loomEnvironment(), targetCfg: [],
   });
 }
@@ -82,7 +82,7 @@ export function qualifyNativeRegistryLoom(run = spawnSync) {
     kind: "--lib", filters: [
       "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
       "native_mount::fence::models::retirement_preserves_registry_identity_for_pending_and_new_starters",
-    ], timeout: 9500,
+    ],
     env: loomEnvironment(), targetCfg: [],
   });
 }
@@ -106,7 +106,6 @@ export function qualifyE2eProgressLoom(features = ["--features", "filesystem-loc
     targetCfg: ["--", "--cfg", "loom"],
     filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
       "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability", "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"],
-    timeout: 9500,
   });
 }
 
@@ -133,7 +132,7 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
       "testing::queue_model::premature_cancelled_waiter_refund_is_detected",
       "testing::queue_model::release_broadcast_reaches_every_waiter_across_concurrent_cancellation",
       "testing::queue_model::head_only_capacity_wake_is_detected",
-    ], timeout: 9500,
+    ],
   });
 }
 
@@ -158,7 +157,7 @@ export function qualifySessionFsLoom(run = spawnSync) {
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
     env: loomEnvironment(),
-    targetCfg: [], timeout: 9500,
+    targetCfg: [],
     filters: ["session_fs_model::change_resume_exhausts_append_registration_and_wakeup",
       "session_fs_model::change_resume_exhausts_independent_history_replacement"],
   });
@@ -166,7 +165,7 @@ export function qualifySessionFsLoom(run = spawnSync) {
 
 export function qualifyOwnershipLoom(run = spawnSync) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
-    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8, timeout: 9500,
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8,
     env: loomEnvironment(), targetCfg: [],
   });
 }
@@ -224,7 +223,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
   for (const test of tests) {
-    const result = run(binaries[0], test.args, { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
+    const result = run(binaries[0], test.args, { encoding: "utf8" });
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");

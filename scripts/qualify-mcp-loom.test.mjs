@@ -44,7 +44,6 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
         target = crate.replaceAll("-", "_");
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
       }
-      assert.equal(options.timeout, undefined);
       executed++;
       const passed = suites.find(([prefix]) => prefix === args[0])[1];
       return { status: 0, stdout: summary(missing === args[0] ? 0 : passed, 0, 10) };
@@ -91,7 +90,6 @@ test("skill materializer qualification requires the production owner model and i
       }
       assert.equal(args[0], ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"][models]);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
     };
     if (missing === null) { qualifySkillMaterializerLoom(run); assert.equal(models, 2); }
@@ -124,7 +122,6 @@ test("ownership qualification requires every dedicated real-lock model and compi
         return {status: 0, stderr: "", stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
       }
       assert.deepEqual(args, ["ownership::model::"]);
-      assert.equal(options.timeout, 9500);
       return {status: 0, stderr: "", stdout: summary(passed, 0, 50)};
     };
     if (passed === 8) qualifyOwnershipLoom(run);
@@ -190,7 +187,6 @@ test("fs Session qualification instruments real provider and Session locks and r
       }
       assert.match(args[0], /^session_fs_model::change_resume_exhausts_/);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 2) };
     };
@@ -212,7 +208,6 @@ test("hook qualification requires every retained checkout and projection model",
         }
         assert.match(args[0], /(?:cancelled_bash_retains_projection|local::workspace::projection::tests::)/);
         assert.equal(args[1], "--exact");
-        assert.equal(options.timeout, 9500);
         models++;
         return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
       };
@@ -311,7 +306,6 @@ test("registry gate instruments real native locks and rejects either omitted pro
       }
       assert.match(args[0], /native_mount::fence::models::/);
       assert.equal(args[1], "--exact");
-      assert.equal(options.timeout, 9500);
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
     };
