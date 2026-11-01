@@ -23,3 +23,64 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
         GitCompatError::RequestObservation(error) => {
             acyclic_fs::LazyWorkspaceError::NativeRecordIo(error, None).into()
         }
+        GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
+            Error::Storage(error.to_string())
+        }
+        GitCompatError::WorkspaceMismatch
+        | GitCompatError::Contended
+        | GitCompatError::UnbornHead
+        | GitCompatError::NothingToCommit
+        | GitCompatError::TransitionPending(_)
+        | GitCompatError::StaleTransition => Error::Conflict(error.to_string()),
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_error_keeps_its_cause_and_original_allocation() -> crate::Result<()> {
+        use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
+        let cancellation = CancellationToken::new();
+        let work =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let custody = work.claim(123, 1, WorkCounters::UNCHARGED)?;
+        let error = run_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
+            GitCompatRunError::Executor(
+                acyclic_fs::LazyWorkspaceError::NativeRecordIo(
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    Some(custody),
+                )
+                .into(),
+            ),
+        );
+        assert_eq!(work.live_allocation_bytes(), baseline + 123);
+        let Error::NativeSource { source, .. } = &error else {
+            return Err(Error::Invalid("native source cause was lost".into()));
+        };
+        let acyclic_fs::LazyWorkspaceError::NativeRecordIo(cause, Some(allocation)) =
+            source.as_ref()
+        else {
+            return Err(Error::Invalid("native IO cause or custody was lost".into()));
+        };
+        assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(allocation.bytes(), 123);
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        let error = compat_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
+            GitCompatError::RequestObservation(std::io::ErrorKind::PermissionDenied.into()),
+        );
+        let Error::NativeSource { source, .. } = &error else {
+            return Err(Error::Invalid("request observation cause was lost".into()));
+        };
+        let acyclic_fs::LazyWorkspaceError::NativeRecordIo(cause, None) = source.as_ref() else {
+            return Err(Error::Invalid(
+                "request observation acquired foreign custody".into(),
+            ));
+        };
+        assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
+        Ok(())
+    }
+}

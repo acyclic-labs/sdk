@@ -1257,3 +1257,5 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
             .await?;
         assert_eq!(read.bytes, bytes);
     }
+    Ok(())
+}

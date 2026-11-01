@@ -41,7 +41,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
             })),
         };
         assert_eq!(
-            crate::http_failure(response, 2048, None).await.code(),
+            crate::http_failure(response, Some(2048), None).await.code(),
             crate::http_error(status).code(),
         );
     }
@@ -58,9 +58,9 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for status in [400, 401, 403, 404, 408, 413, 429, 503] {
         let ordinary = crate::diagnostic::rejection(
-            crate::http_failure(response(status, 0), 2048, None).await,
+            crate::http_failure(response(status, 0), Some(2048), None).await,
         );
-        let native = crate::http_failure(response(status, 0), 2048, Some(&work)).await;
+        let native = crate::http_failure(response(status, 0), Some(2048), Some(&work)).await;
         assert_eq!(native.code(), ordinary.code());
         assert_eq!(native.to_string(), ordinary.to_string());
         if let Error::ModelDiagnostic {
@@ -90,7 +90,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
                 })
             })),
         };
-        let mut refusal = Box::pin(crate::http_failure(response, 2048, Some(&work)));
+        let mut refusal = Box::pin(crate::http_failure(response, Some(2048), Some(&work)));
         assert!(futures::poll!(refusal.as_mut()).is_pending());
         assert!(work.live_allocation_bytes() > baseline);
         if drop_consumer {
@@ -124,3 +124,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     assert!(matches!(
         crate::http_failure(response, Some(2048), Some(&denied)).await,
         Error::NativeWork { .. }
+    ));
+    assert_eq!(denied.live_allocation_bytes(), baseline);
+    Ok(())
+}
