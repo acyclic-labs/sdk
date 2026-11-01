@@ -2,6 +2,86 @@ use super::*;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
+async fn serving_summary_recovers_transient_pre_dispatch_failure() -> Result<()> {
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = crate::filesystem::SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([82; 16]))?;
+    let counts = Arc::new(AtomicUsize::new(0));
+    let observed_counts = Arc::clone(&counts);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("recovered summary".into())])
+            .with_token_counter(move |request| {
+                if observed_counts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::ModelUnavailable {
+                        failure: crate::ModelTransportFailure::Connect,
+                        excerpt: String::new(),
+                    });
+                }
+                fixture_token_count(request)
+            }),
+    );
+    let stock = StockExecutor::new(
+        Model::new("synthetic".into(), "recovery".into(), "1".into())?,
+        provider.native(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_session(Some(slot));
+    let execution = StockExecution::ordinary(&stock);
+    let context = crate::context::Context {
+        messages: ["source", "recent"]
+            .into_iter()
+            .map(|text| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(text.into()),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let failed = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    let error = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&failed, &context) => result.unwrap_err(),
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unavailable);
+    assert!(provider.requests().is_empty(), "failure followed dispatch");
+    let resumed = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    assert!(!Arc::ptr_eq(&failed, &resumed), "failure pinned the slot");
+    let (summary, _) = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&resumed, &context) => result?,
+    };
+    assert_eq!(
+        journal.load(&summary.output, None)?.await?.as_ref(),
+        b"recovered summary"
+    );
+    assert!(counts.load(Ordering::SeqCst) >= 2);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.reconciliations().is_empty());
+    let retained = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    assert!(Arc::ptr_eq(&resumed, &retained));
+    assert_eq!(
+        execution.demand_summary(&retained, &context).await?.0,
+        summary
+    );
+    assert_eq!(provider.requests().len(), 1, "completion was regenerated");
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
 async fn serving_summary_overlaps_turns_and_replays_exact_source() -> Result<()> {
     use crate::filesystem::SessionWork;
     let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;

@@ -131,15 +131,21 @@ impl StockExecution<'_> {
         })?;
         if let Some(original) = selected.as_ref() {
             if original.through == through && original.matches(context, profile, self.io)? {
-                let needs_reconciliation = matches!(
+                let needs_resume = matches!(
                     original.completion.borrow().as_deref(),
-                    Some(Err(Error::Indeterminate(_)))
+                    Some(Err(error)) if matches!(
+                        error.code(),
+                        crate::wire::ErrorCode::Indeterminate
+                            | crate::wire::ErrorCode::Unavailable
+                            | crate::wire::ErrorCode::Storage
+                    )
                 );
-                if !needs_reconciliation {
+                if !needs_resume {
                     return Ok(Some(Arc::clone(original)));
                 }
-                // Resume the same accepted summary operation and selected cut.
-                // A later consumer is the event that requests reconciliation.
+                // A later consumer resumes the same operation and selected
+                // cut. Its journal retries preparation, reconciles accepted
+                // work and replays completion without generating it again.
                 through = original.through;
             }
             if original.completion.borrow().is_none() && original.completion.has_changed().is_ok() {
