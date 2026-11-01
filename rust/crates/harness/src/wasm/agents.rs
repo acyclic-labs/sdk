@@ -143,6 +143,19 @@ struct WasmBrowserAgentOptions {
     #[serde(default)]
     #[tsify(optional)]
     handler_timeout_ms: Option<u64>,
+    /// This host places and wakes child agents. Its turns then run under the
+    /// built-in role profiles; otherwise both spawn entrances refuse.
+    #[serde(default)]
+    #[tsify(optional)]
+    children: bool,
+}
+
+impl WasmBrowserAgentOptions {
+    /// The role profiles of a host that places and wakes children, the one
+    /// choice both its turns and its root creation take; `None` otherwise.
+    fn profiles(&self) -> Option<Arc<crate::profile::Profiles>> {
+        self.children.then(crate::profile::Profiles::builtin)
+    }
 }
 
 /// Outcome of one control commit.
@@ -513,16 +526,19 @@ impl WasmAgents {
         let Providers {
             stream, filesystem, ..
         } = providers;
-        let agents = Arc::new(
-            AgentHost::hosting(
-                stream,
-                owner.within()?,
-                handler,
-                Arc::new(SystemClock),
-                Some(composer),
-            )
-            .map_err(agent_error)?,
-        );
+        let agents = AgentHost::hosting(
+            stream,
+            owner.within()?,
+            handler,
+            Arc::new(SystemClock),
+            Some(composer),
+        )
+        .map_err(agent_error)?;
+        // Roots are pinned to the same profiles the turns run under.
+        let agents = Arc::new(match options.profiles() {
+            Some(profiles) => agents.with_profiles(profiles).map_err(agent_error)?,
+            None => agents,
+        });
         let run = if background {
             let runner = Arc::clone(&agents);
             let (run, stop) = futures::future::abortable(async move {
@@ -597,6 +613,7 @@ impl WasmAgents {
             .create(
                 &IntentId::try_from(intent).map_err(agent_error)?,
                 ForkAdopted {
+                    profile: None,
                     agent: id,
                     parent: None,
                     forked_at: 0,

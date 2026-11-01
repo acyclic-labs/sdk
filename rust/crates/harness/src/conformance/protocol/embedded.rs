@@ -109,7 +109,6 @@ pub async fn open<B: Backend + ?Sized>(
     let preset = Preset {
         tools: Vec::new(),
         web_tools: false,
-        max_children: None,
         approval_policy: policy,
     };
     let effects = Arc::new(AtomicUsize::new(0));
@@ -127,21 +126,23 @@ pub async fn open<B: Backend + ?Sized>(
         &mut None,
         None,
     )?;
-    let executors = preset.executors(
-        (
-            Model::new("conformance".into(), "scripted".into(), "1".into())?,
-            Arc::new(Scripted),
-        ),
-        tools,
-        (
-            Limits {
-                model_steps: 4,
-                ..Limits::default()
-            },
-            CompactionPolicy::Disabled,
-        ),
-        Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
-    );
+    let executors = preset
+        .executors(
+            (
+                Model::new("conformance".into(), "scripted".into(), "1".into())?,
+                Arc::new(Scripted),
+            ),
+            tools,
+            (
+                Limits {
+                    model_steps: 4,
+                    ..Limits::default()
+                },
+                CompactionPolicy::Disabled,
+            ),
+            Arc::new(Grants(vec![format!("tool:call:{TOOL}")])),
+        )
+        .with_profiles(crate::profile::Profiles::builtin());
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },

@@ -66,6 +66,7 @@ pub(super) fn apply(
                 return Ok(reject(session, id, "native child already exists"));
             }
             outs.push(Out::Spawn {
+                profile: None,
                 intent,
                 brief: Some(brief),
                 volumes: Vec::new(),

@@ -349,6 +349,7 @@ where
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
+        let profiles = turns.executors.profiles();
         let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -373,13 +374,18 @@ where
                 .map_err(|_| Error::Record("agent handler manifest"))?
                 .with_spawn_volumes(spawns.clone()),
         );
-        let agents = Arc::new(AgentHost::hosting(
+        let agents = AgentHost::hosting(
             stream,
             within.clone(),
             handler.clone(),
             turns.clock.clone(),
             Some(spawns.clone()),
-        )?);
+        )?;
+        // The host pins roots to the same profiles these turns run under.
+        let agents = Arc::new(match profiles {
+            Some(profiles) => agents.with_profiles(profiles)?,
+            None => agents,
+        });
         Ok(Self {
             issuer,
             admission,
@@ -401,10 +407,9 @@ where
         mut self,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
-        // The guest composes the same spawns as this binding's own handler.
-        self.agents = Arc::new(AgentHost::hosting(
-            self.agents.provider().clone(),
-            self.within.clone(),
+        // The guest composes the same spawns as this binding's own handler,
+        // and roots keep the role profiles its turns run under.
+        self.agents = Arc::new(self.agents.rehosted(
             handler.clone(),
             self.clock.clone(),
             Some(self.spawns.clone()),
@@ -859,6 +864,21 @@ where
         &self.within
     }
 
+    /// The pin of a `role` child of `parent`, admitted by `parent`'s role.
+    /// A pin never changes once adopted, so this admission holds for the
+    /// step that applies the spawn.
+    ///
+    /// # Errors
+    /// [`Error::SpawnRefused`] when these turns bind no roles, `parent` has
+    /// no role, or its role does not admit `role`; or the state read fails.
+    pub async fn child_profile(
+        &self,
+        parent: &AgentPath,
+        role: &str,
+    ) -> Result<crate::agent::AgentProfilePin, Error> {
+        self.agents.child_profile(parent, role).await
+    }
+
     /// Stages `text` once on `agent`'s private volume under the agent's
     /// admitted authority, keyed by the agent, the input `kind`, its sender
     /// and `intent`. The original source binds the request before expansion;
@@ -1136,6 +1156,7 @@ where
         let Spawn { child, request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
+                profile: None,
                 agent,
                 parent: None,
                 forked_at: 0,

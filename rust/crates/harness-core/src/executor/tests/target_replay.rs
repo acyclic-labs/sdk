@@ -136,6 +136,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         AgentState::adopted(
             path.clone(),
             &ForkAdopted {
+                profile: None,
                 agent: path.id().clone(),
                 parent: None,
                 forked_at: 0,

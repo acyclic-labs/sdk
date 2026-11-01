@@ -232,6 +232,11 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             root,
             &by,
             &InboxRecord::Spawn(crate::agent::SpawnRequest {
+                profile: crate::agent::AgentProfilePin {
+                    role: "worker".into(),
+                    digest: [0; 32],
+                    context: crate::agent::SpawnContext::Fork,
+                },
                 by: by.clone(),
                 id,
                 brief: Box::new(brief),

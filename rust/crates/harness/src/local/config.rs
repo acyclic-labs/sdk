@@ -51,8 +51,6 @@ pub struct LocalHarnessConfig {
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
     pub(super) default_tools: Vec<String>,
-    /// Open children each agent may have at once.
-    pub(super) max_children: Option<u32>,
     /// Hosts the agents for [`crate::server::serve`].
     pub(super) served: Option<Arc<dyn super::Verifier>>,
     pub(super) approval_policy: crate::approvals::ApprovalPolicy,
@@ -185,7 +183,6 @@ impl LocalHarnessConfig {
             models: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
-            max_children: None,
             served: None,
             approval_policy: Default::default(),
             approval_issuer: None,
@@ -359,7 +356,6 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
         self.default_tools.clone_from(&preset.tools);
-        self.max_children = preset.max_children;
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools;
@@ -371,7 +367,6 @@ impl LocalHarnessConfig {
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
             tools: self.default_tools.clone(),
-            max_children: self.max_children,
             #[cfg(feature = "search-http")]
             web_tools: self.web_tools,
             #[cfg(not(feature = "search-http"))]

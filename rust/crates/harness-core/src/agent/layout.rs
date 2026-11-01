@@ -315,9 +315,14 @@ impl fmt::Display for AgentPath {
     }
 }
 
-/// Relative names excluded from a child's inherited subtree.
-pub fn not_inherited() -> Result<Vec<StreamPath>, Error> {
-    NOT_INHERITED.iter().map(|name| stream(name)).collect()
+/// Relative names excluded from a child's inherited subtree; a `fresh` child
+/// inherits no conversation either.
+pub fn not_inherited(fresh: bool) -> Result<Vec<StreamPath>, Error> {
+    NOT_INHERITED
+        .iter()
+        .chain(fresh.then_some(&CONVERSATION))
+        .map(|name| stream(name))
+        .collect()
 }
 
 fn stream(text: &str) -> Result<StreamPath, Error> {

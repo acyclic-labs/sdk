@@ -4,7 +4,7 @@
   "model": {
     "steps": [
       { "when": { "user": "PARENT_CHILD_RESULT_TASK" }, "tools": [
-        { "id": "spawn", "name": "spawn", "arguments": { "name": "worker", "task": "CHILD_RESULT_TASK" } }
+        { "id": "spawn", "name": "spawn", "arguments": { "name": "worker", "task": "CHILD_RESULT_TASK", "role": "worker" } }
       ] },
       { "when": { "user": "PARENT_CHILD_RESULT_TASK", "tool_result": "agent" },
         "tools": [

@@ -318,9 +318,15 @@ mod tests {
         ))
     }
 
-    /// The widest adoption: deepest parent, every volume, brief and policy.
+    /// The widest adoption: deepest parent, longest built-in role pin, every
+    /// volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
+            profile: Some(crate::agent::AgentProfilePin {
+                role: "orchestrator".into(),
+                digest: [u8::MAX; 32],
+                context: crate::agent::SpawnContext::TopLevel,
+            }),
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
             forked_at: u64::MAX,
@@ -377,6 +383,11 @@ mod tests {
                 attachments: None,
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
+                profile: crate::agent::AgentProfilePin {
+                    role: "orchestrator".into(),
+                    digest: [u8::MAX; 32],
+                    context: crate::agent::SpawnContext::TopLevel,
+                },
                 by: from.clone(),
                 id: intent(),
                 brief: Box::new(file()),
@@ -508,6 +519,7 @@ mod tests {
                 .collect();
             for outcome in outcomes() {
                 let state = AgentState {
+                    profile: adopted.profile.clone(),
                     parent: path.parent(),
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),

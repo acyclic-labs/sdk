@@ -386,6 +386,13 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 
+    /// The role profiles these turns run under: roots are pinned to their
+    /// top-level role and children are admitted by their parent's role.
+    /// `None` binds no roles, so neither spawn entrance admits a child.
+    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
+        None
+    }
+
     /// The execution targets `agent`'s `shell` reaches, announced to its
     /// model whenever they change; `None` binds no targets.
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {

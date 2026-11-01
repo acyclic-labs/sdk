@@ -45,6 +45,7 @@ fn user() -> Sender {
 
 fn adopted(agent: AgentId) -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent,
         parent: None,
         forked_at: 0,
@@ -290,6 +291,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
         outs: vec![
             Out::Conversation(b"c3".to_vec()),
             Out::Spawn {
+                profile: None,
                 intent: intent(name),
                 brief: None,
                 volumes: Vec::new(),
@@ -403,6 +405,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
     let step = Step {
         outs: vec![
             Out::Spawn {
+                profile: None,
                 intent: intent("s1"),
                 brief: None,
                 volumes: Vec::new(),
@@ -966,6 +969,11 @@ fn spawn_request(sequence: u64) -> Wake {
     Wake::Inbox {
         sequence,
         record: InboxRecord::Spawn(SpawnRequest {
+            profile: acyclic_harness_core::agent::AgentProfilePin {
+                role: "worker".into(),
+                digest: [0; 32],
+                context: acyclic_harness_core::agent::SpawnContext::Fork,
+            },
             by: user(),
             id: intent(&format!("s{sequence}")),
             brief: Box::new(driver::file("task").expect("file")),
@@ -1041,6 +1049,7 @@ impl TurnDriver for ToolSpawner {
                 reserved_children: 0,
                 checkpoint: None,
                 outs: vec![Out::Spawn {
+                    profile: None,
                     intent: intent("spawn:tool"),
                     brief: None,
                     volumes: Vec::new(),
@@ -1127,6 +1136,7 @@ async fn a_paused_turns_recorded_spawn_keeps_its_slot_from_a_client_spawn() -> R
         reserved_children: 0,
         checkpoint: None,
         outs: vec![Out::Spawn {
+            profile: None,
             intent: intent("spawn:tool"),
             brief: None,
             volumes: Vec::new(),

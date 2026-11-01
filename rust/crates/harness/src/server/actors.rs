@@ -164,12 +164,15 @@ where
                 Some(context) => context,
                 None => Arc::new(Grants(self.preset.tool_grants(&tools)?)),
             };
-            let executors = self.preset.executors(
-                execution.model,
-                tools,
-                (execution.limits, execution.compaction),
-                context,
-            );
+            let executors = self
+                .preset
+                .executors(
+                    execution.model,
+                    tools,
+                    (execution.limits, execution.compaction),
+                    context,
+                )
+                .with_profiles(crate::profile::Profiles::builtin());
             let Placement {
                 filesystem,
                 provider,

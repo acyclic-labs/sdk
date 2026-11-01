@@ -16,6 +16,10 @@ pub use binding::{BoundTools, ToolBinding};
 mod native;
 pub use native::NativeToolProfile;
 
+mod runtime;
+pub use crate::agent::SpawnContext;
+pub use runtime::{Profiles, ROOT_ROLE};
+
 /// One capability's model-specific shape, in declaration order.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,18 +33,6 @@ pub struct ToolRevision {
 }
 
 pub use acyclic_model_render::{Cache, Effort, Reasoning};
-
-/// Context carried by a role. `TopLevel` refuses child admission.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpawnContext {
-    /// A root role that cannot be admitted as a child.
-    TopLevel,
-    /// Only the self-contained brief and explicitly sent artifacts.
-    Fresh,
-    /// A stream fork at the parent's conversation cut plus the brief.
-    Fork,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,6 +156,11 @@ impl ModelProfile {
 pub struct RoleFile(File<Role>);
 
 impl RoleFile {
+    /// Role identity, the name a spawn selects it by.
+    pub fn name(&self) -> &str {
+        &self.0.metadata.name
+    }
+
     /// Parses a versioned role file without resolving or opening its model.
     pub fn parse(source: &str) -> Result<Self> {
         let file = File::<Role>::parse(source)?;

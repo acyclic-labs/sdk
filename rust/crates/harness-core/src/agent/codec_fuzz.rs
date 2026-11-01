@@ -54,6 +54,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     let agent = AgentId::from_bytes([7; 16]);
     let path = AgentPath::root(&agent);
     let adopted = ForkAdopted {
+        profile: None,
         agent,
         parent: None,
         forked_at: 0,

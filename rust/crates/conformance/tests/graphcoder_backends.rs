@@ -176,7 +176,11 @@ fn answer(
             &json!({"command": "echo conformance-shell"}),
         ),
         1 => call("write", "write", &write_arguments(request)),
-        2 => call("spawn", "spawn", &json!({"task": CHILD, "name": "child"})),
+        2 => call(
+            "spawn",
+            "spawn",
+            &json!({"task": CHILD, "name": "child", "role": "worker"}),
+        ),
         _ => text("root answer"),
     }]))
 }

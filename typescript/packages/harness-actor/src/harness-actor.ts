@@ -13,7 +13,9 @@ export { HarnessActorError } from "./bindings.js";
 /** The artifact owner's configuration. Credentials appear only as canonical
  * versioned secret references inside `model.spec.authentication`. */
 export interface HarnessActorConfig {
-  readonly options: BrowserAgentOptions;
+  /** Whether a host places and wakes children is the host's own property,
+   * never the owner's: this one places only its own agent. */
+  readonly options: Omit<BrowserAgentOptions, "children">;
   readonly model: {
     readonly provider: string;
     readonly spec: ProviderSpec;
@@ -102,10 +104,10 @@ export const actor = defineActor<Opened, HarnessBindings>({
     const workspace = BrowserMachinesWorkspace.open(owner, env.workspace);
     try { registry.bindMachinesWorkspace(workspace); } finally { workspace.free(); }
     const state = new ActorStateStorage(env.storage);
-    // Shared history alone does not admit a child Actor's placement and wake.
-    // Keep both spawn entrances closed until the original producer owns them.
-    const childless = { ...options, preset: { ...options.preset, max_children: 0 } };
-    const host = new EventAgentHost(state.domain("actor"), ledger, name, childless, owner, registry, env.access);
+    // Shared history alone does not admit a child Actor's placement and wake,
+    // so this host runs no children and both spawn entrances refuse, whatever
+    // the owner's configuration carries.
+    const host = new EventAgentHost(state.domain("actor"), ledger, name, { ...options, children: false }, owner, registry, env.access);
     await host.create(name);
     return { host };
   },

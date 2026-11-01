@@ -81,11 +81,13 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         if let Out::Spawn {
             intent,
             brief,
+            profile,
             volumes,
         } = out
         {
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
+            adopted.profile.clone_from(profile);
             let spawn = commit::spawn(path, intent, cursor, adopted)?;
             builder.created.insert(spawn.child.inbox()?);
             for condition in spawn.request.conditions {
@@ -184,6 +186,7 @@ pub(super) fn adoption(
     conversation_tail: u64,
 ) -> ForkAdopted {
     ForkAdopted {
+        profile: None,
         agent: state.path.id(),
         parent: None,
         forked_at: cursor,

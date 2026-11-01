@@ -7,12 +7,13 @@
 use super::{TurnAuthority, TurnExecutors};
 use crate::{
     Capabilities, Error, OperationId, Result,
-    agent::AgentState,
+    agent::{AgentState, SpawnProfiles},
     context::{CompactionPolicy, ContextPipeline},
     conversation::Limits,
     executor::{Executor, StockExecutor},
     model::{Model, ModelContent, ModelProvider},
     preset::Preset,
+    profile::Profiles,
     runtime::{AgentHarness, RuntimeScope, TaskContext},
     tool::ToolRegistry,
 };
@@ -134,15 +135,16 @@ pub struct StockExecutors {
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
-    max_children: Option<u32>,
+    profiles: Option<Arc<Profiles>>,
     context: Arc<dyn TurnContext>,
 }
 
 impl Preset {
     /// This preset's stock turns over `model` served by `provider`, with
     /// `tools` (the host's registry of this preset's tools) under `limits`,
-    /// `compaction` and `context`. The preset's agent tools apply; `limits`
-    /// bounds execution capacity. The turn admission is the host's: pass the
+    /// `compaction` and `context`. The preset's agent tools apply; a host
+    /// that runs children adds role profiles with
+    /// [`StockExecutors::with_profiles`]. `limits` bounds execution capacity. The turn admission is the host's: pass the
     /// result to the turn host that carries it.
     #[must_use]
     pub fn executors(
@@ -153,7 +155,7 @@ impl Preset {
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
         StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools, self.max_children)
+            .with_agent_tools(&self.tools)
     }
 
     /// This preset's tools, the one construction every host takes them from:
@@ -223,21 +225,28 @@ impl StockExecutors {
             limits,
             compaction,
             agent_tools: Vec::new(),
-            max_children: None,
+            profiles: None,
             context,
         }
     }
 
-    /// Binds the agent tools among `names` to each turn's effects, with at
-    /// most `max_children` open children per agent.
+    /// Binds the agent tools among `names` to each turn's effects.
     #[must_use]
-    pub fn with_agent_tools(mut self, names: &[String], max_children: Option<u32>) -> Self {
+    pub fn with_agent_tools(mut self, names: &[String]) -> Self {
         self.agent_tools = names
             .iter()
             .filter(|name| crate::tools::AGENT_TOOLS.contains(&name.as_str()))
             .cloned()
             .collect();
-        self.max_children = max_children;
+        self
+    }
+
+    /// Runs each agent under its pinned role in `profiles`: roots are created
+    /// with the top-level role, spawns admit children by role, and each turn
+    /// carries its role's directive.
+    #[must_use]
+    pub fn with_profiles(mut self, profiles: Arc<Profiles>) -> Self {
+        self.profiles = Some(profiles);
         self
     }
 }
@@ -245,6 +254,12 @@ impl StockExecutors {
 impl TurnExecutors for StockExecutors {
     fn render_bytes(&self) -> Option<u64> {
         Some(self.limits.render_bytes)
+    }
+
+    fn profiles(&self) -> Option<Arc<dyn SpawnProfiles>> {
+        self.profiles
+            .clone()
+            .map(|profiles| profiles as Arc<dyn SpawnProfiles>)
     }
 
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
@@ -279,7 +294,12 @@ impl TurnExecutors for StockExecutors {
                     (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
-                    (&self.agent_tools, self.max_children),
+                    (
+                        &self.agent_tools,
+                        self.profiles
+                            .clone()
+                            .map(|profiles| profiles as Arc<dyn SpawnProfiles>),
+                    ),
                 )?;
             }
             let executor = StockExecutor::new(
@@ -294,6 +314,17 @@ impl TurnExecutors for StockExecutors {
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
+            let executor = match (&self.profiles, &agent.profile) {
+                (Some(profiles), Some(pin)) => {
+                    executor.with_context_stage(Arc::new(crate::context::SourceStage::new(
+                        "role",
+                        blake3::Hash::from(pin.digest).to_hex().to_string(),
+                        profiles.directive(pin)?,
+                        crate::context::ContextPlacement::Prepend,
+                    )))?
+                }
+                _ => executor,
+            };
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }

@@ -357,9 +357,14 @@ impl Providers {
             )),
             None => Arc::new(Grants(grants)),
         };
-        Ok(options
-            .preset
-            .executors((model, provider), tools, (limits, compaction), context))
+        let executors =
+            options
+                .preset
+                .executors((model, provider), tools, (limits, compaction), context);
+        Ok(match options.profiles() {
+            Some(profiles) => executors.with_profiles(profiles),
+            None => executors,
+        })
     }
 
     pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {

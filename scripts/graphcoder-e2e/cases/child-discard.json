@@ -16,7 +16,8 @@
             "name": "spawn",
             "arguments": {
               "name": "worker",
-              "task": "CHILD_E2E_TASK"
+              "task": "CHILD_E2E_TASK",
+              "role": "worker"
             }
           }
         ]

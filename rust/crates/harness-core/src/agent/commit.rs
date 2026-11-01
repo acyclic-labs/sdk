@@ -168,8 +168,9 @@ pub struct Spawn {
 ///
 /// `at_tail` is the parent's consumed inbox cursor, so the child's first delivery
 /// is `ForkAdopted` at that sequence. The conversation is inherited at the commit
-/// cut; `children`, `status` and `closed` are not. The key binds the parent and
-/// the spawning intent, so a retry names the same child and replays exactly.
+/// cut, unless the child's role selects a fresh context; `children`, `status`
+/// and `closed` are not. The key binds the parent and the spawning intent, so a
+/// retry names the same child and replays exactly.
 pub fn spawn(
     parent: &AgentPath,
     intent: &IntentId,
@@ -181,6 +182,15 @@ pub fn spawn(
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;
+    let context = adopted.profile.as_ref().map(|pin| pin.context);
+    if context == Some(super::SpawnContext::TopLevel) {
+        return Err(Error::Record("a top-level role is never spawned"));
+    }
+    let fresh = context == Some(super::SpawnContext::Fresh);
+    if fresh {
+        adopted.conversation_tail = 0;
+        adopted.checkpoint = None;
+    }
     let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
@@ -196,7 +206,7 @@ pub fn spawn(
             ],
             mutations: vec![
                 CommitMutation::Fork {
-                    exclude: layout::not_inherited()?,
+                    exclude: layout::not_inherited(fresh)?,
                     source: parent.inbox()?,
                     destination: child.inbox()?,
                     at_tail,

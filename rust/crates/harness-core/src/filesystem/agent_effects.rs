@@ -213,6 +213,11 @@ mod tests {
                     name.into(),
                     &mut None,
                 )?),
+                profile: crate::agent::AgentProfilePin {
+                    role: "worker".into(),
+                    digest: [0; 32],
+                    context: crate::agent::SpawnContext::Fork,
+                },
             })
         };
         let first = effect("first")?;
