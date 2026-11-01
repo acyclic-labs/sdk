@@ -206,12 +206,24 @@ fn undecodable_input_answers_a_parse_error_and_ends_the_server() {
 }
 
 /// A client that reads slower than requests arrive.
-struct Slow(Written);
+struct Slow {
+    output: Written,
+    writing: std::sync::mpsc::SyncSender<()>,
+    admission: std::sync::mpsc::Receiver<()>,
+}
 
 impl Write for Slow {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        self.0.write(bytes)
+        self.writing
+            .send(())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "reader observer closed"))?;
+        self.admission.recv().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "reader admission producer closed",
+            )
+        })?;
+        self.output.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -229,30 +241,66 @@ fn request_bursts_wait_for_a_slow_reader() {
         input.push_str(&format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#));
         input.push('\n');
     }
-    let output = Written::default();
-    let served = ToolServer {
-        name: "fixture",
-        version: "1",
-        parked: 1,
-        frame_bytes: 256,
+    for withdraw in [false, true] {
+        let output = Written::default();
+        let served = std::thread::scope(|scope| {
+            let (writing, blocked) = std::sync::mpsc::sync_channel(0);
+            let (release, admission) = std::sync::mpsc::sync_channel(0);
+            let (input, output) = (input.clone(), output.clone());
+            let written = output.clone();
+            let serving = scope.spawn(move || {
+                ToolServer {
+                    name: "fixture",
+                    version: "1",
+                    parked: 1,
+                    frame_bytes: 256,
+                }
+                .serve(
+                    &mut Fixture::default(),
+                    io::Cursor::new(input),
+                    Slow {
+                        output,
+                        writing,
+                        admission,
+                    },
+                )
+                .map_err(|error| error.to_string())
+            });
+            // The original writer announces entry before waiting for this
+            // reader. Neither readiness nor completion depends on time.
+            blocked.recv().expect("original writer entered");
+            assert!(written.0.lock().expect("output lock").is_empty());
+            if !withdraw {
+                for id in 0..=100 {
+                    release.send(()).expect("original writer still live");
+                    if id != 100 {
+                        blocked.recv().expect("next original reply entered");
+                    }
+                }
+            }
+            // Withdrawing the only admission producer must end the same
+            // writer and serving join, including when no reply was admitted.
+            drop(release);
+            serving.join().expect("serving thread panicked")
+        });
+        let output = output.0.lock().expect("output lock");
+        if withdraw {
+            assert!(
+                served
+                    .expect_err("withdrawn reader must refuse the original write")
+                    .contains("reader admission producer closed")
+            );
+            assert!(output.is_empty());
+        } else {
+            assert!(served.is_ok(), "{served:?}");
+            let ids = String::from_utf8_lossy(&output)
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter_map(|reply| reply["id"].as_u64())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, (0..=100).collect::<Vec<_>>());
+        }
     }
-    .serve(
-        &mut Fixture::default(),
-        io::Cursor::new(input),
-        Slow(output.clone()),
-    );
-    assert!(served.is_ok());
-    let output = output
-        .0
-        .lock()
-        .map(|bytes| bytes.clone())
-        .unwrap_or_default();
-    let ids = String::from_utf8_lossy(&output)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|reply| reply["id"].as_u64())
-        .collect::<Vec<_>>();
-    assert_eq!(ids, (0..=100).collect::<Vec<_>>());
 }
 
 fn at(replies: &[Value], index: usize) -> &Value {
