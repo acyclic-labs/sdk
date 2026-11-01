@@ -2,6 +2,134 @@ use super::*;
 
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observed_generations_keep_the_original_hold_until_the_last_alias()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_objects::Blobs as _;
+    for exact in [false, true] {
+        for native in [false, true] {
+            for forget in [false, true] {
+                let directory = tempfile::tempdir()?;
+                let cancel = CancellationToken::new();
+                let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+                let workspace = unbounded!(fs, create_workspace("observed-hold"))?;
+                let content = "held".repeat(1_250);
+                workspace.write_text("/content", &content).await?;
+                let id = unbounded!(workspace, head())?.id();
+                let config = workspace.volume.config();
+                let record = {
+                    let mut checkout = unbounded!(
+                        workspace,
+                        checkout(
+                            GenerationSelector::Exact(id),
+                            CheckoutMode::read_only_pinned()
+                        )
+                    )?;
+                    let path = crate::kernel::NamespacePath::from_text_in_profile(
+                        "/content",
+                        config.profile,
+                        config.limits,
+                    )?;
+                    unbounded!(checkout, lookup_no_follow(&path))?
+                        .record
+                        .ok_or("missing file")?
+                };
+                let crate::kernel::FilePayload::Regular { extents, .. } = record.payload else {
+                    return Err("the control needs separately stored file bytes".into());
+                };
+                let account = fs.local_account();
+                let mut pending = vec![acyclic_objects::Digest::from_bytes(
+                    extents.digest.into_bytes(),
+                )];
+                let mut content_objects = std::collections::BTreeSet::new();
+                while let Some(digest) = pending.pop() {
+                    if content_objects.insert(digest) {
+                        pending.extend(account.head(digest).await?.references);
+                    }
+                }
+                let original = native
+                    .then(|| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel))
+                    .transpose()
+                    .map_err(|(error, _)| error)?;
+                let baseline = original.as_ref().map(|work| work.live_allocation_bytes());
+                let observed = match (&original, exact) {
+                    (Some(work), false) => workspace.head(work, &cancel).await?,
+                    (Some(work), true) => workspace.generation(id, work, &cancel).await?,
+                    (None, false) => unbounded!(workspace, head())?,
+                    (None, true) => unbounded!(workspace, generation(id))?,
+                };
+                let alias = observed.clone();
+                let mut last = alias.clone();
+                drop((observed, alias));
+                if forget {
+                    // Negative control: the original return dropped this hold.
+                    last.publication_closure = None;
+                }
+                assert_eq!(
+                    workspace.delete(IdempotencyKey::new()).await?,
+                    WorkspaceDelete::Deleted
+                );
+                let digest = acyclic_objects::Digest::from_bytes(id.digest().into_bytes());
+                // Both epoch transitions must see the same surviving root.
+                for _ in 0..2 {
+                    fs.collect_local_pass(None, true, &cancel).await?;
+                }
+                account_collections(&fs).await?;
+                let found = account
+                    .get(digest, acyclic_objects::ByteRange::FULL, u64::MAX)
+                    .await;
+                if forget {
+                    assert_eq!(
+                        found.unwrap_err().code,
+                        acyclic_objects::wire::ErrorCode::NotFound
+                    );
+                } else {
+                    assert!(!found?.body().is_empty());
+                    // Bypass disposable caches: read the actual stored extent/blob closure.
+                    let read = crate::kernel::read_file_range_async(
+                        fs.objects().inner().inner(),
+                        crate::kernel::FileRangeRequest {
+                            record,
+                            range: crate::ByteRange {
+                                offset: 0,
+                                length: content.len() as u64,
+                            },
+                            maximum_spans: config.limits.maximum_directory_page_entries,
+                            limits: crate::kernel::DecodeLimits::for_volume(config),
+                            budget: WorkBudget::UNBOUNDED,
+                        },
+                        &cancel,
+                    )
+                    .await?;
+                    assert_eq!(read.bytes.as_ref(), content.as_bytes());
+                }
+                drop(last);
+                fs.collect_local_garbage(None, &cancel).await?;
+                assert_eq!(
+                    account.head(digest).await.unwrap_err().code,
+                    acyclic_objects::wire::ErrorCode::NotFound,
+                    "the final alias must release the original root"
+                );
+                for content_digest in content_objects {
+                    assert_eq!(
+                        account.head(content_digest).await.unwrap_err().code,
+                        acyclic_objects::wire::ErrorCode::NotFound,
+                        "the final alias must release file content {content_digest:?}"
+                    );
+                }
+                drop((account, workspace));
+                close_local(fs).await?;
+                if let Some(work) = &original {
+                    work.receipt().verify(WorkBudget::UNBOUNDED)?;
+                    assert_eq!(Some(work.live_allocation_bytes()), baseline);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path();

@@ -178,7 +178,7 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
 }
 
 mod memory;
-pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
+pub(crate) use memory::{CachedProofs, ObservedProof, ProofGuard, ProofMeter};
 mod published;
 use crate::kernel::allocation::retained::RetainedArc;
 use memory::{ProofVec, map_get, map_insert, set_insert};

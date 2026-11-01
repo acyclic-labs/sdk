@@ -35,17 +35,14 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
-    /// Keeps an exact observed proof on its original ledger through later cache replacement.
+    /// Keeps the exact observed proof and original collection registration.
     pub(super) fn observed(
         workspace: &Workspace<A, O>,
-        id: GenerationId,
+        checkout: Checkout<A, O>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, WorkspaceError> {
-        let publication_closure =
-            workspace
-                .volume
-                .fs
-                .observed_generation_closure(&workspace.volume, id, accounting)?;
+        let id = checkout.generation_id();
+        let publication_closure = checkout.into_generation_closure(accounting)?;
         Ok(Self {
             workspace: workspace.clone(),
             id,

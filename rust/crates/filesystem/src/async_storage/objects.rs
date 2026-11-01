@@ -21,13 +21,13 @@ pub(crate) async fn prepare_object<S: AsyncObjectStore>(
 
 /// The objects one authority record makes reachable, which must be durable,
 /// and retained under the store's current collection epoch, before the
-/// record is appended. A reused proof's parent is live, so the collection
-/// that opened the epoch retained it, which is what lets its scope list
-/// only the difference.
+/// record is appended. A reused proof's parent is live through its accepted
+/// publication in this epoch or its original registered root hold. The
+/// collection retains that parent, so the scope lists only the difference.
 #[derive(Clone, Copy, Debug)]
 pub struct PublicationScope<'a> {
     /// Every object the record reaches, or, when its proof reused the
-    /// published parent's proof from the same collection epoch, every
+    /// published parent's proof in this epoch or under its retained root, every
     /// object it reaches that the parent's closure did not list.
     pub objects: &'a [ObjectId],
     /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.

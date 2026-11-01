@@ -174,7 +174,14 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
                 .inner
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .published(request.volume_id, generation, limits, None, &mut observe)?
+                .observed(
+                    request.volume_id,
+                    generation,
+                    limits,
+                    None,
+                    None,
+                    &mut observe
+                )?
                 .is_some(),
             committed,
             "only the actual committed member may publish its original pending proof"

@@ -11,11 +11,12 @@ pub(super) struct LastCommit {
 pub(crate) type PublicationClosure<A, O> =
     crate::kernel::allocation::retained::RetainedArc<Mutex<PublicationCustody<A, O>>>;
 
-/// A generation aliases either its original publication handback or an already
-/// published proof. Observing a proof requires no new custody allocation.
+/// A generation aliases its original publication handback or published proof.
+/// Observations also retain the checkout's existing collection registration.
 pub(crate) enum GenerationClosure<A: 'static, O: 'static> {
     Publication(PublicationClosure<A, O>),
     Published(crate::kernel::closure::PublishedProof),
+    Observed(crate::kernel::allocation::retained::RetainedArc<crate::collection::Hold>),
 }
 
 impl<A, O> Clone for GenerationClosure<A, O> {
@@ -23,6 +24,7 @@ impl<A, O> Clone for GenerationClosure<A, O> {
         match self {
             Self::Publication(original) => Self::Publication(original.clone()),
             Self::Published(original) => Self::Published(original.clone()),
+            Self::Observed(hold) => Self::Observed(hold.clone()),
         }
     }
 }
@@ -36,6 +38,7 @@ impl<A, O> GenerationClosure<A, O> {
                 .published
                 .clone(),
             Self::Published(original) => Some(original.clone()),
+            Self::Observed(_) => None,
         }
     }
 
@@ -46,7 +49,7 @@ impl<A, O> GenerationClosure<A, O> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .pin
                 .take(),
-            Self::Published(_) => None,
+            Self::Published(_) | Self::Observed(_) => None,
         }
     }
 }

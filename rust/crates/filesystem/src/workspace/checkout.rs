@@ -35,9 +35,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .and_then(|checkout| {
-                Generation::observed(self, checkout.generation_id(), &mut accounting)
-            });
+            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
         work.finish(result, &accounting)
     }
 
@@ -57,9 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 cancellation,
             )
             .await
-            .and_then(|checkout| {
-                Generation::observed(self, checkout.generation_id(), &mut accounting)
-            });
+            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
         work.finish(result, &accounting)
     }
 
@@ -134,27 +130,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
-        accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let mut checkout = self
-                .volume
-                .checkout(selector, mode, original, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?;
-            self.check_access(&mut checkout, accounting, cancellation)
-                .await?;
-            return Ok(checkout);
-        }
-        let opened = self
+        let mut checkout = self
             .volume
-            .checkout(selector, mode, accounting.remaining()?, cancellation)
-            .await;
-        let (allocations, work, budget, _) = accounting
-            .standalone_parts()
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
-        work.verify(budget)?;
+            .checkout_accounted(selector, mode, accounting, cancellation)
+            .await
+            .map_err(WorkspaceError::from)?;
         self.check_access(&mut checkout, accounting, cancellation)
             .await?;
         Ok(checkout)
@@ -171,13 +151,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .checkout_accounted(selector, mode, accounting, cancellation)
             .await?;
         let bytes = if accounting.standalone_parts().is_some() {
-            checkout.logical_owned_bytes()
+            checkout.scratch_owned_bytes()
         } else {
             0
         };
         Ok(crate::kernel::Owned::new(
             checkout,
-            accounting.claim_owned(bytes, 0)?,
+            // Opening already charged this ledger. Transfer that charge so
+            // retirement releases it once, without a second admission.
+            accounting.claim_owned(0, 0)?,
             bytes,
         ))
     }

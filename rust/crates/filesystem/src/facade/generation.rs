@@ -92,6 +92,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         volume: &Volume<A, O>,
         generation: GenerationId,
+        hold: Option<crate::collection::GenerationHold>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<Option<GenerationClosure<A, O>>, FsError> {
         let epochs = self
@@ -104,14 +105,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .published(
+            .observed(
                 volume.id,
                 generation,
                 closure_limits(volume.config),
                 epochs,
+                hold.map(|hold| (volume.config, hold)),
                 accounting,
             )
-            .map(|published| published.map(GenerationClosure::Published))
+            .map(|observed| {
+                observed.map(|observed| match observed {
+                    crate::kernel::closure::ObservedProof::Published(proof) => {
+                        GenerationClosure::Published(proof)
+                    }
+                    crate::kernel::closure::ObservedProof::Held(hold) => {
+                        GenerationClosure::Observed(hold)
+                    }
+                })
+            })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -317,17 +317,30 @@ pub(crate) struct CachedProofs {
     entries: crate::kernel::allocation::fixed_index::FixedIndex<CachedProofSlot>,
 }
 
+pub(crate) enum ObservedProof {
+    Published(PublishedProof),
+    Held(RetainedArc<crate::collection::Hold>),
+}
+
 impl CachedProofs {
-    /// Borrows only an existing exact-generation proof; a miss creates nothing.
-    pub(crate) fn published(
+    /// Binds an existing exact proof while its original registration is already live.
+    /// A miss keeps that registration without manufacturing a semantic proof.
+    pub(crate) fn observed(
         &self,
         volume: crate::VolumeId,
         generation: GenerationId,
         limits: ClosureLimits,
         epochs: Option<&crate::collection::Epochs>,
+        hold: Option<(crate::VolumeConfig, crate::collection::GenerationHold)>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<Option<PublishedProof>, crate::FsError> {
-        Ok(self
+    ) -> Result<Option<ObservedProof>, crate::FsError> {
+        if let Some((config, hold)) = &hold {
+            accounting.charge_items(1)?;
+            if !hold.matches(generation, *config, epochs) {
+                return Err(crate::FsError::InvalidDiff);
+            }
+        }
+        let published = self
             .entries
             .get(volume.into_bytes(), accounting)?
             .and_then(|slot| {
@@ -336,7 +349,17 @@ impl CachedProofs {
                         && proof.root.volume_id == volume
                         && proof.limits == limits
                 })
-            }))
+            });
+        Ok(match (published, hold) {
+            (Some(mut published), hold) => {
+                if let Some((_, hold)) = hold {
+                    published.retain(hold.into_original());
+                }
+                Some(ObservedProof::Published(published))
+            }
+            (None, Some((_, hold))) => Some(ObservedProof::Held(hold.into_original())),
+            (None, None) => None,
+        })
     }
 
     /// The volume's proof slot, created empty on first use.
