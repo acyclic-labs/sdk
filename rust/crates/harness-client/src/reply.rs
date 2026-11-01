@@ -267,7 +267,7 @@ pub fn encode_agent_reply(
     let mut reason = None;
     let value = match result {
         Ok(reply) => {
-            let mut writer = ReplyWriter(Vec::with_capacity(MAX_AGENT_COMMAND_BYTES));
+            let mut writer = ReplyWriter(Vec::new());
             serde_json::to_writer(&mut writer, reply).map_err(|_| CommandError::Capacity)?;
             Value::Reply(writer.0)
         }
