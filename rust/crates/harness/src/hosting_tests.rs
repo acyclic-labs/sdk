@@ -698,6 +698,17 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         ));
         owner.denied.store(false, Ordering::SeqCst);
     }
+    assert!(
+        matches!(
+            call(&client, "agents", &AgentCommand::History {
+                agent: root.clone(),
+                page: AgentPageRequest::new(1, 1, None)?,
+            }).await?,
+            Err(AgentControlFailure::Refused { code, .. })
+                if code == Error::Stream(StreamError::Capacity).code()
+        ),
+        "an empty page must reserve its complete canonical envelope"
+    );
     let spawn = AgentCommand::Spawn {
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
