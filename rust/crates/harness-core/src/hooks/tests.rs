@@ -256,6 +256,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(|| Ok(())),
         65_536,
         None,
+        None,
     ));
     let (mut stream, _) = tokio::select! {
         result = listener.accept() => result.map_err(process_error)?,

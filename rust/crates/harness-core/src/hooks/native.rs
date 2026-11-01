@@ -4,6 +4,7 @@ use acyclic_native_runtime::{
     ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -14,6 +15,17 @@ use std::{
 
 #[doc(hidden)]
 pub type HookCheck = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
+/// Host-selected confinement and ordinary environment for one hook invocation.
+/// Construct only after authenticated approval decides the complete grant.
+/// Hook configuration and output cannot create or change this authority.
+pub struct HookExecution {
+    /// The same immutable grant enforced by the shared native launch owner.
+    pub grant: acyclic_native_runtime::execution::ExecutionGrant,
+    /// Complete explicit ordinary environment; never include host credentials.
+    /// The original runner sets `CLAUDE_PROJECT_DIR` to its workspace afterward.
+    pub environment: BTreeMap<String, String>,
+}
 
 impl Hooks {
     /// Runs matching hooks concurrently, merging decisions in configuration order.
@@ -32,11 +44,13 @@ impl Hooks {
             input.into(),
             registry,
             65_536,
-            (Arc::new(|| Ok(())), None),
+            (Arc::new(|| Ok(())), None, None),
         )
         .await
     }
 
+    /// Runs with the original owner check/wake and optional host-approved execution.
+    /// A supplied execution never inherits ambient environment or retries unconfined.
     #[doc(hidden)]
     pub async fn run_checked(
         &self,
@@ -45,10 +59,14 @@ impl Hooks {
         input: HookInput<'_>,
         registry: &ToolRegistry,
         maximum_bytes: u64,
-        control: (HookCheck, Option<acyclic_native_runtime::ProcessWake>),
+        control: (
+            HookCheck,
+            Option<acyclic_native_runtime::ProcessWake>,
+            Option<Arc<HookExecution>>,
+        ),
     ) -> Result<HookOutput> {
         let (workspace, cwd) = paths;
-        let (check, wake) = control;
+        let (check, wake, execution) = control;
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
@@ -61,6 +79,7 @@ impl Hooks {
                 Arc::clone(&check),
                 quota,
                 wake.clone(),
+                execution.clone(),
             )
         })
         .await
@@ -73,6 +92,7 @@ pub(super) async fn run_hook(
     owner_check: HookCheck,
     maximum_bytes: usize,
     owner_wake: Option<acyclic_native_runtime::ProcessWake>,
+    execution: Option<Arc<HookExecution>>,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new().map_err(Error::process_io)?;
@@ -96,12 +116,17 @@ pub(super) async fn run_hook(
                 }));
             }
             handler.check().map_err(Error::process_io)?;
-            let mut command = hook_command(
-                &hook,
-                &request.0,
-                &request.1,
-                crate::native_environment::variable,
-            )?;
+            let mut command =
+                hook_command(&hook, &request.0, &request.1, |key| match &execution {
+                    Some(execution) => execution
+                        .environment
+                        .get(key)
+                        .map(|value| value.as_str().into()),
+                    None => crate::native_environment::variable(key),
+                })?;
+            if let Some(execution) = &execution {
+                command.env_clear().envs(&execution.environment);
+            }
             command
                 .current_dir(&request.1)
                 .env("CLAUDE_PROJECT_DIR", &request.0)
@@ -109,7 +134,11 @@ pub(super) async fn run_hook(
                 .stdout(ProcessStdio::piped())
                 .stderr(ProcessStdio::piped());
             handler.check().map_err(Error::process_io)?;
-            let tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
+            let tree = match execution {
+                Some(execution) => ProcessTree::spawn_granted(command, &execution.grant, None),
+                None => ProcessTree::spawn(&mut command),
+            }
+            .map_err(Error::process_io)?;
             Ok((tree, handler))
         },
         None,
@@ -235,6 +264,10 @@ fn check_cancelled(cancelled: &AtomicBool) -> std::io::Result<()> {
         Ok(())
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "native/granted.rs"]
+mod granted;
 
 #[cfg(test)]
 mod tests {

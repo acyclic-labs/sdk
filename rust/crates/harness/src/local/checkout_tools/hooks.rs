@@ -87,7 +87,7 @@ impl CheckoutTools {
                         input,
                         registry,
                         context.effective_scope().limits().file_bytes,
-                        (check, Some(wake)),
+                        (check, Some(wake), None),
                     )
                 })
                 .await?;
