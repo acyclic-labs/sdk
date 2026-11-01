@@ -101,7 +101,7 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
     let unique = PacketRequest::parse(&attributes.request)
         .map_err(std::io::Error::from_raw_os_error)?
         .unique;
-    let original = cache_work(FINITE_CACHE_BUDGET, &crate::CancellationToken::new());
+    let original = cache_work(FINITE_HANDLER_POLICY, &crate::CancellationToken::new());
     let baseline = original.live_allocation_bytes();
     // Return, cancellation and producer unwind use the same physical path.
     for exit in 0..3 {
@@ -121,12 +121,30 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             device: Arc::downgrade(&device),
             unwind: exit == 2,
         });
-        let (source, _) = shared_sources(posix_config())?;
-        let core = projection_core(
-            Arc::new(source.with_native_callback_guard(guard.clone())),
-            FINITE_HANDLER_POLICY,
-            work.cancellation(),
-        )?;
+        let config = posix_config();
+        let checkout = memory_checkout(
+            config,
+            crate::model::CheckoutMode::tracking_transaction(),
+            1,
+        )?
+        .into_iter()
+        .next()
+        .ok_or("one checkout")?;
+        let source = crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new_at_meter(
+                Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+                config,
+                crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+                &work,
+                Some(&work),
+            )?,
+            vec![],
+            None,
+        )?
+        .with_native_callback_guard(guard.clone())
+        .into_arc_meter(&work)?;
+        let core = projection_core(source, FINITE_HANDLER_POLICY, work.cancellation())?;
         let protocol = PacketSession::new(
             PacketRouter::Single(super::super::FuseProjection { core }),
             64 * 1024,
@@ -187,7 +205,7 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         // this receive then terminates by type rather than waiting forever.
         let unlocked = observed.recv();
         let observations = (|| -> Result<Option<(bool, u16)>, Box<dyn std::error::Error>> {
-            if unlocked.is_err() {
+            if unlocked.as_ref().ok() != Some(&[true; 3]) {
                 return Ok(None);
             }
             // Independent original queue configuration progresses during IO.
@@ -208,15 +226,25 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             }
             Ok(Some((unknown, used)))
         })();
+        let expect_waiter =
+            unlocked.as_ref().ok() == Some(&[true; 3]) && matches!(&observations, Ok(Some(_)));
         let (started, waiting) = sync_channel(1);
         let controller = Arc::clone(&device);
         let drain = std::thread::spawn(move || -> Result<u16, NativeMountError> {
-            super::super::vring::probe_wait_registration(started);
+            if expect_waiter {
+                super::super::vring::probe_wait_registration(started);
+            }
             controller.drain(1)
         });
         // Registration holds the same queue mutex until the condition wait
         // releases it atomically. Completion therefore has to wake this wait.
-        let waiting = waiting.recv();
+        // A failed immediate guard observation must release the original
+        // callback before joining control, including the old locked path.
+        let waiting = if expect_waiter {
+            waiting.recv()
+        } else {
+            Ok(())
+        };
         let _ = release.send(());
         let completion = worker.join();
         let drained = drain.join().map_err(|_| "original drain owner unwound")?;
@@ -232,9 +260,10 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             assert_eq!(ram.read_obj::<u64>(GuestAddress(8200))?, 0);
         } else {
             if exit == 1 {
-                let error = completion
-                    .map_err(|_| "cancelled packet producer unwound")?
-                    .expect_err("original cancellation cannot complete a used entry");
+                let error = match completion.map_err(|_| "cancelled packet producer unwound")? {
+                    Err(error) => error,
+                    Ok(_) => panic!("original cancellation cannot complete a used entry"),
+                };
                 assert_eq!(crate::native_mount::callback_errno(&error), libc::ECANCELED);
             } else {
                 assert!(completion.is_err());
