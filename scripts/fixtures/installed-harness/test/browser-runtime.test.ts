@@ -20,7 +20,7 @@ test("installed browser entry hosts an agent turn", async () => {
   let agents: BrowserAgents | undefined;
   try {
     let generations = 0;
-    registry.configureModel({ provider: "installed", name: "stock", revision: "1", options: {} },
+    registry.configureModel({ provider: "installed", name: "stock", revision: "1" },
       async function* (_bytes, _dispatch, _signal, files) {
         generations++;
         yield { kind: "content", delta: `stock:${new TextDecoder().decode(files.at(-1))}` };
@@ -31,7 +31,8 @@ test("installed browser entry hosts an agent turn", async () => {
         return { context_tokens: 1024, output_tokens: 16 };
       }, (bytes, request_digest) => {
         const request = JSON.parse(new TextDecoder().decode(bytes));
-        return { request_digest, fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
+        return { request_digest, input_tokens: BigInt(1 + 2 * request.messages.length),
+          fixed_tokens: 1, message_tokens: request.messages.map(() => 2) };
       }, { kind: "disabled" });
     const options: BrowserAgentOptions = {
       filesystem_database: `installed-fs-${id}`, stream_database: `installed-stream-${id}`,

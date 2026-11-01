@@ -12,7 +12,7 @@ export async function agentsFixture(id, reply, initialize = init) {
   const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];
-  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1", options: {} },
+  registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1" },
     async function* (bytes, dispatch, signal, files) {
       const request = JSON.parse(new TextDecoder().decode(bytes));
       const texts = files.map(file => new TextDecoder().decode(file));
