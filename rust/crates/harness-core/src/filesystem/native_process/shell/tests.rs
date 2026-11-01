@@ -89,7 +89,6 @@ fn invocation(root: &Path) -> Invocation {
         inherit_environment: false,
         execution_grant: None,
         schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-        control_timeout_ms: 1000,
         maximum_output_bytes: Some(32_768),
         process_custody: None,
         standard_input: None,
