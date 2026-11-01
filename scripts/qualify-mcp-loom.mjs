@@ -2,6 +2,12 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** @typedef {(command: string, args: string[], options: {
+ * encoding: 'utf8', maxBuffer?: number, env?: NodeJS.ProcessEnv
+ * }) => {status: number | null, stdout: string, stderr?: string, error?: Error}} RunCommand */
+/** @type {RunCommand} */
+const runCommand = spawnSync;
+
 // The gate and its offline preflight consume this same ordered step list.
 export const gateQualifications = [
   { args: ["--all-features"] },
@@ -32,25 +38,16 @@ export function qualificationGatePlans() {
 }
 
 function qualifyGate(run) {
-  return gateQualifications.map(step => {
-    const previous = process.env.RUSTFLAGS;
-    try {
-      if (step.rustflags) process.env.RUSTFLAGS = `${previous ?? ""} ${step.rustflags}`;
-      return dispatch(step.args, run);
-    } finally {
-      if (previous === undefined) delete process.env.RUSTFLAGS;
-      else process.env.RUSTFLAGS = previous;
-    }
-  });
+  return gateQualifications.map(step => dispatch(step.args, run));
 }
 
-export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
+export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
   });
 }
 
-export function qualifySkillMaterializerLoom(run = spawnSync) {
+export function qualifySkillMaterializerLoom(run = runCommand) {
   return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"],
@@ -59,7 +56,7 @@ export function qualifySkillMaterializerLoom(run = spawnSync) {
 }
 
 // Checkout and projection models retain physical cleanup custody.
-export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
+export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
@@ -77,7 +74,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
   });
 }
 
-export function qualifyNativeRegistryLoom(run = spawnSync) {
+export function qualifyNativeRegistryLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", ["--features", "model-checking"], run, {
     kind: "--lib", filters: [
       "native_mount::fence::models::registry_contention_retires_with_original_credit_and_missing_wait_control",
@@ -87,7 +84,7 @@ export function qualifyNativeRegistryLoom(run = spawnSync) {
   });
 }
 
-export function qualifyTimerLoom(run = spawnSync) {
+export function qualifyTimerLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
   ], run, {
@@ -95,13 +92,13 @@ export function qualifyTimerLoom(run = spawnSync) {
   });
 }
 
-export function qualifyGuestLoom(run = spawnSync) {
+export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 4]],
   });
 }
 
-export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
+export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = runCommand) {
   return qualifyLoom("acyclic-harness", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"],
     filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
@@ -109,7 +106,7 @@ export function qualifyE2eProgressLoom(features = ["--features", "filesystem-loc
   });
 }
 
-export function qualifyNativeProgressLoom(run = spawnSync) {
+export function qualifyNativeProgressLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
     env: loomEnvironment(),
@@ -136,13 +133,13 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
   });
 }
 
-export function qualifyFsBindingLoom(features = [], run = spawnSync) {
+export function qualifyFsBindingLoom(features = [], run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
   });
 }
 
-export function qualifyFsPolicyLoom(run = spawnSync) {
+export function qualifyFsPolicyLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "acyclic_fs", [
     "--no-default-features", "--features", "memory,model-checking",
   ], run, {
@@ -152,7 +149,7 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
   });
 }
 
-export function qualifySessionFsLoom(run = spawnSync) {
+export function qualifySessionFsLoom(run = runCommand) {
   return qualifyLoom("acyclic-fs", "main", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
@@ -163,7 +160,7 @@ export function qualifySessionFsLoom(run = spawnSync) {
   });
 }
 
-export function qualifyOwnershipLoom(run = spawnSync) {
+export function qualifyOwnershipLoom(run = runCommand) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
     kind: "--lib", filter: "ownership::model::", exact: false, passed: 8,
     env: loomEnvironment(), targetCfg: [],
@@ -178,7 +175,7 @@ export const harnessModelSuites = {
   ],
 };
 
-export function qualifyHarnessModelsLoom(features = ["--all-features"], run = spawnSync) {
+export function qualifyHarnessModelsLoom(features = ["--all-features"], run = runCommand) {
   return qualifyHarnessSuite("acyclic-harness", "acyclic_harness", features, run, {
     kind: "--lib", suites: harnessModelSuites["acyclic-harness"],
   });
@@ -268,7 +265,7 @@ function dispatch([name, ...rest], run) {
   return qualifyMcpLoom(featureSelection(name === undefined ? [] : [name, ...rest]), run);
 }
 
-export function qualificationMain(args, run = spawnSync) {
+export function qualificationMain(args, run = runCommand) {
   if (args[0] === "--gate") {
     if (args.length !== 1) throw new Error(`unknown qualification argument: ${args[1]}`);
     qualifyGate(run);

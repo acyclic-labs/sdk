@@ -109,6 +109,7 @@ test("gate rejects every trailing argument before starting a build", () => {
 
 function assertGateStep(args) {
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(gate, "the original qualification must retain its gate branch");
   assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --gate/);
   assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
 }
@@ -197,7 +198,9 @@ test("fs Session qualification instruments real provider and Session locks and r
 });
 
 test("hook qualification requires every retained checkout and projection model", () => {
-  for (const [qualify, target, count] of [[qualifyHookLifecycleLoom, "acyclic_harness", 10]]) {
+  /** @type {Array<[typeof qualifyHookLifecycleLoom, string, number]>} */
+  const hooks = [[qualifyHookLifecycleLoom, "acyclic_harness", 10]];
+  for (const [qualify, target, count] of hooks) {
     for (const missing of [null, ...Array.from({ length: count }, (_, i) => i + 1)]) {
       let models = 0;
       const run = (command, args, options) => {
@@ -234,6 +237,7 @@ test("qualification opts into the crate cfg only for the model build and execute
   assertGateStep(["--timer"]);
   assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(policy, "the original qualification must retain its policy branch");
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
 
@@ -264,7 +268,9 @@ test("guest qualification selects every guest model in the instrumented main tar
 });
 
 test("qualification rejects zero, skipped, filtered and failed model execution", () => {
-  for (const [status, output] of [[0, summary(0)], [0, summary(5, 1)], [0, summary(5, 0, 1)], [1, summary(6)]]) {
+  /** @type {Array<[number, string]>} */
+  const executions = [[0, summary(0)], [0, summary(5, 1)], [0, summary(5, 0, 1)], [1, summary(6)]];
+  for (const [status, output] of executions) {
     assert.throws(() => qualifyMcpLoom(undefined, command => ({
       status: command === "cargo" ? 0 : status,
       stdout: command === "cargo" ? JSON.stringify(artifact) : output,
@@ -274,7 +280,9 @@ test("qualification rejects zero, skipped, filtered and failed model execution",
 });
 
 test("qualification rejects failed builds and missing or ambiguous artifacts", () => {
-  for (const [status, stdout] of [[1, ""], [0, ""], [0, `${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}`]]) {
+  /** @type {Array<[number, string]>} */
+  const builds = [[1, ""], [0, ""], [0, `${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}`]];
+  for (const [status, stdout] of builds) {
     assert.throws(() => qualifyMcpLoom(undefined, () => ({ status, stdout, stderr: "" })),
       /MCP Loom build (failed|must produce)/);
   }

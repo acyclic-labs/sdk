@@ -5,7 +5,10 @@ Baseline: `d33ed17571`. Locations refer to that baseline so deletion does not er
 Scope: `rust/crates/**` and `typescript/packages/**`, excluding the separately owned `harness`, `harness-core`, `harness-tui` and `harness-client` packages. Product code, tests, conformance, examples, benchmarks and scripts are included. Exact publicly released Harness caller slices are composed atomically with their primitive contracts; their sites are explicitly recorded below.
 
 The expanded test scope also includes tests in those packages and every test
-harness. Its full current-source census is pending. Ordinary test readiness
+harness. The current-source census at `6b26abe95b` covers 6,083 source files
+and identifies 91,428 conservative candidates, including 4,630 in plugin sources.
+These include finite work, event waits and dependency references; exact
+classifications and conversions remain incomplete. Ordinary test readiness
 uses the producer's event. Deliberately defective polling negative controls and
 workload holds retain their independent oracle and exact classification; they
 do not authorize a test-folder or helper exemption. A registry without an
@@ -4480,3 +4483,15 @@ The existing actual-Git control now compares the emitted candidate set with the 
 Linux x86_64: the original four-participant browser shell control passed 1/1 in 0.191 seconds total execution at `ed067de93e`, covering all five original overlap/status/timing/early-exit scenarios. The separate real Bash gate control passed 1/1 in 0.052 seconds total execution at the same source, covering early readiness, invalid input and original producer loss while the foreground stays blocked. These qualify the Linux shell components only; the separate generated-package fixture, Windows descriptor inheritance, full static census and other changed script controls remain unqualified.
 Linux x86_64: `node --test --test-name-pattern 'the entry point compares real Git objects and rejects modified and untracked sources' scripts/no-polling.test.mjs`, 1/1 passed in 3.122 seconds total execution at `989f31cbf3`. This includes the added direct/indirect/untracked plugin rejection, inventory equality and existing-artifact preservation negatives. It does not qualify a full-repository census or grant any exact disposition.
 The first full current-source census refused an unterminated quoted string before emitting an artifact. The lexer did not identify the file, so that attempt supplies no census or classification. Native lexical refusals now include the original path and line. Project analysis collects all rejected-source diagnostics in that same pass, then refuses the whole analysis before dependency resolution; it never treats a rejected current file as clean. The existing malformed-source control includes two original source inputs to check the retained path/line errors. Those added diagnostics are not yet qualified by execution.
+
+### Current census and packaging completion
+
+At `6b26abe95b`, the full census completed over 6,083 source files with 91,428 conservative candidates, including 4,630 plugin candidates. This supersedes the earlier failed-census observations above. Exact classifications remain incomplete and no candidate is implicitly approved. The full existing source-rule suite passed 20/20 at `5841df989b`, including malformed-source diagnostics, real Git inventory equality, plugin sources and indirect timers.
+
+| Source at `6b26abe95b` | Kind | Original completion and disposition |
+| --- | --- | --- |
+| `scripts/check-harness-package.test.mjs:70` | Fixed shell-test execution timer | Delete the 60-second option. The original finite shell command exits with the selected success/refusal status; the test observes that same child exit and exact call log. |
+| `scripts/check-harness-package.test.mjs:114` | Fixed staging-test execution timer | Delete the 60-second option. The original finite artifact-admission and copy command exits; missing input still refuses before staging. Preserve the generated authority producer order and exact public package bytes; private protobuf fixtures remain outside the public package. |
+| `scripts/check-harness-package.test.mjs:165` | Fixed package-test execution timer | Delete the 60-second option. The original finite shell fixture returns its selected status; the existing completion marker and output log retain success/refusal coverage. |
+
+These three changes delete three timer configurations and add no process, worker, channel, syscall, copy, allocation or durability barrier. Child completion remains the original operating-system event. The fixed fixture inputs bound their work; neither a readiness probe nor a time-based absence assertion remains in these controls. Execution of these latest changes is pending.

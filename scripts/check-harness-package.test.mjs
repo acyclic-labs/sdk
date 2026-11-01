@@ -67,7 +67,7 @@ cargo() {
   return 1
 }
 ${commands}
-`], { encoding: "utf8", timeout: 60_000, env: { ...process.env, SDK_TARGET_FIXTURE: directory.replaceAll("\\", "/") } });
+`], { encoding: "utf8", env: { ...process.env, SDK_TARGET_FIXTURE: directory.replaceAll("\\", "/") } });
       assert.ifError(result.error);
       assert.equal(result.status, status, result.stderr);
       assert.equal(readFileSync(join(directory, "calls"), "utf8"), "test\n");
@@ -111,7 +111,7 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
       mkdirSync(work);
       if (missing) rmSync(join(wasm, "acyclic_harness_wasm_bg.wasm"));
       const result = spawnSync(bash, ["-c", `set -euo pipefail\nwork='${work}'\nwasm_output='${wasm}'\n${command}`], {
-        cwd: root, encoding: "utf8", timeout: 60_000,
+        cwd: root, encoding: "utf8",
       });
       assert.ifError(result.error);
       assert.equal(result.status, missing ? 1 : 0, result.stderr);
@@ -120,8 +120,10 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
         assert.match(result.stderr, /missing generated Harness artifact: acyclic_harness_wasm_bg\.wasm/);
         assert.equal(existsSync(staged), false);
       } else {
-        for (const name of ["dist/index.js", "generated/proto/fixture.js", "generated/wasm/acyclic_harness_wasm_bg.wasm"])
+        for (const name of ["dist/index.js", "generated/wasm/acyclic_harness_wasm_bg.wasm"])
           assert.deepEqual(readFileSync(join(staged, name)), readFileSync(join(packageRoot, name)));
+        assert.equal(existsSync(join(staged, "generated/proto")), false,
+          "private fixture protobufs are staged separately from the public package");
       }
     }
   } finally {
@@ -162,7 +164,7 @@ cargo() {
 }
 ${command}
 printf 'completed\\n'
-`], { env, encoding: "utf8", timeout: 60_000 });
+`], { env, encoding: "utf8" });
       assert.ifError(result.error);
       assert.equal(result.status, status, result.stderr);
       assert.equal(result.stdout.includes("completed"), status === 0);

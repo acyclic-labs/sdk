@@ -64,8 +64,10 @@ const server = createServer(async (request, response) => {
     response.end(sse({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 64, output_tokens: 8 } } }));
   } catch (error) { rejectFailure(error); response.writeHead(500); response.end("fixture validation failed"); }
 });
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const base = `http://127.0.0.1:${server.address().port}`;
+await /** @type {Promise<void>} */ (new Promise(resolve => server.listen(0, "127.0.0.1", resolve)));
+const address = server.address();
+assert.ok(address && typeof address !== "string", "the original HTTP listener must expose its bound port");
+const base = `http://127.0.0.1:${address.port}`;
 source = `${base}/source`; answer = `FETCH_E2E_DONE [${title}](${source})`;
 writeFileSync(join(settings, ".codex/search.json"), JSON.stringify({ provider: "exa", api_keys: { exa: "fixture-unused" }, endpoint: `${base}/search` }));
 const catalog = join(root, "catalog.json"), operation = randomUUID();

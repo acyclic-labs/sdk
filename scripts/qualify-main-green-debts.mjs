@@ -53,9 +53,20 @@ export function testExecutable(entry, output) {
 
 // The original leader exit retires its process group before inherited output
 // can keep pipe closure pending. Qualification still joins the actual output.
+/**
+ * @typedef {{pid?: number, stdout: import('node:stream').Readable,
+ * stderr: import('node:stream').Readable,
+ * on(event: string, listener: (...args: any[]) => void): unknown}} QualificationChild
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {{launch?: (command: string, args: string[], options:
+ * import('node:child_process').SpawnOptionsWithStdioTuple<import('node:child_process').StdioNull,
+ * import('node:child_process').StdioPipe, import('node:child_process').StdioPipe>) => QualificationChild,
+ * terminate?: (child: QualificationChild) => void}} options
+ */
 export function executeTest(executable, args, {
   launch = spawn,
-  terminate = child => process.kill(-child.pid, 'SIGKILL'),
+  terminate = child => { process.kill(-/** @type {number} */ (child.pid), 'SIGKILL'); },
 } = {}) {
   return new Promise((accept, reject) => {
     const child = launch(executable, args, {
