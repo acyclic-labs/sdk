@@ -256,18 +256,18 @@ impl<'a> OrdinalIndex<'a> {
         maximum: u64,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+        let _path_hold;
+        let (path, hold) = self.path(operation)?;
+        _path_hold = hold;
         let _file_hold;
         let (file, retained) = self
             .task
-            .observe_private_file_once(self.destination, operation, io)
+            .observe_private_file_once(self.destination, operation, &path, io)
             .await?;
         _file_hold = super::window::custody(io, retained)?;
         let Some(file) = file else {
             return Ok(None);
         };
-        let _path_hold;
-        let (path, hold) = self.path(operation)?;
-        _path_hold = hold;
         if file.path() != path
             || file.descriptor().media_type() != "application/octet-stream"
             || file.display_name() != "ordinal-index.bin"

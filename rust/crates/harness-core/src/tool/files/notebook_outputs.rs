@@ -313,7 +313,7 @@ pub(super) async fn retain(
         let mut file_hold;
         let (cached, owned) = context
             .task()
-            .observe_private_file_once(destination, operation, io)
+            .observe_private_file_once(destination, operation, &path, io)
             .await?;
         file_hold = super::window::custody(io, owned)?;
         let file = if let Some(file) = cached {

@@ -126,10 +126,20 @@ impl TaskContext {
         &self,
         destination: PrivateContent<'_>,
         operation_id: OperationId,
+        path: &str,
         io: Option<&ContentIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.observe_bound_file_once(Some(destination.0), operation_id, None, io, &self.scope)
-            .await
+        self.observe_bound_file_once(
+            Some(destination.0),
+            operation_id,
+            Some(crate::conversation::ContentPublicationQuery::Operation {
+                volume: destination.volume(),
+                path,
+            }),
+            io,
+            &self.scope,
+        )
+        .await
     }
 
     /// Stages exact bytes through the authenticated writer.

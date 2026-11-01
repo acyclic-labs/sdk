@@ -137,6 +137,37 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
             .execute(invocation.clone(), Some(context.clone())),
     )?;
     assert_eq!(unchanged.value, result.value);
+    // Known projection receipts need their original write action, not List.
+    let actions = acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[
+            acyclic_fs::access::Action::Read,
+            acyclic_fs::access::Action::Create,
+        ],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let exact = task.scoped(
+        Capabilities::new(task.scope().grants().iter().chain([actions.as_str()])),
+        limits,
+    )?;
+    let destination = exact.projection_destination(None)?.unwrap();
+    let output = &selected.outputs[0].file;
+    let operation = OperationId::parse(output.path().rsplit('/').next().unwrap())?;
+    assert_eq!(
+        runtime
+            .block_on(exact.observe_private_file_once(destination, operation, output.path(), None))?
+            .0,
+        Some(output.clone())
+    );
+    assert!(matches!(
+        runtime.block_on(exact.observe_private_file_once(destination, operation, "other", None)),
+        Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+    ));
+    assert!(matches!(
+        runtime.block_on(exact.list_private_directory(&private.volume, "", "", None, None, 1)),
+        Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized
+    ));
     assert_eq!(
         runtime
             .block_on(task.read_file(&selected.outputs[0].file, None))?
