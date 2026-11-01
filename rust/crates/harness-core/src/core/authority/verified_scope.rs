@@ -15,7 +15,7 @@ impl AuthorityVerifier {
     /// Register before checking authority; producer loss ends active use.
     #[must_use]
     pub fn trust_changes(&self) -> std::sync::Arc<dyn acyclic_auth::trust::ChangeSource> {
-        self.public.changes.clone()
+        self.public.trust.clone()
     }
 
     #[cfg(feature = "filesystem")]

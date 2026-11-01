@@ -278,9 +278,9 @@ impl DeviceRunner {
             .deadline_epoch_ms
             .map_or(expiry, |task| task.min(expiry));
         let budget = match self.authority.context.narrow(
-            Some(std::time::Duration::from_millis(u64::from(
-                input.timeout_ms()?,
-            ))),
+            input
+                .timeout_ms()?
+                .map(|milliseconds| std::time::Duration::from_millis(u64::from(milliseconds))),
             Some(expiry),
         ) {
             Ok(budget) => budget,

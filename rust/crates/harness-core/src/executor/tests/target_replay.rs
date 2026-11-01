@@ -516,8 +516,8 @@ struct Devices {
 }
 
 impl TargetResolver for Devices {
-    fn roster(&self) -> &Arc<crate::agent::Roster> {
-        &self.roster
+    fn roster(&self) -> Arc<crate::agent::Roster> {
+        Arc::clone(&self.roster)
     }
 
     fn resolve(&self, name: Option<&str>) -> Result<Arc<Target>> {

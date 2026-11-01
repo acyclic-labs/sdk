@@ -669,7 +669,17 @@ async fn committed_handover(refused_close: bool) -> Result {
                 operation,
                 &invocation.call_id,
             )?;
-            let recovered = remote.executor.reconcile(invocation, Some(context)).await;
+            let mut recovery = remote.executor.reconcile(invocation, Some(context));
+            let recovered = if refused_close {
+                let std::task::Poll::Ready(result) = futures::poll!(recovery.as_mut()) else {
+                    return Err(
+                        "original failed Close left recovery waiting on healthy storage".into(),
+                    );
+                };
+                result
+            } else {
+                recovery.await
+            };
             if let Some(exit) = expected_exit {
                 let result = recovered?.ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);

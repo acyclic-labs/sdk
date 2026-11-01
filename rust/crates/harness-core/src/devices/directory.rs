@@ -70,13 +70,13 @@ impl Devices {
         } else {
             targets.push(status.target.clone());
         }
-        let roster = Arc::new(Roster::new(home.name.clone(), targets.clone()).map_err(agent)?);
+        let roster = Arc::new(Roster::new(&home.name, targets.clone()).map_err(agent)?);
         // Prepare producer-loss disclosure at this same admitted change. Drop
         // only selects a retained immutable snapshot; it cannot allocate/fail.
         for target in targets.iter_mut().skip(1) {
             target.state = TargetState::Offline;
         }
-        let offline = Arc::new(Roster::new(home.name.clone(), targets).map_err(agent)?);
+        let offline = Arc::new(Roster::new(&home.name, targets).map_err(agent)?);
         Ok(Some((roster, offline)))
     }
 }
@@ -131,9 +131,8 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         grant: DeviceGrant,
     ) -> Result<Self> {
         crate::agent::AgentRecord::check(&home.record).map_err(agent)?;
-        let roster = Arc::new(
-            Roster::new(home.record.name.clone(), vec![home.record.clone()]).map_err(agent)?,
-        );
+        let roster =
+            Arc::new(Roster::new(&home.record.name, vec![home.record.clone()]).map_err(agent)?);
         let devices = Devices {
             statuses: BTreeMap::new(),
             offline: Arc::clone(&roster),
