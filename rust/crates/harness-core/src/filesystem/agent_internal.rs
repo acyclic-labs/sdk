@@ -409,20 +409,25 @@ where
             let turn = format!("/{}/{turn}", super::TOOL_OUTPUT);
             for dispatch in Self::list_at(&head, &turn).await?.iter().rev() {
                 let reply = format!("{turn}/{dispatch}/reply");
-                let chunks = Self::list_at(&head, &reply).await?;
-                if chunks.is_empty() {
-                    continue;
-                }
+                let cancellation = CancellationToken::new();
+                let mut chunks = InternalDirectory::new(&head, Cow::Borrowed(&reply));
                 let mut text = Vec::new();
-                for chunk in chunks {
-                    if let Some(bytes) =
-                        Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
-                    {
-                        text.extend_from_slice(&bytes);
+                let mut found = false;
+                while let Some(page) = chunks.next(&cancellation).await? {
+                    found |= !page.entries.is_empty();
+                    for entry in &page.entries {
+                        let chunk = filename(entry.name.as_bytes())?;
+                        if let Some(bytes) =
+                            Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
+                        {
+                            text.extend_from_slice(&bytes);
+                        }
                     }
                 }
-                return String::from_utf8(text)
-                    .map_err(|_| crate::Error::Storage("live reply is not UTF-8".into()));
+                if found {
+                    return String::from_utf8(text)
+                        .map_err(|_| crate::Error::Storage("live reply is not UTF-8".into()));
+                }
             }
             Ok(String::new())
         })
