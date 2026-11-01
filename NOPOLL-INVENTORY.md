@@ -1,5 +1,16 @@
 # Polling and timed-wait inventory
 
+Installer source closure: the published deletion `138ca708d0` is composed at
+`fa976a4cac`. At predecessor `13faa3a5cb`, `plugin/bin/install.js:22` defined
+`warmUp`, `:26` imposed a 30-second execution timeout, and `:48` launched it
+after installation. All three sites are deleted, along with their unused import
+and the test devoted solely to ignored warmup results. Installation retains the
+original executable verification, certification and native publication result.
+Per installation: extra launches 1 to 0, ignored waits 1 to 0, implicit deadlines
+1 to 0; no replacement event, allocation, copy or durability barrier is added.
+Original idempotency, byte-integrity and recovery controls remain. This
+composition has no new installer execution qualification.
+
 Baseline: `d33ed17571`. Locations refer to that baseline so deletion does not erase the audit trail. A location explicitly followed by a revision names a later source composition at that revision.
 
 Scope: `rust/crates/**` and `typescript/packages/**`, excluding the separately owned `harness`, `harness-core`, `harness-tui` and `harness-client` packages. Product code, tests, conformance, examples, benchmarks and scripts are included. Exact publicly released Harness caller slices are composed atomically with their primitive contracts; their sites are explicitly recorded below.
