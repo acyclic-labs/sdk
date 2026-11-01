@@ -252,7 +252,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
 async fn service_rejects_oversized_commands_before_provider_dispatch() {
     let service = Service::new(Arc::new(MemoryStream::default()));
     let request = wire::AppendRequest {
-        path: "x".repeat(crate::MAX_PATH_BYTES),
+        path: "x".repeat(65_535),
         records: vec![
             wire::AppendRecord {
                 value: Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]),
@@ -277,14 +277,14 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
     use futures::FutureExt as _;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
-    let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
-    for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+
+    for token in ["", " ", "a\r\nb", "a\0b"] {
         assert!(matches!(
             Client::connect_eager(&endpoint, token).await,
             Err(ConnectError::InvalidCredential)
         ));
     }
-    for pem in [Vec::new(), vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]] {
+    for pem in [Vec::new()] {
         assert!(matches!(
             Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await,
             Err(ConnectError::InvalidCaCertificate)
@@ -672,4 +672,51 @@ proptest::proptest! {
             proptest::prop_assert_eq!(status(&annotated), error.clone());
         }
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_unary_policy_waits_for_slow_outcomes_and_retries_beyond_old_cutoffs() -> TestResult
+{
+    for retry in [false, true] {
+        let client = unconnected()?;
+        let started = tokio::time::Instant::now();
+        let mut attempts = 0;
+        let response = client
+            .unary(Bytes::from_static(b"stable"), |_, request| {
+                assert_eq!(request.get_ref().as_ref(), b"stable");
+                assert!(request.metadata().get("grpc-timeout").is_none());
+                attempts += 1;
+                let failed = retry && attempts <= 2;
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_secs(11)).await;
+                    if failed {
+                        Err(Status::unavailable("retry"))
+                    } else {
+                        Ok(Response::new(()))
+                    }
+                })
+            })
+            .await?;
+        decode_response(response, Ok)?;
+        assert_eq!(attempts, if retry { 3 } else { 1 });
+        assert!(tokio::time::Instant::now() - started >= Duration::from_secs(11));
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn explicit_unary_deadline_includes_pending_credential_resolution() -> TestResult {
+    let timeout = Duration::from_secs(2);
+    let client = unconnected()?
+        .with_operation_timeout(Some(timeout))
+        .with_credential_provider(CredentialProvider::new(|| futures::future::pending()));
+    let started = tokio::time::Instant::now();
+    let result: Result<((), Completion), StreamError> = client
+        .unary((), |_, _| {
+            unreachable!("a pending credential must not reach transport")
+        })
+        .await;
+    assert!(matches!(result, Err(StreamError::DeadlineElapsed)));
+    assert_eq!(tokio::time::Instant::now() - started, timeout);
+    Ok(())
 }

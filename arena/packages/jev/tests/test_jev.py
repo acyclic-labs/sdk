@@ -34,9 +34,6 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(p.cached_tokens, P + suffix)
         self.assertEqual(p.naive_tokens, P * 5 + suffix)
 
-    def test_validate_refuses_long(self):
-        with self.assertRaises(ValueError):
-            fmt.validate([Question("q " * 400, ("a", "b"))])
 
 
 class TestMock(unittest.TestCase):
@@ -355,17 +352,99 @@ class TestHttp(unittest.TestCase):
         try:
             b = HttpBackend(f"http://127.0.0.1:{srv.server_address[1]}")
             self.assertTrue(b.health()["ok"])
-            qs = [Question("Risk?", ("low", "high")), Question.yes_no("Breaking?")]
-            r = b.decide(STATE, qs)
-            self.assertEqual([d.probs for d in r], [d.probs for d in MockBackend().decide(STATE, qs)])
+            state = STATE + "x" * (1024 * 1024)
+            qs = [Question("Risk? " * 200, tuple(f"option{i}:" + "value" * 100 for i in range(65)))]
+            qs.extend(Question.yes_no(f"Breaking{i}?") for i in range(65))
+            r = b.decide(state, qs)
+            self.assertEqual([d.probs for d in r], [d.probs for d in MockBackend().decide(state, qs)])
             self.assertEqual(r.backend, "http:mock")
             with self.assertRaises(ValueError):
                 b.decide(STATE, [])
         finally:
             srv.shutdown(); srv.server_close()
 
+    def test_explicit_http_policies_admit_boundaries_and_refuse_before_backend(self):
+        import http.client
+        import threading
+        from unittest.mock import patch
+        from jev.server import make_server
+        policies = {"JEV_SERVE_MAX_BODY": "2048", "JEV_SERVE_MAX_QUESTIONS": "2",
+                    "JEV_SERVE_MAX_OPTIONS": "3", "JEV_SERVE_MAX_STATE": "8"}
+        backend = MockBackend()
+        with patch.dict(os.environ, policies):
+            srv = make_server(backend, "127.0.0.1", 0)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        def post(payload=None, declared=None):
+            connection = http.client.HTTPConnection(*srv.server_address, timeout=2)
+            try:
+                if declared is not None:
+                    # A refused declaration must finish before any body is sent.
+                    connection.putrequest("POST", "/decide")
+                    connection.putheader("Content-Length", str(declared))
+                    connection.endheaders()
+                else:
+                    connection.request("POST", "/decide", json.dumps(payload).encode())
+                response = connection.getresponse()
+                response.read()
+                return response.status
+            finally:
+                connection.close()
+        question = {"question": "Pick?", "options": ["a", "b", "c"]}
+        try:
+            self.assertEqual(post({"state": "boundary", "questions": [question] * 2}), 200)
+            self.assertEqual(post(declared=2049), 413)
+            self.assertEqual(post({"state": "boundary", "questions": [question] * 3}), 400)
+            self.assertEqual(post({"state": "boundary!", "questions": [question]}), 413)
+            self.assertEqual(post({"state": "boundary", "questions": [{**question, "options": ["a", "b", "c", "d"]}]}), 400)
+            self.assertEqual(len(backend.calls), 1)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join()
+
+    def test_invalid_operator_policy_refuses_to_bind(self):
+        from unittest.mock import patch
+        from jev.server import make_server
+        for name in ["BODY", "QUESTIONS", "OPTIONS", "STATE"]:
+            for value in ["-1", "invalid"]:
+                with self.subTest(name=name, value=value), patch.dict(os.environ, {f"JEV_SERVE_MAX_{name}": value}):
+                    with self.assertRaises(ValueError):
+                        make_server(MockBackend(), "127.0.0.1", 0)
+
 
 class TestOpenRouter(unittest.TestCase):
+    def test_group_conditionals_preserve_complete_leaf_distribution_and_cost(self):
+        import math
+        from jev.backends.openrouter import OpenRouterBackend
+
+        calls = []
+        def post(url, headers, body):
+            calls.append(body)
+            choices = body["messages"][1]["content"].split("\n\nOptions:\n", 1)[1].split("\n\nAnswer", 1)[0]
+            weighted = []
+            for line in choices.splitlines():
+                label, option = line.split(". ", 1)
+                leaves = json.loads(option) if option.startswith("[") else [option]
+                weighted.append((label, sum(int(leaf.removeprefix("weight-")) for leaf in leaves)))
+            total = sum(weight for _, weight in weighted)
+            top = [{"token": label, "logprob": math.log(weight / total)} for label, weight in weighted]
+            return {"choices": [{"logprobs": {"content": [{"top_logprobs": top}]}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.01}}
+
+        options = tuple(f"weight-{i}" for i in range(1, 1004))
+        result = OpenRouterBackend(api_key="k", post=post).decide(STATE, [Question("Choose", options)])
+        decision = result[0]
+        self.assertEqual(len(decision.probs), len(options))
+        self.assertEqual(decision.chosen, options[-1])
+        total = sum(range(1, len(options) + 1))
+        for weight, probability in enumerate(decision.probs, 1):
+            self.assertAlmostEqual(probability, weight / total)
+        self.assertAlmostEqual(sum(decision.probs), 1.0)
+        self.assertEqual(result.timing.forwards, len(calls))
+        self.assertEqual(result.timing.tokens, 2 * len(calls))
+        self.assertAlmostEqual(result.timing.usd, 0.01 * len(calls))
+
     def fake_post(self, url, headers, body):
         self.bodies.append(body)
         assert body["max_tokens"] == 1 and body["logprobs"] is True

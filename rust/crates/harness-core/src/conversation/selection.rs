@@ -88,7 +88,7 @@ impl ConversationState {
         &self,
         after: u64,
         through: u64,
-        maximum: usize,
+        maximum: Option<usize>,
     ) -> Result<impl Iterator<Item = &ConversationMessage>> {
         if after < self.resident_after_sequence()
             || after > through
@@ -107,7 +107,7 @@ impl ConversationState {
         let messages = self.messages[start..end]
             .iter()
             .filter(|message| model_visible(&message.kind));
-        if messages.clone().nth(maximum).is_some() {
+        if maximum.is_some_and(|maximum| messages.clone().nth(maximum).is_some()) {
             return Err(Error::Invalid(
                 "canonical history delta exceeds context limit".into(),
             ));

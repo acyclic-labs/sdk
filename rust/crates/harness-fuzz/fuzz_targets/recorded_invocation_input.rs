@@ -76,7 +76,14 @@ pub fn assert_replay(record: Record, limits: Limits) {
         return;
     }
     let encoded = serde_json::to_vec(&record).unwrap();
-    assert!(encoded.len() as u64 <= limits.file_bytes.min(limits.render_bytes));
+    assert!(
+        limits
+            .render_bytes
+            .into_iter()
+            .chain(limits.file_bytes)
+            .min()
+            .is_none_or(|maximum| encoded.len() as u64 <= maximum)
+    );
     let result = serde_json::to_vec(&ToolResult { value: Value::Null }).unwrap();
     let projection = serde_json::to_vec(&ToolResultContent::Json { value: Value::Null }).unwrap();
     let files = Resolver(BTreeMap::from([
@@ -182,8 +189,8 @@ pub fn assert_replay(record: Record, limits: Limits) {
         PhantomData,
         &bytes,
         JsonBounds {
-            maximum_bytes: bytes.len() as u64,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(bytes.len() as u64),
+            maximum_items: None,
             maximum_depth: 256,
         },
         None,
@@ -199,8 +206,8 @@ pub fn check(data: &[u8]) {
         PhantomData::<Record>,
         data,
         JsonBounds {
-            maximum_bytes: 4096,
-            maximum_items: 4096,
+            maximum_bytes: Some(4096),
+            maximum_items: Some(4096),
             maximum_depth: 256,
         },
         None,
@@ -211,8 +218,8 @@ pub fn check(data: &[u8]) {
         assert_replay(
             record,
             Limits {
-                file_bytes: 4096,
-                render_bytes: 4096,
+                file_bytes: Some(4096),
+                render_bytes: Some(4096),
                 ..Limits::default()
             },
         );

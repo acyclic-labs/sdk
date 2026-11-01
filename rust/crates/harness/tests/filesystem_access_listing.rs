@@ -8,7 +8,6 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     let mut policy: Policy = serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;

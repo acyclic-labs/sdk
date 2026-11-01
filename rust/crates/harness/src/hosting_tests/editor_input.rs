@@ -328,7 +328,6 @@ impl TurnExecutors for InheritedEditorInput {
                         &authority.scope,
                         file.volume(),
                         crate::conversation::VolumeOperation::Write,
-                        u64::MAX,
                         &mut None,
                     )
                     .is_err(),

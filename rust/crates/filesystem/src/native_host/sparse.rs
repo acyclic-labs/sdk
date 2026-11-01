@@ -169,7 +169,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
             if clone_length == 0 {
                 return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
             }
-            source_control(target, FSCTL_SET_SPARSE, &[], &mut [], Write, work)?;
+            source_control(target, FSCTL_SET_SPARSE, &[], &mut [], Write, work)?.into_complete()?;
             truncate_file(target, length, work)?;
             let mut offset = 0;
             while offset < clone_length {
@@ -197,12 +197,13 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                     &mut [],
                     Write,
                     work,
-                )?;
+                )?
+                .into_complete()?;
                 offset += count;
             }
             if clone_length < length {
                 let ranges =
-                    allocated_data_ranges(source, clone_length, length - clone_length, 64, work)?;
+                    allocated_data_ranges(source, clone_length, length - clone_length, None, work)?;
                 let allocation = (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
                 let result = (|| {
                     let mut buffer = [0_u8; 64 * 1024];

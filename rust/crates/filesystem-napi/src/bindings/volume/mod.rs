@@ -26,9 +26,9 @@ impl NativeVolume {
         &self,
         before: Buffer,
         after: Buffer,
-        maximum_changes: NapiU32,
+        maximum_changes: Option<NapiU32>,
     ) -> Result<NativeGenerationDiff> {
-        let maximum_changes = maximum_changes.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
 
         let before = decode_generation_id(&before)?;
         let after = decode_generation_id(&after)?;
@@ -38,7 +38,7 @@ impl NativeVolume {
                 before,
                 after,
                 maximum_changes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -64,7 +64,7 @@ impl NativeVolume {
             .checkout(
                 GenerationSelector::Head,
                 mode,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await

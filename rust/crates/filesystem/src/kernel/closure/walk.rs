@@ -39,7 +39,6 @@ pub(crate) struct ProofContext<'a, S> {
 }
 
 struct PublicationOrder<'a> {
-    seen: u64,
     objects: ProofVec<'a, ObjectId>,
     completed: crate::kernel::allocation::fixed_index::FixedIndex<bool, { ObjectId::ENCODED_LEN }>,
 }
@@ -60,7 +59,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     pub(crate) fn publication_order(mut self) -> Self {
         self.publication = Some(PublicationOrder {
-            seen: 0,
             objects: ProofVec::new(&self.meter),
             completed: Default::default(),
         });
@@ -194,12 +192,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .filter(|cached| reusable(&root.0, cached, self.limits, authority_root))
         });
         if let Some(previous) = previous {
-            let increment = match self.prove_increment(&root.0, &previous).await {
-                Err(crate::FsError::Closure(
-                    ClosureError::TooManyObjects { .. } | ClosureError::ClosureBytesExceeded { .. },
-                )) => None,
-                result => result?,
-            };
+            let increment = self.prove_increment(&root.0, &previous).await?;
             if let Some((file_count, logical_file_bytes, object_count)) = increment {
                 let objects = self.take_objects()?;
                 let mut output = (
@@ -227,13 +220,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         let (records, directories) = self.prove_file_table(root.0.file_table).await?;
         let file_count = usize_to_u64(records.values.len());
-        if file_count > self.limits.maximum_files {
-            return Err(ClosureError::TooManyFiles {
-                observed: file_count,
-                maximum: self.limits.maximum_files,
-            }
-            .into());
-        }
         let mut logical_file_bytes = 0_u128;
         for record in records.values.iter().map(|(_, value)| value) {
             self.examine(1)?;
@@ -300,27 +286,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
         if let Some(order) = &mut self.publication {
-            let seen = &mut order.seen;
             self.meter.with_accounting(|accounting| {
                 order
                     .completed
-                    .get_or_try_insert_with(object.index_key(), accounting, |_| {
-                        let observed = seen.checked_add(1).ok_or(WorkError::Overflow)?;
-                        if observed > self.limits.maximum_objects {
-                            return Err(ClosureError::TooManyObjects {
-                                observed,
-                                maximum: self.limits.maximum_objects,
-                            }
-                            .into());
-                        }
-                        *seen = observed;
-                        Ok(false)
-                    })
+                    .get_or_try_insert_with(object.index_key(), accounting, |_| Ok(false))
                     .map(|_| ())
             })?;
         } else {
-            self.objects
-                .insert(object, Some(self.limits.maximum_objects))?;
+            self.objects.insert(object)?;
         }
         self.meter.charge(WorkCounters {
             page_reads: u64::from(page),
@@ -334,14 +307,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             .object_bytes
             .checked_add(usize_to_u64(read.0.bytes.len()))
             .ok_or(WorkError::Overflow)?;
-        let observed = self.object_bytes;
-        if observed > self.limits.maximum_object_bytes {
-            return Err(ClosureError::ClosureBytesExceeded {
-                observed,
-                maximum: self.limits.maximum_object_bytes,
-            }
-            .into());
-        }
         Ok(read)
     }
 
@@ -535,15 +500,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 validate_ordered_bounds(children.iter().map(|child| &child.first), lower, upper)?;
                 for (index, child) in children.iter().enumerate().rev() {
                     self.examine(1)?;
-                    let child_lower = self
-                        .meter
-                        .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                    let child_lower = self.meter.clone_key::<F>(&child.first)?;
                     let upper_key = children.get(index + 1).map(|next| &next.first).or(upper);
                     let child_upper = upper_key
-                        .map(|key| {
-                            self.meter
-                                .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
-                        })
+                        .map(|key| self.meter.clone_key::<F>(key))
                         .transpose()?;
                     pending.push((child.page, Some(child_lower), child_upper, false))?;
                 }

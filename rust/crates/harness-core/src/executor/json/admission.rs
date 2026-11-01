@@ -436,7 +436,10 @@ impl<const TRACK_SCRATCH: bool> Lexer<TRACK_SCRATCH> {
             }
         };
         if item {
-            if self.items >= bounds.maximum_items {
+            if bounds
+                .maximum_items
+                .is_some_and(|maximum| self.items >= maximum)
+            {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {
@@ -471,7 +474,10 @@ fn laid_out(
     charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
 ) -> Result<JsonValueShape> {
     bounds.maximum_depth = bounds.maximum_depth.min(256);
-    if bytes.len() as u64 > bounds.maximum_bytes {
+    if bounds
+        .maximum_bytes
+        .is_some_and(|maximum| bytes.len() as u64 > maximum)
+    {
         return Err(boundary("JSON input exceeds declared byte bound", code));
     }
     let charge = RefCell::new(charge);
@@ -525,7 +531,7 @@ fn finish(
 ) -> Result<JsonValueShape> {
     if items
         .checked_add(counts.nodes)
-        .is_none_or(|items| items > bounds.maximum_items)
+        .is_none_or(|items| bounds.maximum_items.is_some_and(|maximum| items > maximum))
     {
         return Err(boundary("JSON item limit exceeded", code));
     }
@@ -611,8 +617,8 @@ pub(super) fn admit_typed(
 #[cfg(test)]
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
-        maximum_bytes: u64::MAX,
-        maximum_items: u64::MAX,
+        maximum_bytes: None,
+        maximum_items: None,
         maximum_depth: 256,
     };
     admit_json_layout(bytes, bounds, None, T::LAYOUT, None, &mut |_| Ok(()))

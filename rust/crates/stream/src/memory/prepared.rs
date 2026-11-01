@@ -76,7 +76,7 @@ impl MemoryStream {
     pub(crate) async fn prepare(
         &self,
         mut request: CommitRequest,
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
     ) -> Result<
         (
             PreparedCommit,
@@ -84,17 +84,23 @@ impl MemoryStream {
         ),
         StreamError,
     > {
+        let maximum = capacity.payload_bytes;
         let expected = prepared_tail(&mut request, maximum)?;
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
-        let maximum_hash = prepared_hash_bytes(&request, maximum);
-        let headers = work.record(crate::record_headers::PreparedHeaders::new(
+        let maximum_hash = prepared_hash_bytes(&request, capacity)?;
+        let publication_hash = maximum_hash
+            .checked_add(identity_bytes())
+            .ok_or(StreamError::Capacity)?;
+        let headers = work.record(crate::record_headers::PreparedHeaders::new_shape(
             &work.meter,
             maximum,
+            capacity.keys,
+            capacity.attributes,
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
-        let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
+        let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
         // The tree can grow up to the admitted replay limit while this completion is pending.
         let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
@@ -115,7 +121,7 @@ impl MemoryStream {
             expected;
         // Header keys arrive with the body. The shared radix owns its physical
         // node layout and fixed-width work bound; prepay both before issuance.
-        let count = crate::MAX_RECORD_KEYS as u64;
+        let count = u64::try_from(capacity.keys).map_err(|_| StreamError::Capacity)?;
         let bound = plan
             .histories
             .first()
@@ -153,7 +159,7 @@ impl MemoryStream {
         let recovery = self.prepare_recovery(
             key.clone(),
             conditions.clone(),
-            maximum,
+            capacity,
             maximum_hash,
             prototype,
         )?;
@@ -162,7 +168,7 @@ impl MemoryStream {
             NativeCodecWork {
                 copied: (2 * std::mem::size_of::<Record>())
                     .max(4 * std::mem::size_of::<CommitConflict>()) as u64,
-                hashed: maximum_hash + identity_bytes(),
+                hashed: publication_hash,
                 ..NativeCodecWork::default()
             },
         ))?;
@@ -177,7 +183,7 @@ impl MemoryStream {
                 retained,
                 namespace,
                 conflicts: conflict,
-                capacity,
+                capacity: capacity_reservation,
                 probes,
                 codec,
                 headers,
@@ -228,7 +234,7 @@ impl MemoryStream {
         &self,
         recovery_key: IdempotencyKey,
         recovery_conditions: [CommitCondition; 2],
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
         maximum_hash: u64,
         prototype: (CommittedEnvelope, Allocation),
     ) -> Result<NativeProviderFuture<'static, Option<IdempotencyObservation>>, StreamError> {
@@ -242,7 +248,7 @@ impl MemoryStream {
         let mut bytes = work.record(NativeByteReservation::new(
             Arc::clone(&meter),
             NativeOperationKind::Read,
-            maximum,
+            capacity.payload_bytes,
         ))?;
         let mut codec = work.record(NativeCodecReservation::new(
             Arc::clone(&meter),
@@ -273,7 +279,7 @@ impl MemoryStream {
                     let target = envelope_append(&value);
                     let envelope = prepared_envelope(
                         stored,
-                        maximum,
+                        capacity,
                         &target.path,
                         target.start,
                         target.tail,
@@ -380,7 +386,11 @@ impl PreparedCommit {
                 let result = copy_outcome(
                     stored,
                     self.provider.revisions.at(stored.index),
-                    body.payload_bytes(),
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: body.payload_bytes(),
+                        keys: body.headers.keys().len(),
+                        attributes: body.headers.attributes().len(),
+                    },
                     (self.plan.result, self.plan.output_claim),
                 )?;
                 let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
@@ -491,13 +501,23 @@ fn record_codec(
     })
 }
 
-fn prepared_hash_bytes(request: &CommitRequest, maximum: usize) -> u64 {
-    // Header payload is included in `maximum`; its canonical length words
+fn prepared_hash_bytes(
+    request: &CommitRequest,
+    capacity: crate::PreparedRecordCapacity,
+) -> Result<u64, StreamError> {
+    // Header payload is included in `payload_bytes`; its canonical length words
     // are additional digest input, even for empty keys and attribute values.
+    let keys = (capacity.keys as u64)
+        .checked_mul(8)
+        .ok_or(StreamError::Capacity)?;
+    let attributes = (capacity.attributes as u64)
+        .checked_mul(16)
+        .ok_or(StreamError::Capacity)?;
     commit_hash_bytes(request)
-        + maximum as u64
-        + 8 * crate::MAX_RECORD_KEYS as u64
-        + 16 * crate::MAX_RECORD_ATTRIBUTES as u64
+        .checked_add(capacity.payload_bytes as u64)
+        .and_then(|bytes| bytes.checked_add(keys))
+        .and_then(|bytes| bytes.checked_add(attributes))
+        .ok_or(StreamError::Capacity)
 }
 
 fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {
@@ -576,11 +596,11 @@ fn digest(
 fn copy_outcome(
     stored: &Retained,
     revision: crate::Revision,
-    maximum: usize,
+    capacity: crate::PreparedRecordCapacity,
     (mut output, output_claim): (CommitOutcome, Allocation),
 ) -> Result<(CommitOutcome, Allocation), StreamError> {
     let target = append(&output);
-    let envelope = prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
+    let envelope = prepared_envelope(stored, capacity, &target.path, target.start, target.tail)?;
     let CommitOutcome::Committed(receipt) = &mut output else {
         unreachable!()
     };
@@ -592,7 +612,7 @@ fn copy_outcome(
 
 fn prepared_envelope<'a>(
     stored: &'a Retained,
-    maximum: usize,
+    capacity: crate::PreparedRecordCapacity,
     path: &StreamPath,
     start: u64,
     tail: u64,
@@ -622,9 +642,7 @@ fn prepared_envelope<'a>(
     {
         return Err(StreamError::IdempotencyMismatch);
     }
-    if record.payload_bytes() > maximum {
-        return Err(StreamError::LimitExceeded);
-    }
+    capacity.validate(&record.value, &record.headers)?;
     Ok(envelope)
 }
 fn copied_bytes(value: &CommitOutcome) -> u64 {

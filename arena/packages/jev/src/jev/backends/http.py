@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from typing import Optional
 
 from ..types import Question, Decision, DecideResult, Timing
 from .base import Backend
@@ -12,7 +13,7 @@ class HttpBackend(Backend):
     name = "http"
     max_questions = 10_000
 
-    def __init__(self, url: str = "http://127.0.0.1:8788", timeout: float = 120.0):
+    def __init__(self, url: str = "http://127.0.0.1:8788", timeout: Optional[float] = None):
         self.url = url.rstrip("/")
         self.timeout = timeout
 

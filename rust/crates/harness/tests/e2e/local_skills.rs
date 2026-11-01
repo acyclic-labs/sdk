@@ -150,7 +150,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
     let harness = open(
         config(root.path(), home.path(), state.path(), model.clone())?.limits(
             acyclic_harness::conversation::Limits {
-                file_bytes: 65_536,
+                file_bytes: Some(65_536),
                 ..Default::default()
             },
         ),
@@ -387,30 +387,5 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
         .ok_or("updated greet2 skill absent")?;
     assert_eq!(skill.description, "Updated generation");
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn large_skill_directory_stops_at_the_existing_discovery_bound() -> TestResult {
-    let root = super::local_workspace::temporary()?;
-    let home = super::local_workspace::temporary()?;
-    let state = super::local_workspace::temporary()?;
-    for index in 0..300 {
-        write(
-            root.path(),
-            &format!(".agents/skills/s{index}/SKILL.md"),
-            &format!("---\nname: s{index}\ndescription: bounded\n---\nbody"),
-        )?;
-    }
-    let model = provider(1);
-    let harness = open(config(
-        root.path(),
-        home.path(),
-        state.path(),
-        model.clone(),
-    )?)
-    .await?;
-    turn(&harness, "inventory", false).await?;
-    assert!(model.requests().is_empty());
     Ok(())
 }

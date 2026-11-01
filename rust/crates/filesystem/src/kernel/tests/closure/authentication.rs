@@ -47,12 +47,12 @@ async fn authenticated_generation_counts_hardlinked_inline_file_once()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
                 file_id,
                 kind: FileKind::Regular,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
                 file_id,
                 kind: FileKind::Regular,
             },
@@ -290,12 +290,12 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"link".to_vec())?,
                 file_id: symlink_id,
                 kind: FileKind::SymbolicLink,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"reparse".to_vec())?,
                 file_id: reparse_id,
                 kind: FileKind::ReparsePoint,
             },
@@ -406,12 +406,12 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
         &store,
         &TreePage::Leaf(vec![
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"first".to_vec())?,
                 file_id: child_ids[0],
                 kind: FileKind::Regular,
             },
             TreeEntry {
-                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec(), 255)?,
+                name: LogicalName::new(NameEncoding::Utf8, b"second".to_vec())?,
                 file_id: child_ids[1],
                 kind: FileKind::Regular,
             },

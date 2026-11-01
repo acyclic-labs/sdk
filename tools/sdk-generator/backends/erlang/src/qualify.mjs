@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,11 +28,11 @@ export function verifyDependencies(root, bytes, pin = qualificationPins) {
 }
 
 // Injected commands support offline lifecycle controls; CLI qualification is native.
-export function qualify(args, { command = spawnSync, onProgress = () => {}, toolchain = pins,
+export async function qualify(args, { command = captureCommand, onProgress = () => {}, toolchain = pins,
   runtimePin = toolchain.runtime["linux-x64"], dependencyPin = qualificationPins,
   toolIndexBytes = read("../toolchains/generator-files.json"), dependencyIndexBytes = read("../toolchains/dependency-files.json") } = {}) {
-  if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
-  const admitted = readPackage(args);
+  if (command === captureCommand && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
+  const admitted = await readPackage(args);
   if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1 and Stream v1 exports");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies"].map(name => [name, realpathSync(args[name])]));
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
@@ -44,15 +44,15 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const runtimeBytes = readFileSync(inputs["runtime-inventory"]);
   const toolBytes = toolIndexBytes, dependencyBytes = dependencyIndexBytes;
   const sourceBytes = new Map(sourceNames.map(name => [name, read(name)]));
-  const guard = () => {
+  const guard = async () => {
     if (!readFileSync(inputs["runtime-inventory"]).equals(runtimeBytes) || !readFileSync(inputs.receipt).equals(admitted.receiptBytes)) throw new Error("qualification input bytes changed");
     verifyRuntime(inputs["runtime-root"], runtimeBytes, runtimePin);
     verifyTools(inputs["tool-home"], toolBytes, toolchain);
     verifyDependencies(inputs.dependencies, dependencyBytes, dependencyPin);
     for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
-    readPackage(args);
+    await readPackage(args);
   };
-  onProgress("Admit package, full OTP runtime, generator tools and locked native dependencies"); guard();
+  onProgress("Admit package, full OTP runtime, generator tools and locked native dependencies"); await guard();
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   const sdk = join(output, "libs/acyclic_sdk_transport-0.1.0"), libs = join(output, "libs"), consumer = join(output, "consumer");
@@ -79,7 +79,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const logNames = [];
   const run = (name, executable, argv) => {
     onProgress("Run " + name);
-    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000 });
     const text = (result.stdout ?? "") + (result.stderr ?? "");
     const log = "logs/" + name + ".log"; put(log, text); logNames.push(log);
     if (result.error || result.status !== 0) throw new Error("Erlang qualification command failed: " + name + "\n" + text);
@@ -102,9 +102,11 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   for (const marker of [`PASS archive-installed Erlang clients: ${methodCount} populated native TCP RPC pairs`, "actors_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
     if (!native.includes(marker)) throw new Error("installed consumer completion marker missing: " + marker);
   }
+  const shapes = native.match(/^PASS RPC shapes: (\d+) unary, (\d+) server streaming$/m);
+  if (!shapes || Number(shapes[1]) + Number(shapes[2]) !== methodCount) throw new Error("RPC shape coverage incomplete");
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
   onProgress("Verify post-execution package, dependency, compiler and consumer bytes");
-  guard(); privateDependencyGuard();
+  await guard(); privateDependencyGuard();
   for (const [name, bytes] of admitted.payload) if (!readFileSync(join(sdk, name)).equals(bytes)) throw new Error("installed package payload changed");
   for (const [name, digest] of Object.entries(compiled)) if (sha256(readFileSync(join(sdk, "ebin", name))) !== digest) throw new Error("compiled SDK changed");
   if (JSON.stringify(inventory(sdk)) !== JSON.stringify([...admitted.payload.keys(), ...Object.keys(compiled).map(name => "ebin/" + name)].sort())) throw new Error("installed SDK tree differs");
@@ -113,7 +115,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const consumerFiles = [...controls, ...expectedConsumerBeams.map(name => "ebin/" + name), "actors_pb_route_fixture.erl", "stream_pb_route_fixture.erl"].sort();
   if (JSON.stringify(inventory(consumer)) !== JSON.stringify(consumerFiles)) throw new Error("consumer tree differs");
   const receipt = { schema: "acyclic.sdk.erlang-installed-qualification.v1", authority: "rust", target: "erlang",
-    source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: sha256(admitted.archiveBytes),
+    source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: admitted.archiveDigest,
     generation_receipt_sha256: sha256(admitted.receiptBytes), runtime_inventory_sha256: sha256(runtimeBytes),
     generator_inventory_sha256: sha256(toolBytes), dependency_inventory_sha256: sha256(dependencyBytes),
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
@@ -121,7 +123,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
     compiled_sdk_sha256: compiled, compiled_consumer_sha256: consumerBeams,
     consumer_source_sha256: Object.fromEntries(inventory(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
     log_sha256: Object.fromEntries(logNames.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    native_rpc_calls_executed: methodCount, unary_rpc_calls: methodCount - 3, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: methodCount, runtime_type_rejections: 2,
+    native_rpc_calls_executed: methodCount, unary_rpc_calls: Number(shapes[1]), server_streaming_rpc_calls: Number(shapes[2]), populated_rpc_message_pairs: methodCount, runtime_type_rejections: 2,
     compiled_sdk_provenance: true, modeled_file_descriptor_semantics: true,
     descriptor_normalization: ["source locations omitted", "source filename basename", "declared protobuf defaults", "default JSON names", "message and enum declaration order", "single-field proto3-optional synthetic oneof names"],
     unknown_descriptor_extensions_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };

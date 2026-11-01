@@ -255,6 +255,13 @@ impl Connection {
         )))?;
         sender.unbounded_send(Ok(frame(
             0,
+            Body::Credential(wire::SessionCredential {
+                slot: 0,
+                credential: credential(&granted_resource).into(),
+            }),
+        )))?;
+        sender.unbounded_send(Ok(frame(
+            0,
             Body::Interest(wire::SessionInterest {
                 revision: 1,
                 remove: vec![],

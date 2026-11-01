@@ -249,7 +249,7 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
     // the first that verified.
     let first = tokio::spawn(async move { incoming.next().await });
     // A peer that never handshakes, and one that fails, hold back no other.
-    let _stalled = TcpStream::connect(address).await?;
+    let mut stalled = TcpStream::connect(address).await?;
     let foreign = client(&fixture.untrusted, PEER)?;
     let refused = fixture.connector(Some(&foreign), TLS13)?;
     let _ = refused
@@ -261,6 +261,13 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
         .connect("localhost".try_into()?, TcpStream::connect(address).await?)
         .await?;
     let accepted = first.await?.ok_or("the listener ended")??;
+    // The serving future has dropped its listener stream and all unfinished
+    // handshakes. Its original socket EOF proves there is no detached owner.
+    let mut byte = [0];
+    assert_eq!(
+        tokio::io::AsyncReadExt::read(&mut stalled, &mut byte).await?,
+        0
+    );
     let expected = certificates(peer.certificate.as_bytes(), "client")?;
     assert_eq!(
         accepted

@@ -109,11 +109,18 @@ async fn racing_read(protected: bool, range: bool, revoke: bool) -> Result<(), B
         release.send(()).map_err(|_| "read abandoned its gate")?;
         Ok::<_, Box<dyn Error>>(())
     };
-    let (result, revoked) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        futures::join!(read, publish)
-    })
-    .await?;
-    revoked?;
+    futures::pin_mut!(read, publish);
+    let read = match futures::future::select(publish, read).await {
+        futures::future::Either::Left((revoked, read)) => {
+            revoked?;
+            read
+        }
+        futures::future::Either::Right((result, _)) => {
+            result?;
+            return Err("read finished without reaching its disclosure gate".into());
+        }
+    };
+    let result = read.await;
     if revoke {
         assert_denied(result);
     } else {

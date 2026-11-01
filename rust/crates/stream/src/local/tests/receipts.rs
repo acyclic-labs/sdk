@@ -180,7 +180,15 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
                 .await??
         } else {
             let packet = provider
-                .native_prepare_commit(request, 64, meter.original())
+                .native_prepare_commit(
+                    request,
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: 64,
+                        keys: 64,
+                        attributes: 16,
+                    },
+                    meter.original(),
+                )
                 .await??;
             let (packet, allocation) = packet.into_parts();
             let result = packet

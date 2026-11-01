@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,12 +17,12 @@ const markers = [`PASS C++ complete file descriptors, ${methodCount} RPC message
   `PASS C++ ${methodCount} generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types`];
 
 // Native command and pin injection is limited to offline runner controls.
-export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
-  if (command === spawnSync && (process.platform !== "win32" || process.arch !== "x64")) throw new Error("C++ installed qualification requires Windows x64");
+export async function qualify(args, { command = captureCommand, toolchain = pinned, onProgress = () => {} } = {}) {
+  if (command === captureCommand && (process.platform !== "win32" || process.arch !== "x64")) throw new Error("C++ installed qualification requires Windows x64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "host-inventory"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
-  const admitted = readPackage({ ...args, ...inputs });
+  const admitted = await readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "generate.mjs", "../toolchains/qualification.json", "../toolchains/toolchain.json", "../toolchains/build-runtime.cmake",
     "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs", "../templates/package/CMakeLists.txt", "../templates/package/AcyclicTransportConfig.cmake.in", ...controls.map(name => "../tests/fixtures/consumer/" + name)];
   const sourceBytes = new Map(sourceNames.map(name => [name, read(name)]));
@@ -36,11 +37,11 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
     INCLUDE: present(host.environment.include).join(";"), LIB: present(host.environment.lib).join(";"), LIBPATH: present(host.environment.lib).join(";"),
     PATH: [...new Set([...Object.values(tools).map(dirname), join(toolchain.system_root, "System32"), toolchain.system_root])].join(delimiter),
     USERPROFILE: join(output, "home"), APPDATA: join(output, "home/AppData/Roaming"), LOCALAPPDATA: join(output, "home/AppData/Local"), TEMP: join(output, "tmp"), TMP: join(output, "tmp") });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, windowsHide: true });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const name of ["home", "home/AppData/Roaming", "home/AppData/Local", "tmp"]) mkdirSync(join(output, name), { recursive: true });
-  put("package.tar.gz", admitted.archiveBytes); put("generation-receipt.json", admitted.receiptBytes); put("host-inventory.json", hostBytes); put("runtime-inventory.json", runtimeBytes);
+  await copyVerifiedArchive(admitted.archivePath, join(output, "package.tar.gz"), admitted.archiveDigest); put("generation-receipt.json", admitted.receiptBytes); put("host-inventory.json", hostBytes); put("runtime-inventory.json", runtimeBytes);
   for (const [name, bytes] of admitted.payload) put("sdk-source/" + name, bytes);
   for (const [name, bytes] of admitted.approved.inputs) put("authority/" + name, bytes); put("authority/rust-authority.json", admitted.approved.bytes);
   for (const name of Object.keys(runtime.files)) put("runtime/" + name, readFileSync(join(inputs["runtime-root"], name)));
@@ -85,10 +86,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
   if (!readFileSync(inputs["host-inventory"]).equals(hostBytes) || !readFileSync(inputs["runtime-inventory"]).equals(runtimeBytes)) throw new Error("external inventory changed");
   verifyHost(hostBytes, toolchain); verifyRuntime(inputs["runtime-root"], runtimeBytes, toolchain); verifyRuntime(runtimeRoot, runtimeBytes, toolchain);
-  const after = readPackage({ ...args, ...inputs });
-  if (!after.archiveBytes.equals(admitted.archiveBytes) || !after.receiptBytes.equals(admitted.receiptBytes)) throw new Error("archive evidence changed");
+  const after = await readPackage({ ...args, ...inputs });
+  if (after.archiveDigest !== admitted.archiveDigest || !after.receiptBytes.equals(admitted.receiptBytes)) throw new Error("archive evidence changed");
   const receipt = { schema: "acyclic.sdk.cpp-installed-qualification.v1", authority: "rust", target: "cpp", source_revision: admitted.receipt.source_revision,
-    authority_manifest_sha256: admitted.receipt.authority_manifest_sha256, archive_sha256: sha256(admitted.archiveBytes), generation_receipt_sha256: sha256(admitted.receiptBytes),
+    authority_manifest_sha256: admitted.receipt.authority_manifest_sha256, archive_sha256: admitted.archiveDigest, generation_receipt_sha256: sha256(admitted.receiptBytes),
     host_inventory_sha256: sha256(hostBytes), runtime_inventory_sha256: sha256(runtimeBytes), host_sdk_files: toolchain.host_inventory_files, runtime_files: toolchain.runtime_files,
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])), payload_sha256: admitted.receipt.output_sha256,
     compiled_sdk_inventory_sha256: sha256(readFileSync(join(sdkBuild, "compile_commands.json"))), compiled_consumer_inventory_sha256: sha256(readFileSync(join(build, "compile_commands.json"))),

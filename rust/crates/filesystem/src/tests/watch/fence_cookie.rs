@@ -67,6 +67,7 @@ fn cookie(watch: &mut NativeWatch) -> Result<HostChange, Box<dyn std::error::Err
 fn armed(watch: &NativeWatch) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     Ok(watch
         .shared
+        .state
         .lock()
         .map_err(|_| "watch state poisoned")?
         .fence

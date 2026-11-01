@@ -9,9 +9,6 @@ use crate::{
     executor::TurnOutput,
 };
 
-/// Bound of one native prompt.
-const MAXIMUM_PROMPT: usize = 32_768;
-
 /// Coordination only. Native session processes are owned by the plugin.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -57,9 +54,9 @@ pub enum SessionAction {
     Recover,
 }
 
-fn prompt_bound(prompt: &str) -> Result<()> {
-    if prompt.is_empty() || prompt.len() > MAXIMUM_PROMPT {
-        return Err(Error::Invalid("native prompt exceeds input bound".into()));
+fn validate_prompt(prompt: &str) -> Result<()> {
+    if prompt.is_empty() {
+        return Err(Error::Invalid("native prompt is empty".into()));
     }
     Ok(())
 }
@@ -95,7 +92,7 @@ fn logged_session_id(log: &[u8]) -> Option<String> {
 }
 
 fn valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+    !id.is_empty() && !id.chars().any(char::is_control)
 }
 
 /// The claim exchange fused onto request `operation`: its own inbox identity.
@@ -126,12 +123,17 @@ impl HostWorkspaceOwner {
         self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
         if let SessionAction::Spawn { prompt } = &action {
-            prompt_bound(prompt)?;
+            validate_prompt(prompt)?;
             host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
             // Replaying a spawn is idempotent only for its own prompt.
             let brief = self.native.brief(&state, reference, prompt).await?;
-            if !state.open_children.contains(&child) {
+            if !state
+                .open_children
+                .contains(&child)
+                .await
+                .map_err(storage)?
+            {
                 // Host-authored parent work is the child's starting point.
                 self.view(parent)?.capture(operation).await?;
                 self.native
@@ -158,7 +160,7 @@ impl HostWorkspaceOwner {
                 accepted = Some(json!({"id": id, "inbox": inbox}));
             }
             SessionAction::Send { prompt } => {
-                prompt_bound(&prompt)?;
+                validate_prompt(&prompt)?;
                 let id = IntentId::try_from(format!("native:{operation}")).map_err(storage)?;
                 let inbox = self.native.message(&child, &id, &prompt).await?;
                 accepted = Some(json!({"id": id, "inbox": inbox}));
@@ -379,16 +381,35 @@ impl HostWorkspaceOwner {
             "pending":pending}))
     }
 
-    /// The open children `parent` spawned, by parent-local name: the whole
-    /// bounded set.
+    /// The open children, enumerated through their persistent membership pages.
     pub(super) async fn sessions(&self, parent: &AgentPath) -> Result<Value> {
-        let (state, session) = self.native.session(parent).await?;
-        // A child whose report a stop dropped is closed all the same.
-        let open = |reference: &&String| {
-            agents::child(&state.path, reference)
-                .is_ok_and(|path| state.open_children.contains(&path))
-        };
-        let references = session.spawned.iter().filter(open).collect::<Vec<_>>();
+        let (state, _) = self.native.session(parent).await?;
+        let mut references = Vec::new();
+        let mut after = None;
+        loop {
+            let children = state
+                .open_children
+                .page(after.as_ref(), 256)
+                .await
+                .map_err(storage)?;
+            if children.is_empty() {
+                break;
+            }
+            after = children.last().cloned();
+            for id in children {
+                let child = state.path.child(&id).map_err(storage)?;
+                let (_, session) = self.native.session(&child).await?;
+                let reference = session.reference.ok_or_else(|| {
+                    Error::Conflict("native child has no committed session reference".into())
+                })?;
+                if agents::child(&state.path, &reference)? != child {
+                    return Err(Error::Conflict(
+                        "native session reference names a different child".into(),
+                    ));
+                }
+                references.push(reference);
+            }
+        }
         Ok(json!({ "references": references }))
     }
 }

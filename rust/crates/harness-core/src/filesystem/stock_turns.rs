@@ -136,10 +136,18 @@ pub struct StockExecutors {
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
     profiles: Option<Arc<Profiles>>,
+    max_children: Option<u32>,
     context: Arc<dyn TurnContext>,
 }
 
 impl Preset {
+    /// The limits shared by this preset's executor, task scope and turn host.
+    #[must_use]
+    pub fn execution_limits(&self, mut limits: Limits) -> Limits {
+        limits.model_steps = limits.model_steps.into_iter().chain(self.max_steps).min();
+        limits
+    }
+
     /// This preset's stock turns over `model` served by `provider`, with
     /// `tools` (the host's registry of this preset's tools) under `limits`,
     /// `compaction` and `context`. The preset's agent tools apply; a host
@@ -154,8 +162,15 @@ impl Preset {
         (limits, compaction): (Limits, CompactionPolicy),
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
-        StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools)
+        let mut executors = StockExecutors::new(
+            model,
+            tools,
+            (self.execution_limits(limits), compaction),
+            context,
+        )
+        .with_agent_tools(&self.tools);
+        executors.max_children = self.max_children;
+        executors
     }
 
     /// This preset's tools, the one construction every host takes them from:
@@ -226,6 +241,7 @@ impl StockExecutors {
             compaction,
             agent_tools: Vec::new(),
             profiles: None,
+            max_children: None,
             context,
         }
     }
@@ -253,7 +269,7 @@ impl StockExecutors {
 
 impl TurnExecutors for StockExecutors {
     fn render_bytes(&self) -> Option<u64> {
-        Some(self.limits.render_bytes)
+        self.limits.render_bytes
     }
 
     fn profiles(&self) -> Option<Arc<dyn SpawnProfiles>> {
@@ -296,6 +312,7 @@ impl TurnExecutors for StockExecutors {
                     self.limits.file_bytes,
                     (
                         &self.agent_tools,
+                        self.max_children,
                         self.profiles
                             .clone()
                             .map(|profiles| profiles as Arc<dyn SpawnProfiles>),

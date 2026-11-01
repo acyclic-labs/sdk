@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readDeclaredTarGzip } from "../../../../../scripts/archive-utils.mjs";
+import { readArchivePayload } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, equalEntries, readGenerationReceipt, sha256 } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -12,7 +12,7 @@ export const pins = {
 export const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 
 // Admission only. Compilation and native transport controls must run separately.
-export function readPackage(args) {
+export async function readPackage(args) {
   if (!/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("archive SHA256 is required");
   const { receiptBytes, receipt, approved } = readGenerationReceipt(args.receipt, args.authority, "swift");
   if (!receipt.output_sha256 || !receipt.input_sha256) throw new Error("unsupported Swift generation receipt");
@@ -38,8 +38,8 @@ export function readPackage(args) {
   for (const source of targets) for (const suffix of [".pb.swift", ".grpc.swift"]) {
     if (!names.has("Sources/AcyclicTransport/" + source.slice(0, -6) + suffix)) throw new Error("tested family bindings missing");
   }
-  const { compressed, payload } = readDeclaredTarGzip(args.package, args.sha256, receipt.output_sha256, 128 * 1024 * 1024);
+  const { digest, payload } = await readArchivePayload(args.package, { canonical, expected: args.sha256, declared: receipt.output_sha256 });
   if (sha256(payload.get("Package.swift")) !== sha256(readFileSync(join(directory, "../templates/package/Package.swift")))
     || !payload.get("authority/rust-authority.json").equals(approved.bytes)) throw new Error("package metadata differs from maintained inputs");
-  return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };
+  return { payload, receipt, receiptBytes, approved, archiveDigest: digest, archivePath: args.package };
 }

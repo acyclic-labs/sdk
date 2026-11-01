@@ -56,7 +56,9 @@ impl CanonicalContextCheckpoint {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
-            || self.selection.message_ids.len() > limits.context_messages
+            || limits
+                .context_messages
+                .is_some_and(|maximum| self.selection.message_ids.len() > maximum.get())
         {
             return Err(stock_boundary(
                 io,
@@ -130,7 +132,11 @@ impl CanonicalContextCheckpoint {
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
         crate::executor::json::json_byte_length(
             self,
-            limits.file_bytes.min(limits.render_bytes),
+            limits
+                .render_bytes
+                .into_iter()
+                .chain(limits.file_bytes)
+                .min(),
             &mut None,
         )
         .map(|_| ())?;

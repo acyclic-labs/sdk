@@ -203,7 +203,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn bind_content(
         &self,
         _: std::sync::Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        _: u64,
+        _: Option<u64>,
     ) -> Option<std::sync::Arc<dyn ModelProvider>> {
         None
     }

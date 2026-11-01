@@ -26,7 +26,7 @@ async fn early_stdin_closure_preserves_a_deny_with_a_large_tool_payload() -> Res
                 command: command.into(),
                 shell: Some(shell.into()),
             },
-            timeout_ms: 5_000,
+            timeout_ms: Some(5_000),
             failure: HookFailure::Report,
         }],
     }])?;
@@ -65,7 +65,7 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
             eprintln!("guard argument was changed");
             std::process::exit(3);
         }
-        eprintln!("expanded guard denied");
+        eprintln!("expanded guard denied{}", "é".repeat(40_000));
         std::process::exit(2);
     }
     let executable = std::env::current_exe().map_err(|error| Error::Invalid(error.to_string()))?;
@@ -109,7 +109,7 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
             .await?;
         assert_eq!(
             output.blocked.as_deref(),
-            Some("expanded guard denied\n"),
+            Some(format!("expanded guard denied{}\n", "é".repeat(40_000)).as_str()),
             "{output:?}"
         );
         assert!(output.diagnostics.is_empty(), "{output:?}");
@@ -246,7 +246,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
             argv: vec!["--exact".into(), "hooks::tests::native_hooks_default_user_guards_and_project_trust_use_one_shared_script".into(),
                 "--nocapture".into(), "--skip".into(), format!("hook-child:{address}")],
         },
-        timeout_ms: 60_000,
+        timeout_ms: Some(60_000),
         failure: HookFailure::Report,
     };
     let root = std::env::current_dir().map_err(process_error)?;
@@ -254,7 +254,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(hook),
         Arc::new((root.clone(), root, vec![])),
         Arc::new(|| Ok(())),
-        65_536,
+        Some(65_536),
         None,
         None,
     ));
@@ -265,12 +265,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
     assert_eq!(stream.read_u8().await.map_err(process_error)?, 1);
     drop(future);
     let mut bytes = Vec::new();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        stream.read_to_end(&mut bytes),
-    )
-    .await
-    .map_err(|_| Error::Invalid("cancelled hook process stayed alive".into()))?;
+    let result = stream.read_to_end(&mut bytes).await;
     match result {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
@@ -431,7 +426,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
                     executable: "guard".into(),
                     argv: vec!["--check".into()],
                 },
-                timeout_ms: 2_000,
+                timeout_ms: Some(2_000),
                 failure: HookFailure::Block,
             },
             HookSpec {
@@ -439,7 +434,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
                     command: "format".into(),
                     shell: Some("sh".into()),
                 },
-                timeout_ms: 60_000,
+                timeout_ms: None,
                 failure: HookFailure::Report,
             },
         ],
@@ -463,7 +458,7 @@ fn imports_normalize_to_the_same_typed_rules_and_validate_atomically() -> Result
         );
     }
     let mut invalid = rule.clone();
-    invalid.hooks[0].timeout_ms = 0;
+    invalid.hooks[0].timeout_ms = Some(0);
     assert!(typed.add_rules([rule, invalid]).is_err());
     assert_eq!(
         typed
@@ -1181,7 +1176,7 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         executable: "deny".into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 },
                 HookSpec {
@@ -1189,7 +1184,7 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         executable: "expand".into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 },
             ],
@@ -1207,7 +1202,10 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         }
                         _ => vec![0; 100],
                     };
-                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    assert!(
+                        stdout.len() <= quota.expect("selected finite capture policy"),
+                        "fixture exceeds capture quota"
+                    );
                     std::future::ready(Ok((Some(0), stdout, vec![])))
                 },
             )
@@ -1243,7 +1241,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                         executable: command.into(),
                         argv: vec![],
                     },
-                    timeout_ms: 1000,
+                    timeout_ms: Some(1000),
                     failure: HookFailure::Report,
                 })
                 .collect(),
@@ -1255,7 +1253,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                 let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
                     vec![0;1000]
                 } else { br#"{"continue":false,"stopReason":"deny"}"#.to_vec() };
-                assert!(stdout.len() <= quota);
+                assert!(stdout.len() <= quota.expect("selected finite capture policy"));
                 std::future::ready(Ok((Some(0),stdout,vec![])))
             }).await?;
         assert_eq!(calls, 2);

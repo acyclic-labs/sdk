@@ -4,9 +4,8 @@ use super::*;
 #[napi(object)]
 pub struct NativeSourceOptions {
     pub mode: String,
-    pub maximum_paths: NapiU32,
-    pub maximum_extent_spans: NapiU32,
-    pub maximum_queued_changes: NapiU32,
+    pub maximum_paths: Option<NapiU32>,
+    pub maximum_extent_spans: Option<NapiU32>,
     pub excluded_paths: Option<Vec<String>>,
 }
 

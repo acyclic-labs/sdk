@@ -220,9 +220,9 @@ fn binding_with(
         Turns {
             executors,
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
@@ -1078,9 +1078,9 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         Turns {
             executors: Arc::new(Never),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                maximum_bytes: Some(64 * 1024),
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),

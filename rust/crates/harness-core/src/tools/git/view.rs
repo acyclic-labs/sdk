@@ -106,8 +106,9 @@ impl<
     pub(super) async fn read(
         self,
         path: &str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
     ) -> crate::Result<acyclic_stream::OwnedBytes> {
+        let maximum = maximum.into();
         let cancellation = CancellationToken::new();
         match self {
             #[cfg(all(
@@ -254,9 +255,8 @@ impl<
     pub(crate) async fn optional(
         self,
         path: &str,
-        maximum: u64,
     ) -> crate::Result<Option<acyclic_stream::OwnedBytes>> {
-        match self.read(path, maximum).await {
+        match self.read(path, None).await {
             Ok(bytes) => Ok(Some(bytes)),
             #[cfg(not(target_arch = "wasm32"))]
             Err(Error::NativeSource { source, .. })

@@ -139,13 +139,10 @@ pub struct Page {
 pub struct RootId(Vec<u8>);
 
 impl RootId {
-    /// Largest root identity in bytes.
-    pub const MAX_BYTES: usize = 1024;
-
-    /// Wraps a nonempty identity of at most [`Self::MAX_BYTES`].
+    /// Wraps a nonempty identity.
     pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, Error> {
         let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > Self::MAX_BYTES {
+        if bytes.is_empty() {
             return Err(wire::ErrorCode::InvalidArgument.into());
         }
         Ok(Self(bytes))

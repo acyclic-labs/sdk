@@ -260,7 +260,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "filesystem")]
             let funded = self
                 .io
-                .map(|io| io.encode(&definitions, u64::MAX, false))
+                .map(|io| io.encode(&definitions, None, false))
                 .transpose()?;
             #[cfg(not(feature = "filesystem"))]
             let funded: Option<acyclic_stream::OwnedBytes> = None;
@@ -276,7 +276,7 @@ impl StockExecution<'_> {
                         )
                     })?,
             };
-            let maximum = usize::try_from(self.stock.limits.render_bytes)
+            let maximum = usize::try_from(self.stock.limits.render_bytes.unwrap_or(u64::MAX))
                 .unwrap_or(usize::MAX)
                 .saturating_sub(crate::tool::schema::json_envelope_bytes()?);
             let token = CancellationToken::new();
@@ -358,7 +358,7 @@ impl StockExecution<'_> {
                         };
                         let ok = result.is_ok();
                         let (value, _result_hold) = match result { Ok(result) => result, Err(message) => (Value::String(message), None) };
-                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, u64::MAX, work))?;
+                        let output_bytes = with_history_io(self.io, |work| crate::executor::json::json_byte_length(&value, None, work))?;
                         let entry = CallLog { kind: "code.call", call_id: &parent.call_id, ordinal, tool: &call.name.value, ok, input_bytes, output_bytes };
                         let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:{ordinal}:result", parent.operation_id), work))?;
                         #[cfg(feature = "filesystem")]
@@ -380,7 +380,7 @@ impl StockExecution<'_> {
                         struct Reply<'a> { ok: bool, value: &'a Value }
                         let reply = Reply { ok, value: &value };
                         #[cfg(feature = "filesystem")]
-                        let funded = self.io.map(|io| io.encode(&reply, u64::MAX, false)).transpose()?;
+                        let funded = self.io.map(|io| io.encode(&reply, None, false)).transpose()?;
                         #[cfg(not(feature = "filesystem"))]
                         let funded: Option<acyclic_stream::OwnedBytes> = None;
                         let reply = match funded {
@@ -409,7 +409,7 @@ impl StockExecution<'_> {
                     let mut value = serde_json::json!({"error": ""});
                     // Reserve the exact wrapper before fitting escaped text.
                     let overhead = with_history_io(self.io, |work| {
-                        crate::executor::json::json_byte_length(&value, maximum as u64, work)
+                        crate::executor::json::json_byte_length(&value, Some(maximum as u64), work)
                     })?;
                     let budget =
                         maximum.saturating_sub(usize::try_from(overhead).unwrap_or(usize::MAX));
@@ -422,7 +422,7 @@ impl StockExecution<'_> {
             // receipt wrapper is never part of the model's output.
             stock_json_bound(
                 value.get("value").unwrap_or(&value),
-                maximum as u64,
+                Some(maximum as u64),
                 self.io,
             )?;
             let mut context = Vec::new();

@@ -175,8 +175,7 @@ impl<
             .sort_unstable_by(|a, b| exactify_path_order(a, b));
         let result = async {
             let limits = self.workspace.limits();
-            let maximum = (limits.maximum_checkout_dependencies as usize
-                / (limits.maximum_path_depth as usize + 4))
+            let maximum = (limits.maximum_directory_page_entries as usize)
                 .min(limits.maximum_mutations_per_batch as usize / 4)
                 .max(1);
             let mut generation = start.id;

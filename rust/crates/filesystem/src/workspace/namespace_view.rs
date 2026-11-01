@@ -12,10 +12,11 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
     pub(crate) async fn records(
         &self,
         ids: &[FileId],
-        maximum_entries: u32,
+        maximum_entries: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
+        let maximum_entries = maximum_entries.into();
         let mut matches = (
             NamespaceRecordSearch {
                 records: NamespaceRecords::new(),
@@ -23,7 +24,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
             },
             accounting.claim_owned(0, 0)?,
         );
-        if ids.is_empty() || maximum_entries == 0 {
+        if ids.is_empty() || maximum_entries == Some(0) {
             return Ok(matches);
         }
         let result = super::reverse_traversal::collect_selected(

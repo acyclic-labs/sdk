@@ -116,7 +116,7 @@ mod tests {
             operation_id: OperationId::new(),
             input: selected.messages.last().unwrap().content.clone(),
             selected_context: Some(selected),
-            max_steps: 3,
+            max_steps: Some(3),
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");

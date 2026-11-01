@@ -10,8 +10,8 @@ use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 
 use crate::{
-    MAX_COMMAND_BYTES, MemoryStream, StreamError, StreamProvider, StreamProviderExt as _, memory,
-    wire, wire_codec,
+    MAX_COMMAND_BYTES, MemoryStream, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _, memory, wire, wire_codec,
 };
 
 #[cfg(test)]

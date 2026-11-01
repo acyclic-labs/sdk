@@ -15,7 +15,7 @@ const fixtureDirectory = new URL("../../../../rust/crates/filesystem/tests/fixtu
 const source = JSON.parse(readFileSync(new URL("source.json", fixtureDirectory), "utf8"));
 const cases = JSON.parse(readFileSync(new URL("golden.json", fixtureDirectory), "utf8"));
 
-test("Cloud filesystem fixture provenance pins its handler tests and exact descriptor", () => {
+test("Filesystem fixture pins Cloud handler inputs and its SDK capture descriptor", () => {
   assert.equal(source.repository, "acyclic-labs/cloud");
   assert.match(source.commit, /^[a-f0-9]{40}$/);
   assert.match(source.sdk_pin, /^[a-f0-9]{40}$/);
@@ -24,7 +24,9 @@ test("Cloud filesystem fixture provenance pins its handler tests and exact descr
   for (const file of source.files) assert.match(file.blob, /^[a-f0-9]{40}$/);
   const descriptor = readFileSync(new URL("../../../../compatibility/descriptors/filesystem-v2.bin", import.meta.url));
   const blob = createHash("sha1").update(`blob ${descriptor.length}\0`).update(descriptor).digest("hex");
-  assert.equal(blob, source.descriptor_blob, "refresh Cloud's SDK pin and these fixtures together");
+  assert.match(source.sdk_capture.commit, /^[a-f0-9]{40}$/);
+  assert.equal(source.sdk_capture.recorder, "rust/crates/filesystem/examples/record_cloud_contract.rs");
+  assert.equal(blob, source.sdk_capture.descriptor_blob, "regenerate the SDK capture after descriptor changes");
   for (const method of ["CreateWorkspace", "ApplyTransaction", "Read", "ListDirectory", "DeleteWorkspace"]) {
     assert.ok(cases.some(row => row.method === method), `missing ${method} golden`);
   }

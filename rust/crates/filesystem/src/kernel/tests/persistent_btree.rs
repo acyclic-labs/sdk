@@ -5,7 +5,7 @@ use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
 use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<LogicalName, crate::kernel::TreePageError> {
-    LogicalName::new(NameEncoding::PosixBytes, vec![byte], 1)
+    LogicalName::new(NameEncoding::PosixBytes, vec![byte])
 }
 
 fn entry(byte: u8) -> Result<TreeEntry, crate::kernel::TreePageError> {
@@ -43,33 +43,17 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
     let limits = DecodeLimits::default();
     let mutation = remove(1)?;
 
-    for (candidate_root, mutations, maximum, candidate_limits, expected) in [
+    for (candidate_root, mutations, candidate_limits, expected) in [
         (
             root(ObjectKind::Blob, 1),
             vec![mutation.clone()],
-            1,
             limits,
             "wrong-kind",
         ),
-        (root(ObjectKind::TreePage, 1), vec![], 1, limits, "empty"),
+        (root(ObjectKind::TreePage, 1), vec![], limits, "empty"),
         (
             root(ObjectKind::TreePage, 1),
             vec![mutation.clone()],
-            0,
-            limits,
-            "too-many",
-        ),
-        (
-            root(ObjectKind::TreePage, 1),
-            vec![mutation.clone(), mutation.clone()],
-            1,
-            limits,
-            "too-many",
-        ),
-        (
-            root(ObjectKind::TreePage, 1),
-            vec![mutation.clone()],
-            1,
             DecodeLimits {
                 maximum_page_items: 1,
                 ..limits
@@ -80,7 +64,6 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         let failure = validate::<TreeFormat, TreeMutation>(
             Some(candidate_root),
             &mutations,
-            maximum,
             candidate_limits,
         )
         .err()
@@ -88,18 +71,12 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
         match expected {
             "wrong-kind" => assert!(matches!(failure, Error::WrongRootKind)),
             "empty" => assert!(matches!(failure, Error::Empty)),
-            "too-many" => assert!(matches!(failure, Error::TooManyMutations)),
             "invalid-limits" => assert!(matches!(failure, Error::InvalidLimits)),
             _ => unreachable!(),
         }
     }
 
-    validate::<TreeFormat, TreeMutation>(
-        Some(root(ObjectKind::TreePage, 1)),
-        &[mutation],
-        1,
-        limits,
-    )?;
+    validate::<TreeFormat, TreeMutation>(Some(root(ObjectKind::TreePage, 1)), &[mutation], limits)?;
     Ok(())
 }
 

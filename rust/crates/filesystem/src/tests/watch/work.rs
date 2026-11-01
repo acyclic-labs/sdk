@@ -1,5 +1,63 @@
 use super::*;
 
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::source_watch::HostChangeSink as _;
+    use std::future::Future as _;
+    use std::task::{Context, Waker};
+    let root = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(root.path(), measured_watch_options())?;
+    let scan = watch.begin_rescan()?;
+    watch.finish_rescan(scan)?;
+    let work = native_watch_work()?;
+    let mut first = std::pin::pin!(watch.subscription().changed_with_native_work(&work));
+    let mut second = std::pin::pin!(watch.subscription().changed_with_native_work(&work));
+    assert!(
+        first
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        second
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    let (sender, _receiver) = crate::watch_queue::channel(None);
+    let sink = NativeEventDelivery {
+        context: NativeEventContext {
+            root: watch.root.clone(),
+            root_identity: watch.root_identity,
+            profile: watch.profile,
+            limits: VolumeLimits::default(),
+            _root_allocation: None,
+        },
+        sender,
+        shared: Arc::clone(&watch.shared),
+        queued: Arc::clone(&watch.queued),
+        fenced: Arc::clone(&watch.fenced),
+    };
+    sink.delivery_lost();
+    first.await?;
+    second.await?;
+    assert!(matches!(
+        watch
+            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+            .value,
+        WatchBatch::RescanRequired {
+            reason: WatchInvalidationReason::BackendError,
+            ..
+        }
+    ));
+    // The notification is not the evidence: a later subscriber sees the same
+    // retained failure even though no callback will ever fire again.
+    watch.subscription().changed_with_native_work(&work).await?;
+    Ok(())
+}
+
 pub(super) fn measured_watch_options() -> NativeWatchOptions {
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.recursive = false;
@@ -340,6 +398,7 @@ fn failed_compound_baselines_release_scan_custody_without_acknowledging_the_root
         assert!(
             watch
                 .shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .rescan
@@ -399,6 +458,7 @@ fn baseline_failures_leave_the_rescan_recoverable() -> Result<(), Box<dyn std::e
     assert!(
         watch
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .rescan
@@ -472,6 +532,7 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
     assert!(
         watch
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .rescan
@@ -588,7 +649,6 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
     .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
     let options = crate::watch::NativeWatchOptions {
-        maximum_queued_changes: 65_536,
         recursive: false,
         ..crate::watch::NativeWatchOptions::new(crate::VolumeLimits::default())
     };

@@ -33,7 +33,7 @@ struct UnifiedHunk<'a> {
     lines: Vec<&'a str>,
 }
 
-/// Applies a bounded UTF-8 patch under one writer permit.
+/// Applies a UTF-8 patch under one writer permit.
 pub async fn apply_git_patch<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     workspace: &Workspace<A, O>,
     patch: &[u8],
@@ -91,9 +91,20 @@ pub(super) async fn apply_git_patch_at<
         let original = if patch.old_path.is_none() {
             acyclic_stream::OwnedBytes::from_static(b"")
         } else {
+            let length = head
+                .stat(
+                    &format!("/{path}"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+                .logical_bytes
+                .ok_or_else(|| GitPatchError::Invalid("patch preimage is not a file".to_owned()))?;
             head.read(
                 &format!("/{path}"),
-                MAXIMUM_PATCH_FILE_BYTES,
+                length,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )

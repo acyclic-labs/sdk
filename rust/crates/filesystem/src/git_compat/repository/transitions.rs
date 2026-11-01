@@ -78,9 +78,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 Err(GitCompatError::NothingToCommit) => return Ok(None),
                 Err(error) => return Err(error),
             };
-            state.record_request(request, self.unanswered(), &output);
+            state
+                .record_request(request, self.unanswered(), &output)
+                .map_err(GitCompatError::RequestObservation)?;
             if continues != request {
-                state.record_request(continues, self.unanswered(), &output);
+                state
+                    .record_request(continues, self.unanswered(), &output)
+                    .map_err(GitCompatError::RequestObservation)?;
             }
             Ok(Some(output))
         })

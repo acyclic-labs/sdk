@@ -6,13 +6,13 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
     let cancellation = CancellationToken::new();
 
     let mut zero_changes = request(valid.clone(), valid.clone(), valid.clone());
-    zero_changes.maximum_changes = 0;
+    zero_changes.maximum_changes = Some(0);
     let failure = merge_error(zero_changes, &cancellation).await?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let mut zero_conflicts = request(valid.clone(), valid.clone(), valid.clone());
-    zero_conflicts.maximum_conflicts = 0;
+    zero_conflicts.maximum_conflicts = Some(0);
     assert!(matches!(
         merge_error(zero_conflicts, &cancellation).await?.error,
         MergeGenerationError::ChangeLimit
@@ -120,7 +120,7 @@ async fn directory_scalar_conflicts_are_exact_and_bounded() -> Result<(), Box<dy
 #[test]
 fn tree_mutation_preserves_exact_names_and_file_identity() -> Result<(), Box<dyn std::error::Error>>
 {
-    let name = LogicalName::new(NameEncoding::Utf8, b"entry".to_vec(), 16)?;
+    let name = LogicalName::new(NameEncoding::Utf8, b"entry".to_vec())?;
     let before = TreeEntry {
         name: name.clone(),
         file_id: FileId::from_bytes([1; 16]),
@@ -157,8 +157,8 @@ async fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
     let target_id = FileId::from_bytes([31; 16]);
     let directory_id = FileId::from_bytes([32; 16]);
     let target = record(31, 1, 2, FilePayload::Empty, FileKind::Fifo);
-    let a = LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 8)?;
-    let b = LogicalName::new(NameEncoding::Utf8, b"b".to_vec(), 8)?;
+    let a = LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?;
+    let b = LogicalName::new(NameEncoding::Utf8, b"b".to_vec())?;
     let entry = |name: LogicalName| TreeEntry {
         name,
         file_id: target_id,
@@ -283,7 +283,7 @@ async fn pruning_an_unbound_directory_recomputes_descendant_links()
     let entries = put_tree(
         &store,
         vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 8)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?,
             file_id: child_id,
             kind: FileKind::Fifo,
         }],

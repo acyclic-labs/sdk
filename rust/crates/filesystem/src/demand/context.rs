@@ -71,35 +71,81 @@ mod lock_probe;
 mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
+    released: acyclic_native_runtime::OwnershipReleaseSignal<CaptureRetirement>,
+}
+
+struct CaptureRetirement {
     retained: AtomicU64,
+    // The final packet may drop while the original leaf is locked. Keep both
+    // control guards with the observer, which retires them outside that lock.
     #[cfg(any(test, feature = "native-watch"))]
-    header: crate::NativeAllocation,
+    controls: Mutex<Option<[crate::NativeAllocation; 2]>>,
 }
 impl CaptureTransientCustody {
+    #[cfg(test)]
+    pub(crate) const fn allocation_bytes() -> u64 {
+        (acyclic_native_runtime::arc_allocation_bytes::<Self>()
+            + acyclic_native_runtime::OwnershipReleaseSignal::<CaptureRetirement>::allocation_bytes(
+            )) as u64
+    }
+
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
-        Ok(Arc::new(Self {
+        let header = work.claim(
+            acyclic_native_runtime::arc_allocation_bytes::<Self>() as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        let allocation = work.claim(
+            acyclic_native_runtime::OwnershipReleaseSignal::<CaptureRetirement>::allocation_bytes()
+                as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        let released = acyclic_native_runtime::OwnershipReleaseSignal::new(CaptureRetirement {
             retained: AtomicU64::new(0),
-            header: work.claim(
-                std::mem::size_of::<Self>() as u64,
-                1,
-                WorkCounters::UNCHARGED,
-            )?,
-        }))
+            controls: Mutex::new(Some([header, allocation])),
+        });
+        Ok(Arc::new(Self { released }))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
-        self.header.work().shares_allocation_context(work)
+        self.released
+            .state()
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|controls| controls[0].work().shares_allocation_context(work))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn take_retained_bytes(&self) -> u64 {
-        self.retained.swap(0, Ordering::AcqRel)
+        self.released.state().retained.swap(0, Ordering::AcqRel)
+    }
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn retire(self: Arc<Self>) -> (u64, [crate::NativeAllocation; 2]) {
+        let barrier = self.released.release_barrier();
+        drop(self);
+        barrier.wait();
+        // Notification can race the signal's final Arc decrement. Move the
+        // guards to this observer, so neither can ever drop on the packet
+        // thread while that thread holds the original leaf lock.
+        let controls = barrier
+            .state()
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("one capture retirement observer");
+        (barrier.state().retained.swap(0, Ordering::AcqRel), controls)
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
-        self.retained
+        self.released
+            .state()
+            .retained
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current.checked_sub(bytes)
             })
@@ -107,23 +153,31 @@ impl CaptureTransientCustody {
             .map_err(|_| crate::WorkError::Overflow)
     }
     pub(super) fn claim(&self, bytes: u64) {
-        self.retained.fetch_add(bytes, Ordering::AcqRel);
+        self.released
+            .state()
+            .retained
+            .fetch_add(bytes, Ordering::AcqRel);
     }
     pub(super) fn release(&self, bytes: u64) {
         #[cfg(all(test, loom))]
         if model_checking::broken_release() {
-            let current = self.retained.load(Ordering::Acquire);
-            self.retained
+            let current = self.released.state().retained.load(Ordering::Acquire);
+            self.released
+                .state()
+                .retained
                 .store(current.saturating_sub(bytes), Ordering::Release);
             return;
         }
-        let _ = self
-            .retained
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                Some(current.saturating_sub(bytes))
-            });
+        let _ = self.released.state().retained.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| Some(current.saturating_sub(bytes)),
+        );
     }
 }
+
+#[cfg(all(test, not(loom)))]
+mod retirement_tests;
 
 pub(crate) fn native_demand_error(error: std::io::Error) -> DemandError {
     error

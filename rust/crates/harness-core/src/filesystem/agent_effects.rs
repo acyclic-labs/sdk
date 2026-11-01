@@ -19,7 +19,7 @@ pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O:
     stream: Arc<P>,
     agent: AgentPath,
     directory: String,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
@@ -28,14 +28,14 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
         stream: Arc<P>,
         agent: AgentPath,
         (turn, segment): (OperationId, u32),
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Self {
         Self {
             files,
             stream,
             agent,
             directory: format!("effects/v3/{turn}/{segment}"),
-            maximum_bytes,
+            maximum_bytes: maximum_bytes.into(),
         }
     }
 }
@@ -186,7 +186,6 @@ mod tests {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let files = Arc::new(AgentInternalFiles::new(host.clone(), volume.clone(), write));
@@ -270,7 +269,11 @@ mod tests {
         let saved = br#"{"spawn":{"brief":"review the diff","intent":"first"}}"#;
         assert_eq!(
             files
-                .create(&format!("{}/0000000001-a.json", old.directory), saved, 4096)
+                .create(
+                    &format!("{}/0000000001-a.json", old.directory),
+                    saved,
+                    Some(4096),
+                )
                 .await?,
             None
         );
@@ -324,7 +327,7 @@ mod tests {
                 panic!("new file already exists");
             };
         }
-        assert!(files.read(abandoned_path, 4096).await?.is_none());
+        assert!(files.read(abandoned_path, Some(4096)).await?.is_none());
 
         // Removing a file after selection changes a fresh read, but cannot
         // remove a listed effect from the retained original generation.
@@ -348,12 +351,12 @@ mod tests {
             ))
             .await
             .map_err(super::super::map_error)?;
-        assert!(files.read(&removed, 4096).await?.is_none());
+        assert!(files.read(&removed, Some(4096)).await?.is_none());
         assert_eq!(reader.list(&effects.directory).await?, selected);
         let mut retained = Vec::new();
         for name in selected {
             let bytes = reader
-                .read(&format!("{}/{name}", effects.directory), 4096)
+                .read(&format!("{}/{name}", effects.directory), Some(4096))
                 .await?
                 .ok_or_else(|| Error::Storage("selected effect disappeared".into()))?;
             retained.push(decode(&bytes)?);

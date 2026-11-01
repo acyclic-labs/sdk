@@ -48,7 +48,7 @@ async fn bound_in_directory<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     let paths = view
         .paths_for_file_id(
             directory,
-            1,
+            None,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )

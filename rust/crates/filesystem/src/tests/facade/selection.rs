@@ -22,17 +22,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
         )
         .await?
         .value;
-    let limits = source.workspace.volume.config().limits;
-    for invalid in [
-        "/../file".to_owned(),
-        "/bad\0name".to_owned(),
-        format!(
-            "/{}",
-            "x".repeat(limits.maximum_component_bytes as usize + 1)
-        ),
-        format!("/{}", "a/".repeat(limits.maximum_path_depth as usize + 1)),
-        format!("/{}", "x".repeat(limits.maximum_path_bytes as usize + 1)),
-    ] {
+    for invalid in ["/../file".to_owned(), "/bad\0name".to_owned()] {
         let paths = vec![invalid];
         let owned = (paths.capacity() * std::mem::size_of::<String>() + paths[0].capacity()) as u64;
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(

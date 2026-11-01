@@ -152,6 +152,20 @@ fn kills_accumulate_and_yank_rotation_is_cancelled_by_other_actions() {
     editor.insert("!", 6);
     editor.rotate_yank(7);
     assert_eq!(editor.text(), "two three!");
+
+    let mut editor = Editor::default();
+    for index in 0..65 {
+        editor.insert(&index.to_string(), index * 2);
+        editor.kill(Motion::LineStart, index * 2 + 1);
+    }
+    editor.yank(131);
+    assert_eq!(editor.text(), "64");
+    for index in (0..64).rev() {
+        editor.rotate_yank(132);
+        assert_eq!(editor.text(), index.to_string());
+    }
+    editor.rotate_yank(133);
+    assert_eq!(editor.text(), "64");
 }
 
 #[test]

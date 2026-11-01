@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -16,8 +16,8 @@ const negatives = { InvalidActorBytes: "Google.Protobuf.ByteString", InvalidOpti
 const xml = value => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 // Injected commands/pins support offline runner tests. The CLI uses the real tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
-  if (process.platform !== "win32" && command === spawnSync) throw new Error("installed qualification currently requires Windows NuGet.exe");
+export function qualify(args, { command = captureCommand, toolchain = pinned } = {}) {
+  if (process.platform !== "win32" && command === captureCommand) throw new Error("installed qualification currently requires Windows NuGet.exe");
   const packageRoot = realpathSync(args.package);
   const authority = realpathSync(args.authority);
   const dotnet = realpathSync(args.dotnet);
@@ -65,7 +65,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_CLI_USE_MSBUILD_SERVER: "0", MSBUILDDISABLENODEREUSE: "1",
     NUGET_PACKAGES: join(output, "cache"), NUGET_HTTP_CACHE_PATH: join(output, "http-cache"), DOTNET_PROCESSOR_COUNT: "1" });
   Object.assign(env, { DOTNET_CLI_UI_LANGUAGE: "en-US", VSLANG: "1033", NUGET_CERT_REVOCATION_MODE: "offline" });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000 });
   // Check version in a directory carrying the package's exact global.json.
   const sdk = execute(dotnet, ["--list-sdks"], directory);
   if (sdk.error || sdk.status !== 0 || !(sdk.stdout ?? "").split(/\r?\n/).some(line => line.startsWith(`${toolchain.dotnet_sdk} [`))) {

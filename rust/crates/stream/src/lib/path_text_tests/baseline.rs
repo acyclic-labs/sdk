@@ -15,7 +15,7 @@ impl BaselinePath {
 
     fn validate(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
-            || path.len() > MAX_PATH_BYTES
+            || path.len() > 65_535
             || !path.is_ascii()
             || path.starts_with('/')
             || path.ends_with('/')

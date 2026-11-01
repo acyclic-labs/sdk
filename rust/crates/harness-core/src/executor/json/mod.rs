@@ -20,6 +20,8 @@ pub(crate) use spans::{JsonSpans, SpanEvent, SpanKind};
 pub(crate) struct BorrowedText<'a>(#[serde(borrow)] pub std::borrow::Cow<'a, str>);
 #[cfg(test)]
 mod item_budget_tests;
+#[cfg(test)]
+mod policy_tests;
 mod records;
 #[doc(hidden)]
 pub use identity::{
@@ -91,13 +93,13 @@ fn input_error(kind: JsonInputError, code: Option<crate::wire::ErrorCode>) -> Er
     Error::Invalid(kind.to_string())
 }
 
-/// Finite byte, node and nesting admission for one document.
+/// Optional byte and node policies, with nesting admission for one document.
 #[derive(Clone, Copy, Debug)]
 pub struct JsonBounds {
-    /// UTF-8 input/output bytes.
-    pub maximum_bytes: u64,
-    /// Values and keys, including replaced duplicate entries.
-    pub maximum_items: u64,
+    /// Selected UTF-8 input/output byte policy; None accepts any size.
+    pub maximum_bytes: Option<u64>,
+    /// Selected value/key policy, including replaced duplicate entries.
+    pub maximum_items: Option<u64>,
     /// Zero-based nesting depth.
     pub maximum_depth: u32,
 }

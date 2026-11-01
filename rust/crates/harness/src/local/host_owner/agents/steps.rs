@@ -19,7 +19,6 @@ pub(super) fn start(mut session: Session, inbox: u64, input: TurnInput) -> Resul
 /// The open turn's step: `session` in its checkpoint, awaiting the next hook.
 pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
     Ok(TurnStep {
-        reserved_children: 0,
         checkpoint: Some(serde_json::to_vec(session).map_err(storage)?),
         outs,
         wait: Wait::Host(HOST.into()),
@@ -29,7 +28,6 @@ pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
 
 pub(super) fn idle(outs: Vec<Out>) -> TurnStep {
     TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs,
         wait: Wait::Input,
@@ -45,10 +43,10 @@ pub(super) fn reject(session: &mut Session, id: &IntentId, reason: &str) -> Opti
     None
 }
 
-/// Applies owner request `id`, returning the input it settled. Stale or
-/// replayed requests are recorded, never failed: a failed turn would leave its
-/// input queued ahead of every later one.
-pub(super) fn apply(
+/// Applies owner request `id` at inbox sequence `inbox`, returning the input it
+/// settled. Stale or replayed requests are recorded, never failed: a failed
+/// turn would leave its input queued ahead of every later one.
+pub(super) async fn apply(
     agent: &AgentState,
     session: &mut Session,
     id: &IntentId,
@@ -62,6 +60,8 @@ pub(super) fn apply(
             if agent
                 .open_children
                 .contains(&child(&agent.path, &reference)?)
+                .await
+                .map_err(storage)?
             {
                 return Ok(reject(session, id, "native child already exists"));
             }
@@ -72,7 +72,6 @@ pub(super) fn apply(
                 volumes: Vec::new(),
                 history: None,
             });
-            session.spawned.push(reference);
         }
         Event::Claim => {
             let reason = match &session.running {
@@ -103,7 +102,7 @@ pub(super) fn apply(
                 ));
             }
             session.settled += 1;
-            session.result = Some(bounded(outcome));
+            session.result = Some(outcome);
             session.events = events;
             return Ok(session.running.take());
         }
@@ -140,26 +139,4 @@ fn claim_bytes(agent: &AgentState, session: &Session) -> [u8; 16] {
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     bytes
-}
-
-fn bounded(outcome: crate::Outcome<TurnOutput>) -> crate::Outcome<TurnOutput> {
-    let truncate = |text: String| -> String {
-        let mut end = text.len().min(MAXIMUM_MESSAGE);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text[..end].to_owned()
-    };
-    match outcome {
-        crate::Outcome::Succeeded(mut output) => {
-            output.text = truncate(output.text);
-            output.metadata = Value::Null;
-            output.attachments.clear();
-            crate::Outcome::Succeeded(output)
-        }
-        crate::Outcome::Failed { message } => crate::Outcome::Failed {
-            message: truncate(message),
-        },
-        other => other,
-    }
 }

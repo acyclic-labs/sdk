@@ -20,13 +20,23 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
             Error::Unsupported(format!("{command}: {reason}"))
         }
         GitCompatError::Store(error) => S::error(error),
+        GitCompatError::RequestObservation(error) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                acyclic_fs::LazyWorkspaceError::NativeRecordIo(error, None).into()
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                acyclic_fs::LazyWorkspaceError::Demand(acyclic_fs::DemandError::Io(error)).into()
+            }
+        }
         GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
             Error::Storage(error.to_string())
         }
         GitCompatError::WorkspaceMismatch
+        | GitCompatError::Contended
         | GitCompatError::UnbornHead
         | GitCompatError::NothingToCommit
-        | GitCompatError::Contended
         | GitCompatError::TransitionPending(_)
         | GitCompatError::StaleTransition => Error::Conflict(error.to_string()),
     }
@@ -66,6 +76,18 @@ mod tests {
         assert_eq!(allocation.bytes(), 123);
         drop(error);
         assert_eq!(work.live_allocation_bytes(), baseline);
+        let error = compat_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
+            GitCompatError::RequestObservation(std::io::ErrorKind::PermissionDenied.into()),
+        );
+        let Error::NativeSource { source, .. } = &error else {
+            return Err(Error::Invalid("request observation cause was lost".into()));
+        };
+        let acyclic_fs::LazyWorkspaceError::NativeRecordIo(cause, None) = source.as_ref() else {
+            return Err(Error::Invalid(
+                "request observation acquired foreign custody".into(),
+            ));
+        };
+        assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied);
         Ok(())
     }
 }

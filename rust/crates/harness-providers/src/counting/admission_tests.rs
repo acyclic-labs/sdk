@@ -136,7 +136,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         assert!(provider.count_tokens(&request).await.is_err());
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
-    Arc::make_mut(&mut provider.config).max_event_bytes = 8;
+    Arc::make_mut(&mut provider.config).max_event_bytes = Some(8);
     provider.transport = crate::deadline::Bounded::new(
         Arc::new(CountResponse {
             status: 200,
@@ -147,16 +147,16 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     );
     let (request, _) = request(&provider)?;
     assert!(provider.count_tokens(&request).await.is_err());
+    Arc::make_mut(&mut provider.config).max_event_bytes = Some(18);
     provider.transport = crate::deadline::Bounded::new(
         Arc::new(CountResponse {
             status: 200,
-            body: b"",
-            empty_chunks: 9,
+            body: b"{\"input_tokens\":1}",
+            empty_chunks: 4097,
         }),
         crate::TimeoutSpec::DEFAULT,
     );
-    let error = provider.count_tokens(&request).await.unwrap_err();
-    assert!(error.to_string().contains("item limit"));
+    assert_eq!(provider.count_tokens(&request).await?.input_tokens, 1);
     Ok(())
 }
 

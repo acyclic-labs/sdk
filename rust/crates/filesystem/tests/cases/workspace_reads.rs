@@ -1,8 +1,8 @@
 //! Focused public whole-file read behavior tests.
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, FsError, IdempotencyKey,
-    Transaction, TransactionCommit, WorkBudget, WorkspaceError,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, Transaction,
+    TransactionCommit, WorkBudget, WorkspaceError,
 };
 use bytes::Bytes;
 use std::error::Error;
@@ -144,36 +144,6 @@ async fn whole_file_read_resolves_once_and_preserves_admission() -> Result<(), B
             .read("/entry", 300, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .is_err()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn whole_file_read_preserves_volume_read_limit() -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    config.limits.maximum_read_bytes = 4;
-    let workspace = unbounded!(fs, create_workspace_with_config("read-limit", config))?;
-    workspace.write_text("/entry", "abc").await?;
-    let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(transaction, resize("/entry", 5))?;
-    assert!(matches!(
-        commit(&mut transaction).await?,
-        TransactionCommit::Committed(_)
-    ));
-    let cancellation = CancellationToken::new();
-    let error = workspace
-        .read("/entry", 5, WorkBudget::UNBOUNDED, &cancellation)
-        .await;
-    assert!(matches!(error, Err(ref failure) if matches!(
-        failure.error,
-        WorkspaceError::Filesystem(FsError::FileRead(acyclic_fs::kernel::FileRangeReadError::InvalidRange))
-    )));
-    assert_eq!(
-        unbounded!(workspace, read_range("/entry", 0, 4))?
-            .bytes
-            .as_ref(),
-        b"abc\0"
     );
     Ok(())
 }

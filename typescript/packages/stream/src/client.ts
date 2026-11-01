@@ -1,6 +1,5 @@
 import { DefaultStreamProvider } from "./default.js";
 import { MemoryStreamProvider } from "./memory.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
@@ -181,8 +180,8 @@ export class Stream<Value = Uint8Array> {
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
   append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {
-    if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
-      return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
+    if (values.length < 1) {
+      return Promise.reject(new StreamError("limit_exceeded", "append requires at least one record"));
     }
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);
@@ -226,7 +225,7 @@ function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 function positiveInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`);
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<Uint8Array> {
   // Validate path before optional fields so the canonical path error wins.

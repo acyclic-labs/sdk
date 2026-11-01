@@ -161,8 +161,7 @@ impl BrowserCheckout {
         name: Vec<u8>,
     ) -> Result<Ts<BrowserNamedAttributeResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let name =
-            browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
+        let name = browser_attribute_name(&attribute_class, name)?;
         let receipt = browser_call!(self, read_named_attribute(&path, &name,))?;
         ts(BrowserNamedAttributeResult {
             exists: receipt.value.is_some(),
@@ -184,11 +183,7 @@ impl BrowserCheckout {
         let path = browser_path(&path, self.engine.volume_config())?;
         let after = match (after_class, after_name) {
             (None, None) => None,
-            (Some(class), Some(name)) => Some(browser_attribute_name(
-                &class,
-                name,
-                self.engine.volume_config().limits,
-            )?),
+            (Some(class), Some(name)) => Some(browser_attribute_name(&class, name)?),
             _ => return Err(js_error("named-attribute cursor is incomplete")),
         };
         let receipt = browser_call!(
@@ -220,8 +215,7 @@ impl BrowserCheckout {
         mode: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let name =
-            browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
+        let name = browser_attribute_name(&attribute_class, name)?;
         let mode = browser_attribute_write_mode(&mode)?;
         let receipt = browser_call!(
             self,
@@ -238,8 +232,7 @@ impl BrowserCheckout {
         name: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let path = browser_path(&path, self.engine.volume_config())?;
-        let name =
-            browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
+        let name = browser_attribute_name(&attribute_class, name)?;
         let receipt = browser_call!(self, change_named_attribute(path, &name, None,))?;
         mutation_value(receipt.work)
     }
@@ -258,14 +251,8 @@ pub(in crate::bindings) const fn browser_attribute_class_name(
 pub(in crate::bindings) fn browser_attribute_name(
     class: &str,
     name: Vec<u8>,
-    limits: VolumeLimits,
 ) -> Result<AttributeName, JsValue> {
-    AttributeName::new(
-        browser_attribute_class(class)?,
-        name,
-        limits.maximum_component_bytes,
-    )
-    .map_err(js_error)
+    AttributeName::new(browser_attribute_class(class)?, name).map_err(js_error)
 }
 
 pub(in crate::bindings) fn browser_attribute_write_mode(

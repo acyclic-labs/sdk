@@ -52,9 +52,9 @@ pub fn select_turn_delta(
 ) -> Result<ModelContextSelection> {
     limits.validate(&mut None)?;
     current.validate(&mut None)?;
-    if current.kind != MessageKind::User || limits.context_messages == 0 {
+    if current.kind != MessageKind::User {
         return Err(Error::Invalid(
-            "canonical turn delta requires a bounded user input".into(),
+            "canonical turn delta requires a user input".into(),
         ));
     }
     if append {
@@ -99,7 +99,9 @@ pub fn select_turn_delta(
         .model_messages_between(
             after,
             current.sequence - u64::from(append),
-            limits.context_messages - usize::from(append),
+            limits
+                .context_messages
+                .map(|maximum| maximum.get() - usize::from(append)),
         )?
         .map(|message| message.id)
         .collect::<Vec<_>>();

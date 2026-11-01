@@ -21,10 +21,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 const MAX_LOOKAHEAD: usize = 256;
 /// Agents remembered as recently active, for prefetch.
 const MAX_RECENT: usize = 16;
-/// Rows in one frame, at most.
-const MAX_ROWS: usize = 512;
-/// History rows in one window, at most.
-const MAX_HISTORY_ROWS: usize = 1024;
 
 /// A tree position: a listed child, or a listing page not loaded yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -401,8 +397,8 @@ impl Explorer {
 
     /// Viewport rows, overscan rows and the frame interval.
     pub fn set_viewport(&mut self, height: usize, overscan: usize, frame_ms: u64) {
-        self.height = height.clamp(1, MAX_ROWS);
-        self.overscan = overscan.min(MAX_ROWS);
+        self.height = height.max(1);
+        self.overscan = overscan;
         self.frame_ms = frame_ms.max(1);
     }
 
@@ -419,7 +415,7 @@ impl Explorer {
     /// Scroll by rows; the per-frame velocity steers lookahead.
     pub fn scroll(&mut self, rows: i64) {
         self.velocity = rows;
-        let steps = rows.unsigned_abs().min(MAX_ROWS as u64 * 4);
+        let steps = rows.unsigned_abs();
         for _ in 0..steps {
             let next = if rows > 0 {
                 self.next(&self.anchor)
@@ -463,7 +459,7 @@ impl Explorer {
         self.history = Some(History {
             stream,
             from: 0,
-            rows: rows.clamp(1, MAX_HISTORY_ROWS),
+            rows: rows.max(1),
             end: true,
         });
     }
@@ -659,7 +655,7 @@ impl Explorer {
 
     /// The last row shown under `pos`, through expanded descendants.
     fn last_descendant(&self, mut pos: Pos) -> Pos {
-        for _ in 0..acyclic_harness_core::agent::MAX_DEPTH {
+        loop {
             let Pos::Row {
                 parent,
                 page,
@@ -680,19 +676,17 @@ impl Explorer {
             let Ok(children) = agent.children() else {
                 return pos;
             };
-            let mut last = None;
-            let mut page = 0;
-            loop {
+            let mut page = 0_u32;
+            let last = loop {
                 match self.reader.cache().listing(&children, page) {
                     None => {
-                        last = Some(Pos::Gap {
+                        break Some(Pos::Gap {
                             parent: children.clone(),
                             page,
                         });
-                        break;
                     }
                     Some(listing) if listing.next.is_none() => {
-                        last = listing
+                        break listing
                             .children
                             .len()
                             .checked_sub(1)
@@ -701,21 +695,20 @@ impl Explorer {
                                 page,
                                 offset: u32::try_from(offset).unwrap_or(0),
                             });
-                        break;
                     }
-                    Some(_) => {}
+                    Some(_) => {
+                        let Some(next) = page.checked_add(1) else {
+                            return pos;
+                        };
+                        page = next;
+                    }
                 }
-                let Some(next) = page.checked_add(1) else {
-                    break;
-                };
-                page = next;
-            }
+            };
             match last {
                 Some(next) => pos = next,
                 None => return pos,
             }
         }
-        pos
     }
 
     fn render(&self, pos: &Pos) -> Row {
@@ -1032,25 +1025,19 @@ impl Explorer {
     }
 
     fn history_wants(&self, history: &History, wants: &mut Vec<(Want, Priority)>) {
-        let rows = history.rows as u32;
-        if history.end {
-            wants.push((
-                Want::Last {
-                    stream: history.stream.clone(),
-                    count: rows,
-                },
-                Priority::Visible,
-            ));
-        } else {
-            wants.push((
-                Want::Range {
-                    stream: history.stream.clone(),
-                    from: history.from,
-                    to: history.from + u64::from(rows),
-                },
-                Priority::Visible,
-            ));
-        }
+        let rows = history.rows as u64;
+        let want = match self.history_start(history) {
+            Some(from) => Want::Range {
+                stream: history.stream.clone(),
+                from,
+                to: from.saturating_add(rows),
+            },
+            None => Want::Last {
+                stream: history.stream.clone(),
+                count: 1,
+            },
+        };
+        wants.push((want, Priority::Visible));
         // The page before the window is the likely next scroll.
         let start = self.history_start(history);
         if let Some(start) = start
@@ -1059,7 +1046,7 @@ impl Explorer {
             wants.push((
                 Want::Range {
                     stream: history.stream.clone(),
-                    from: start.saturating_sub(u64::from(rows)),
+                    from: start.saturating_sub(rows),
                     to: start,
                 },
                 Priority::Prefetch,
@@ -1086,8 +1073,8 @@ impl Explorer {
             return Vec::new();
         };
         let end = match self.reader.cache().tail(&history.stream) {
-            Some(tail) => tail.min(start + history.rows as u64),
-            None => start + history.rows as u64,
+            Some(tail) => tail.min(start.saturating_add(history.rows as u64)),
+            None => start.saturating_add(history.rows as u64),
         };
         self.reader
             .cache()

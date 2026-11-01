@@ -6,8 +6,7 @@ use std::{
 };
 
 struct State<T> {
-    frames: VecDeque<(T, usize)>,
-    bytes: usize,
+    frames: VecDeque<T>,
     closed: bool,
     reader: Option<Waker>,
 }
@@ -16,36 +15,27 @@ pub(super) struct Outbound<T> {
     // Lock order: never nested with another SDK lock, including closed's gate.
     // Wake callbacks and queued-value destruction happen after unlocking.
     state: Mutex<State<T>>,
-    frames: usize,
-    bytes: usize,
     closed: gate::Gate,
 }
 
 impl<T> Outbound<T> {
-    pub(super) fn new(frames: usize, bytes: usize) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             state: Mutex::new(State {
                 frames: VecDeque::new(),
-                bytes: 0,
                 closed: false,
                 reader: None,
             }),
-            frames,
-            bytes,
             closed: gate::Gate::new(),
         }
     }
-    pub(super) fn push(&self, value: T, bytes: usize) -> Result<(), StreamError> {
+    pub(super) fn push(&self, value: T) -> Result<(), StreamError> {
         let wake = {
             let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
             if state.closed {
                 return Err(StreamError::Unavailable);
             }
-            if state.frames.len() >= self.frames || bytes > self.bytes - state.bytes {
-                return Err(StreamError::Capacity);
-            }
-            state.bytes += bytes;
-            state.frames.push_back((value, bytes));
+            state.frames.push_back(value);
             state.reader.take()
         };
         if let Some(wake) = wake {
@@ -62,8 +52,7 @@ impl<T> Outbound<T> {
             if state.closed {
                 return Poll::Ready(Err(StreamError::Unavailable));
             }
-            if let Some((value, bytes)) = state.frames.pop_front() {
-                state.bytes -= bytes;
+            if let Some(value) = state.frames.pop_front() {
                 return Poll::Ready(Ok(value));
             }
             state.reader.replace(wake)
@@ -78,7 +67,6 @@ impl<T> Outbound<T> {
         let (frames, wake) = {
             let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
             state.closed = true;
-            state.bytes = 0;
             (std::mem::take(&mut state.frames), state.reader.take())
         };
         self.closed.set(true)?;

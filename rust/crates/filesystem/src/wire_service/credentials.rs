@@ -7,7 +7,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         self.admit(&request)?;
         let request = request.into_inner();
         if request.expires_after_seconds == 0
-            || request.expires_after_seconds > self.limits.maximum_credential_seconds
+            || self
+                .limits
+                .maximum_credential_seconds
+                .is_some_and(|maximum| request.expires_after_seconds > maximum.get())
         {
             return Err(Status::invalid_argument(
                 "credential lifetime exceeds the configured bound",

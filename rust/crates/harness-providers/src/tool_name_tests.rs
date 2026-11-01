@@ -392,7 +392,7 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
 #[tokio::test]
 async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<()> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    Arc::make_mut(&mut provider.config).max_event_bytes = 512;
+    Arc::make_mut(&mut provider.config).max_event_bytes = Some(512);
     let (prepared, _) = request(&provider)?;
     let mut request = prepared.request().clone();
     request.tools = ['a', 'b']
@@ -425,13 +425,13 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     };
     let mut ordinary = provider.generate(&prepared, dispatch);
     let error = ordinary.next().await.unwrap().unwrap_err();
-    assert!(error.to_string().contains("aggregate"));
+    assert!(error.to_string().contains("configured byte policy"));
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
     let mut native = provider
         .generate_with_native_work(&prepared, dispatch, &work)?
         .await?;
     let error = native.next().await.unwrap().unwrap_err();
-    assert!(error.to_string().contains("aggregate"));
+    assert!(error.to_string().contains("configured byte policy"));
     Ok(())
 }
 

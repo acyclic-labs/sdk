@@ -5,7 +5,7 @@ use crate::kernel::Child;
 #[test]
 fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let page = AttributePage::Leaf(vec![AttributeEntry {
-        name: AttributeName::new(AttributeClass::PosixXattr, b"user.test".to_vec(), 255)?,
+        name: AttributeName::new(AttributeClass::PosixXattr, b"user.test".to_vec())?,
         value_bytes: 4,
         value: ObjectId {
             storage: None,
@@ -45,15 +45,11 @@ fn every_attribute_class_and_name_boundary_is_canonical() -> Result<(), Box<dyn 
         Err(AttributeError::UnknownClass(0))
     );
     assert_eq!(
-        AttributeName::new(AttributeClass::PosixXattr, Vec::new(), 8),
+        AttributeName::new(AttributeClass::PosixXattr, Vec::new()),
         Err(AttributeError::InvalidName)
     );
     assert_eq!(
-        AttributeName::new(AttributeClass::PosixXattr, b"a\0b".to_vec(), 8),
-        Err(AttributeError::InvalidName)
-    );
-    assert_eq!(
-        AttributeName::new(AttributeClass::PosixXattr, b"abc".to_vec(), 2),
+        AttributeName::new(AttributeClass::PosixXattr, b"a\0b".to_vec()),
         Err(AttributeError::InvalidName)
     );
     Ok(())
@@ -62,8 +58,8 @@ fn every_attribute_class_and_name_boundary_is_canonical() -> Result<(), Box<dyn 
 #[test]
 fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn std::error::Error>>
 {
-    let first = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec(), 8)?;
-    let second = AttributeName::new(AttributeClass::WindowsStream, b"b".to_vec(), 8)?;
+    let first = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec())?;
+    let second = AttributeName::new(AttributeClass::WindowsStream, b"b".to_vec())?;
     let blob = ObjectId {
         storage: None,
         kind: ObjectKind::Blob,
@@ -106,7 +102,6 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
     ]);
     let limits = DecodeLimits {
         maximum_page_items: 2,
-        maximum_name_bytes: 8,
         ..DecodeLimits::default()
     };
     for (page, kind) in [
@@ -172,7 +167,7 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
 #[test]
 fn malformed_attribute_pages_fail_at_every_public_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
-    let name = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec(), 8)?;
+    let name = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec())?;
     let blob = ObjectId {
         storage: None,
         kind: ObjectKind::Blob,

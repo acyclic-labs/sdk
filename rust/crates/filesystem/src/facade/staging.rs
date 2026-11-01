@@ -387,9 +387,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<StagedContent, FsError> {
-        if content.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let mut source = std::io::Cursor::new(content.as_ref());
         let result = self
             .stage_content_with_accounting(
@@ -403,14 +400,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         result
     }
 
-    /// Streams caller content into immutable authenticated chunks without
+    /// Streams content into authenticated chunks, with an optional source byte policy.
     pub async fn stage_content<R: AsyncBlobSource>(
         &self,
         source: &mut R,
-        maximum_source_bytes: u64,
+        maximum_source_bytes: impl Into<Option<u64>> + Send,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<StagedContent> {
+        let maximum_source_bytes = maximum_source_bytes.into();
         in_heap(move || async move {
             let mut accounting = KernelAccounting::standalone(budget, cancellation);
             let result = self
@@ -429,7 +427,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) async fn stage_content_with_accounting<R: AsyncBlobSource>(
         &self,
         source: &mut R,
-        maximum_source_bytes: u64,
+        maximum_source_bytes: impl Into<Option<u64>> + Send,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<StagedContent, FsError> {
@@ -451,13 +449,12 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
 >(
     volume: &Volume<A, O>,
     source: &mut R,
-    maximum_source_bytes: u64,
+    maximum_source_bytes: impl Into<Option<u64>> + Send,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<StagedContent, FsError> {
-    if maximum_source_bytes == 0
-        || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
-    {
+    let maximum_source_bytes = maximum_source_bytes.into();
+    if maximum_source_bytes == Some(0) {
         return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
     }
     accounting.check()?;

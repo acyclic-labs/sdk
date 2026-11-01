@@ -1,7 +1,6 @@
 import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type MessageShape } from "@bufbuild/protobuf";
 import { credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
-import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
   EvaluationSpecSchema,
@@ -278,7 +277,7 @@ function openBody(body: ReadableStream<Uint8Array>, signal?: AbortSignal) {
   } };
 }
 
-async function readBoundedText(response: Response, maximumBytes: number, kind: string, check: () => void, signal?: AbortSignal): Promise<string> {
+async function readBoundedText(response: Response, maximumBytes: number | undefined, kind: string, check: () => void, signal?: AbortSignal): Promise<string> {
   if (response.body === null) { check(); return ""; }
   const body = openBody(response.body, signal);
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -299,7 +298,7 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
       check();
       if (item.done) break;
       observed += item.value.byteLength;
-      if (observed > maximumBytes) {
+      if (maximumBytes !== undefined && observed > maximumBytes) {
         throw new InferenceTransportError(response.status, `${kind} exceeds configured bound`);
       }
       chunks.push(decode(item.value, true));
@@ -313,9 +312,6 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
   }
 }
 
-/** Maximum bearer credential bytes. */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
-
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
   readonly authorization: AuthorizationHeaders;
@@ -324,8 +320,8 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly endpoint: string,
     authorization: AuthorizationHeaders | CredentialOptions,
     readonly fetcher: typeof fetch = fetch,
-    /** UTF-8 ceiling for requests, responses and stream events. */
-    readonly maximumMessageBytes = MAXIMUM_HTTP_JSON_BYTES,
+    /** Optional caller-selected UTF-8 ceiling for requests, responses and stream events. */
+    readonly maximumMessageBytes: number | undefined = undefined,
     observer?: AcyclicObserver,
   ) {
     if (typeof authorization === "function") this.authorization = authorization;
@@ -335,7 +331,7 @@ export class HttpInferenceTransport implements InferenceTransport {
       this.authorization = async signal => ({ authorization: `Bearer ${(await resolveCredential(credential, signal)).token()}` });
     }
     this.#observer = resolveObserver(observer);
-    if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes <= 0) {
+    if (maximumMessageBytes !== undefined && (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes <= 0)) {
       throw new RangeError("maximumMessageBytes must be a positive safe integer byte ceiling");
     }
     let parsed: URL;
@@ -422,14 +418,15 @@ export class HttpInferenceTransport implements InferenceTransport {
           const newline = item.value.indexOf(0x0a, start);
           const end = newline < 0 ? item.value.length : newline;
           const length = end - start;
-          if (length > this.maximumMessageBytes - lineLength) {
+          if (this.maximumMessageBytes !== undefined && length > this.maximumMessageBytes - lineLength) {
             throw new InferenceTransportError(response.status, "run event exceeds configured bound");
           }
           let frame = item.value.subarray(start, end);
           if (lineLength > 0 || newline < 0) {
             const needed = lineLength + length;
             if (needed > lineBuffer.length) {
-              const next = new Uint8Array(Math.min(this.maximumMessageBytes, Math.max(1024, needed, lineBuffer.length * 2)));
+              const capacity = Math.max(1024, needed, lineBuffer.length * 2);
+              const next = new Uint8Array(this.maximumMessageBytes === undefined ? capacity : Math.min(this.maximumMessageBytes, capacity));
               next.set(lineBuffer.subarray(0, lineLength));
               lineBuffer = next;
             }
@@ -481,7 +478,7 @@ export class HttpInferenceTransport implements InferenceTransport {
   async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<{ response: Response; check: () => void; close: () => void; signal: AbortSignal | undefined }> {
     const length = utf8Length(body);
     if (sizes) sizes.requestBytes = length;
-    if (length > this.maximumMessageBytes) {
+    if (this.maximumMessageBytes !== undefined && length > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
     signal?.throwIfAborted();
@@ -499,8 +496,8 @@ export class HttpInferenceTransport implements InferenceTransport {
       // Shared Auth validates lease tokens once. Raw header callbacks have no lease.
       if (lease === undefined) {
         const authorization = headers.get("authorization") ?? "";
-        if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
-          throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
+        if (authorization.trim().length === 0) {
+          throw new InferenceTransportError(0, "authorization header must be non-empty");
         }
       }
       headers.set("content-type", "application/json");

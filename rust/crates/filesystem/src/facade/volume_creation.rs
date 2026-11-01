@@ -380,6 +380,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<(VolumeCreated, OperationId), FsError> {
         accounting.check()?;
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+        let maximum_payload_bytes = work.accounting().remaining()?.authority_bytes_read;
         let result = self
             .inner
             .authority
@@ -388,7 +389,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 Sequence::GENESIS,
                 ReplayLimit {
                     records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                    payload_bytes: maximum_payload_bytes,
                 },
                 &mut work,
             )
@@ -516,7 +517,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 _ => return Ok(false),
             };
-            let step = config.limits.maximum_read_bytes.max(1);
+            let step = crate::kernel::CONTENT_READ_CHUNK_BYTES;
             let mut offset = 0;
             while offset < logical_bytes {
                 let length = step.min(logical_bytes - offset);

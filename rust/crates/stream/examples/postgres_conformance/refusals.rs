@@ -5,9 +5,10 @@ async fn retained(
     client: &tokio_postgres::Client,
     namespace: &str,
 ) -> Result<(i64, i64), tokio_postgres::Error> {
+    let namespace_key = blake3::hash(namespace.as_bytes());
     let row = client.query_one(
         "SELECT count(*), coalesce(sum(octet_length(command)),0)::bigint FROM acyclic_stream_journal WHERE namespace=$1",
-        &[&namespace],
+        &[&namespace_key.as_bytes().as_slice()],
     ).await?;
     Ok((row.get(0), row.get(1)))
 }
@@ -17,6 +18,25 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     let provider = PostgresStream::connect(database, &namespace).await?;
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);
+    let namespace_key = blake3::hash(namespace.as_bytes());
+    // A fixed-key collision or foreign generation spelling must not reopen the
+    // original journal, change its incarnation, or produce an accepted row.
+    client
+        .execute(
+            "UPDATE acyclic_stream_generation SET original_name=$2 WHERE namespace=$1",
+            &[&namespace_key.as_bytes().as_slice(), &"foreign-spelling"],
+        )
+        .await?;
+    assert!(matches!(
+        PostgresStream::connect(database, &namespace).await,
+        Err(StreamError::InvalidArgument)
+    ));
+    client
+        .execute(
+            "UPDATE acyclic_stream_generation SET original_name=$2 WHERE namespace=$1",
+            &[&namespace_key.as_bytes().as_slice(), &namespace],
+        )
+        .await?;
     let path = StreamPath::new("refusal/corrected")?;
     let mut append = AppendRequest {
         path: path.clone(),

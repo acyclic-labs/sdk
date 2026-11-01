@@ -379,11 +379,11 @@ async fn no_selected_tools_grant_no_authority_and_invalid_limits_never_connect()
     for field in 0..5 {
         let mut limits = McpClientLimits::default();
         match field {
-            0 => limits.servers = 0,
-            1 => limits.tools_per_server = 0,
-            2 => limits.pages_per_server = 0,
-            3 => limits.catalog_bytes = 0,
-            _ => limits.tool_bytes = 0,
+            0 => limits.servers = Some(0),
+            1 => limits.tools_per_server = Some(0),
+            2 => limits.pages_per_server = Some(0),
+            3 => limits.catalog_bytes = Some(0),
+            _ => limits.tool_bytes = Some(0),
         }
         assert!(matches!(
             configuration()?
@@ -489,21 +489,21 @@ async fn discovery_moves_schemas_and_rejects_cursor_count_and_byte_overruns() ->
         (
             vec![page(&[], Some("x"))],
             McpClientLimits {
-                pages_per_server: 1,
+                pages_per_server: Some(1),
                 ..Default::default()
             },
         ),
         (
             vec![page(&["a", "b"], None)],
             McpClientLimits {
-                tools_per_server: 1,
+                tools_per_server: Some(1),
                 ..Default::default()
             },
         ),
         (
             vec![page(&["a"], None)],
             McpClientLimits {
-                catalog_bytes: 1,
+                catalog_bytes: Some(1),
                 ..Default::default()
             },
         ),
@@ -741,8 +741,8 @@ IFS= read -r input
             ToolRegistry::default(),
             root.path(),
             McpClientLimits {
-                catalog_bytes: 1024,
-                tool_bytes: 8192,
+                catalog_bytes: Some(1024),
+                tool_bytes: Some(8192),
                 ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),

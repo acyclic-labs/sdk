@@ -1,8 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn delayed_objects_are_invisible_until_bounded_flush()
--> Result<(), Box<dyn std::error::Error>> {
+async fn delayed_objects_are_invisible_until_flush() -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
         operation: SimulationOperation::ObjectPut,
@@ -51,14 +50,9 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
+async fn delayed_object_admission_is_idempotent_and_digest_checked()
 -> Result<(), Box<dyn std::error::Error>> {
-    let simulation = Simulation::new(SimulationOptions {
-        maximum_scheduled_faults: 4,
-        maximum_trace_entries: 8,
-        maximum_pending_objects: 1,
-        maximum_pending_object_bytes: 4,
-    })?;
+    let simulation = Simulation::new();
     for occurrence in 1..=4 {
         simulation.schedule(ScheduledSimulationFault {
             operation: SimulationOperation::ObjectPut,
@@ -92,13 +86,17 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     (work!(objects, put(first_id, first_bytes), B, &cancellation)).await?;
 
     let (second_id, second_bytes) = object(b"x");
-    let bounded = (work!(objects, put(second_id, second_bytes), B, &cancellation))
-        .await
-        .err()
-        .ok_or("delayed-object bound was ignored")?;
-    assert!(matches!(bounded.error, ObjectStoreError::Rejected(_)));
+    (work!(
+        objects,
+        put(second_id, second_bytes.clone()),
+        B,
+        &cancellation
+    ))
+    .await?;
     let flushed = (work!(simulation, flush_object_visibility(), B, &cancellation)).await?;
-    assert_eq!(flushed.value, 1);
+    assert_eq!(flushed.value, 2);
+    let visible = (work!(objects, read(second_id, 64), B, &cancellation)).await?;
+    assert_eq!(visible.value.bytes, second_bytes);
     Ok(())
 }
 

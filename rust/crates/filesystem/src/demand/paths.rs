@@ -39,7 +39,6 @@ mod tests {
             let name = crate::kernel::LogicalName::new(
                 crate::kernel::NameEncoding::Utf8,
                 text.as_bytes().to_vec(),
-                255,
             )?;
             let folded = case_fold_unicode_with_work(text, &mut work)?;
             assert_eq!(folded, name.case_fold_key(), "{text}");

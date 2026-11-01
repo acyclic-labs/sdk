@@ -169,9 +169,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
     ) -> W::OwnedOutput<Vec<FileRangeRead>> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            if concurrency == 0
-                || requests.len() > self.volume.config.limits.maximum_paths_per_batch as usize
-            {
+            if concurrency == 0 {
                 return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
             }
             #[cfg(not(target_arch = "wasm32"))]

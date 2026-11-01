@@ -254,11 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let custody = Checkout::<A, O>::checkout_custody(accounting, cancellation)?;
         let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
         let captured_allocation = accounting.claim_owned(captured_bytes, 1)?;
-        let captured = CheckoutDependencies::new(
-            std::iter::empty(),
-            std::iter::empty(),
-            self.config.limits.maximum_checkout_dependencies,
-        )?;
+        let captured = CheckoutDependencies::new(std::iter::empty(), std::iter::empty())?;
         let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
         let proof_allocation = accounting.claim_owned(proof_bytes, 1)?;
         let (base_root, root, dependencies) = match allocation {
@@ -466,6 +462,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             }
             if self.has_pending_mutations() {
                 return Err(FsError::PendingMutationsRequireRebase);
+            }
+            accounting.check()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.validate_native_work(original)?;
             }
             let (root, head) = self
                 .volume

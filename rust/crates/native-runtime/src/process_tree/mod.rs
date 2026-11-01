@@ -1001,7 +1001,8 @@ impl ProcessTree {
                 .map(|input| PendingStdin::new_with_buffer(input, stdin_buffer, meter, owner))
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
-            let mut pump = pump::Pump::new(self, schedule.into(), max_bytes, input, meter, output)?;
+            let mut pump =
+                pump::Pump::new(self, schedule.into(), Some(max_bytes), input, meter, output)?;
             let result = 'capture: loop {
                 for signal in wake.unwrap_or_default() {
                     if let Err(error) = signal.consume() {
@@ -1027,7 +1028,7 @@ impl ProcessTree {
                     },
                 }
             };
-            captured = pump.captured(max_bytes);
+            captured = pump.captured();
             pump.finish(self, result, meter)
         });
         operation.record("bytes", captured);
@@ -1035,7 +1036,7 @@ impl ProcessTree {
         result
     }
 
-    /// Captures bounded output like [`Self::wait_with_output`], holding no
+    /// Captures output with an optional caller byte policy, holding no
     /// thread while the child runs: each turn runs on the blocking pool, and
     /// between turns the capture awaits one readiness wait on its pipes, its
     /// exit and its next check. The returned future owns the tree until
@@ -1046,10 +1047,11 @@ impl ProcessTree {
     pub async fn capture<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: impl Into<Option<usize>>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
+        let max_bytes = max_bytes.into();
         // How many turns a capture takes is OS readiness timing. A simulation
         // scope sees all of them as one physical submission, so a seeded
         // replay schedules the same work however the child's output arrives.
@@ -1068,7 +1070,7 @@ impl ProcessTree {
     async fn capture_physical<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
@@ -1107,7 +1109,7 @@ impl ProcessTree {
     fn start_capture<H: CaptureHandler>(
         mut self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         mut handler: H,
     ) -> Result<StartedCapture<H>, CaptureOutcome<H>> {

@@ -455,11 +455,14 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     let config = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
     let mut components = Vec::new();
     for _ in 0..6 {
-        components.push(LogicalName::new(NameEncoding::Utf8, vec![b'x'; 240], 255)?);
+        components.push(LogicalName::new(NameEncoding::Utf8, vec![b'x'; 240])?);
     }
     let path = NamespacePath::new(components, config.limits)?;
     let key = crate::publication_changes::entry::key(&path, config);
-    assert_eq!(key.slice().len(), acyclic_stream::MAX_RECORD_KEY_BYTES);
+    assert_eq!(
+        key.slice().len(),
+        acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES
+    );
     let full = path
         .components()
         .iter()
@@ -613,7 +616,7 @@ async fn change_chunks_preserve_every_entry_and_finish_filtered_members_within_o
                 record.value.len() + record.headers.payload_bytes()
                     <= acyclic_stream::MAX_RECORD_BYTES
             );
-            assert!(record.headers.keys().len() <= acyclic_stream::MAX_RECORD_KEYS);
+            assert!(record.headers.keys().len() <= super::changes::CHANGES_PAGE_ENTRIES);
             let chunk = acyclic_stream::decode_changes(record.value.as_ref())?;
             let actual = crate::PublicationContext::from_bytes(chunk.context.as_ref())?;
             assert_eq!(

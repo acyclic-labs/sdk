@@ -160,9 +160,9 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
         fetch: None,
         worker_limits: None,
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1,
-            memory_bytes: 1,
-            checkpoint_bytes: 1,
+            handler_timeout_millis: Some(1),
+            memory_bytes: Some(1),
+            checkpoint_bytes: Some(1),
         }),
         ..worker.clone()
     };

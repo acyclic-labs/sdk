@@ -99,7 +99,10 @@ struct State {
 }
 
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
-type ContentReader = (Arc<dyn crate::conversation::ContentResidencyVerifier>, u64);
+type ContentReader = (
+    Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    Option<u64>,
+);
 
 /// Replays responses once and retains the exact requests delivered by the executor.
 /// Exhaustion fails instead of silently repeating the final response.
@@ -265,7 +268,10 @@ impl ScriptedModelProvider {
 /// stock providers do; the first unbound or refused read fails. Reference parts
 /// travel as identities and are not read.
 pub async fn read_request_files(
-    reader: Option<(&dyn crate::conversation::ContentResidencyVerifier, u64)>,
+    reader: Option<(
+        &dyn crate::conversation::ContentResidencyVerifier,
+        Option<u64>,
+    )>,
     request: &PreparedModelRequest,
 ) -> Result<()> {
     for message in &request.request().messages {
@@ -280,7 +286,14 @@ pub async fn read_request_files(
             let (reader, maximum) = reader.ok_or_else(|| {
                 Error::Unauthorized("scripted provider has no content reader".into())
             })?;
-            reader.read(file, maximum, None, None)?.await?;
+            reader
+                .read(
+                    file,
+                    maximum.unwrap_or_else(|| file.descriptor().byte_length()),
+                    None,
+                    None,
+                )?
+                .await?;
         }
     }
     Ok(())
@@ -309,7 +322,7 @@ impl ModelProvider for ScriptedModelProvider {
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         self.reads_content.then(|| {
             Arc::new(Self {

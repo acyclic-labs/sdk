@@ -188,15 +188,5 @@ async fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .await
             .is_err()
     );
-    assert!(
-        (checkout.stage_content(
-            &mut empty,
-            config().limits.maximum_generation_bytes + 1,
-            B,
-            &cancellation,
-        ))
-        .await
-        .is_err()
-    );
     Ok(())
 }

@@ -11,7 +11,7 @@ fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<(
     let pty = rustix_openpty::openpty(None, None)?;
     let _master = File::from(pty.controller);
     let mut tty = RawTty::from_file(File::from(pty.user))?;
-    let result = tty.receive(&mut [0; 8], Instant::now() + Duration::from_millis(1));
+    let result = tty.read(&mut [0; 8]);
     let restored = tty.restore();
     // The old implementation slept until the deadline and returned zero,
     // keeping lifecycle::active locked for the entire wait.
@@ -69,22 +69,16 @@ fn write_all<D: NonblockingWrite>(
     Ok(())
 }
 
-/// The removed loop: a fixed 1 ms sleep after EAGAIN, no readiness wait.
-fn sleeping<D: NonblockingWrite>(
-    device: &mut D,
-    bytes: &[u8],
-    deadline: Instant,
-) -> io::Result<usize> {
-    loop {
+/// Counterexample: consume the finite syscall sequence without readiness.
+fn without_readiness(device: &mut Scripted, bytes: &[u8], _deadline: Instant) -> io::Result<usize> {
+    for _ in 0..device.script.len() {
         match device.try_write(bytes) {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                std::thread::sleep(Duration::from_millis(1).min(remaining));
-            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             result => return result,
         }
     }
+    Err(io::ErrorKind::UnexpectedEof.into())
 }
 
 fn scripted_trace(each: Loop<Scripted>) -> Vec<Op> {
@@ -119,8 +113,12 @@ fn eagain_waits_for_readiness_and_eintr_retries_at_once() {
 
 #[test]
 #[should_panic(expected = "readiness trace")]
-fn negative_control_sleeping_loop_is_detected() {
-    assert_eq!(scripted_trace(sleeping), EXPECTED, "readiness trace");
+fn negative_control_missing_readiness_is_detected() {
+    assert_eq!(
+        scripted_trace(without_readiness),
+        EXPECTED,
+        "readiness trace"
+    );
 }
 
 #[test]
@@ -138,7 +136,8 @@ fn an_elapsed_deadline_times_out_without_a_syscall() {
 struct Traced<'a> {
     tty: &'a mut RawTty,
     trace: Vec<Op>,
-    spin: bool,
+    skip_first_wait: bool,
+    start_drain: Option<std::sync::mpsc::Sender<()>>,
 }
 impl NonblockingWrite for Traced<'_> {
     fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -148,30 +147,39 @@ impl NonblockingWrite for Traced<'_> {
     }
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
         self.trace.push(Op::Wait);
-        if self.spin {
-            // The removed macOS path for descriptors beyond FD_SETSIZE.
-            std::thread::yield_now();
-            Ok(())
-        } else {
-            self.tty.wait_writable(deadline)
+        if self.skip_first_wait {
+            // One false readiness result, while the real reader remains held.
+            // The next actual EAGAIN must fail the unchanged progress oracle.
+            self.skip_first_wait = false;
+            return Ok(());
         }
+        if let Some(start) = self.start_drain.take() {
+            start.send(()).map_err(|_| io::ErrorKind::BrokenPipe)?;
+        }
+        self.tty.wait_writable(deadline)
     }
 }
 
 const FRAME: usize = 256 * 1024;
 
 /// Write a frame far larger than the kernel PTY queue (1 KiB on macOS, 4 KiB
-/// on Linux) while the emulator side starts reading late.
+/// on Linux). Start the emulator drain only after the first actual EAGAIN.
 /// `select` forces Darwin's /dev/tty-alias wait (unlimited select) on any
 /// terminal; elsewhere every terminal has the one poll(2) wait.
-fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Result<Vec<Op>> {
+fn real_trace(
+    user: File,
+    controller: File,
+    skip_first_wait: bool,
+    select: bool,
+) -> io::Result<Vec<Op>> {
     let controller_device = controller.metadata()?.rdev();
+    let (start_drain, started) = std::sync::mpsc::channel();
     let drain = std::thread::spawn(move || {
         let mut controller = controller;
-        std::thread::sleep(Duration::from_millis(20));
         let mut total = 0;
         let mut buffer = [0; 65536];
-        while total < FRAME {
+        let started = started.recv().is_ok();
+        while started && total < FRAME {
             match controller.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(count) => total += count,
@@ -191,12 +199,17 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
     let mut traced = Traced {
         tty: &mut tty,
         trace: Vec::new(),
-        spin,
+        skip_first_wait,
+        start_drain: Some(start_drain),
     };
     let written = write_all(&mut traced, &vec![b'x'; FRAME], write_until);
     let trace = traced.trace;
+    drop(traced.start_drain);
     if let Err(error) = written {
-        tty.restore()?;
+        let restored = tty.restore();
+        drop(tty);
+        let _ = drain.join();
+        restored?;
         return Err(error);
     }
     // Joining transfers controller custody; worker completion cannot hang up
@@ -296,7 +309,7 @@ fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
 
 #[test]
 #[should_panic(expected = "without room")]
-fn negative_control_spinning_wait_is_detected() {
+fn negative_control_false_readiness_is_detected() {
     let pty = rustix_openpty::openpty(None, None).unwrap_or_else(|error| panic!("{error}"));
     let trace = real_trace(
         File::from(pty.user),

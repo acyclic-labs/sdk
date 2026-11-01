@@ -23,7 +23,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         base: GenerationId,
         source: &crate::Generation<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
@@ -44,14 +44,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         base: GenerationId,
         source: &crate::Generation<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
+        let maximum_changes = maximum_changes.into();
         use crate::workspace::WorkspaceError;
         let mut accounting = accounting.allocation_scope();
         let result = async {
-            if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
+            if maximum_changes == Some(0)
+                || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             {
                 return Err(WorkspaceError::ForeignGeneration);
             }
@@ -120,13 +122,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         &self,
         before: GenerationId,
         after: GenerationId,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<GenerationDiff> {
+        let maximum_changes = maximum_changes.into();
+
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            if maximum_changes == 0 {
+            if maximum_changes == Some(0) {
                 return Err(FsError::InvalidDiff);
             }
             if before == after {
@@ -188,10 +192,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(crate) async fn candidate_diff<W: FsWork>(
         &self,
         candidate: &Self,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(GenerationDiff, KernelOwnedAllocation), FsError> {
+        let maximum_changes = maximum_changes.into();
+
         let mut accounting = work.accounting(cancellation);
         let result = async {
             if candidate.volume.id != self.volume.id {

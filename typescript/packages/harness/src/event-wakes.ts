@@ -18,15 +18,15 @@ function corrupt(): never {
  * visit one path; subtree changes visit only that prefix's registered nodes.
  * Pending links survive owner loss without enumerating unrelated Actors. */
 export class WakeIndex {
-  constructor(private readonly storage: EventStorage, private readonly maximumActors: number) {
-    if (!Number.isSafeInteger(maximumActors) || maximumActors <= 0 || maximumActors > 0xffff_ffff) {
-      throw { code: "invalid_argument", step: "actor-wake-open", recovery: "supply the journal's positive u32 path capacity" };
+  constructor(private readonly storage: EventStorage, private readonly maximumActors?: number) {
+    if (maximumActors !== undefined && (!Number.isSafeInteger(maximumActors) || maximumActors <= 0)) {
+      throw { code: "invalid_argument", step: "actor-wake-open", recovery: "omit capacity or supply a positive safe integer" };
     }
     storage.transaction(() => {
       const header = storage.get(HEADER);
       if (header !== undefined) { this.index(header); return; }
       // Unversioned metadata is refused, never silently reopened as an empty index.
-      if (storage.entries().length !== 0) this.unsupported();
+      if (storage.entries("", "", 1).length !== 0) this.unsupported();
       this.saveIndex({ format: FORMAT, actors: 0, pending: 0, first: null, last: null });
       this.saveNode("", { actor: null, first: null, next: null });
     });
@@ -93,7 +93,7 @@ export class WakeIndex {
       const index = this.index(), existing = this.registration(actor);
       if (existing) return existing.paths.every(path => paths.includes(path)) ? { admitted: true } : { refused: "conflict" };
       if (paths.some(path => this.node(`${path}/`)?.actor != null)) return { refused: "conflict" };
-      if (index.actors >= this.maximumActors) return { refused: "capacity" };
+      if (this.maximumActors !== undefined && index.actors >= this.maximumActors) return { refused: "capacity" };
       for (const path of paths) this.insert(path, actor);
       this.save(actor, { paths, generation: 0, pending: false, previous: null, next: null });
       this.saveIndex({ ...index, actors: index.actors + 1 });

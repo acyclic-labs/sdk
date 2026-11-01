@@ -1,4 +1,4 @@
-//! Terminal writability on Darwin for every descriptor number.
+//! Terminal readiness on Darwin for every descriptor number.
 //!
 //! Darwin's poll(2) reports `POLLNVAL` for terminals and kqueue rejects the
 //! /dev/tty alias with EINVAL. The remaining wait is select(2), whose default
@@ -55,7 +55,93 @@ impl Writable {
                 .map_err(|_| io::ErrorKind::InvalidInput)?,
         };
         let write = self.words.as_mut_ptr().cast::<libc::fd_set>();
-        let result = select_unlimited(nfds, write, &mut timeval);
+        let result = select_unlimited(nfds, std::ptr::null_mut(), write, Some(&mut timeval));
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+}
+
+/// One terminal input descriptor and its lifecycle notification descriptor.
+/// Both are level triggered; restored input observes only lifecycle changes.
+pub struct Readable {
+    words: Vec<u32>,
+    input: usize,
+    changes: usize,
+}
+
+impl Readable {
+    /// Allocate the one descriptor set, including descriptors beyond FD_SETSIZE.
+    pub fn new(input: BorrowedFd<'_>, changes: BorrowedFd<'_>) -> io::Result<Self> {
+        let input = usize::try_from(input.as_raw_fd()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let changes =
+            usize::try_from(changes.as_raw_fd()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        let length = input.max(changes) / WORD_BITS + 1;
+        let mut words = Vec::new();
+        words.try_reserve_exact(length)?;
+        words.resize(length, 0);
+        Ok(Self {
+            words,
+            input,
+            changes,
+        })
+    }
+
+    /// Wait for input or a lifecycle change without retaining a terminal lock.
+    pub fn wait(
+        &mut self,
+        input: BorrowedFd<'_>,
+        changes: BorrowedFd<'_>,
+        active: bool,
+        timeout: Option<Duration>,
+    ) -> io::Result<()> {
+        if usize::try_from(input.as_raw_fd()).ok() != Some(self.input)
+            || usize::try_from(changes.as_raw_fd()).ok() != Some(self.changes)
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.words.fill(0);
+        for fd in [Some(self.changes), active.then_some(self.input)]
+            .into_iter()
+            .flatten()
+        {
+            let word = self
+                .words
+                .get_mut(fd / WORD_BITS)
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            *word |= 1 << (fd % WORD_BITS);
+        }
+        let maximum = if active {
+            self.input.max(self.changes)
+        } else {
+            self.changes
+        };
+        let nfds = libc::c_int::try_from(maximum)
+            .ok()
+            .and_then(|fd| fd.checked_add(1))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let mut timeval = timeout
+            .map(|timeout| {
+                Ok::<_, io::Error>(libc::timeval {
+                    tv_sec: libc::time_t::try_from(timeout.as_secs().min(MAX_SECONDS))
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                    tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
+                        .map_err(|_| io::ErrorKind::InvalidInput)?,
+                })
+            })
+            .transpose()?;
+        let result = select_unlimited(
+            nfds,
+            self.words.as_mut_ptr().cast(),
+            std::ptr::null_mut(),
+            timeval.as_mut(),
+        );
         if result >= 0 {
             return Ok(());
         }
@@ -74,8 +160,9 @@ impl Writable {
 )]
 fn select_unlimited(
     nfds: libc::c_int,
+    read: *mut libc::fd_set,
     write: *mut libc::fd_set,
-    timeout: &mut libc::timeval,
+    timeout: Option<&mut libc::timeval>,
 ) -> libc::c_int {
     // SAFETY: `select$DARWIN_EXTSN` is libSystem's select(2) without the
     // FD_SETSIZE check (the symbol C code binds under
@@ -90,18 +177,12 @@ fn select_unlimited(
             timeout: *mut libc::timeval,
         ) -> libc::c_int;
     }
-    // SAFETY: `write` points at `nfds.div_ceil(32)` or more owned, initialized
-    // words (Writable sizes its set to fd / 32 + 1 and nfds is fd + 1); the
-    // other sets are null and the timeout is a live, exclusive timeval.
-    unsafe {
-        select(
-            nfds,
-            std::ptr::null_mut(),
-            write,
-            std::ptr::null_mut(),
-            timeout,
-        )
-    }
+    // SAFETY: every non-null set covers nfds bits of owned, initialized words.
+    // Readable and Writable size each set before passing it here. The sets
+    // are exclusive; a present timeout is live and exclusive, while null
+    // requests the native indefinite wait.
+    let timeout = timeout.map_or(std::ptr::null_mut(), |timeout| timeout as *mut _);
+    unsafe { select(nfds, read, write, std::ptr::null_mut(), timeout) }
 }
 
 #[cfg(test)]

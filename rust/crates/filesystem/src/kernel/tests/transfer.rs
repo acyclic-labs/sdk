@@ -79,9 +79,6 @@ async fn minimal_generation(
 fn closure_limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: 16,
-        maximum_files: 8,
-        maximum_object_bytes: 1024 * 1024,
         profile: FilesystemProfile::Portable,
         symbolic_links: true,
         hard_links: true,

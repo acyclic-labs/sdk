@@ -13,11 +13,7 @@ async fn finite_native_utf16_paths_preserve_unpaired_names_and_restart() -> Test
         .into_iter()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
-    let name = LogicalName::new(
-        NameEncoding::WindowsUtf16Le,
-        bytes,
-        limits.maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, bytes)?;
     let path = NamespacePath::new(vec![name.clone()], limits)?;
     let source = NativeDemandSource::open(
         std::borrow::Cow::Owned(std::path::Path::new(directory.path()).to_path_buf()),

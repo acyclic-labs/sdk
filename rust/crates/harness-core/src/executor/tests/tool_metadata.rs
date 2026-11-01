@@ -109,7 +109,7 @@ async fn complete_batch_keeps_each_signature_through_execution_and_replay() -> R
         operation_id: OperationId::new(),
         input: ModelContent::Text("user".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
     let output = executor.execute(input.clone(), &journal).await?;
     assert_eq!(output.text, "done");

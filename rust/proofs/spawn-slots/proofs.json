@@ -1,44 +1,17 @@
 {
   "version": 1,
-  "status": "bounded_component_proofs_passed",
+  "status": "cap_proofs_retired_independent_attestation_controls_retained",
   "qualification": {
     "local": "unqualified",
     "cloud": "unqualified"
   },
   "decisions": [
-    "Include the actual dependency-free production slot arithmetic in a small Kani workspace.",
     "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
-    "Keep slots vacated during a paused turn until the driver reconciles recorded effects; duplicate ChildDone reserves nothing.",
     "Generate ExplicitStreamProvider from the same trait declaration; it removes all defaults and generates forwarding, so missing adapter methods fail compilation.",
     "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity.",
-    "Bound WaitingHost names introduced by main and fail invalid driver waits before effects are published."
+    "Unbounded child membership retires capacity arithmetic and maximum-record proofs. Malformed host names still fail before effects publish."
   ],
   "targets": [
-    {
-      "id": "spawn_slots",
-      "production": "rust/crates/harness-core/src/agent/slots.rs",
-      "proofs": [
-        "Kani: client_cannot_take_a_recorded_slot",
-        "Kani: every_recorded_child_fits_after_client_admission",
-        "Kani: completing_a_child_does_not_release_a_paused_turns_slot",
-        "Kani: replay_and_untrusted_reservation_counts_do_not_overflow",
-        "agent-model: slot_schedules"
-      ],
-      "controls": [
-        {
-          "file": "rust/crates/harness-core/src/agent/slots.rs",
-          "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })",
-          "after": "MAX_OPEN_CHILDREN",
-          "expected": "Kani counterexample and unchanged slot schedule assertion failure"
-        },
-        {
-          "file": "rust/crates/harness-core/src/agent/slots.rs",
-          "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)",
-          "after": "reserved",
-          "expected": "Kani counterexample and unchanged ChildDone replay regression failure"
-        }
-      ]
-    },
     {
       "id": "attested",
       "proofs": [
@@ -67,25 +40,16 @@
       ]
     },
     {
-      "id": "record_bounds",
+      "id": "host_syntax",
       "proofs": [
-        "harness-core: record_bounds_cover_every_kind_and_json_escape_expansion",
-        "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
-        "harness-core: waiting_host_status_requires_a_bounded_name",
         "agent-model: an_invalid_host_wait_fails_before_publishing_status_or_effects"
       ],
       "controls": [
         {
-          "file": "rust/crates/harness-core/src/conversation/mod.rs",
-          "before": "pub const MAX_PATH_BYTES: usize = 4096;",
-          "after": "pub const MAX_PATH_BYTES: usize = 32768;",
-          "expected": "unchanged canonical-encoding bound assertion fails; refusal is not counted as a successful bound"
-        },
-        {
           "file": "rust/crates/harness-core/src/agent/records.rs",
           "before": "Phase::WaitingHost { host } => check_text(host)",
           "after": "Phase::WaitingHost { host: _ } => Ok(())",
-          "expected": "unchanged bounded host admission assertion fails"
+          "expected": "invalid host wait fails before effects publish"
         }
       ]
     }
@@ -142,7 +106,5 @@
       "raw_log_root": "[private-path-removed]"
     }
   ],
-  "remaining": [
-    "queue and merge this one PR"
-  ]
+  "remaining": []
 }

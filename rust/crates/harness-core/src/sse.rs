@@ -203,11 +203,11 @@ impl Decoder {
         Ok(())
     }
 
-    fn add_bytes(&mut self, bytes: usize, maximum: usize) -> Result<()> {
+    fn add_bytes(&mut self, bytes: usize, maximum: Option<usize>) -> Result<()> {
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .filter(|bytes| *bytes <= maximum)
+            .filter(|bytes| maximum.is_none_or(|maximum| *bytes <= maximum))
             .ok_or_else(|| self.failure("SSE event exceeds configured byte limit"))?;
         Ok(())
     }
@@ -217,12 +217,13 @@ impl Decoder {
 /// EOF inside an event refuses; a pending body retains its original producer wait.
 pub fn frames<'a, S>(
     body: S,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
     decoder: Decoder,
 ) -> impl Stream<Item = Result<Frame>> + acyclic_stream::ProviderTask + 'a
 where
     S: Stream<Item = Result<Bytes>> + acyclic_stream::ProviderTask + Unpin + 'a,
 {
+    let maximum = maximum.into();
     futures::stream::try_unfold(
         (body, Bytes::new(), decoder),
         move |(mut body, mut chunk, mut decoder)| async move {

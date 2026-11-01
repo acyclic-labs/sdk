@@ -205,11 +205,7 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if limit == 0 || limit > MAX_PAGE_SIZE {
-                    return Err(ProviderError::Invalid(
-                        "machine page limit must be 1..=256".into(),
-                    ));
-                }
+                let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
                 let state = self.state.lock().await;
                 let mut values = state
                     .machines
@@ -605,11 +601,7 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-                    return Err(ProviderError::Invalid(
-                        "event page limit must be 1..=1024".into(),
-                    ));
-                }
+                let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
                 let state = self.state.lock().await;
                 if !state.machines.contains_key(&machine) {
                     return Err(ProviderError::NotFound(machine.to_string()));

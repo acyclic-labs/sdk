@@ -49,6 +49,15 @@ fn capture_meter(
         .map_err(|(error, _)| MountSourceError::NativeWork(error))
 }
 
+impl<A, O> CheckoutMountSource<A, O> {
+    fn operation_work(&self) -> Result<crate::NativeMaterializationWork, MountSourceError> {
+        match &self.native_original {
+            Some(work) => Ok(work.clone()),
+            None => capture_meter(WorkBudget::UNBOUNDED, &self.cancellation),
+        }
+    }
+}
+
 #[cfg(test)]
 std::thread_local! {
     static CALLBACK_BOUNDARIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -65,6 +74,6 @@ pub(super) fn boundary<T>(
 ) -> Result<T, MountSourceError> {
     #[cfg(test)]
     CALLBACK_BOUNDARIES.with(|count| count.set(count.get() + 1));
-    let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)?;
+    let work = capture_meter(WorkBudget::UNBOUNDED, cancellation)?;
     operation(&work)
 }

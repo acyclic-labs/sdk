@@ -58,9 +58,14 @@ impl PostgresStream {
     /// The connection string is never included in diagnostics. Use a TLS proxy
     /// or Unix socket when the database is outside the local trust boundary.
     pub async fn connect(database: &str, namespace: &str) -> Result<Self, StreamError> {
-        if namespace.is_empty() || namespace.len() > 256 || namespace.contains('\0') {
+        if namespace.is_empty() || namespace.contains('\0') {
             return Err(StreamError::InvalidArgument);
         }
+        // Indexes and notifications carry a fixed key; retain the exact spelling
+        // in the generation row so a digest collision cannot alias namespaces.
+        let namespace_key = blake3::hash(namespace.as_bytes());
+        let namespace_token = namespace_key.to_hex();
+        let diagnostic_label = &namespace_token.as_str()[..32];
         let (client, connection) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
@@ -71,19 +76,27 @@ impl PostgresStream {
             .query_one(
                 "SELECT set_config('application_name', $1, false), \
                  set_config('default_transaction_isolation', 'read committed', false)",
-                &[&format!("acyclic-stream-query-{namespace}")],
+                &[&format!("acyclic-stream-query-{diagnostic_label}")],
             )
             .await
             .map_err(unavailable)?;
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
         // The first opener installs the generation; every later replica reads it.
         let generation: Vec<u8> = client
-            .query_one(
-                "INSERT INTO acyclic_stream_generation(namespace, generation) VALUES ($1, $2)                  ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation                  RETURNING generation",
-                &[&namespace, &uuid::Uuid::new_v4().as_bytes().as_slice()],
+            .query_opt(
+                "INSERT INTO acyclic_stream_generation(namespace, original_name, generation) VALUES ($1, $2, $3)
+                 ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation
+                 WHERE acyclic_stream_generation.original_name = EXCLUDED.original_name
+                 RETURNING generation",
+                &[
+                    &namespace_key.as_bytes().as_slice(),
+                    &namespace,
+                    &uuid::Uuid::new_v4().as_bytes().as_slice(),
+                ],
             )
             .await
             .map_err(unavailable)?
+            .ok_or(StreamError::InvalidArgument)?
             .get(0);
         let generation = <[u8; 16]>::try_from(generation.as_slice()).map_err(unavailable)?;
         let publish = client
@@ -109,7 +122,7 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         let (wake, wakes) = watch::channel(());
-        let notified_namespace = namespace.to_owned();
+        let notified_namespace = namespace_token.to_string();
         let notification_driver = tokio::spawn(async move {
             while let Some(message) =
                 futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
@@ -132,7 +145,7 @@ impl PostgresStream {
         listener
             .query_one(
                 "SELECT set_config('application_name', $1, false)",
-                &[&format!("acyclic-stream-listener-{namespace}")],
+                &[&format!("acyclic-stream-listener-{diagnostic_label}")],
             )
             .await
             .map_err(unavailable)?;
@@ -144,8 +157,9 @@ impl PostgresStream {
         // scope comes from the database's own generation row, never from
         // connection settings: replicas that reach one database through
         // different credentials, hosts or parameters share one scope.
-        let mut location = generation.to_vec();
-        location.extend_from_slice(namespace.as_bytes());
+        let mut location = [0; 48];
+        location[..16].copy_from_slice(&generation);
+        location[16..].copy_from_slice(namespace_key.as_bytes());
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
             clock.clone(),
@@ -165,7 +179,7 @@ impl PostgresStream {
                         publish,
                         read,
                         wakes,
-                        namespace: namespace.to_owned(),
+                        namespace: *namespace_key.as_bytes(),
                     },
                     core.clone(),
                     clock,

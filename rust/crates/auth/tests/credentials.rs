@@ -10,12 +10,12 @@ use std::sync::{
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn credential_admission_matches_the_bounded_header_contract(value in prop_oneof![
+    fn credential_admission_matches_the_header_syntax(value in prop_oneof![
         any::<String>(),
-        (0..=MAX_CREDENTIAL_BYTES + 2, any::<bool>()).prop_map(|(length, unicode)|
+        (0_usize..=16 * 1024, any::<bool>()).prop_map(|(length, unicode)|
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
     ]) {
-        let expected = value.len() <= 12288 && value.chars().any(|c| !c.is_whitespace())
+        let expected = value.chars().any(|c| !c.is_whitespace())
             && !value.bytes().any(|c| [0, 10, 13].contains(&c));
         prop_assert_eq!(valid_credential(&value), expected);
         let provider = CredentialProvider::new(move || future::ready(Ok(value.clone())));
@@ -70,17 +70,9 @@ proptest! {
 }
 
 #[test]
-fn byte_limits_delimiters_and_provider_failure_fail_closed() {
-    for (value, valid) in [
-        ("a".repeat(12288), true),
-        ("a".repeat(12289), false),
-        ("é".repeat(6144), true),
-        ("é".repeat(6145), false),
-        ("a\0b".into(), false),
-        ("a\rb".into(), false),
-        ("a\nb".into(), false),
-    ] {
-        assert_eq!(valid_credential(&value), valid);
+fn delimiters_and_provider_failure_fail_closed() {
+    for value in ["a\0b", "a\rb", "a\nb"] {
+        assert!(!valid_credential(value));
     }
     let provider = CredentialProvider::new(|| {
         future::ready(Err(CredentialError::Provider(Box::new(

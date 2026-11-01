@@ -400,9 +400,8 @@ impl Conversation {
         loop {
             let (range, length) =
                 Self::read_at(connection, agent, target.clone(), bytes.len() as u64).await?;
-            let done = range.is_empty();
             bytes.extend_from_slice(&range);
-            if done || bytes.len() as u64 >= length {
+            if bytes.len() as u64 == length {
                 return Ok(bytes);
             }
         }

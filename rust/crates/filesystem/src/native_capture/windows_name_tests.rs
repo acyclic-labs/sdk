@@ -11,19 +11,18 @@ fn posix_profile_names_round_trip_through_utf8_on_windows() -> Result<(), Box<dy
     let valid = LogicalName::new(
         NameEncoding::PosixBytes,
         "uni-ÃƒÂ©Ã¤Â¸Â\u{ad}.txt".as_bytes().to_vec(),
-        255,
     )?;
     assert_eq!(
         host_path(valid)?,
         std::ffi::OsString::from("uni-ÃƒÂ©Ã¤Â¸Â\u{ad}.txt")
     );
 
-    let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
+    let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff])?;
     assert!(matches!(
         host_path(invalid),
         Err(CaptureError::UnrepresentablePath)
     ));
-    let alias = LogicalName::new(NameEncoding::PosixBytes, b"a\\b".to_vec(), 255)?;
+    let alias = LogicalName::new(NameEncoding::PosixBytes, b"a\\b".to_vec())?;
     assert!(matches!(
         host_path(alias),
         Err(CaptureError::UnrepresentablePath)
@@ -34,7 +33,6 @@ fn posix_profile_names_round_trip_through_utf8_on_windows() -> Result<(), Box<dy
 #[test]
 fn host_path_round_trips_through_windows_profile() -> Result<(), Box<dyn std::error::Error>> {
     let limits = crate::model::VolumeLimits {
-        maximum_component_bytes: 510,
         ..crate::model::VolumeLimits::default()
     };
     let host = std::path::Path::new("src/ÃƒÂ¼nÃƒÂ¯cÃƒÂ¸de/Ã¦â€”Â¥Ã¦Å“Â¬Ã¨ÂªÅ¾.rs");

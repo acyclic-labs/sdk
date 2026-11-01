@@ -61,11 +61,11 @@ impl NativeCheckout {
     pub async fn prepare_merge(
         &self,
         theirs: Buffer,
-        maximum_changes: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_changes: Option<NapiU32>,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeMergePreparation> {
-        let maximum_changes = maximum_changes.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let theirs = decode_generation_id(&theirs)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -103,8 +103,7 @@ pub(in crate::bindings) fn native_merge_selection_conflict(
                     "binding selection has an invalid name encoding",
                 )
             })?;
-            let name =
-                LogicalName::new(encoding, name.bytes.to_vec(), u32::MAX).map_err(napi_error)?;
+            let name = LogicalName::new(encoding, name.bytes.to_vec()).map_err(napi_error)?;
             Ok(MergeConflict::Binding { directory_id, name })
         }
         _ => Err(Error::new(
