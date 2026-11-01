@@ -14,7 +14,10 @@ test("Linux joins Harness packaging and generated checks before conformance, inc
   assert.ok(end > start);
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"))
-    .replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5');
+    .replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5')
+    .replace('  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"',
+      '  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"\n  exec 3>&-');
+  assert.ok(helpers.includes("exec 3>&-"));
   const bash = process.platform === "win32"
     ? join(process.env.ProgramFiles ?? "C:/Program Files", "Git", "bin", "bash.exe") : "bash";
   mkdirSync(".tools", { recursive: true });
@@ -27,6 +30,7 @@ exec 5>&1
 SDK_TEMP_DIR="$SDK_OVERLAP_FIXTURE"
 SDK_ARTIFACT_DIR="$SDK_TEMP_DIR/artifacts"
 bash() {
+  exec 4>&-
   [[ "$#" == 2 && "$1" == scripts/check-harness-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
   printf 'fixture:harness-started\\n' >&5

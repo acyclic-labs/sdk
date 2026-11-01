@@ -459,7 +459,10 @@ test("Linux filesystem packaging overlaps Harness conformance and joins both fai
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
   assert.ok(helpers.includes("finish() {"));
-  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5');
+  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5')
+    .replace('  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"',
+      '  echo "$!" >"$SDK_TEMP_DIR/background-$name.pid"\n  exec 3>&-');
+  assert.ok(controlledHelpers.includes("exec 3>&-"));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/linux-packages-").replaceAll("\\", "/");
   assert.match(root, /^\.tools\/linux-packages-[A-Za-z0-9]+$/);
@@ -492,6 +495,7 @@ on_exit() {
 }
 trap on_exit EXIT
 bun() {
+  exec 4>&-
   [[ "$#" == 4 && "$1" == scripts/run-harness-conformance.mjs ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
   [[ "$3" == "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" ]]
@@ -592,7 +596,7 @@ test("web browser commands overlap, finish before shell exit and retain named ti
       mkdirSync(fixture);
       const body = earlyExit ? commands.replace(
         'if wait "$browser_pid"; then :; else browser_status=1; fi', 'wait "$browser_pid" || exit 1') : commands;
-      const controlledBody = body.replace("    browser_status=0", '    printf "fixture:all-launched\\n" >&7\n    browser_status=0');
+      const controlledBody = body.replace("    browser_status=0", '    exec 3>&- 4>&- 5>&- 6>&-\n    printf "fixture:all-launched\\n" >&7\n    browser_status=0');
       assert.notEqual(controlledBody, body);
       const ids = ["fs", "compaction", "mcp", "client"];
       const started = new Set();
@@ -612,10 +616,10 @@ on_exit() {
 trap on_exit EXIT
 bun() {
   case "$*" in
-    *"@acyclic-labs/fs"*) id=fs; gate=3 ;;
-    *"browser-compaction.html"*) id=compaction; gate=4 ;;
-    *"test:browser:mcp"*) id=mcp; gate=5 ;;
-    *"test:client:browser"*) id=client; gate=6 ;;
+    *"@acyclic-labs/fs"*) id=fs; gate=3; exec 4>&- 5>&- 6>&- ;;
+    *"browser-compaction.html"*) id=compaction; gate=4; exec 3>&- 5>&- 6>&- ;;
+    *"test:browser:mcp"*) id=mcp; gate=5; exec 3>&- 4>&- 6>&- ;;
+    *"test:client:browser"*) id=client; gate=6; exec 3>&- 4>&- 5>&- ;;
     *) return 98 ;;
   esac
   printf 'started:%s\\n' "$id"
