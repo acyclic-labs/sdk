@@ -59,7 +59,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         ("incarnation", encode_incarnation(7, 9)),
         ("epoch", encode_epoch(9)),
     ];
-    for (name, dying) in [("head-live", None), ("head-dying", Some([2; 16]))] {
+    for (name, dying) in [("head-v2-live", None), ("head-v2-dying", Some([2; 16]))] {
         seeds.push((
             name,
             Envelope {

@@ -10,11 +10,11 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         edges: vec![Digest::from_bytes([4; 32])],
     };
     let envelope = Envelope {
-        kind: Kind::Blob,
-        length: 7,
-        stored: 7,
-        references: vec![Digest::from_bytes([3; 32])],
-        version: [4; 16],
+        kind: Kind::Manifest,
+        length: 22,
+        stored: 64,
+        references: vec![Digest::of(b"persisted codec corpus")],
+        version: [1; 16],
         dying: None,
         condemned: 9,
     };
@@ -22,9 +22,12 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         ("manifest", manifest.encode(), MANIFEST_MAGIC, |bytes| {
             Manifest::decode(bytes).map(|_| ())
         }),
-        ("envelope", envelope.encode(), ENVELOPE_MAGIC, |bytes| {
-            Envelope::decode(bytes).map(|_| ())
-        }),
+        (
+            "corpus/object_persistence/head-v2-live",
+            envelope.encode(),
+            ENVELOPE_MAGIC,
+            |bytes| Envelope::decode(bytes).map(|_| ()),
+        ),
         (
             "retained",
             encode_batch(&[Digest::from_bytes([3; 32])]),
@@ -42,10 +45,18 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         }),
     ];
     for (name, encoded, magic, decode) in frames {
-        let golden = acyclic_proto_build::golden::frame(&format!("objects.{name}"))?;
+        let frame = if name.starts_with("corpus/") {
+            name.to_owned()
+        } else {
+            format!("objects.{name}")
+        };
+        let golden = acyclic_proto_build::golden::frame(&frame)?;
         assert_eq!(encoded, golden, "{name}: persisted bytes changed");
         decode(&golden)?;
-        for version in [b'0', b'2', b'9'] {
+        for version in [b'0', b'1', b'2', b'9']
+            .into_iter()
+            .filter(|version| *version != magic[magic.len() - 2])
+        {
             let mut rejected = golden.clone();
             rejected[magic.len() - 2] = version;
             // No body can be read: reject the version even with a missing body.
@@ -75,6 +86,18 @@ fn persisted_golden_frames_refuse_other_versions() -> Result<(), Box<dyn std::er
         assert!(
             decode(&trailing).is_err(),
             "{name}: accepted trailing bytes"
+        );
+    }
+    for name in [
+        "objects.envelope",
+        "corpus/object_persistence/head-live",
+        "corpus/object_persistence/head-dying",
+    ] {
+        let historical = acyclic_proto_build::golden::frame(name)?;
+        assert_eq!(
+            Envelope::decode(&historical).map_err(|error| error.code),
+            Err(ErrorCode::Unsupported),
+            "{name}"
         );
     }
     assert_eq!(Manifest::decode(&manifest.encode())?, manifest);

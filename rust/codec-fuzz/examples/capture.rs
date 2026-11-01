@@ -174,6 +174,30 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-objects") {
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
+        for (name, bytes) in acyclic_objects::codec_fuzz::seeds() {
+            save(
+                "object_persistence",
+                name,
+                &bytes,
+                "acyclic_objects::codec_fuzz::seeds",
+                &mut manifest,
+            )?;
+        }
+        // Keep prior captures as refusal inputs, without duplicate provenance.
+        let mut seen = std::collections::HashSet::new();
+        let manifest = manifest
+            .lines()
+            .rev()
+            .filter(|line| seen.insert(line.split('\t').next().unwrap_or(line)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        return finish(&manifest, "object_persistence/");
+    }
     if std::env::args().any(|arg| arg == "--only-protobuf") {
         golden_controls()?;
         let previous = std::fs::read_to_string("corpus/SOURCES.tsv")?;
@@ -312,6 +336,23 @@ fn capture() -> Result<(), Box<dyn Error>> {
         }
     }
     capture_semantic(&mut manifest)?;
+    // Preserve historical bytes without reintroducing obsolete writers.
+    for line in std::fs::read_to_string("corpus/SOURCES.tsv")?
+        .lines()
+        .filter(|line| {
+            matches!(
+                line.split('\t').next(),
+                Some(
+                    "actor_codecs/timer"
+                        | "object_persistence/head-live"
+                        | "object_persistence/head-dying"
+                )
+            )
+        })
+    {
+        manifest.push_str(line);
+        manifest.push('\n');
+    }
     save(
         "harness_codecs",
         "attachment-manifest-empty",
@@ -901,18 +942,6 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "transition",
         &guest::wire::encode_transition(&transition)?,
         "guest::wire::encode_transition",
-        manifest,
-    )?;
-    let timer = acyclic_actors::timers::TimerRecord::new(
-        "11111111-1111-4111-8111-111111111111".into(),
-        "22222222-2222-4222-8222-222222222222".into(),
-        42,
-    )?;
-    save(
-        "actor_codecs",
-        "timer",
-        &timer.encode()?,
-        "TimerRecord::encode",
         manifest,
     )?;
     use acyclic_fs::{

@@ -1,4 +1,4 @@
-//! Content addresses, logical ranges, manifests and the v1 envelope encoding.
+//! Content addresses, logical ranges, manifests and the v2 envelope encoding.
 use crate::{Error, wire::ErrorCode};
 
 /// BLAKE3-256 of a blob's stored bytes.
@@ -125,7 +125,7 @@ pub struct Manifest {
 }
 
 const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";
-const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v1\0";
+const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
 const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
 const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
 const EPOCH_MAGIC: &[u8] = b"acyclic-epoch-v1\0";

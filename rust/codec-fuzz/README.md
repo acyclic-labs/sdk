@@ -57,6 +57,11 @@ SDK captures come from production encoders and memory-backed operations, rather
 than hosted traffic; cryptographic producers use deterministic test keys.
 Original v1 state-record captures retain their names and bytes as typed-refusal
 inputs; current writers use distinct `state-v2-` names for publication provenance.
+Objects envelopes likewise retain v1 captures and publish distinct `head-v2-`
+captures. Refresh only these original writer seeds with
+`cargo run --locked --example capture -- --only-objects --extend-goldens`.
+The retired Actor timer capture remains historical input; it has no current
+production timer decoder or producer join.
 
 Capture also writes `corpus/resource-identity-v1.json` from the actual resource
 encoder and cross-language vector inputs. When admitting an identity format,

@@ -423,7 +423,7 @@ pub fn identities(bytes: &[u8]) {
 }
 
 pub fn actor_codecs(bytes: &[u8]) {
-    use acyclic_actors::{guest::wire, local::State, timers::TimerRecord};
+    use acyclic_actors::{guest::wire, local::State};
     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
     if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
         use acyclic_actors::guest::{CheckpointCodec, CodecIdentity, GuestError, prepare_update};
@@ -481,12 +481,6 @@ pub fn actor_codecs(bytes: &[u8]) {
         assert_eq!(
             wire::encode_transition(&wire::decode_transition(&canonical).unwrap()).unwrap(),
             canonical
-        );
-    }
-    if let Ok(value) = TimerRecord::decode(bytes) {
-        assert_eq!(
-            TimerRecord::decode(&value.encode().unwrap()).unwrap(),
-            value
         );
     }
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)

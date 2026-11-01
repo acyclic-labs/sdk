@@ -171,6 +171,56 @@ mod format_recovery_tests {
                 set_fixture(&account.medium, key, &refused, original.clone().into()).await?;
             }
         }
+        // Reopen the actual local log with each formerly valid v1 layout.
+        // Repair runs before incarnation admission and must not delete it.
+        let old = acyclic_proto_build::golden::frame("objects.envelope")?;
+        let unstamped = old[..old.len() - 8].to_vec();
+        let mut pending = old[..old.len() - 24].to_vec();
+        *pending.last_mut().ok_or("missing original pending flag")? = 2;
+        for refused in [old, unstamped, pending] {
+            set_fixture(
+                &account.medium,
+                &envelope_key,
+                &envelope,
+                refused.clone().into(),
+            )
+            .await?;
+            let recovered_root = tempfile::tempdir()?;
+            for leaf in ["FORMAT", "OPEN", "log"] {
+                std::fs::copy(root.path().join(leaf), recovered_root.path().join(leaf))?;
+            }
+            let original_log = std::fs::read(recovered_root.path().join("log"))?;
+            let recovered = Store::new(
+                crate::LocalMedium::open(recovered_root.path(), Default::default(), None).await?,
+            );
+            let recovered = recovered.account(b"format-recovery")?;
+            assert!(recovered.medium.recovered());
+            assert_eq!(
+                recovered
+                    .issued()
+                    .await
+                    .err()
+                    .ok_or("old envelope admitted")?
+                    .code,
+                ErrorCode::Unsupported
+            );
+            assert!(recovered.medium.recovered());
+            assert_eq!(
+                recovered.medium.read(&envelope_key, None).await?.as_deref(),
+                Some(refused.as_slice())
+            );
+            assert_eq!(
+                std::fs::read(recovered_root.path().join("log"))?,
+                original_log
+            );
+            set_fixture(
+                &account.medium,
+                &envelope_key,
+                &refused,
+                envelope.clone().into(),
+            )
+            .await?;
+        }
         assert!(account.stored_envelope(&digest).await?.is_some());
         assert!(account.batch_survived(&batch_key, &HashMap::new()).await?);
         // A damaged current payload remains recoverable, unlike a refused header.
