@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { Duplex } from "node:stream";
+import assert from "node:assert/strict";
 
 // Each gate is an original child pipe, armed by spawn before the shell runs.
 // Only a producer record releases it; shell exit closes every unfinished gate.
@@ -8,7 +10,13 @@ export function runShellFixture(bash, script, { gates, env, recovery, event }) {
     const child = spawn(bash, ["-c", script], {
       env, stdio: ["ignore", "pipe", "pipe", ...Array.from({ length: gates }, () => "pipe")],
     });
-    const inputs = child.stdio.slice(3);
+    const inputs = child.stdio.slice(3).map(input => {
+      assert.ok(input instanceof Duplex,
+        `step=open original shell fixture pipe; recovery command: ${recovery}`);
+      return input;
+    });
+    assert.ok(child.stdout && child.stderr,
+      `step=open original shell fixture output; recovery command: ${recovery}`);
     const published = inputs.map(() => false);
     let stdout = "", stderr = "", failure, exited = false;
     const fail = error => {
@@ -25,7 +33,7 @@ export function runShellFixture(bash, script, { gates, env, recovery, event }) {
     };
     for (const [index, input] of inputs.entries()) {
       input.on("error", error => {
-        if (!exited || error.code !== "EPIPE") fail(error);
+        if (!exited || !("code" in error) || error.code !== "EPIPE") fail(error);
       });
       const ended = () => {
         if (!exited && !published[index]) fail(new Error(`gate ${index} producer closed before its event`));

@@ -8,20 +8,23 @@ import { performance } from "node:perf_hooks";
 import { Processes } from "./graphcoder-e2e/process.mjs";
 import { pty } from "./graphcoder-e2e/pty.mjs";
 import { environment, scratchDirectory } from "./graphcoder-e2e/scratch.mjs";
+import { commandCancellation, withOwnedCase } from "./graphcoder-e2e/suite.mjs";
 
 const [binary] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping GraphCoder required");
 const begin = performance.now(), processes = new Processes();
+const cancellation = commandCancellation();
 const root = scratchDirectory("graphcoder-fetch-cancel-");
 const workspace = join(root, "workspace"), settings = join(root, "settings"), catalog = join(root, "catalog.json");
 const env = environment(settings);
 mkdirSync(workspace);
-const requests = [], captures = [], listeners = new Set();
+const requests = [], captures = [], listeners = new Set(), requestKeys = new Set();
 let rejectFailure, closedSource, source, generations = 0, fetches = 0, sourceRetired = false;
 const failed = new Promise((_, reject) => { rejectFailure = reject; }); failed.catch(() => {});
 const retired = new Promise(resolve => { closedSource = resolve; });
 const sse = value => `data: ${JSON.stringify(value)}\n\n`;
-const record = event => { requests.push(event); for (const listener of listeners) listener(event); };
+const requestKey = ({ path, step }) => JSON.stringify([path, step]);
+const record = event => { requests.push(event); requestKeys.add(requestKey(event)); for (const listener of listeners) listener(event); };
 const server = createServer(async (request, response) => {
   try {
     if (request.url === "/source") {
@@ -46,6 +49,7 @@ writeFileSync(catalog, JSON.stringify({ e2e: { adapter: "responses", authenticat
   models: { tiny: { capacity: { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
   token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 } } }));
 const fixture = { workspace, settings, catalog, env, requests,
+  requested: request => requestKeys.has(requestKey(request)),
   args: ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog, "--model", "e2e/tiny"],
   onRequest(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 const prompt = "cancel this held source fetch";
@@ -59,11 +63,14 @@ const inputs = [
 ];
 let passed = false, activePty;
 try {
-  for (const input of inputs) { activePty = pty(processes, binary, fixture, input, capture => captures.push(capture)); await Promise.race([failed, activePty]); }
-  await Promise.race([failed, retired]);
-  assert.equal(generations, 1); assert.equal(fetches, 1); assert.equal(sourceRetired, true);
+  await withOwnedCase({ processes, signal: cancellation.signal, run: async () => {
+    for (const input of inputs) { activePty = pty(processes, binary, fixture, input, capture => captures.push(capture)); await Promise.race([failed, activePty]); }
+    await Promise.race([failed, retired]);
+    assert.equal(generations, 1); assert.equal(fetches, 1); assert.equal(sourceRetired, true);
+  } });
   passed = true; console.log("PASS held fetch Escape, owned HTTP retirement and explicit resume without redispatch");
 } finally {
+  cancellation.dispose();
   await processes.close(); await activePty?.catch(() => {}); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   const proof = { passed, seconds: (performance.now() - begin) / 1000, generations, fetches, sourceRetired, requests, captures, fixture: passed ? null : root };
   if (process.env.E2E_OUTPUT) { const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true }); writeFileSync(join(output, "fetch-cancellation.json"), JSON.stringify(proof)); }

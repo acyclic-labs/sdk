@@ -84,12 +84,17 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
   const lane = readFileSync("scripts/qualify-ci.sh", "utf8").split("  linux)\n")[1]?.split("  linux-musl|")[0] ?? assert.fail("missing Linux lane");
   const workspaceTests = lane.indexOf("bun run test");
   const packageCheck = lane.indexOf("bash scripts/check-harness-package.sh");
+  const authorityBuild = lane.indexOf("bash scripts/build-host-fixture.sh");
+  assert.ok(authorityBuild >= 0 && authorityBuild < workspaceTests,
+    "the qualification producer must generate authority fixtures before the build-free consumer");
   assert.ok(workspaceTests >= 0 && packageCheck > workspaceTests, "packaging requires preceding workspace qualification");
   assert.ok(lane.includes("bun scripts/check-metadata.mjs"));
   const start = source.indexOf("for generated in acyclic_harness_wasm.js");
-  const end = source.indexOf('observer_stage="$work/observer-package"', start);
-  assert.ok(start >= 0 && end > start);
-  const command = source.slice(start, end);
+  const admitted = source.indexOf("# The isolated observer cases", start);
+  const staging = source.indexOf('npm_stage="$work/npm-package"', admitted);
+  const end = source.indexOf('cd "$npm_stage"', staging);
+  assert.ok(start >= 0 && admitted > start && staging > admitted && end > staging);
+  const command = source.slice(start, admitted) + source.slice(staging, end);
   mkdirSync(".tools", { recursive: true });
   const root = resolve(mkdtempSync(".tools/harness-built-")).replaceAll("\\", "/");
   const packageRoot = join(root, "typescript/packages/harness");

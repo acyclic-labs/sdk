@@ -27,6 +27,23 @@ test('Python comments and multiline strings preserve executable timer detection'
  assert.deepEqual(newPollingSites('scripts/graphcoder-e2e/owned-process.py', owned, owned), []);
 });
 
+test('PowerShell here-strings retain embedded child waits without consuming later code', () => {
+ const file = 'scripts/control.ps1';
+ for (const quote of ["'", '"']) {
+  const source = `Add-Type @${quote}\n// the user's buffer\nstring text = "ordinary";\n${quote}@\n`;
+  assert.deepEqual(pollingSites(file, source), []);
+  assert.ok(pollingSites(file, source.replace('ordinary', 'Thread.Sleep(1)'))
+   .some(site => site.kind === 'embedded-timer-or-retry'));
+  assert.ok(pollingSites(file, source + 'Start-Sleep 1')
+   .some(site => site.kind === 'timer-or-readiness'));
+  assert.throws(() => pollingSites(file, source.replace(`${quote}@`, '')),
+   /control.ps1:1: unterminated PowerShell here-string/);
+ }
+ assert.doesNotThrow(() => pollingSites('scripts/test-terminal-region-screen.ps1',
+  readFileSync(new URL('./test-terminal-region-screen.ps1', import.meta.url), 'utf8')));
+ assert.deepEqual(pollingSites(file, 'Write-Output "a`"b"; Write-Output \'it\'\'s here\''), []);
+});
+
 test('new direct and indirect readiness mutations are rejected', () => {
  // These are intentional bad source edits, not external-tool/provider captures.
  for (const source of [
@@ -218,8 +235,10 @@ test('comments and Future polling remain distinct from time and readiness rechec
  assert.deepEqual(pollingSites(rust, `
  // while sleep timeout retry
  /* outer /* nested sleep */ while */
- fn drive<'a>(future: &'a mut Future) { future.poll(context); }
+ fn drive<'a>(future: &'a mut Future) { Future::poll(future, context); }
  `), []);
+ assert.ok(pollingSites(rust, 'fn drive(future: &mut Source) { future.poll(context); }')
+  .some(site => site.kind === 'timer-or-readiness'), 'a receiver name cannot prove the Future trait');
  assert.deepEqual(pollingSites(script, '// setTimeout retry while\nconst pattern = /[//]sleep/;'), []);
  assert.deepEqual(pollingSites(script, 'const name = globalThis["crypto"]; name.getRandomValues(bytes);'), []);
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));

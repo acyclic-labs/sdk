@@ -107,7 +107,7 @@ unsafe impl Send for PipeOperation {}
 unsafe impl Sync for PipeOperation {}
 
 fn port() -> io::Result<HANDLE> {
-    super::hub().map(|hub| hub.poller.port.as_raw_handle())
+    super::Events::start().map(|events| events._hub.poller.port.as_raw_handle())
 }
 
 impl PipeOperation {

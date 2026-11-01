@@ -26,16 +26,27 @@ impl Drop for Core {
 
 #[test]
 fn no_callback_runs_on_a_retired_view() {
-    check(false);
+    check(false, false);
 }
 
 #[test]
 #[should_panic(expected = "callback ran after its view retired")]
 fn retiring_without_draining_is_detected() {
-    check(true);
+    check(true, false);
 }
 
-fn check(broken: bool) {
+#[test]
+fn stop_unwind_drains_the_original_admitted_callbacks() {
+    check(false, true);
+}
+
+#[test]
+#[should_panic(expected = "callback ran after its view retired")]
+fn stop_unwind_without_draining_is_detected() {
+    check(true, true);
+}
+
+fn check(broken: bool, unwind: bool) {
     loom::model(move || {
         let table = Arc::new(ViewTable::new(u64::MAX));
         let dropped = Arc::new(AtomicBool::new(false));
@@ -90,7 +101,15 @@ fn check(broken: bool) {
         });
 
         RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
-        drop(owner);
+        if unwind {
+            struct StopUnwind;
+            let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                owner.retire_after(|| std::panic::panic_any(StopUnwind))
+            }));
+            assert!(stopped.is_err_and(|error| error.is::<StopUnwind>()));
+        } else {
+            drop(owner);
+        }
         if !broken {
             assert!(
                 dropped.load(Ordering::SeqCst),

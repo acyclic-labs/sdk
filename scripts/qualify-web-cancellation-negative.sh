@@ -18,19 +18,28 @@ python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-bina
 source .sessions-binaries.env
 for name in pty-search-cancel-resume held-fetch; do
  python3 - "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$proof" "$name" <<'PY'
-import os,pathlib,re,subprocess,sys,time
+import os,pathlib,re,signal,subprocess,sys,time
 binary,mock,proof,name=sys.argv[1:];start=time.monotonic()
 command=['node','scripts/qualify-fetch-cancellation.mjs',binary] if name=='held-fetch' else ['node','scripts/graphcoder-e2e/run.mjs',binary,mock,name]
-r=subprocess.run(command,env=dict(os.environ,E2E_OUTPUT=proof+'/'+name),capture_output=True,text=True)
-elapsed=time.monotonic()-start;out=r.stdout+r.stderr
+child=subprocess.Popen(command,env=dict(os.environ,E2E_OUTPUT=proof+'/'+name),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+cancelled=False
+try:
+ # The negative caller owns this external command's existing ten-second deadline.
+ stdout,stderr=child.communicate(timeout=10)
+except subprocess.TimeoutExpired:
+ cancelled=True
+ child.send_signal(signal.SIGTERM)
+ stdout,stderr=child.communicate()
+elapsed=time.monotonic()-start;out=stdout+stderr
 pathlib.Path(proof+'/'+name+'.log').write_text(out)
-assert r.returncode!=0,out
+assert child.returncode!=0,out
 if name=='held-fetch':
  import json
  record=json.loads(pathlib.Path(proof+'/'+name+'/fetch-cancellation.json').read_text())
  assert not record['passed'] and record['captures'][0]['actions']==2,record
 else: assert 'PTY completed 2/3 actions' in out,out
-assert elapsed<10,elapsed
+if cancelled: assert 'caller cancelled command (SIGTERM)' in out,out
+else: assert elapsed<10,elapsed
 print('SESSIONS_WEB_CANCELLATION_NEGATIVE_PASS',name,elapsed,flush=True)
 PY
 done

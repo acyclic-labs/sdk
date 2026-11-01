@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool } from "./process.mjs";
-import { withOwnedCase } from "./suite.mjs";
+import { commandCancellation, withOwnedCase } from "./suite.mjs";
 
 test("owned cases join cleanup before returning or propagating failure", async () => {
   for (const failed of [false, true]) {
@@ -18,9 +18,8 @@ test("owned cases join cleanup before returning or propagating failure", async (
       return "scenario result";
     } });
     running.then(() => settled = true, () => settled = true);
-    await Promise.resolve();
-    assert.equal(closes, 1, "every selected case must join the supplied process owner's drain");
     await started.promise;
+    assert.equal(closes, 1, "every selected case must join the supplied process owner's drain");
     assert.equal(settled, false, "selected case must retain custody until physical drain");
     drain.resolve();
     if (failed) await assert.rejects(running, error => error === failure);
@@ -78,6 +77,42 @@ test("native preparation completion admits execution through the original proces
     assert.equal(dirname(root), parent);
     rmSync(root, { recursive: true });
   }
+});
+
+test("caller cancellation retires and joins the original child during preparation and execution", async () => {
+  for (const preparation of [false, true]) {
+    const scope = new Processes(), cancellation = commandCancellation();
+    let events, child, completed = false;
+    const entered = Promise.withResolvers();
+    const hold = async () => {
+      child = scope.start(process.execPath, ["-e", "console.log(JSON.stringify({ready:true}));process.stdin.resume()"]);
+      events = new Spool(child.child.stdout, child.closed, { key: event => event.ready ? ["ready"] : [] });
+      entered.resolve();
+      await child.closed;
+      completed = true;
+    };
+    const running = withOwnedCase({ processes: scope, signal: cancellation.signal,
+      ...(preparation ? { prepare: hold, run: () => assert.fail("cancelled preparation cannot admit execution") }
+        : { run: hold }) });
+    running.catch(() => {});
+    try {
+      await entered.promise;
+      await events.keyed("ready");
+      assert.equal(completed, false);
+      process.emit("SIGTERM");
+      await assert.rejects(running, /caller cancelled command \(SIGTERM\)/);
+      assert.equal(completed, true, "publication joins the original operation after physical retirement");
+      assert.equal(scope.children.size, 0);
+      const result = await child.closed;
+      assert.ok(result.signal || result.code !== 0);
+    } finally { cancellation.dispose(); await scope.close(); }
+  }
+  const cancellation = new AbortController(), scope = new Processes();
+  const error = new Error("caller cancelled before admission");
+  cancellation.abort(error);
+  await assert.rejects(withOwnedCase({ processes: scope, signal: cancellation.signal,
+    run: () => assert.fail("a cancelled caller cannot start work") }), caught => caught === error);
+  assert.equal(scope.started, 0);
 });
 
 test("a real preparation launch refusal publishes its phase after original retirement", async () => {

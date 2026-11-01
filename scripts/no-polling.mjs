@@ -113,6 +113,7 @@ function scriptTokens(file, source) {
 function nativeTokens(source, file) {
  const rust = file.endsWith('.rs');
  const python = file.endsWith('.py');
+ const powershell = file.endsWith('.ps1');
  const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
  const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
  const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
@@ -152,6 +153,14 @@ function nativeTokens(source, file) {
    if (end < 0) throw malformed('unterminated raw string');
    emit(end + close.length, 'literal'); continue;
   }
+  const here = powershell && tail.match(/^@(['"])\r?\n/);
+  if (here) {
+   const terminator = new RegExp('^' + here[1] + '@', 'gm');
+   terminator.lastIndex = at + here[0].length;
+   const end = terminator.exec(source);
+   if (!end) throw malformed('unterminated PowerShell here-string');
+   emit(end.index + end[0].length, 'literal'); continue;
+  }
   const quote = tail[0];
   if (python && (tail.startsWith('"""') || tail.startsWith("'''"))) {
    const delimiter = tail.slice(0, 3);
@@ -164,7 +173,11 @@ function nativeTokens(source, file) {
   if (character) { emit(at + character[0].length, 'literal'); continue; }
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + 1;
-   while (end < source.length && source[end] !== quote) end += source[end] === '\\' ? 2 : 1;
+   while (end < source.length) {
+    if (powershell && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
+    if (source[end] === quote) break;
+    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1) : (source[end] === '\\' ? 2 : 1);
+   }
    if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
   }

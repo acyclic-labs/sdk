@@ -22,7 +22,7 @@ import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
 import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
-import { withOwnedCase } from "./suite.mjs";
+import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { variants } from "./serial.mjs";
 import { conversation } from "./conversation.mjs";
 
@@ -49,6 +49,7 @@ assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case ident
 const processes = new Processes({ transcripts: join(output, "transcripts"), onReport: event => {
   process.stderr.write(`case-lifecycle: ${JSON.stringify({ phase: "report", ...event })}\n`);
 } });
+const cancellation = commandCancellation();
 mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
@@ -198,7 +199,7 @@ async function verify(result, allRecords) {
 let results, currentPhase, failedPhase, execution;
 const phases = {};
 // Include process startup in the elapsed-time report.
-try { execution = await withOwnedCase({ processes, origin: 0, onPhase: event => {
+try { execution = await withOwnedCase({ processes, signal: cancellation.signal, origin: 0, onPhase: event => {
   currentPhase = event.phase;
   if (event.outcome === "failed") failedPhase ??= event.phase;
   phases[event.phase] = event;
@@ -237,6 +238,7 @@ catch (error) {
   });
   execution = { preparation_seconds: phases.preparation?.seconds };
 }
+finally { cancellation.dispose(); }
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
 const allRecords = port ? await recordedRequests(events, join(output, "requests.jsonl")) : [];
