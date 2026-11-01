@@ -16,68 +16,6 @@ use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
 
-/// Stable identity of one independently fenced authority stream.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AuthorityId(Uuid);
-
-impl AuthorityId {
-    /// Creates a fresh time-ordered authority identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(crate::identity::fresh_time_uuid())
-    }
-
-    /// Constructs an identity from its canonical 16 bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(Uuid::from_bytes(bytes))
-    }
-
-    /// Returns the canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for AuthorityId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Stable idempotency identity for one authority operation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct OperationId(Uuid);
-
-impl OperationId {
-    /// Creates a fresh time-ordered operation identity.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(crate::identity::fresh_time_uuid())
-    }
-
-    /// Constructs an identity from its canonical 16 bytes.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(Uuid::from_bytes(bytes))
-    }
-
-    /// Returns the canonical bytes.
-    #[must_use]
-    pub const fn into_bytes(self) -> [u8; 16] {
-        self.0.into_bytes()
-    }
-}
-
-impl Default for OperationId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Monotonic authority incarnation used to fence stale writers.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -215,6 +153,14 @@ macro_rules! uuid_identity {
     };
 }
 
+uuid_identity!(
+    AuthorityId,
+    "Stable identity of one independently fenced authority stream."
+);
+uuid_identity!(
+    OperationId,
+    "Stable idempotency identity for one authority operation."
+);
 uuid_identity!(
     VolumeId,
     "Stable identity of one independently versioned volume."
