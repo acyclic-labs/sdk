@@ -382,6 +382,7 @@ impl Opening {
                         self.config.clock.clone(),
                         &signed,
                         &verifier,
+                        None,
                     )
                     .await?;
                 (Some(tools), Some(writer))

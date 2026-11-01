@@ -27,7 +27,7 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: self.environment.clone(),
             inherit_environment: false,
-            execution_grant: None,
+            execution_grant: self.execution_grant.clone(),
             schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             // Presentation is bounded below; streaming output is not a reason to stop a command.

@@ -26,6 +26,7 @@ async fn native_fixture() -> Result<(
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &harness.signed,
             &harness.verifier,
+            None,
         )
         .await?,
     );
@@ -79,6 +80,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &harness.signed,
             &harness.verifier,
+            None,
         )
         .await?,
     );

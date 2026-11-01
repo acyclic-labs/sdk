@@ -2,6 +2,8 @@ use super::super::capture::{KILL_BEFORE_CAPTURE, OWED_WRITE_UNAPPLIED};
 use super::*;
 
 mod admission_cost;
+#[cfg(target_os = "linux")]
+mod granted;
 mod observed_cost;
 mod recovery;
 
@@ -133,6 +135,7 @@ async fn open_fixture(
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             &signed,
             &verifier,
+            None,
         )
         .await?,
     );
@@ -300,6 +303,7 @@ async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> 
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
         &harness.verifier,
+        None,
     )
     .await?;
     assert_eq!(
@@ -1170,6 +1174,7 @@ async fn executor_bindings_share_one_initial_checkout_selection() -> Result<()> 
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         &harness.signed,
         &harness.verifier,
+        None,
     )
     .await?;
     assert_eq!(

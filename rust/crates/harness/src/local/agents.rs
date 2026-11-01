@@ -231,6 +231,7 @@ impl LocalHarness {
                     Arc::clone(&self.clock),
                     &authority.scope,
                     &verifier,
+                    None,
                 )
                 .await?;
             let context = super::context::Binding {
