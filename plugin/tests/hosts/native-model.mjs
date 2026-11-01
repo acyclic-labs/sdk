@@ -29,8 +29,10 @@ export function assertNativeCompletion(host,result,answer,selection) {
     assert.equal(initialized,false,'duplicate native Claude initialization');initialized=true;
     assert.equal(event.model,selection.model,'native Claude model differs from approved selection');
     const count=selection.installed?1:0;
-    assert.equal(event.plugins?.length,count,'native Claude plugin set differs from paired mode');
-    assert.equal(event.mcp_servers?.length,count,'native Claude MCP connections differ from paired mode');
+    assert.ok(Array.isArray(event.plugins),'native Claude plugin set differs from paired mode');
+    assert.ok(Array.isArray(event.mcp_servers),'native Claude MCP connections differ from paired mode');
+    assert.equal(event.plugins.length,count,'native Claude plugin set differs from paired mode');
+    assert.equal(event.mcp_servers.length,count,'native Claude MCP connections differ from paired mode');
     if(selection.installed) {
      assert.equal(event.plugins[0].name,'acyclic','native Claude plugin set differs from paired mode');
      assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
