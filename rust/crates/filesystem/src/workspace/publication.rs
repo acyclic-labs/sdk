@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(all(test, feature = "memory"))]
+mod tests;
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Fences this workspace's mutable head for an exact publication operation.
     pub async fn reserve_publication<W: crate::facade::FsWork>(
@@ -13,12 +16,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             accounting.check()?;
             let authority = self.volume.fs.authority();
             let authority_id = self.authority_id();
-            let mut authority_work =
-                crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                authority_work.original = accounting.native_work();
-            }
+            let mut authority_work = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let reserved = async {
                 let head = authority.head(authority_id, &mut authority_work).await?;
                 authority_work.remaining()?;
@@ -28,12 +26,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             }
             .await
             .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-            let reserved = match accounting.standalone_parts() {
-                Some((_, spent, _, _)) => {
-                    merge_workspace_backend(authority_work.receipt(reserved), spent, 0)?.value
-                }
-                None => reserved?,
-            };
+            crate::facade::finish_authority_work(authority_work)?;
+            let reserved = reserved?;
             let reservation = match reserved {
                 crate::ReservationOutcome::Reserved(proof)
                 | crate::ReservationOutcome::AlreadyReserved(proof) => proof,
@@ -73,12 +67,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
             accounting.check()?;
-            let mut authority_work =
-                crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                authority_work.original = accounting.native_work();
-            }
+            let mut authority_work = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let released = self
                 .volume
                 .fs
@@ -86,13 +75,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 .release_publication(reservation, &mut authority_work)
                 .await
                 .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-            match accounting.standalone_parts() {
-                Some((_, spent, _, _)) => {
-                    merge_workspace_backend(authority_work.receipt(released), spent, 0)
-                        .map(|receipt| receipt.value)
-                }
-                None => released,
-            }
+            crate::facade::finish_authority_work(authority_work)?;
+            released
         }
         .await;
         work.finish(result, &accounting)
