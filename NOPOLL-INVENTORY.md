@@ -18,10 +18,22 @@ No production operation changes. Per measured compilation, repeated filesystem
 existence checks and sleeps become one TCP connection, one fixed-name write and
 one byte read. Two constant-size connections and one listener replace two marker
 files and repeated filesystem metadata reads. One toolchain-path lookup is
-added per test. No added compilation, thread,
-durability barrier or polling timer. The original
-Cargo lock-wait adapter is qualified below; exact resource totals remain unmeasured. The original two-crate parallel
-positive and restored shared-target negative remain the deciding control.
+added per test. No added compilation, thread, durability barrier or polling timer.
+One line observer per Cargo child consumes its original diagnostic stream without
+rescanning accumulated output. Exact resource totals remain unmeasured.
+
+Linux x86_64: at `801de03695`, the named real-Cargo overlap control passed 1/1,
+0.963 seconds named execution and 1.006 seconds total test execution. The actual
+selected Cargo 1.98.1 emitted its build-directory lock-wait diagnostic; the
+restored shared target was refused through the original channel EOF and script
+failure. This is captured real output, not a synthetic Cargo transcript. Channel
+connect/write refusals also retain the same overlap failure identity.
+
+At `a45dfe583b`, explicit-file TypeScript checking of the changed test and its
+imports passed with `--ignoreConfig --allowJs --checkJs --noEmit --strict
+--noImplicitAny false --skipLibCheck --target ES2024 --module NodeNext
+--moduleResolution NodeNext --types node`. No project-wide or Windows result is
+claimed. The separate metadata/routing test was typechecked but not executed.
 
 The previous milestone, #2031, shipped the completed producer-event conversions, typed publication
 conflicts and source-analyzer coverage below. Remaining backend, compiler-fixture
@@ -3146,7 +3158,7 @@ This expanded census covers current Rust, TypeScript and repository-script sourc
 | `typescript/packages/stream/test/session-error-driver.ts:62` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Current source census candidate | Review this current composition against its original primitive producer and lost-producer terminal. A matching earlier spelling does not qualify changed ownership; finite byte traversal, OS waits, explicit caller policy, model retries and transient transport backoff require individual classification. | Pending |
 | `typescript/packages/stream/test/session-deadline-model-driver.ts:70` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Current source census candidate | Review this current composition against its original primitive producer and lost-producer terminal. A matching earlier spelling does not qualify changed ownership; finite byte traversal, OS waits, explicit caller policy, model retries and transient transport backoff require individual classification. | Pending |
 | `scripts/build-native-family.mjs:1112` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Non-executable census text | Comment documents that provenance failure must never relaunch a build; the sole actual compiler invocation remains unchanged. | Non-wait source |
-| `scripts/check-crate-tests.test.mjs:57` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Current source census candidate | Review this exact script site against its original compiler/process/OS notification/registry response producer and terminal. Captured historical source, finite parsing, negative-control source and actual caller deadlines require individual classification; no blanket exception or readiness timeout is authorized. | Pending |
+| `scripts/check-crate-tests.test.mjs:57` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Original generated compiler readiness | Replaced by the pre-armed original build-script channel and actual Cargo lock-wait event; preserve the real parallel positive and shared-target negative. See successor qualification at `801de03695` above. | Actioned |
 | `scripts/check-build-boundaries.mjs:15` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Finite dependency graph | Traverse the already-returned Cargo metadata dependency graph once per boundary with a visited set. Each graph node expands once; no compiler readiness recheck or timer. Actual dependency/path data costs remain input-proportional. | Finite work |
 | `typescript/packages/stream/test/remote-history.browser.ts:11` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Current source census candidate | Review this current composition against its original primitive producer and lost-producer terminal. A matching earlier spelling does not qualify changed ownership; finite byte traversal, OS waits, explicit caller policy, model retries and transient transport backoff require individual classification. | Pending |
 | `typescript/packages/stream/test/remote-history.browser.ts:21` at `d6f7c4c566dc74f4b757db04967b4cbdf0bf1d95` | Current source census candidate | Review this current composition against its original primitive producer and lost-producer terminal. A matching earlier spelling does not qualify changed ownership; finite byte traversal, OS waits, explicit caller policy, model retries and transient transport backoff require individual classification. | Pending |
@@ -3837,7 +3849,7 @@ agent implementation remains separate from this expanded test audit.
 | `scripts/backends/storage-conformance.sh:80` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/stream/src/pending/tests.rs:13` | Primitive declaration | Declaration only; actual invocation and implementation sites are inventoried separately. This row grants no delay exception. | Non-wait |
 | `rust/crates/sdk-generation/src/historical/tests.rs:95` | One settled-child assertion | The original read_git_source_blobs call has already returned after its child wait/kill join. One try_wait asserts that contract immediately, including the held-input malformed-protocol negative; there is no loop, readiness wait, timer or second attempt. | Non-wait |
-| `scripts/check-crate-tests.test.mjs:57` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
+| `scripts/check-crate-tests.test.mjs:57` | Original generated compiler readiness | Replaced by the pre-armed original build-script channel and actual Cargo lock-wait event; preserve the real parallel positive and shared-target negative. See successor qualification at `801de03695` above. | Actioned |
 | `rust/crates/actors/src/conformance.rs:384` | Actor conformance quiet or alarm window | Use the original delivery/applied cut and the same host clock/alarm settlement owner, including paused and restarted cases. Keep absence assertions pending until a genuine settle event exists. | Pending |
 | `rust/crates/actors/src/conformance.rs:1090` | Actor conformance quiet or alarm window | Use the original delivery/applied cut and the same host clock/alarm settlement owner, including paused and restarted cases. Keep absence assertions pending until a genuine settle event exists. | Pending |
 | `rust/crates/conformance/src/bin/native_mount_qualify/mutation.rs:301` | Watcher readiness timeout | Use the original native watcher delivery and continuity/producer terminal, preserving the real mounted child mutation and sentinel oracle. PollWatcher fallback also requires an original event producer. | Pending |

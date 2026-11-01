@@ -74,8 +74,9 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
 fn main() {
     println!("cargo:rerun-if-env-changed=COMPILE_BARRIER");
     let Some(barrier) = std::env::var_os("COMPILE_BARRIER") else { return };
-    let mut stream = std::net::TcpStream::connect(barrier.to_str().unwrap()).unwrap();
-    stream.write_all(b"${name}\\n").unwrap();
+    let mut stream = std::net::TcpStream::connect(barrier.to_str().unwrap())
+        .expect("compilations did not overlap: channel unavailable");
+    stream.write_all(b"${name}\\n").expect("compilations did not overlap: producer closed before arrival");
     let mut admitted = [0];
     stream.read_exact(&mut admitted).expect("compilations did not overlap: producer closed");
     assert_eq!(admitted, [1], "compilations did not overlap: invalid admission");
