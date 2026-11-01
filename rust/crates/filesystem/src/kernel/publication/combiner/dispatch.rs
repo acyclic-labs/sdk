@@ -127,13 +127,10 @@ fn seal_group<P: PublicationOwner>(
     let mut requests = Retained::from_owned(requests, accounting)?;
     let cuts = Owned::<Vec<crate::PolicyCut>>::allocate(count, accounting)?;
     let mut cuts = Retained::from_owned(cuts, accounting)?;
-    let mut preparation_work = backend_work(accounting, cancellation)?;
+    let mut preparation_work =
+        crate::async_storage::AuthorityFrame::borrow(accounting, cancellation)?;
     let result = prepare_requests(group, &mut requests.value, &mut preparation_work);
-    let completed = preparation_work.spent();
     drop(preparation_work);
-    if accounting.standalone_parts().is_some() {
-        accounting.accept_backend(completed)?;
-    }
     let head = result?;
     {
         let state = group
@@ -430,30 +427,6 @@ fn distribute(group: &Group, outcome: crate::AppendGroupOutcome) -> Result<(), c
                 return Err(crate::FsError::InvalidAuthorityHistory);
             }
         }
-    }
-    Ok(())
-}
-
-pub(super) fn backend_work<'a>(
-    accounting: &KernelAccounting<'a>,
-    cancellation: &'a CancellationToken,
-) -> Result<crate::AuthorityWork<'a>, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        return Ok(crate::AuthorityWork::native(original, cancellation));
-    }
-    Ok(crate::AuthorityWork::new(
-        accounting.remaining()?,
-        cancellation,
-    ))
-}
-
-pub(super) fn merge_work(
-    accounting: &mut KernelAccounting<'_>,
-    work: &crate::AuthorityWork<'_>,
-) -> Result<(), crate::FsError> {
-    if accounting.standalone_parts().is_some() {
-        accept_backend(accounting, work.spent())?;
     }
     Ok(())
 }

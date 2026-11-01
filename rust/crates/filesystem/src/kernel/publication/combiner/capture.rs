@@ -67,11 +67,11 @@ impl ProposalCore {
         let mut quote = self.quote.clone();
         quote.expected = anchor.head;
         quote.commit.publication = Some(self.changes(anchor.head, self.request.generation_root)?);
-        let mut work = dispatch::backend_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting, cancellation)?;
         let cost = authority
             .quote_group_append(&quote, self.growth, &mut work)
             .await;
-        dispatch::merge_work(accounting, &work)?;
+        drop(work);
         let cost = cost?;
         *self
             .cost

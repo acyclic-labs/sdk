@@ -28,6 +28,7 @@ mod fork;
 pub use fork::{GenerationFork, GenerationForkSource, WorkspaceForkCommit, WorkspaceForkOutcome};
 pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
+pub(crate) use work::AuthorityFrame;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::NativeAuthorityGuard;
 #[cfg(any(test, feature = "distributed"))]
