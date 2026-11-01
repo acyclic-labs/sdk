@@ -1,6 +1,6 @@
 //! Standard split-ring control over the original mapping and completion owner.
 
-use super::vring::{PacketVring, RingFeatures};
+use super::vring::{PacketVring, RingFeatures, VringQueue};
 use super::vring_event::CounterId;
 use super::vring_memory::GuestRam;
 use super::*;
@@ -48,10 +48,10 @@ impl std::ops::Deref for QueueKick {
 }
 
 pub(super) struct VringControl {
-    // Workers borrow memory BEFORE locking a queue, retaining this table until
-    // its actual used-ring completion. Replacement takes the write lock first.
-    pub(super) memory: RwLock<Option<GuestRam>>,
-    pub(super) queues: [Mutex<PacketVring>; QUEUE_COUNT],
+    // Pin this table and the original batch before dropping both guards.
+    // Replacement retains the same lock order and waits for that batch.
+    pub(super) memory: RwLock<Option<Arc<GuestRam>>>,
+    pub(super) queues: [VringQueue; QUEUE_COUNT],
     pub(super) work: NativeMaterializationWork,
     pub(super) changes: [ProcessWake; QUEUE_COUNT],
     features: AtomicU64,
@@ -76,10 +76,7 @@ impl VringControl {
         )?;
         Ok(Arc::new(Self {
             memory: RwLock::new(None),
-            queues: [
-                Mutex::new(PacketVring::new(maximum)?),
-                Mutex::new(PacketVring::new(maximum)?),
-            ],
+            queues: [VringQueue::new(maximum)?, VringQueue::new(maximum)?],
             work: work.clone(),
             changes: [ProcessWake::new()?, ProcessWake::new()?],
             features: AtomicU64::new(0),
@@ -171,7 +168,7 @@ impl VringControl {
 
     pub(super) fn replace_memory(
         &self,
-        prepare: impl FnOnce() -> Result<GuestRam, NativeMountError>,
+        prepare: impl FnOnce() -> Result<Arc<GuestRam>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         self.check()?;
         {
@@ -211,11 +208,7 @@ impl VringControl {
         &self,
         index: u32,
     ) -> Result<std::sync::MutexGuard<'_, PacketVring>, NativeMountError> {
-        self.queues
-            .get(index as usize)
-            .ok_or(libc::EINVAL)?
-            .lock()
-            .map_err(|_| std::io::Error::from_raw_os_error(libc::EIO).into())
+        self.queues.get(index as usize).ok_or(libc::EINVAL)?.lock()
     }
 
     pub(super) fn set_addresses(
@@ -331,8 +324,8 @@ impl VringControl {
             }
         }
         let queue = queues.get_mut(index as usize).ok_or(libc::EINVAL)?;
-        // Standard frontends replace CALL after enabling a queue. Acquiring
-        // the physical queue lock waits for its current publication; no
+        // Standard frontends replace CALL after enabling a queue. The original
+        // batch's completion event retains its current publication; no
         // descriptor or callback interpretation changes with this notifier.
         queue.settled()?;
         match target {
@@ -346,18 +339,36 @@ impl VringControl {
     pub(super) fn set_enabled(&self, index: u32, enabled: bool) -> Result<(), NativeMountError> {
         self.check()?;
         let memory = self.memory.read().unwrap_or_else(PoisonError::into_inner);
-        let mut queue = self.queue(index)?;
         if enabled {
+            let mut queue = self.queue(index)?;
             let memory = memory.as_ref().ok_or(libc::EINVAL)?;
             queue.enable(memory.memory().as_ref(), self.features().event_idx)?;
         } else {
-            // Holding the actual queue lock excludes all callbacks through
-            // physical publication; disabling cannot race an accepted head.
-            queue.enabled = false;
-            queue.configurable()?;
+            self.disable_queue(index)?.configurable()?;
         }
         self.changed(index)?;
         Ok(())
+    }
+
+    fn disable_queue(
+        &self,
+        index: u32,
+    ) -> Result<std::sync::MutexGuard<'_, PacketVring>, NativeMountError> {
+        let queue = self.queues.get(index as usize).ok_or(libc::EINVAL)?;
+        // Close new admission before waiting for the original accepted batch.
+        // Its producer needs neither the memory guard nor a control guard.
+        queue
+            .state
+            .lock()
+            .map_err(|_| std::io::Error::from_raw_os_error(libc::EIO))?
+            .enabled = false;
+        queue.lock()
+    }
+
+    pub(super) fn drain(&self, index: u32) -> Result<u16, NativeMountError> {
+        let base = self.disable_queue(index)?.drain()?;
+        self.changed(index)?;
+        Ok(base)
     }
 }
 

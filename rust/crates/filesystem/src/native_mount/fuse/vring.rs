@@ -2,7 +2,7 @@
 
 use super::NativeMountError;
 use super::vring_control::{QueueKick, QueueSignal};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use virtio_queue::{Queue, QueueT};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
@@ -23,6 +23,95 @@ pub(super) struct PacketVring {
     failed: bool,
     sized: bool,
     addressed: bool,
+    leased: bool,
+    waiters: usize,
+}
+
+/// Control waits on the original batch's physical completion, without holding
+/// the queue lock needed by its producer. No replacement can pass that wait.
+pub(super) struct VringQueue {
+    pub(super) state: Mutex<PacketVring>,
+    completed: Condvar,
+}
+
+pub(super) struct VringBatch<'a> {
+    owner: &'a VringQueue,
+    completed: bool,
+}
+
+impl VringQueue {
+    pub(super) fn new(maximum: std::num::NonZeroU16) -> Result<Self, NativeMountError> {
+        Ok(Self {
+            state: Mutex::new(PacketVring::new(maximum)?),
+            completed: Condvar::new(),
+        })
+    }
+
+    pub(super) fn lock(&self) -> Result<MutexGuard<'_, PacketVring>, NativeMountError> {
+        let mut queue = self.state.lock().map_err(poisoned)?;
+        if !queue.leased {
+            return Ok(queue);
+        }
+        queue.waiters = queue.waiters.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        match self.completed.wait_while(queue, |queue| queue.leased) {
+            Ok(mut queue) => {
+                queue.waiters -= 1;
+                Ok(queue)
+            }
+            Err(error) => {
+                error.into_inner().waiters -= 1;
+                Err(std::io::Error::from_raw_os_error(libc::EIO).into())
+            }
+        }
+    }
+
+    /// The worker transfers its exact locked queue into one affine batch.
+    pub(super) fn release_for_io<'a>(
+        &'a self,
+        mut queue: MutexGuard<'a, PacketVring>,
+    ) -> VringBatch<'a> {
+        queue.leased = true;
+        drop(queue);
+        VringBatch {
+            owner: self,
+            completed: false,
+        }
+    }
+}
+
+impl VringBatch<'_> {
+    pub(super) fn queue(&self) -> Result<MutexGuard<'_, PacketVring>, NativeMountError> {
+        self.owner.state.lock().map_err(poisoned)
+    }
+
+    pub(super) fn finish(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for VringBatch<'_> {
+    fn drop(&mut self) {
+        let mut queue = self
+            .owner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !self.completed {
+            // Return, cancellation and unwind all release the same wait. A
+            // missing producer can never manufacture a positive drain.
+            queue.fail();
+        }
+        queue.leased = false;
+        let waiting = queue.waiters != 0;
+        drop(queue);
+        if waiting {
+            self.owner.completed.notify_all();
+        }
+    }
+}
+
+fn poisoned<T>(_: PoisonError<T>) -> NativeMountError {
+    std::io::Error::from_raw_os_error(libc::EIO).into()
 }
 
 impl PacketVring {
@@ -36,6 +125,8 @@ impl PacketVring {
             failed: false,
             sized: false,
             addressed: false,
+            leased: false,
+            waiters: 0,
         })
     }
 
@@ -68,7 +159,7 @@ impl PacketVring {
     }
 
     pub(super) fn settled(&self) -> Result<(), NativeMountError> {
-        if self.failed || self.queue.next_avail() != self.queue.next_used() {
+        if self.failed || self.leased || self.queue.next_avail() != self.queue.next_used() {
             return Err(NativeMountError::VirtioFsCompletionUnknown);
         }
         Ok(())
@@ -166,13 +257,11 @@ impl PacketVring {
     }
 
     /// Positive GET_VRING_BASE boundary. The control owner holds this queue's
-    /// lock, excluding callbacks through their physical completion. An unknown
+    /// lock after the original batch lease has retired. An unknown
     /// result remains failed even if the two ring indices happen to match.
     pub(super) fn drain(&mut self) -> Result<u16, NativeMountError> {
         self.enabled = false;
-        if self.failed || self.queue.next_avail() != self.queue.next_used() {
-            return Err(NativeMountError::VirtioFsCompletionUnknown);
-        }
+        self.settled()?;
         self.queue.set_ready(false);
         self.kick = None;
         self.call = None;

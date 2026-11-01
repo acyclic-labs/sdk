@@ -7,7 +7,7 @@
 use super::packet::PacketRequest;
 use super::packet_buffers::PacketBuffers;
 use super::packet_session::PacketSession;
-use super::vring::{PacketVring, RingFeatures};
+use super::vring::{PacketVring, RingFeatures, VringBatch};
 use super::vring_memory::GuestRam;
 use super::*;
 use std::io::IoSlice;
@@ -210,11 +210,9 @@ impl<'a, 'scratch> VringPacket<'a, 'scratch> {
         &self,
         vring: &mut PacketVring,
         memory: &GuestMemoryMmap<()>,
-        output: &[IoSlice<'_>],
-        work: &crate::NativeMaterializationWork,
+        length: u32,
         event_idx: bool,
     ) -> Result<(), NativeMountError> {
-        let length = self.scatter(output, work)?;
         // Use the actual original mapping for the used ring and event index.
         let queue = &mut vring.queue;
         queue
@@ -272,14 +270,12 @@ fn pop_packet<'a, 'scratch>(
     .map(Some)
 }
 
-/// Caller holds this exact vring's lock throughout callback and publication.
-/// Thus SET_VRING_ENABLE/GET_VRING_BASE cannot report a drained queue while its
-/// original request is still executing. The original memory Arc stays live too.
-/// On error the queue is marked failed before that lock can be released. The
-/// control owner must retire the connection and retain this actual error.
+/// The original batch and mapping remain pinned through physical publication.
+/// Only descriptor snapshot and used-ring publication need the queue guard;
+/// filesystem dispatch and guest payload copies run outside that guard.
 pub(super) fn serve_vring_packet(
     session: &PacketSession,
-    vring: &mut PacketVring,
+    batch: &VringBatch<'_>,
     scratch: &mut VringScratch<'_>,
     buffers: &mut PacketBuffers,
     work: &crate::NativeMaterializationWork,
@@ -288,14 +284,16 @@ pub(super) fn serve_vring_packet(
 ) -> Result<QueueProgress, NativeMountError> {
     let result = (|| {
         let memory = scratch.memory.memory();
-        let Some(packet) = pop_packet(
-            vring,
-            memory,
-            work,
-            features.indirect,
-            &mut scratch.segments,
-        )?
-        else {
+        let Some(packet) = ({
+            let mut vring = batch.queue()?;
+            pop_packet(
+                &mut vring,
+                memory,
+                work,
+                features.indirect,
+                &mut scratch.segments,
+            )?
+        }) else {
             return Ok(QueueProgress::Empty);
         };
         let maximum = session.packet_capacity();
@@ -311,13 +309,12 @@ pub(super) fn serve_vring_packet(
         let running = session
             .publish(&request, response, |reply| {
                 let slices = reply.slices();
-                packet.complete(
-                    vring,
-                    memory.as_ref(),
+                let length = packet.scatter(
                     slices.as_ref().map_or(&[], |slices| slices.as_slice()),
                     work,
-                    features.event_idx,
-                )
+                )?;
+                let mut vring = batch.queue()?;
+                packet.complete(&mut vring, memory.as_ref(), length, features.event_idx)
             })
             .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
         Ok(if running {
@@ -329,7 +326,6 @@ pub(super) fn serve_vring_packet(
     if result.is_err() {
         // Neither a malformed chain nor uncertain used publication authorizes
         // replay, descriptor substitution, or a manufactured completion.
-        vring.fail();
         session.close();
     }
     result
