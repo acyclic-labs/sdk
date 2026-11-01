@@ -1,6 +1,7 @@
 //! Browser/Node fetch adapter. Authority, JSON and redaction live in acyclic-auth.
 use acyclic_auth::{
     contract::*,
+    operation::ProtectedBytes,
     secrets::{Client, Error, Response, Transport, TransportFuture},
 };
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -34,7 +35,7 @@ impl Transport for FetchTransport {
         &'a self,
         path: &'static str,
         bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
             let init = web_sys::RequestInit::new();
@@ -45,7 +46,7 @@ impl Transport for FetchTransport {
             init.set_credentials(web_sys::RequestCredentials::Omit);
             init.set_cache(web_sys::RequestCache::NoStore);
             init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
-            init.set_body(&Uint8Array::from(body));
+            init.set_body(&Uint8Array::from(body.as_ref()));
             let url = self
                 .endpoint
                 .join(path)
