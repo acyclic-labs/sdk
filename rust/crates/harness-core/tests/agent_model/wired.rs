@@ -264,14 +264,21 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
 
-    use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
+    use acyclic_actors::{
+        addressing::ActorReference,
+        domain::ActorLimits,
+        local::{Clock, ClockError},
+    };
     use std::sync::atomic::{AtomicU64, Ordering};
     struct EventClock(AtomicU64);
     impl Clock for EventClock {
         fn now_unix_ms(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
-        fn sleep_until(&self, _: u64) -> BoxProviderFuture<'static, ()> {
+        fn sleep_until(
+            &self,
+            _: u64,
+        ) -> BoxProviderFuture<'static, std::result::Result<(), ClockError>> {
             panic!("finite actor drain must not start a timer")
         }
     }

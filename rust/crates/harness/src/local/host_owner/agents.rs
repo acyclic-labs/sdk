@@ -414,7 +414,7 @@ impl HostDriver {
                             }
                         )
                         .then_some(inbox);
-                        apply(agent, &mut session, inbox, id, event, &mut outs)?
+                        apply(agent, &mut session, id, event, &mut outs)?
                     }
                     Err(error) => reject(&mut session, id, &error.to_string()),
                 }
