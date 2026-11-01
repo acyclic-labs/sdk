@@ -95,6 +95,9 @@ impl StagedArchive {
         equal_files(&self.path(name), other)
     }
 
+    /// Installs complete members into the Cargo working tree with no-clobber
+    /// visibility. This reconstructible tree has no crash-durability promise;
+    /// final documentation publication owns its separate durability boundary.
     pub fn publish(&self, root: &Path, directory: &str) -> Result<(), String> {
         fs::create_dir_all(root).map_err(|e| e.to_string())?;
         let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -118,7 +121,6 @@ impl StagedArchive {
             let mut output = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
             let mut input = fs::File::open(self.path(name)).map_err(|e| e.to_string())?;
             std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
-            output.as_file().sync_all().map_err(|e| e.to_string())?;
             if let Err(error) = output.persist_noclobber(&path) {
                 if !self.matches(name, &path)? {
                     return Err(error.error.to_string());
