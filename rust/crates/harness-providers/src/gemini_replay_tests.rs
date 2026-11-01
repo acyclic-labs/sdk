@@ -441,6 +441,9 @@ fn shrunk_split_answer_fixture_preserves_text_for_every_target() {
 #[test]
 fn malformed_native_part_fields_fail_before_publication() {
     let mut parts = vec![
+        json!([]),
+        json!(["answer"]),
+        json!([null,null,null,{"name":"echo","args":{}}]),
         json!({"text":"answer","thought":"true"}),
         json!({"text":"answer","thoughtSignature":1}),
         json!({"text":"answer","functionCall":{"name":"echo","args":{}}}),

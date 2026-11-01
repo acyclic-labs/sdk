@@ -175,6 +175,9 @@ pub(crate) fn native_part(raw: &RawValue) -> crate::Result<NativePart<'_>> {
             "Gemini part admission failed; recovery: return one typed data member and a well-formed functionCall per native part",
         )
     };
+    if raw_kind(raw) != Kind::Object {
+        return Err(invalid());
+    }
     let part = serde_json::from_str::<Part<&RawValue>>(raw.get())
         .map_err(|_| invalid())?
         .without_nulls();
