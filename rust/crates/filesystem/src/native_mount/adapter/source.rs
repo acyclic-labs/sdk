@@ -613,13 +613,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             (base, candidate, self.checkout.view_gate.generation())
         };
         if rebase {
-            let (decision, _allocation) = candidate
-                .rebase_head(
-                    None,
-                    &work,
-                    cancellation,
-                )
-                .await?;
+            let (decision, _allocation) = candidate.rebase_head(None, &work, cancellation).await?;
             if matches!(decision, RebaseDecision::Conflicted { .. }) {
                 return Err(MountSourceError::Stale);
             }

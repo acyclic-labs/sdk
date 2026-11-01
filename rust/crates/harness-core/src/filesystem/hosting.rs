@@ -704,7 +704,6 @@ where
             &authority.scope,
             &authority.private.volume,
             crate::conversation::VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )
         .map_err(turn)?;
