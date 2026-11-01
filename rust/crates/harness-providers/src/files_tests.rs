@@ -177,6 +177,84 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             actual,
             projection::body_with_files(&bound, split.request(), &mut expected_files)?
         );
+        if adapter == Adapter::Gemini {
+            assert!(crate::input::validate_input(adapter, &actual).is_empty());
+            assert_eq!(actual["contents"].as_array().unwrap().len(), 1);
+            assert_eq!(actual["contents"][0]["parts"][1]["text"], "child result");
+            let ModelContentPart::Notices { notices } = &notice else {
+                unreachable!()
+            };
+            let frozen = serde_json::to_string(notices).unwrap();
+            assert_eq!(actual["contents"][0]["parts"][0]["text"], frozen);
+
+            // Original wrapped Notice turns fail the real wire grammar even
+            // when the independently admitted split request has the same bug.
+            let mut separate = actual.clone();
+            let parts = separate["contents"][0]["parts"].as_array_mut().unwrap();
+            let attachment = parts.pop().unwrap();
+            separate["contents"].as_array_mut().unwrap().push(json!({
+                "role":"user", "parts":[attachment],
+            }));
+            assert!(crate::input::validate_input(adapter, &separate).contains(&"GEM-SEQ-04"));
+
+            let mut steered = split.request().clone();
+            steered.messages = vec![
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("before".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(
+                        acyclic_harness_core::model::ToolCall::new(
+                            "call".into(),
+                            "echo".into(),
+                            json!({}),
+                        ),
+                    )),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(notice.clone()),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name: "echo".into(),
+                        content: ToolResultContent::Json {
+                            value: json!("done"),
+                        },
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(notice.clone()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("after".into()),
+                },
+            ];
+            steered.tools = vec![acyclic_harness_core::tool::ToolDefinition {
+                name: "echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({}),
+                projection_schema: json!({}),
+            }];
+            let steered = PreparedModelRequest::prepare(steered, Limits::default(), None)?;
+            let joined = projection::body(&bound, steered.request())?;
+            assert!(crate::input::validate_input(adapter, &joined).is_empty());
+            assert_eq!(joined["contents"].as_array().unwrap().len(), 3);
+            let parts = joined["contents"][2]["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), 4);
+            assert!(parts[0]["functionResponse"].is_object());
+            assert_eq!(parts[1]["text"], frozen);
+            assert_eq!(parts[2]["text"], frozen);
+            assert_eq!(parts[3]["text"], "after");
+        }
         // Event metadata cannot turn arbitrary text into an admitted event
         // attachment. JSON references alone retain no file read authority.
         assert!(

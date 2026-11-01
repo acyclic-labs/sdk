@@ -163,6 +163,12 @@ impl WireItem {
         &self.0.wire
     }
 
+    /// Moves the producing-family bytes out of this item without copying.
+    /// Foreign projections and provenance retire with the consumed envelope.
+    pub fn into_wire(self) -> Box<RawValue> {
+        self.0.wire
+    }
+
     /// Borrow the fixed set of admitted foreign projections without decoding.
     /// There are at most three entries, independent of conversation length.
     pub fn projections(&self) -> impl ExactSizeIterator<Item = (Family, &RawValue)> {

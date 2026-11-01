@@ -9,6 +9,7 @@ use serde_json::{Map, Value, value::RawValue};
 pub(super) enum Item<'a> {
     Json(Value),
     Native(&'a RawValue),
+    GeminiNotice(#[serde(serialize_with = "gemini_notice_part")] Box<RawValue>),
     Call(Call<'a>),
     Result(super::result::ToolResult<'a>),
 }
@@ -34,6 +35,21 @@ fn notice_wire<S: serde::Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     item.wire().serialize(serializer)
+}
+
+fn gemini_notice_part<S: serde::Serializer>(
+    item: &RawValue,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // Borrow the canonical renderer's single native part. Only its enclosing
+    // user turn joins neighbouring parts; its original bytes remain opaque.
+    #[derive(serde::Deserialize)]
+    struct Block<'a> {
+        #[serde(borrow)]
+        parts: [&'a RawValue; 1],
+    }
+    let block: Block<'_> = serde_json::from_str(item.get()).map_err(serde::ser::Error::custom)?;
+    block.parts[0].serialize(serializer)
 }
 
 #[derive(Serialize)]

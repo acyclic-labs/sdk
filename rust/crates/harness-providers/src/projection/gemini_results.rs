@@ -28,7 +28,7 @@ fn response<'a>(item: &'a Item<'_>) -> Option<Exchange<'a>> {
             GeminiPart::Response(response) => Some(exchange(response)),
             _ => None,
         },
-        Item::Native(_) | Item::Call(_) => None,
+        Item::Native(_) | Item::GeminiNotice(_) | Item::Call(_) => None,
         Item::Result(result) => Some((Some(result.name.as_ref()), Some(result.id.as_str()))),
     }
 }
@@ -40,7 +40,7 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
             _ => None,
         },
         Item::Call(call) => Some((Some(call.name.as_ref()), Some(call.id.as_str()))),
-        Item::Native(_) | Item::Result(_) => None,
+        Item::Native(_) | Item::GeminiNotice(_) | Item::Result(_) => None,
     });
     let count = calls.clone().count();
     if count == 0 || count > results.len() {

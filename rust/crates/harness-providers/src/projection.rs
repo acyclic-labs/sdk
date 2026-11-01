@@ -165,7 +165,15 @@ pub(crate) fn body_named<'a>(
                 notices,
             )
             .map_err(|error| invalid(error.to_string()))?;
-            sequence::push(adapter, &mut messages, Message::Notice(notice))?;
+            let notice = if adapter == Adapter::Gemini {
+                Message::Gemini {
+                    role: "user",
+                    parts: vec![Item::GeminiNotice(notice.into_wire())],
+                }
+            } else {
+                Message::Notice(notice)
+            };
+            sequence::push(adapter, &mut messages, notice)?;
             if attachments.is_empty() {
                 continue;
             }
