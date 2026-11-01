@@ -14,7 +14,8 @@ use futures::TryStreamExt as _;
 
 #[tokio::test]
 async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() -> Result {
-    let bound = binding()?;
+    let inherited = Arc::new(InheritedEditorInput::default());
+    let bound = binding_with(inherited.clone(), Default::default())?;
     let agent = AgentId::from_bytes([6; 16]);
     let private = VolumeRef::new(
         provider()?,
@@ -66,6 +67,20 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             ContentAccess::default(),
         )?
         .await?;
+    let (sibling, _) = publisher
+        .stage_once(
+            OperationId::from_bytes([8; 16]),
+            "editor/sibling",
+            b"unshared private file",
+            "text/plain",
+            "sibling",
+            ContentAccess::default(),
+        )?
+        .await?;
+    *inherited
+        .files
+        .lock()
+        .map_err(|_| "editor input control poisoned")? = Some((file.clone(), sibling));
     let reader = FilesystemContentVerifier::new(
         bound.volumes().clone(),
         &authority.verifier,
@@ -200,6 +215,56 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         reader.read(&file, 64 * 1024, None, None)?.await?.as_ref(),
         b"original revision"
     );
+    // Drive the original actors to completion without a model, timer or
+    // readiness loop. The real namespace/volume fork inherits both settled
+    // editor prompts, but grants only the file the structured prompt names.
+    bound
+        .agents()
+        .runtime()
+        .drain_actor(&bound.agents().actor(root)?)
+        .await?;
+    let by = Sender::Host {
+        host: "editor-control".into(),
+    };
+    let id = IntentId::try_from("editor-fork")?;
+    let brief = bound
+        .stage_text(root, "brief", &by, &id, ("child", "child"))
+        .await?;
+    let Delivered::Committed { inbox } = bound
+        .agents()
+        .send(
+            root,
+            &by,
+            &InboxRecord::Spawn(crate::agent::SpawnRequest {
+                by: by.clone(),
+                id,
+                brief: Box::new(brief),
+            }),
+        )
+        .await?
+    else {
+        return Err("spawn input did not commit".into());
+    };
+    bound
+        .agents()
+        .runtime()
+        .drain_actor(&bound.agents().actor(root)?)
+        .await?;
+    let (intent, _) = crate::agent::requested_child(root, inbox)?;
+    let crate::agent::SpawnOutcome::Spawned { child } =
+        bound.agents().spawned(root, inbox, &intent).await?
+    else {
+        return Err("editor child was refused".into());
+    };
+    bound
+        .agents()
+        .runtime()
+        .drain_actor(&bound.agents().actor(&child)?)
+        .await?;
+    assert!(
+        inherited.observed.load(Ordering::SeqCst),
+        "child never executed the inherited ordered editor input"
+    );
     let foreign = FileRef::new(
         VolumeRef::new(
             provider()?,
@@ -236,4 +301,108 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             .is_err()
     );
     Ok(())
+}
+
+#[derive(Default)]
+struct InheritedEditorInput {
+    files: std::sync::Mutex<Option<(FileRef, FileRef)>>,
+    observed: Arc<AtomicBool>,
+}
+
+impl TurnExecutors for InheritedEditorInput {
+    fn executor<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        _: OperationId,
+        _: &'a ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, crate::Result<Arc<dyn Executor>>> {
+        Box::pin(async move {
+            let expected = if agent.parent.is_some() {
+                let (file, sibling) = self
+                    .files
+                    .lock()
+                    .map_err(|_| crate::Error::Conflict("editor input control poisoned".into()))?
+                    .clone()
+                    .ok_or_else(|| crate::Error::Invalid("editor files absent".into()))?;
+                let reader = &authority.content.reader;
+                assert_eq!(
+                    reader.read(&file, 64 * 1024, None, None)?.await?.as_ref(),
+                    b"original revision"
+                );
+                assert!(
+                    async { reader.read(&sibling, 64 * 1024, None, None)?.await }
+                        .await
+                        .is_err(),
+                    "an exact inherited file grant exposed a sibling"
+                );
+                assert!(
+                    crate::conversation::ContentGrant::verify(
+                        &authority.issuer.verifier(&mut None)?,
+                        &authority.scope,
+                        file.volume(),
+                        crate::conversation::VolumeOperation::Write,
+                        u64::MAX,
+                        &mut None,
+                    )
+                    .is_err(),
+                    "an inherited read grant permitted a write"
+                );
+                Some(file)
+            } else {
+                None
+            };
+            Ok(Arc::new(EditorTurn {
+                expected,
+                observed: self.observed.clone(),
+            }) as Arc<dyn Executor>)
+        })
+    }
+}
+
+struct EditorTurn {
+    expected: Option<FileRef>,
+    observed: Arc<AtomicBool>,
+}
+
+impl Executor for EditorTurn {
+    fn execute<'a>(
+        &'a self,
+        input: crate::executor::TurnInput,
+        _: &'a dyn crate::executor::ExecutionJournal,
+    ) -> BoxProviderFuture<'a, crate::Result<crate::executor::TurnOutput>> {
+        Box::pin(async move {
+            if let Some(file) = &self.expected {
+                let expected = ModelContent::Parts(vec![
+                    ModelContentPart::Text {
+                        text: "before".into(),
+                    },
+                    ModelContentPart::File {
+                        file: file.clone(),
+                        policy: FileProjectionPolicy::for_attachment(file),
+                    },
+                    ModelContentPart::Text {
+                        text: "after".into(),
+                    },
+                ]);
+                assert!(
+                    input
+                        .selected_context
+                        .as_ref()
+                        .is_some_and(|selected| selected
+                            .messages
+                            .iter()
+                            .any(|message| message.content == expected)),
+                    "child selection lost the inherited ordered prompt or pinned file identity"
+                );
+                self.observed.store(true, Ordering::SeqCst);
+            }
+            Ok(crate::executor::TurnOutput {
+                text: "settled".into(),
+                attachments: Vec::new(),
+                metadata: serde_json::Value::Null,
+                steps: 0,
+            })
+        })
+    }
 }
