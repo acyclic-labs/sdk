@@ -144,8 +144,8 @@ impl TargetResolver for InProcessTargets {
         &'a crate::conversation::VolumeRef,
         std::borrow::Cow<'a, str>,
     )> {
-        self.roster.select(None).map_err(Error::Target)?;
-        self.targets[0].executor.read_path(path, work)
+        let position = self.roster.select_position(None).map_err(Error::Target)?;
+        self.targets[position].executor.read_path(path, work)
     }
 
     fn roster(&self) -> Arc<Roster> {
@@ -153,12 +153,8 @@ impl TargetResolver for InProcessTargets {
     }
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {
-        let record = self.roster.select(target).map_err(Error::Target)?;
-        self.targets
-            .iter()
-            .find(|target| target.record.name == record.name)
-            .cloned()
-            .ok_or_else(|| Error::Invalid("listed target has no executor".into()))
+        let position = self.roster.select_position(target).map_err(Error::Target)?;
+        Ok(Arc::clone(&self.targets[position]))
     }
 }
 

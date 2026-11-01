@@ -29,7 +29,7 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[tokio::test]
 async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     use acyclic_harness_core::{
-        runtime::{Bindings, RuntimeScope, TargetResolver as _, ToolContext},
+        runtime::{Bindings, RuntimeScope, TargetResolver, ToolContext},
         tool::{ToolInvocation, files},
     };
     let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
@@ -39,6 +39,58 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     .await?;
     let (owner, scope, workspace) =
         super::workspace_fixture_for_volume(storage.volume().clone()).await?;
+    let home: Arc<dyn acyclic_harness_core::tool::ToolExecutor> = Arc::new(workspace);
+    let other_storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+        acyclic_harness_core::AgentId::from_bytes([42; 16]),
+        4096,
+    )
+    .await?;
+    let (_, _, other_workspace) =
+        super::workspace_fixture_for_volume(other_storage.volume().clone()).await?;
+    assert_ne!(storage.volume(), other_storage.volume());
+    let other: Arc<dyn acyclic_harness_core::tool::ToolExecutor> = Arc::new(other_workspace);
+    // Attach order is independent of the declared home. Both devices belong
+    // to the same user, whose alias must still select the first attachment.
+    let targets = Arc::new(InProcessTargets::new(
+        "home",
+        vec![
+            Target {
+                record: InProcessTargets::local_record("other", "ana"),
+                executor: other.clone(),
+            },
+            Target {
+                record: InProcessTargets::local_record("home", "ana"),
+                executor: home.clone(),
+            },
+        ],
+    )?);
+    for name in [None, Some("home")] {
+        assert!(Arc::ptr_eq(&targets.resolve(name)?.executor, &home));
+    }
+    assert!(Arc::ptr_eq(
+        &targets.resolve(Some("user:ana"))?.executor,
+        &other,
+    ));
+    let mut offline_home = InProcessTargets::local_record("home", "ana");
+    offline_home.state = TargetState::Offline;
+    let offline = InProcessTargets::new(
+        "home",
+        vec![
+            Target {
+                record: InProcessTargets::local_record("other", "ana"),
+                executor: other,
+            },
+            Target {
+                record: offline_home,
+                executor: home.clone(),
+            },
+        ],
+    )?;
+    assert!(matches!(
+        offline.read_path("notes.txt", None),
+        Err(acyclic_harness_core::Error::Target(refusal))
+            if refusal.refused == acyclic_harness_core::agent::Refused::Offline
+    ));
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(provider.clone(), StreamPath::new("harness/actors")?),
@@ -55,7 +107,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         ),
         Target {
             record: InProcessTargets::local_record("home", "ana"),
-            executor: Arc::new(workspace),
+            executor: home,
         },
         DeviceGrant {
             scope,
@@ -65,69 +117,73 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
     )?);
     // No presence producer or remote socket is required for home paths. The
     // original Machine policy still refuses an unadmitted auxiliary mount.
-    assert!(
-        directory
-            .read_path(".volumes/scratch/file.txt", None)
-            .is_err()
-    );
-    let mut bindings = Bindings::local();
-    bindings.targets = Some(directory);
-    bindings.scope = RuntimeScope::new(
-        Capabilities::default(),
-        acyclic_harness_core::conversation::Limits {
-            file_bytes: 4096,
-            render_bytes: 4096,
-            ..Default::default()
-        },
-    )?;
-    let task = Arc::new(bindings.build()?.agent_context(
-        storage.owner_scope().capabilities(),
-        storage.content_bindings(),
-    )?);
-    storage
-        .stage(
-            OperationId::new(),
-            "notes.txt",
-            b"one",
-            "text/plain",
-            "notes.txt",
-        )
-        .await?;
-    for (tool, arguments, expected) in [
-        (
-            files::read()?,
-            serde_json::json!({"path":"notes.txt"}),
-            Some("one"),
-        ),
-        (
-            files::edit()?,
-            serde_json::json!({"path":"notes.txt","old_text":"one","new_text":"two"}),
-            None,
-        ),
-        (
-            files::read()?,
-            serde_json::json!({"path":"notes.txt"}),
-            Some("two"),
-        ),
-    ] {
-        let invocation = ToolInvocation {
-            operation_id: OperationId::new(),
-            call_id: "home-path".into(),
-            name: tool.definition.name.clone(),
-            arguments,
-        };
-        let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
-        let result = tool.executor.execute(invocation, Some(context)).await?;
-        if let Some(expected) = expected {
-            assert_eq!(result.value["text"], expected);
-        } else {
-            let published: acyclic_harness_core::tool::files::FileResult =
-                serde_json::from_value(result.value)?;
-            assert_eq!(published.file.volume(), storage.volume());
-            assert_eq!(
-                task.read_file(&published.file, None).await?.as_ref(),
-                b"two"
-            );
+    for targets in [directory as Arc<dyn TargetResolver>, targets] {
+        assert!(
+            targets
+                .read_path(".volumes/scratch/file.txt", None)
+                .is_err()
+        );
+        assert_eq!(targets.read_path("notes.txt", None)?.0, storage.volume());
+        let mut bindings = Bindings::local();
+        bindings.targets = Some(targets);
+        bindings.scope = RuntimeScope::new(
+            Capabilities::default(),
+            acyclic_harness_core::conversation::Limits {
+                file_bytes: 4096,
+                render_bytes: 4096,
+                ..Default::default()
+            },
+        )?;
+        let task = Arc::new(bindings.build()?.agent_context(
+            storage.owner_scope().capabilities(),
+            storage.content_bindings(),
+        )?);
+        storage
+            .stage(
+                OperationId::new(),
+                "notes.txt",
+                b"one",
+                "text/plain",
+                "notes.txt",
+            )
+            .await?;
+        for (tool, arguments, expected) in [
+            (
+                files::read()?,
+                serde_json::json!({"path":"notes.txt"}),
+                Some("one"),
+            ),
+            (
+                files::edit()?,
+                serde_json::json!({"path":"notes.txt","old_text":"one","new_text":"two"}),
+                None,
+            ),
+            (
+                files::read()?,
+                serde_json::json!({"path":"notes.txt"}),
+                Some("two"),
+            ),
+        ] {
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "home-path".into(),
+                name: tool.definition.name.clone(),
+                arguments,
+            };
+            let context =
+                ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+            let result = tool.executor.execute(invocation, Some(context)).await?;
+            if let Some(expected) = expected {
+                assert_eq!(result.value["text"], expected);
+            } else {
+                let published: acyclic_harness_core::tool::files::FileResult =
+                    serde_json::from_value(result.value)?;
+                assert_eq!(published.file.volume(), storage.volume());
+                assert_eq!(
+                    task.read_file(&published.file, None).await?.as_ref(),
+                    b"two"
+                );
+            }
         }
     }
     Ok(())
