@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::{
-    ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome, ToolCall, ToolResultContent,
+    NativePart, ReasoningBlock, ReasoningKind, ReasoningOrigin, ReasoningOutcome, ToolCall,
+    ToolResultContent,
 };
 use proptest::prelude::*;
 
@@ -33,20 +34,41 @@ fn transcript(batches: &[Batch], text: &str) -> (Context, Vec<(usize, usize)>) {
                     serde_json::json!({"type":"reasoning","id":id,"encrypted_content":signature,"summary":[]}),
                 ),
             };
+            let origin = ReasoningOrigin {
+                provider: family.into(),
+                model: format!("model{turn}"),
+                credential_scope: Some([provider; 32]),
+            };
+            let between = format!("between:{id}:{text}");
+            if family == "gemini" {
+                // Gemini signs the parts themselves: native text and a native
+                // call, with no reasoning block before them.
+                let native = |payload: serde_json::Value| NativePart {
+                    origin: origin.clone(),
+                    continuity: serde_json::to_vec_pretty(&payload).unwrap(),
+                };
+                parts.push(ModelContentPart::Text {
+                    native: Some(native(
+                        serde_json::json!({"text":between,"thoughtSignature":signature}),
+                    )),
+                    text: between,
+                });
+                parts.push(ModelContentPart::ToolCall(
+                    ToolCall::new(id, "tool".into(), serde_json::json!({}))
+                        .with_native(Some(native(payload))),
+                ));
+                continue;
+            }
             parts.push(ModelContentPart::Reasoning {
                 block: ReasoningBlock {
                     kind,
                     text: (provider % 3 == 1).then(|| text.to_owned()),
-                    origin: ReasoningOrigin {
-                        provider: family.into(),
-                        model: format!("model{turn}"),
-                        credential_scope: Some([provider; 32]),
-                    },
+                    origin,
                     continuity: serde_json::to_vec_pretty(&payload).unwrap(),
                     outcome: ReasoningOutcome::PreservedOpaque,
                 },
             });
-            parts.push(ModelContentPart::text(format!("between:{id}:{text}")));
+            parts.push(ModelContentPart::text(between));
             parts.push(ModelContentPart::ToolCall(ToolCall::new(
                 id,
                 "tool".into(),
@@ -99,6 +121,10 @@ fn whole_units(source: &Context, retained: &Context, units: &[(usize, usize)]) -
                     matches!(
                         part,
                         ModelContentPart::Reasoning { .. }
+                            | ModelContentPart::Text {
+                                native: Some(_),
+                                ..
+                            }
                             | ModelContentPart::ToolCall(_)
                             | ModelContentPart::ToolResult { .. }
                     )
