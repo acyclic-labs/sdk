@@ -116,10 +116,10 @@ where
         drop(removals);
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (namespace, _allocation) = self.authored.namespace_path(path, &mut carrier)?;
-        adapter::record_view_change(
-            &self.authored.shared_checkout().ledger,
+        self.authored.record_projection_change(
             &ViewChange::Entry(&namespace, file_id),
             &mut carrier,
+            || Ok(()),
         )
     }
 
