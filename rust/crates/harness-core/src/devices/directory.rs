@@ -572,7 +572,16 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
+        #[cfg(feature = "filesystem")]
+        if work.is_some() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "device commands require ordinary task execution; recovery: retain the original ordinary device dispatch admission",
+            });
+        }
+        let _ = work;
         let Some(context) = context else {
             return Ok(None);
         };

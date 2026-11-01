@@ -19,7 +19,10 @@ impl StockExecution<'_> {
         let dispatch = if started {
             None
         } else {
-            match tool.executor.dispatch(invocation, context.as_ref()) {
+            match tool
+                .executor
+                .dispatch(invocation, context.as_ref(), self.native_work())
+            {
                 Ok(dispatch) => dispatch,
                 Err(refusal @ Error::Target(_)) => {
                     return self

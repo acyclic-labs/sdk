@@ -862,7 +862,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             assert!(
                 recovery_target
                     .executor
-                    .dispatch(&invocation, Some(&context))
+                    .dispatch(&invocation, Some(&context), None)
                     .is_err()
             );
             let recovered = recovery_target

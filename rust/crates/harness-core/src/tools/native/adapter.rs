@@ -38,6 +38,18 @@ impl ToolExecutor for Adapter {
         self.original.executor.workspace_binding()
     }
 
+    fn dispatch(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<crate::tool::Dispatch>> {
+        let adapted = self.adapt(invocation, work)?;
+        self.original
+            .executor
+            .dispatch(&adapted.invocation, context, work)
+    }
+
     fn prepare_shell_script(
         &self,
         source: &str,

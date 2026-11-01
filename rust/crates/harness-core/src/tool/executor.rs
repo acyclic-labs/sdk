@@ -128,11 +128,14 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// The record that hands this invocation to another host, appended in the
     /// same commit as the journal entry that claims it; `None` when the
     /// invocation runs here. A dispatch that is never claimed was never sent,
-    /// and a claimed one was sent exactly once.
+    /// and a claimed one was sent exactly once. Adapters use the original work
+    /// for argument preparation; an unfunded native handoff must refuse before
+    /// constructing its records.
     fn dispatch(
         &self,
         _invocation: &ToolInvocation,
         _context: Option<&crate::runtime::ToolContext>,
+        _work: crate::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         Ok(None)
     }

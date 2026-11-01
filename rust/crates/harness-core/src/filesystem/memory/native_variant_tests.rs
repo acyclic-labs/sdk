@@ -32,6 +32,20 @@ async fn call(
 // publication below. A schema adapter must never replace a refusing producer.
 struct Refuses;
 impl ToolExecutor for Refuses {
+    fn dispatch(
+        &self,
+        invocation: &ToolInvocation,
+        _: Option<&crate::runtime::ToolContext>,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<crate::tool::Dispatch>> {
+        assert_eq!(invocation.name, "read");
+        assert_eq!(invocation.arguments["path"], "replay-path");
+        assert!(work.is_some());
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "original dispatch authority refused",
+        })
+    }
     fn authorize_replay<'a>(
         &'a self,
         _: Option<&'a crate::runtime::ToolContext>,
@@ -143,6 +157,12 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
                 operation_id: OperationId::new(), call_id:"replay-authority".into(),
                 name:control.definition.name.clone(), arguments:json!({"file_path":"replay-path"}),
             };
+            assert!(matches!(control.executor.dispatch(&invocation,None,Some(&work)),
+                Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "original dispatch authority refused",
+                })));
+            assert_eq!(work.live_allocation_bytes(),baseline);
             let authorization = control.executor.authorize_replay(None,&invocation,Some(&work))?
                 .expect("retained original replay producer");
             assert!(work.live_allocation_bytes() > baseline);

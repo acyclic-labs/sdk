@@ -200,20 +200,20 @@ impl ToolExecutor for WorkspaceExecutor {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<crate::tool::Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
         };
-        if super::bounds::operands(&invocation.arguments, super::bounds::limits(context).1)
-        .is_err()
+        if super::bounds::operands(&invocation.arguments, super::bounds::limits(context).1).is_err()
         {
             // Ordinary execution returns this same rejection to the model.
             // Nothing may be handed to a remote target before that verdict.
             return Ok(None);
         }
-        target(context, invocation, None, self.binding())?
+        target(context, invocation, work, self.binding())?
             .executor()
-            .dispatch(invocation, Some(context))
+            .dispatch(invocation, Some(context), work)
     }
 
     fn execute<'a>(
