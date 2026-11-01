@@ -213,20 +213,23 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
                 cancellation,
             )
             .map_err(MountSourceError::from)?;
-        // Every native mutation retains the policy metadata it was admitted
-        // against in the same proof that authorizes its publication.
+        let base = state
+            .checkout
+            .private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                cancellation,
+            )
+            .map_err(MountSourceError::from)?;
+        drop(state);
+        // Every native mutation retains its pinned policy metadata in the
+        // proof that authorizes publication. Only the private candidate needs
+        // this I/O; neither the checkout nor its callback gate stays locked.
         checkout.access_policy_revision(&work, cancellation).await?;
         Ok(CheckoutCandidate {
             _publication: publication,
             deadline: None,
             _file_mutation: None,
-            base: state
-                .checkout
-                .private_candidate(
-                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
-                    cancellation,
-                )
-                .map_err(MountSourceError::from)?,
+            base,
             checkout,
             operation,
             epoch,
