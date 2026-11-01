@@ -91,22 +91,10 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
             let plan = self
                 .plan_first_record(authority, &commit, &mut work.accounting())
                 .map_err(authority_error)?;
-            if work.is_native() {
+            if work.is_native()
+                || guard.is_some() && !matches!(plan, FirstRecordPlan::Resolved(false))
+            {
                 seal(guard.as_deref_mut(), work).await?;
-            } else if guard.is_some() && !matches!(plan, FirstRecordPlan::Resolved(false)) {
-                // Owner allocations overlap the prepared first record.
-                let live = work.allocations.live_bytes();
-                let mut child = work.operation()?;
-                let result = seal(guard.as_deref_mut(), &mut child).await;
-                let mut spent = child.spent();
-                spent.peak_allocation_bytes = if result.is_err() {
-                    live.saturating_add(spent.peak_allocation_bytes)
-                } else {
-                    live.checked_add(spent.peak_allocation_bytes)
-                        .ok_or(AuthorityStoreError::from(WorkError::Overflow))?
-                };
-                work.record(spent)?;
-                result?;
                 work.check()?;
             }
             if let Some(value) = self

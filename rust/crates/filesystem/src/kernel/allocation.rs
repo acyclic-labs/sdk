@@ -507,18 +507,43 @@ impl AllocationLedger {
             _ => self.with_state(|state| state.release(bytes)),
         }
     }
-    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
+    pub(crate) fn scratch_bytes(&self) -> u64 {
+        match &self.state {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.allocations.live_bytes - state.retained_bytes
+            }
+            _ => self.live_bytes(),
+        }
+    }
+
+    /// Retires only this scope's scratch after its physical owners are gone.
+    /// Earlier scratch and independently retained leases remain charged.
+    pub(crate) fn release_scratch_to(&mut self, baseline: u64) -> Result<(), crate::FsError> {
         self.ensure_active()?;
-        match &mut self.state {
+        let retired = match &mut self.state {
             LedgerState::Shared(state) => {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.allocations.live_bytes = state.retained_bytes;
+                let retained = state.retained_bytes;
+                state
+                    .allocations
+                    .live_bytes
+                    .checked_sub(retained)
+                    .filter(|scratch| *scratch >= baseline)
+                    .map(|_| state.allocations.live_bytes = retained + baseline)
             }
-            _ => self.with_state(|state| state.live_bytes = 0),
-        }
-        Ok(())
+            _ => self.with_state(|state| {
+                (state.live_bytes >= baseline).then(|| state.live_bytes = baseline)
+            }),
+        };
+        retired.ok_or_else(|| {
+            AllocationError::ReleaseInvariant
+                .into_work_or(crate::FsError::PendingMutationAllocationFailed)
+        })
     }
 
     /// Consumes an immutable read frame after its physical state is destroyed.

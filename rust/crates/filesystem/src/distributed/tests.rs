@@ -14,6 +14,323 @@ mod policy_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
+#[tokio::test]
+async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal() -> TestResult {
+    use crate::kernel::allocation::retained::RetainedAllocation;
+
+    struct Guard {
+        original: usize,
+        prior_items: u64,
+        prior_live: u64,
+        seal_scratch: u64,
+        retained: Option<RetainedAllocation>,
+        entered: bool,
+        refuse: bool,
+        completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    }
+
+    impl AuthorityGuard for Guard {
+        type Error = AuthorityStoreError;
+
+        async fn seal(
+            &mut self,
+            work: &mut AuthorityWork<'_>,
+        ) -> Result<(), AuthorityError<Self::Error>> {
+            assert_eq!(
+                work as *mut AuthorityWork<'_> as usize, self.original,
+                "authority forwarding replaced the original frame"
+            );
+            assert!(work.spent().items_examined >= self.prior_items);
+            assert!(work.allocations.live_bytes() >= self.prior_live);
+            if !self.entered {
+                self.seal_scratch = work.allocations.scratch_bytes();
+                let delta = WorkCounters {
+                    items_examined: 2,
+                    ..WorkCounters::UNCHARGED
+                };
+                work.admit(delta)?;
+                self.retained = Some(
+                    RetainedAllocation::claim(73, 1, &mut work.accounting())
+                        .map_err(crate::async_storage::authority_error)?,
+                );
+                work.hold_opaque(31)?;
+                work.charge(delta)?;
+                self.entered = true;
+            }
+            if self.refuse {
+                return Err(AuthorityError::Owner(AuthorityStoreError::Retired));
+            }
+            if let Some(completion) = self.completion.as_mut() {
+                completion
+                    .await
+                    .map_err(|_| AuthorityError::Owner(AuthorityStoreError::Retired))?;
+                self.completion = None;
+            }
+            Ok(())
+        }
+    }
+
+    async fn exercise<S: AsyncAuthorityStore>(store: S, native: bool, exit: u8) -> TestResult {
+        let cancellation = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut work = match native {
+            #[cfg(not(target_arch = "wasm32"))]
+            true => AuthorityWork::native(&original, &cancellation),
+            _ => AuthorityWork::new(BUDGET, &cancellation),
+        };
+        let delta = WorkCounters {
+            items_examined: 3,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(delta)?;
+        work.charge(delta)?;
+        work.hold_opaque(29)?;
+        let mut seed = Some(RetainedAllocation::claim(17, 1, &mut work.accounting())?);
+        let (producer, completion) = tokio::sync::oneshot::channel();
+        let mut guard = Guard {
+            original: &mut work as *mut AuthorityWork<'_> as usize,
+            prior_items: work.spent().items_examined,
+            prior_live: work.allocations.live_bytes(),
+            seal_scratch: 0,
+            retained: None,
+            entered: false,
+            refuse: exit == 1,
+            completion: (exit >= 2).then_some(completion),
+        };
+        let authority = AuthorityId::from_bytes([91; 16]);
+        let mut operation = Box::pin(store.create_first_record(
+            authority,
+            proposed(91),
+            &mut work,
+            Some(&mut guard),
+        ));
+        match exit {
+            0 => assert!(operation.as_mut().await?),
+            1 => assert!(matches!(
+                operation.as_mut().await,
+                Err(AuthorityError::Owner(AuthorityStoreError::Retired))
+            )),
+            2 => {
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                drop(producer);
+                assert!(matches!(
+                    operation.as_mut().await,
+                    Err(AuthorityError::Owner(AuthorityStoreError::Retired))
+                ));
+            }
+            _ => {
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                drop(seed.take());
+                cancellation.cancel();
+            }
+        }
+        drop(operation);
+        assert!(guard.entered);
+        assert!(work.spent().items_examined >= guard.prior_items + 2);
+        let before = work.allocations.live_bytes();
+        if !native {
+            assert!(
+                (29..=guard.seal_scratch).contains(&work.allocations.scratch_bytes()),
+                "temporary guard/request bytes leaked"
+            );
+        }
+        drop(guard);
+        if !native {
+            assert_eq!(work.allocations.live_bytes(), before - 73);
+        }
+        drop(seed);
+        if !native {
+            work.release(29)?;
+        }
+        if exit != 0 {
+            let fresh = CancellationToken::new();
+            let mut explicit = AuthorityWork::new(BUDGET, &fresh);
+            assert!(
+                store
+                    .create_first_record(authority, proposed(92), &mut explicit, None::<&mut ()>)
+                    .await?,
+                "refused or withdrawn preparation published an authority record"
+            );
+        }
+        Ok(())
+    }
+
+    for native in [
+        false,
+        #[cfg(not(target_arch = "wasm32"))]
+        true,
+    ] {
+        for exit in 0..4 {
+            exercise(crate::memory::MemoryAuthorityStore::default(), native, exit).await?;
+            exercise(
+                StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                native,
+                exit,
+            )
+            .await?;
+        }
+    }
+
+    // Reuse a finite original frame: neither successful reads nor failed
+    // decoding may accumulate scratch or retire another caller's live bytes.
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &cancellation);
+    work.hold_opaque(29)?;
+    let retained = RetainedAllocation::claim(73, 1, &mut work.accounting())?;
+    let authority = AuthorityId::from_bytes([93; 16]);
+    assert!(
+        store
+            .create_first_record(authority, proposed(93), &mut work, None::<&mut ()>)
+            .await?
+    );
+    assert_eq!(work.allocations.scratch_bytes(), 29);
+    let baseline = work.allocations.live_bytes();
+    work.budget.peak_allocation_bytes = work.spent().peak_allocation_bytes.max(baseline + 8192);
+    for _ in 0..32 {
+        // Admit the real epoch read, then refuse the record read on the same
+        // cumulative frame. Its temporary epoch backing must retire on error.
+        let before = work.spent().authority_records_read;
+        work.budget.authority_records_read = before + 1;
+        assert!(matches!(
+            store.policy_cut(authority, &mut work).await,
+            Err(AuthorityStoreError::Work(
+                crate::WorkError::BudgetExceeded {
+                    counter: "authority_records_read",
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(work.spent().authority_records_read, before + 1);
+        assert_eq!(
+            work.allocations.scratch_bytes(),
+            29,
+            "failed policy cut leaked epoch scratch"
+        );
+        work.budget.authority_records_read = BUDGET.authority_records_read;
+        store.policy_cut(authority, &mut work).await?;
+        assert_eq!(work.spent().authority_records_read, before + 3);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
+        let head = store.head(authority, &mut work).await?;
+        assert_eq!(head.sequence, Sequence::new(1));
+        assert_eq!(
+            work.allocations.scratch_bytes(),
+            29,
+            "successful head leaked scratch"
+        );
+        let payload = store.head_payload(authority, 1024, &mut work).await?;
+        assert_eq!(payload.0.1.as_deref(), Some(b"publication".as_slice()));
+        drop(payload);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
+        assert!(matches!(
+            store.head_payload(authority, 0, &mut work).await,
+            Err(AuthorityStoreError::InvalidReplayLimit)
+        ));
+        assert_eq!(
+            work.allocations.scratch_bytes(),
+            29,
+            "failed head leaked scratch"
+        );
+        let found = store
+            .find_operation(authority, OperationId::from_bytes([93; 16]), &mut work)
+            .await?;
+        assert_eq!(
+            found.as_ref().map(|record| record.sequence),
+            Some(Sequence::new(1))
+        );
+        drop(found);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
+        let replay = store
+            .replay(
+                authority,
+                Sequence::GENESIS,
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: 1024,
+                },
+                &mut work,
+            )
+            .await?;
+        assert_eq!(replay.0.len(), 1);
+        drop(replay);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
+        let reservation = store
+            .reserve_publication(
+                authority,
+                head,
+                OperationId::from_bytes([94; 16]),
+                &mut work,
+            )
+            .await?;
+        let ReservationOutcome::Reserved(reservation) = reservation else {
+            return Err("expected the original publication reservation".into());
+        };
+        assert_eq!(work.allocations.scratch_bytes(), 29);
+        store.release_publication(reservation, &mut work).await?;
+        assert_eq!(
+            work.allocations.scratch_bytes(),
+            29,
+            "request cleanup retired caller scratch"
+        );
+    }
+    assert!(work.spent().authority_records_read >= 32 * 2);
+    let before_retirement = work.allocations.live_bytes();
+    assert!(before_retirement >= 29 + 73);
+    drop(retained);
+    assert_eq!(work.allocations.live_bytes(), before_retirement - 73);
+    work.release(29)?;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Quotations build real provider requests but return no request backing.
+        // Preserve earlier raw capacity and independently retained output while
+        // retiring each quotation's native capacity on success and refusal.
+        let (stream, reservation) = reserved().await?;
+        let store = StreamAuthorityStore::new(stream);
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut work = AuthorityWork::native(&original, &cancellation);
+        let earlier = work.vec::<u8>(29)?;
+        let retained = work.vec_owned::<u8>(73)?;
+        let request = append(reservation, permit(reservation));
+        let mut baseline = None;
+        for _ in 0..32 {
+            for growth in [0, usize::MAX] {
+                let quote = store
+                    .quote_group_append(&request, growth, &mut work)
+                    .await?;
+                assert_eq!(quote.is_some(), growth == 0);
+                assert_eq!(
+                    work.request_allocation.as_ref().unwrap().bytes(),
+                    earlier.capacity() as u64,
+                    "quotation leaked native request credit"
+                );
+                let live = original.live_allocation_bytes();
+                assert_eq!(*baseline.get_or_insert(live), live);
+            }
+        }
+        let before = original.live_allocation_bytes();
+        drop(retained);
+        assert_eq!(original.live_allocation_bytes(), before - 73);
+        drop(earlier);
+        work.release_request()?;
+        // Withdrawal after real preparation must also retire temporary request
+        // capacity without consulting the now-cancelled admission.
+        let before = original.live_allocation_bytes();
+        {
+            let mut scope = work.scope()?;
+            let values = scope.vec::<u8>(31)?;
+            cancellation.cancel();
+            drop(values);
+        }
+        assert_eq!(original.live_allocation_bytes(), before);
+    }
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_io_failure_preserves_the_real_cause_with_and_without_original_work()

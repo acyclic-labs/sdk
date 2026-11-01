@@ -5,10 +5,7 @@ pub(super) async fn seal<G: AuthorityGuard>(
     guard: Option<&mut G>,
 ) -> Result<(), AuthorityError<G::Error>> {
     work.check()?;
-    let mut child = work.operation()?;
-    let result = crate::async_storage::seal(guard, &mut child).await;
-    work.absorb(&child)?;
-    result?;
+    crate::async_storage::seal(guard, work).await?;
     work.check()?;
     Ok(())
 }

@@ -46,6 +46,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PolicyCut, AuthorityStoreError> {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
         let snapshot = self.fork_snapshot(authority, work).await?;
         Ok(crate::PolicyCut::new(
             self.operation_claims().owner_identity(),
@@ -141,12 +143,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         generation: GenerationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<bool, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self
-            .retained_generation(authority, generation, &mut child)
-            .await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.retained_generation(authority, generation, work).await
     }
 
     async fn create_authority<G: AuthorityGuard>(
@@ -156,10 +155,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
-        let mut child = work.operation()?;
-        let result = self.create(authority, epoch, &mut child, guard).await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.create(authority, epoch, work, guard).await
     }
 
     async fn create_first_record<G: AuthorityGuard>(
@@ -169,10 +167,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<bool, AuthorityError<G::Error>> {
-        let mut child = work.operation()?;
-        let result = self.first(authority, commit, &mut child, guard).await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.first(authority, commit, work, guard).await
     }
 
     async fn fork_workspace<G: AuthorityGuard>(
@@ -182,10 +179,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
-        let mut child = work.operation()?;
-        let result = self.fork_records(fork, permit, &mut child, guard).await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.fork_records(fork, permit, work, guard).await
     }
 
     async fn fork_authority<G: AuthorityGuard>(
@@ -201,12 +197,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .create_authority(destination, Epoch::GENESIS, work, guard)
                 .await;
         }
-        let mut child = work.operation()?;
-        let result = self
-            .fork_generation(source, destination, operation, &mut child, guard)
-            .await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.fork_generation(source, destination, operation, work, guard)
+            .await
     }
 
     async fn compare_and_append<G: AuthorityGuard>(
@@ -215,13 +209,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
-        let mut child = work.operation()?;
-        let result = self
-            .append(request, &mut child, guard)
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.append(request, work, guard)
             .await
-            .and_then(|value| child.finish(value).map_err(Into::into));
-        work.record(child.spent())?;
-        result
+            .and_then(|value| work.finish(value).map_err(Into::into))
     }
 
     async fn head(
@@ -229,13 +221,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Head, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self
-            .fork_snapshot(authority, &mut child)
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.fork_snapshot(authority, work)
             .await
-            .and_then(|snapshot| child.finish(snapshot.head));
-        work.record(child.spent())?;
-        result
+            .and_then(|snapshot| work.finish(snapshot.head))
     }
 
     async fn head_payload(
@@ -269,17 +259,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         if limit.records == 0 || limit.payload_bytes == 0 {
             return Err(AuthorityStoreError::InvalidReplayLimit);
         }
-        let mut child = work.operation()?;
-        let result = async {
-            self.authority_require_live(authority, &mut child).await?;
-            let value = self
-                .read_records(authority, after, limit, &mut child)
-                .await?;
-            child.finish(value)
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        async {
+            self.authority_require_live(authority, work).await?;
+            let value = self.read_records(authority, after, limit, work).await?;
+            work.finish(value)
         }
-        .await;
-        work.record(child.spent())?;
-        result
+        .await
     }
 
     async fn fence(
@@ -288,13 +275,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         expected: Head,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FenceOutcome, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self
-            .authority_fence(authority, expected, &mut child)
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.authority_fence(authority, expected, work)
             .await
-            .and_then(|value| child.finish(value));
-        work.record(child.spent())?;
-        result
+            .and_then(|value| work.finish(value))
     }
 
     async fn find_operation(
@@ -303,13 +288,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self
-            .authority_find_operation(authority, operation, &mut child)
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.authority_find_operation(authority, operation, work)
             .await
-            .and_then(|value| child.finish(value));
-        work.record(child.spent())?;
-        result
+            .and_then(|value| work.finish(value))
     }
 
     async fn publication_reservation(
@@ -318,10 +301,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<PublicationReservation>, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self.reservation(authority, operation, &mut child).await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.reservation(authority, operation, work).await
     }
 
     async fn reserve_publication(
@@ -331,12 +313,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ReservationOutcome, AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self
-            .reserve(authority, expected, operation, &mut child)
-            .await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.reserve(authority, expected, operation, work).await
     }
 
     async fn release_publication(
@@ -344,10 +323,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         reservation: PublicationReservation,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = self.release(reservation, &mut child).await;
-        work.record(child.spent())?;
-        result
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.release(reservation, work).await
     }
 
     async fn retire_authority(
