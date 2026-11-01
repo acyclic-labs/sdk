@@ -32,6 +32,24 @@ async fn call(
 // publication below. A schema adapter must never replace a refusing producer.
 struct Refuses;
 impl ToolExecutor for Refuses {
+    fn authorize_replay<'a>(
+        &'a self,
+        _: Option<&'a crate::runtime::ToolContext>,
+        invocation: &'a ToolInvocation,
+        work: crate::NativeWork<'a>,
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        Ok(Some(crate::NativeFutureBundle::new_optional(
+            work,
+            || async move {
+                assert_eq!(invocation.name, "read");
+                assert_eq!(invocation.arguments["path"], "replay-path");
+                Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "original replay authority refused",
+                })
+            },
+        )?))
+    }
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
@@ -116,6 +134,24 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
             let mut control = NativeDeclarations::new(profile,None)?;
             let control = control.bind_variant(&revisions[0],Arc::new(refusing))?.0;
             assert!(matches!(call(&task,&control,read_args).await,Err(Error::Conflict(reason)) if reason == "original producer refused"));
+            let stop = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024), &stop,
+            ).map_err(|(cause, work)| Error::NativeConstruction {cause,work})?;
+            let baseline = work.live_allocation_bytes();
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(), call_id:"replay-authority".into(),
+                name:control.definition.name.clone(), arguments:json!({"file_path":"replay-path"}),
+            };
+            let authorization = control.executor.authorize_replay(None,&invocation,Some(&work))?
+                .expect("retained original replay producer");
+            assert!(work.live_allocation_bytes() > baseline);
+            assert!(matches!(authorization.await, Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "original replay authority refused",
+            })));
+            assert_eq!(work.live_allocation_bytes(),baseline);
+
             assert_eq!(call(&task,&tools[0],json!({"file_path":path})).await?.1.value["text"],"later\n");
             let lines_path = format!("{path}.lines");
             call(&task,&tools[1],json!({"file_path":lines_path,"content":"first\nβeta\nlast"})).await?;

@@ -121,8 +121,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
         _work: crate::NativeWork<'a>,
-    ) -> Option<BoxFuture<'a, Result<()>>> {
-        None
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        Ok(None)
     }
 
     /// The record that hands this invocation to another host, appended in the

@@ -302,7 +302,7 @@ impl StockExecution<'_> {
                     context.as_ref(),
                     &invocation,
                     self.native_work(),
-                ) {
+                )? {
                     authorization.await?;
                 }
                 self.replay_tool_output(

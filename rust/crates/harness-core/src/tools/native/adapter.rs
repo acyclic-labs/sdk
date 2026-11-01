@@ -17,18 +17,21 @@ impl ToolExecutor for Adapter {
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
         work: crate::NativeWork<'a>,
-    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
-        Some(Box::pin(async move {
-            let adapted = self.adapt(invocation, work)?;
-            if let Some(authorization) =
-                self.original
-                    .executor
-                    .authorize_replay(context, &adapted.invocation, work)
-            {
-                authorization.await?;
-            }
-            Ok(())
-        }))
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        Ok(Some(crate::NativeFutureBundle::new_optional(
+            work,
+            || async move {
+                let adapted = self.adapt(invocation, work)?;
+                if let Some(authorization) =
+                    self.original
+                        .executor
+                        .authorize_replay(context, &adapted.invocation, work)?
+                {
+                    authorization.await?;
+                }
+                Ok(())
+            },
+        )?))
     }
 
     fn workspace_binding(&self) -> Option<crate::tool::WorkspaceBinding> {

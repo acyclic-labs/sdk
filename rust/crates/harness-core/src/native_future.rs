@@ -1,7 +1,8 @@
 //! One native future allocation and its original-ledger custody.
 
 use crate::Result;
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::NativeMaterializationWork;
 use acyclic_stream::BoxProviderFuture;
 use std::{
     future::Future,
@@ -9,40 +10,51 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod ordered;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use ordered::{NativeOrdered, OrderedFutureKey};
 
 /// An admitted future whose custody outlives its physical allocation.
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
     future: BoxProviderFuture<'a, Result<T>>,
-    custody: Option<NativeAllocation>,
+    custody: crate::NativeCustody,
 }
 
 impl<'a, T> NativeFutureBundle<'a, T> {
     /// Borrows the future's original ledger.
     #[must_use]
-    pub fn work(&self) -> Option<&NativeMaterializationWork> {
-        self.custody.as_ref().map(NativeAllocation::work)
+    pub fn work(&self) -> crate::NativeWork<'_> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            self.custody
+                .as_ref()
+                .map(acyclic_fs::NativeAllocation::work)
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        {
+            let _ = &self.custody;
+            None
+        }
     }
 
     /// Admits the concrete allocation before invoking its builder.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new<F>(work: &NativeMaterializationWork, build: impl FnOnce() -> F) -> Result<Self>
     where
-        F: Future<Output = Result<T>> + Send + 'a,
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
     {
         Self::new_optional(Some(work), build)
     }
 
     /// Uses the same allocation path for callers without native accounting.
     /// Custody remains outside the boxed future until its allocation is freed.
-    pub fn new_optional<F>(
-        work: Option<&NativeMaterializationWork>,
-        build: impl FnOnce() -> F,
-    ) -> Result<Self>
+    pub fn new_optional<F>(work: crate::NativeWork<'_>, build: impl FnOnce() -> F) -> Result<Self>
     where
-        F: Future<Output = Result<T>> + Send + 'a,
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
     {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = work
             .map(|work| {
                 work.remaining()?;
@@ -54,6 +66,11 @@ impl<'a, T> NativeFutureBundle<'a, T> {
                 )
             })
             .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = work;
+            None
+        };
         Ok(Self {
             future: Box::pin(build()),
             custody,
@@ -69,7 +86,7 @@ impl<T> Future for NativeFutureBundle<'_, T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, WorkBudget};

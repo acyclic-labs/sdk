@@ -110,21 +110,21 @@ impl ToolExecutor for WorkspaceExecutor {
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
         work: crate::NativeWork<'a>,
-    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
-        let context = context?;
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        let Some(context) = context else {
+            return Ok(None);
+        };
         if let Some(target) = &context.execution_target {
             target
                 .executor
                 .authorize_replay(Some(context), invocation, work)
         } else if invocation.name == "fs" {
-            context
-                .task()
-                .harness
-                .filesystem
-                .as_ref()?
-                .authorize_replay(Some(context), invocation, work)
+            let Some(executor) = &context.task().harness.filesystem else {
+                return Ok(None);
+            };
+            executor.authorize_replay(Some(context), invocation, work)
         } else {
-            None
+            Ok(None)
         }
     }
 
