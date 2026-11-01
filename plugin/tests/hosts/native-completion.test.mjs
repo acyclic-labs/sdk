@@ -15,3 +15,20 @@ for(const record of records)test(`${record.host} requires its original successfu
  assert.throws(()=>assertNativeCompletion(record.host,record,'UNOBSERVED_NATIVE_ANSWER'),/native answer missing/);
  assert.throws(()=>assertNativeCompletion(record.host,{...record,code:1},record.answer));
 });
+
+test('Claude native pair initialization fences model namespace and bare contamination',async()=>{
+ const {records}=JSON.parse(await readFile(new URL('./fixtures/native-pair-initialization.json',import.meta.url),'utf8'));
+ for(const record of records) {
+  const selection={model:'claude-haiku-5-5',installed:record.mode==='installed'};
+  assertNativeCompletion(record.host,record,record.answer,selection);
+  assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,model:'unapproved'}),/model differs/);
+  assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,installed:!selection.installed}),/plugin set differs/);
+  const lines=record.stdout.trim().split('\n');
+  const missing={...record,stdout:lines.filter(line=>JSON.parse(line).type!=='system').join('\n')+'\n'};
+  assert.throws(()=>assertNativeCompletion(record.host,missing,record.answer,selection),/initialization missing/);
+  if(selection.installed) {
+   const namespace={...record,stdout:record.stdout.replace('plugin:acyclic:acyclic-sessions','acyclic-sessions')};
+   assert.throws(()=>assertNativeCompletion(record.host,namespace,record.answer,selection),/MCP connections differ/);
+  }
+ }
+});
