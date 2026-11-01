@@ -221,7 +221,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 acyclic_harness::hosting::reopen(bound, Arc::new(User), AgentPath::root(&id)).await,
             )?
         };
-        let runtime = Runtime::start(server.clone());
+        let runtime = Runtime::start(server.clone())?;
         let completion = runtime.completion();
         let host = Hosted::new(
             server,
