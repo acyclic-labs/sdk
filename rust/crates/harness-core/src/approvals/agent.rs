@@ -14,7 +14,9 @@ use crate::{
     Error, InteractionId, Result,
     agent::{AgentId, AgentPath},
     conversation::Limits,
-    interaction::{ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome},
+    interaction::{
+        ApprovalBinding, ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome,
+    },
 };
 use std::{
     collections::BTreeSet,
@@ -97,7 +99,7 @@ pub struct AgentApprovals {
     files: Arc<dyn ApprovalFiles>,
     policy: Arc<AgentApprovalPolicy>,
     /// The request the turn waits on, and whether its stage is the parent's.
-    pending: Mutex<Option<(String, bool)>>,
+    pending: Mutex<Option<(String, bool, ApprovalBinding)>>,
     /// The turn's agent effects, committed before any later call dispatches.
     effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// Whether the call the turn last stopped at waits on those effects.
@@ -208,13 +210,16 @@ impl AgentApprovals {
         self.outcome(id, journal, io).await
     }
 
-    /// The request the turn now waits on, and whether the parent decides it.
-    #[must_use]
-    pub fn pending(&self) -> Option<(String, bool)> {
-        self.pending.lock().ok().and_then(|pending| pending.clone())
+    /// The request the turn now waits on, its original action binding, and
+    /// whether the parent decides it. Lock loss ends the step with an error.
+    pub fn pending(&self) -> Result<Option<(String, bool, ApprovalBinding)>> {
+        self.pending
+            .lock()
+            .map(|pending| pending.clone())
+            .map_err(|_| Error::Storage("approvals lock".into()))
     }
 
-    fn wait(&self, pending: Option<(String, bool)>) -> Result<()> {
+    fn wait(&self, pending: Option<(String, bool, ApprovalBinding)>) -> Result<()> {
         *self
             .pending
             .lock()
@@ -276,7 +281,7 @@ impl AgentApprovals {
                 0,
             )
             .await?;
-            let (approver, expected) = match stage {
+            let (approver, expected, binding) = match stage {
                 NextStage::Decided(review) => {
                     self.wait(None)?;
                     return Ok(Some(if review.verdict == RuleVerdict::Allow {
@@ -286,8 +291,11 @@ impl AgentApprovals {
                     }));
                 }
                 NextStage::Review {
-                    approver, expected, ..
-                } => (approver, expected),
+                    approver,
+                    expected,
+                    binding,
+                    ..
+                } => (approver, expected, binding),
             };
             if matches!(approver, Approver::Rules { .. } | Approver::Llm { .. }) {
                 let Some(execution) = execution else {
@@ -307,7 +315,11 @@ impl AgentApprovals {
             }
             let path = decision_path(&request, &expected.principal);
             let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
-                self.wait(Some((request, matches!(approver, Approver::Parent))))?;
+                self.wait(Some((
+                    request,
+                    matches!(approver, Approver::Parent),
+                    binding,
+                )))?;
                 return Ok(None);
             };
             let decision = ApprovalDecisionFile::decode(&decided, policy.limits.file_bytes)?;

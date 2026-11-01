@@ -102,7 +102,7 @@ pub(super) async fn prompt(
                 .await?;
                 return Ok(1);
             }
-            if let Phase::WaitingApproval { id } = status.phase {
+            if let Phase::WaitingApproval { id, .. } = status.phase {
                 diagnostic(
                     &mut diagnostics,
                     acyclic_native_runtime::InheritedOutput::stderr,
@@ -373,7 +373,7 @@ pub(super) async fn jsonl(
                         }
                         outstanding.finished = Some(reason);
                     }
-                    if let Phase::WaitingApproval { id } = &status.phase
+                    if let Phase::WaitingApproval { id, .. } = &status.phase
                         && announced.as_ref() != Some(id)
                     {
                         emit(output, conversation.task(), &json!({"approval": id.as_str()})).await?;

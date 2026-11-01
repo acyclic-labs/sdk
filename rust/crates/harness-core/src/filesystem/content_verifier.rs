@@ -310,38 +310,7 @@ where
                 },
             )
             .await?;
-            let entries = page
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    let name = entry
-                        .name
-                        .unicode_text(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .ok()
-                        .map(|receipt| receipt.value)
-                        .ok_or_else(|| {
-                            Error::Unsupported("private directory name is not Unicode".into())
-                        })?;
-                    let kind = match entry.kind {
-                        FileKind::Regular => PrivateDirectoryEntryKind::File,
-                        FileKind::Directory => PrivateDirectoryEntryKind::Directory,
-                        _ => {
-                            return Err(Error::Unsupported(
-                                "private directory contains an unsupported entry kind".into(),
-                            ));
-                        }
-                    };
-                    Ok(PrivateDirectoryEntry { name, kind })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(PrivateDirectoryPage {
-                generation,
-                entries,
-                has_more: page.has_more,
-            })
+            PrivateDirectoryPage::from_filesystem(generation, page)
         })
     }
 

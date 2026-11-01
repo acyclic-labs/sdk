@@ -6,7 +6,8 @@ use acyclic_harness_core::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
     context::{DiffCursor, DiffFilePage},
-    interaction::Interaction,
+    conversation::{DirectoryChanges, PrivateDirectoryPage},
+    interaction::ApprovalBinding,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
 use base64::Engine as _;
@@ -33,16 +34,19 @@ pub struct ChildAgent {
     pub status: Option<StatusRecord>,
 }
 
-/// Authorized immutable request displayed to a human responder.
+/// Original pending action identity; the immutable request is read separately.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct PendingApproval {
     /// Identity used unchanged in the decision command.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub id: IntentId,
-    /// Canonical approval request read through the authorized host reader.
-    pub request: Interaction,
+    /// Original zero-based waiting-status record selecting the request bytes.
+    pub status: u64,
+    /// Exact action from that same actor/status publication.
+    pub binding: ApprovalBinding,
 }
 
 /// Successful replies are finite views or canonical commit receipts. A delivery
@@ -110,6 +114,13 @@ pub enum AgentReply {
     Diff {
         /// Visible fragments in cursor order; empty only for an empty projection.
         items: Vec<DiffFilePage>,
+    },
+    /// Authorized names at one generation, without eager file reads.
+    Directory {
+        /// Ordered visible names and the immutable generation that supplied them.
+        page: PrivateDirectoryPage,
+        /// Present only on the initial snapshot, never a follow grant.
+        changes: Option<DirectoryChanges>,
     },
     /// One range of a read file, and the file's whole length.
     Content {
@@ -371,6 +382,7 @@ fn validate_reply(
             return if data.len() % 4 == 0
                 && bytes <= MAX_READ_BYTES
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
+                && (bytes != 0 || *offset == *length)
             {
                 Ok(())
             } else {
@@ -433,6 +445,37 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (
+            AgentReply::Directory { page, changes },
+            AgentCommand::Directory {
+                path,
+                generation,
+                page: request,
+                ..
+            },
+        ) => {
+            page.validate().map_err(|_| CommandError::Invalid)?;
+            if bytes > request.bytes() as usize || page.entries.len() > request.items() as usize {
+                return Err(CommandError::Capacity);
+            }
+            if (page.has_more && page.entries.is_empty())
+                || generation
+                    .as_ref()
+                    .is_some_and(|selected| selected != &page.generation)
+                || request.cursor().is_some_and(|after| {
+                    page.entries
+                        .first()
+                        .is_some_and(|entry| entry.name.as_str() <= after)
+                })
+                || changes.is_some() != generation.is_none()
+                || changes.as_ref().is_some_and(|changes| {
+                    changes.next == 0 || !directory_resource_matches(&changes.resource, path)
+                })
+            {
+                return Err(CommandError::Invalid);
+            }
+            return Ok(());
+        }
         (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
             return validate_diff_page(items, page, bytes);
         }
@@ -446,14 +489,11 @@ fn validate_reply(
             (items.len(), next, page)
         }
         (AgentReply::Approvals { items, next }, AgentCommand::Approvals { page, .. }) => {
-            let mut seen = std::collections::BTreeSet::new();
+            if items.len() > 1 || next.is_some() || (page.cursor().is_some() && !items.is_empty()) {
+                return Err(CommandError::Invalid);
+            }
             for item in items {
-                if !matches!(item.request, Interaction::Approval { .. }) || !seen.insert(&item.id) {
-                    return Err(CommandError::Invalid);
-                }
-                item.request
-                    .validate(&mut None)
-                    .map_err(|_| CommandError::Invalid)?;
+                item.binding.validate().map_err(|_| CommandError::Invalid)?;
             }
             (items.len(), next, page)
         }
@@ -468,6 +508,24 @@ fn validate_reply(
         return Err(CommandError::Capacity);
     }
     Ok(())
+}
+
+fn directory_resource_matches(resource: &str, path: &str) -> bool {
+    if !acyclic_auth::valid_resource(resource) {
+        return false;
+    }
+    let Some(selected) = resource.strip_prefix("fs:/") else {
+        return false;
+    };
+    let (volume, selected) = selected.split_once('/').unwrap_or((selected, ""));
+    !volume.is_empty()
+        && if path.is_empty() {
+            selected.is_empty() && !resource.ends_with('/')
+        } else {
+            selected.split('/').eq(path
+                .split('/')
+                .map(|part| acyclic_auth::encode_component(part.as_bytes())))
+        }
 }
 
 fn validate_diff_page(

@@ -765,9 +765,16 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 ExecutionProgress::Pending(approval) => {
                     // The approval owner names the request the turn waits on;
                     // a host without one waits on the pending operation.
-                    let (id, parent) = match open.approvals.as_ref().and_then(|a| a.pending()) {
-                        Some((request, parent)) => (request, parent),
-                        None => (approval_intent(approval), false),
+                    let pending = open
+                        .approvals
+                        .as_ref()
+                        .map(|a| a.pending())
+                        .transpose()
+                        .map_err(host_error)?
+                        .flatten();
+                    let (id, parent, binding) = match pending {
+                        Some((request, parent, binding)) => (request, parent, Some(binding)),
+                        None => (approval_intent(approval), false, None),
                     };
                     let id = IntentId::try_from(id)?;
                     // A parent stage asks the parent in the same commit as the pause.
@@ -797,7 +804,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         })?),
                         reserved_children,
                         outs,
-                        wait: Wait::Approval(id),
+                        wait: Wait::Approval { id, binding },
                         drops: None,
                     });
                 }

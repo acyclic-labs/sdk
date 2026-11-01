@@ -98,6 +98,11 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 0);
     let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
     let entries = settled(&agents, &root).await?;
@@ -106,12 +111,108 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.request_count(), 1);
+    // The same live query started before this input. Its exact completion
+    // replaces the original admission, rather than counting another call.
+    while usage.totals().completed == 0 {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 1);
+    assert_eq!(usage.totals().completed, 1);
+    assert!(usage.totals().currency.is_none());
+    assert_eq!(usage.totals().token_nano_units.value(), None);
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
         .read(&entry.output, 1 << 20, None, None)?
         .await?;
     assert!(!output.is_empty());
+    // The same authenticated session selects a directory and its original
+    // publication fence, then continues only at that immutable generation.
+    let page =
+        |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
+    let (first, changes) = client.directory_page("", None, page(None)?).await?;
+    assert_eq!(first.entries.len(), 1);
+    assert!(first.has_more);
+    let changes =
+        changes.ok_or_else(|| Error::Storage("directory snapshot lost its fence".into()))?;
+    assert!(changes.next > 0);
+    let last = &first.entries[0].name;
+    let (second, continuation_changes) = client
+        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .await?;
+    assert_eq!(second.generation, first.generation);
+    assert!(continuation_changes.is_none());
+    assert_eq!(second.entries.len(), 1);
+    assert!(second.entries[0].name > *last);
+    let (range, length) = client
+        .read_private_range(entry.output.path(), &first.generation, 0)
+        .await?;
+    assert_eq!(length, output.len() as u64);
+    assert!(!range.is_empty());
+    assert_eq!(range.as_slice(), &output[..range.len()]);
+    let (end, end_length) = client
+        .read_private_range(entry.output.path(), &first.generation, length)
+        .await?;
+    assert!(end.is_empty());
+    assert_eq!(end_length, length);
+    // Reusing the preceding page cannot pass the shared continuation boundary.
+    let continued = acyclic_harness_client::AgentCommand::Directory {
+        agent: root.clone(),
+        path: String::new(),
+        generation: Some(first.generation.clone()),
+        page: page(Some(last.clone()))?,
+    };
+    assert!(
+        acyclic_harness_client::encode_agent_reply(
+            &Ok(acyclic_harness_client::AgentReply::Directory {
+                page: first.clone(),
+                changes: None
+            },),
+            &continued
+        )
+        .is_err()
+    );
+    // A successful range must make progress or prove this exact file's EOF.
+    let read = acyclic_harness_client::AgentCommand::Read {
+        agent: root.clone(),
+        offset: 0,
+        target: acyclic_harness_client::ReadTarget::Private {
+            path: entry.output.path().to_owned(),
+            generation: first.generation.clone(),
+        },
+    };
+    assert!(
+        acyclic_harness_client::encode_agent_reply(
+            &Ok(acyclic_harness_client::AgentReply::read(&[], length),),
+            &read
+        )
+        .is_err()
+    );
+    // A path cannot bypass the original private grant or its internal boundary.
+    assert!(
+        client
+            .directory_page(".system", None, page(None)?)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .directory_page("", None, page(Some(last.clone()))?)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_private_range(".system/record", &first.generation, 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_private_range(entry.output.path(), &first.generation, length + 1)
+            .await
+            .is_err()
+    );
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
@@ -177,6 +278,13 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
+        let mut usage = client.usage_query();
+        while !usage.synchronized() {
+            usage.advance().await?;
+        }
+        assert_eq!(usage.totals().calls, 1);
+        assert_eq!(usage.totals().completed, 0);
+        let before = usage.totals().clone();
         let waiting = async {
             loop {
                 match events.next().await? {
@@ -187,7 +295,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         };
         tokio::pin!(waiting);
         assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
-        drop(producer);
+        let usage_result = {
+            let advancing = usage.advance();
+            tokio::pin!(advancing);
+            assert!(futures::poll!(&mut advancing).is_pending(), "quiet live usage must wait at its retained frontier");
+            drop(producer);
+            advancing.await
+        };
+        assert!(matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "usage lost the runtime cause: {usage_result:?}");
+        assert_eq!(usage.totals(), &before, "source loss changed the admitted projection");
         // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
         let observed = waiting.await;
         assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");

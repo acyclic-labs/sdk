@@ -11,7 +11,11 @@
 //! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
+mod directory;
+mod history;
+pub use history::{HistoryPage, PreparedHistoryAction};
 mod usage;
+mod usage_query;
 use crate::{
     Error, Result,
     agent::{
@@ -20,7 +24,7 @@ use crate::{
     },
     conversation::FileRef,
     executor::TurnOutput,
-    interaction::{ApprovalBinding, Interaction},
+    interaction::ApprovalBinding,
     model::ModelContent,
 };
 use acyclic_harness_client::{
@@ -30,6 +34,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+pub use usage_query::UsageQuery;
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -270,8 +275,15 @@ impl Conversation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The approval `request` that `agent` waits on, if it is still pending.
-    async fn pending_approval(&self, request: &IntentId) -> Result<Option<Interaction>> {
+    /// Original pending binding and waiting-status sequence. Request bytes stay
+    /// at that immutable status and are read separately in bounded chunks.
+    ///
+    /// # Errors
+    /// When the original session fails, access is refused or the reply is invalid.
+    pub async fn pending_approval(
+        &self,
+        request: &IntentId,
+    ) -> Result<Option<acyclic_harness_client::PendingApproval>> {
         let AgentReply::Approvals { items, .. } = self
             .connection
             .execute(&AgentCommand::Approvals {
@@ -284,34 +296,14 @@ impl Conversation {
         };
         Ok(items
             .into_iter()
-            .find(|pending| &pending.id == request)
-            .map(|pending| pending.request)
-            .filter(|request| matches!(request, Interaction::Approval { .. })))
-    }
-
-    /// The explanation approval `request` shows its approver, or `None` once
-    /// it is no longer pending.
-    ///
-    /// # Errors
-    /// Session, host or decoding failures.
-    pub async fn approval_prompt(&self, request: &IntentId) -> Result<Option<String>> {
-        Ok(match self.pending_approval(request).await? {
-            Some(Interaction::Approval { prompt, .. }) => Some(prompt),
-            _ => None,
-        })
+            .next()
+            .filter(|pending| &pending.id == request))
     }
 
     /// The binding of `request`, which `agent` waits on.
     async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
         match self.pending_approval(request).await? {
-            Some(Interaction::Approval {
-                operation_id,
-                action_digest,
-                ..
-            }) => Ok(ApprovalBinding {
-                operation_id,
-                action_digest,
-            }),
+            Some(pending) => Ok(pending.binding),
             _ => Err(Error::Conflict("no such approval is pending".into())),
         }
     }

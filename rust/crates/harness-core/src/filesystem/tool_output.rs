@@ -1,5 +1,5 @@
-//! Live observation of one agent: its conversation and status streams and its
-//! tool output, `tools/` on its private volume.
+//! Live observation of one agent: its conversation, status and history streams
+//! and its tool output, `tools/` on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
@@ -9,15 +9,15 @@ use acyclic_auth::{
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
-/// A read-only observation of one agent: its conversation and status streams
-/// and its tool output, under one credential.
+/// A read-only observation of one agent: its conversation, status and history
+/// streams and its tool output, under one credential.
 pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to follow the agent's conversation and status and to
-    /// list and read under `resource`, bound to the agent's audience; it lives
-    /// no longer than the agent's scope and is revoked with it.
+    /// Sealed credential to follow the agent's conversation, status and history
+    /// and to list and read under `resource`, bound to the agent's audience; it
+    /// lives no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
     /// Session authority admitting `credential` under the agent's audience.
     pub authority: Arc<Authority>,
@@ -102,13 +102,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
                     .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
             };
-        let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
+        let (conversation, status, history) = (
+            stream(agent.conversation())?,
+            stream(agent.status())?,
+            stream(agent.history())?,
+        );
         let follow: &[&str] = &["streams/follow"];
         let read: &[&str] = &["fs/list", "fs/read"];
         let invoke: &[&str] = &["actors/invoke"];
         let mut grants = vec![
             (conversation.as_str(), false, follow),
             (status.as_str(), false, follow),
+            (history.as_str(), false, follow),
             (resource.as_str(), true, read),
         ];
         if let Some(calls) = calls {

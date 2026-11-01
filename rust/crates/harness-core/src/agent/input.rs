@@ -162,7 +162,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
 /// response to its approval request, or an event hook from the host it waits on.
 pub(super) fn awaits(phase: &Phase, input: &TurnInput) -> bool {
     match (phase, input) {
-        (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) => id == response,
+        (Phase::WaitingApproval { id, .. }, TurnInput::Approval { id: response }) => id == response,
         (Phase::WaitingHost { host }, TurnInput::Hook { host: from, .. }) => host == from,
         _ => false,
     }

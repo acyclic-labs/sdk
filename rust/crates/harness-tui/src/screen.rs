@@ -42,7 +42,11 @@ pub struct Screen<'a> {
     /// Source-byte extent of the selected window and full source length. Some
     /// reserves the track column even while the short document fits the view.
     pub scrollbar: Option<(std::ops::Range<usize>, usize)>,
-    /// Status hints and model/usage summary.
+    /// Committed usage and estimated token charge, formatted by the query
+    /// consumer from the shared projection and borrowed from its cache.
+    /// None reserves no footer space.
+    pub usage: Option<&'a Line<'a>>,
+    /// Status hints and attention, independent of the usage summary.
     pub status: Line<'a>,
 }
 
@@ -69,6 +73,8 @@ pub struct ScreenAreas {
     pub completions: Rect,
     /// Status hints.
     pub status: Rect,
+    /// Optional committed usage footer, above the status hints.
+    pub usage: Rect,
     scrollbar_total: usize,
 }
 
@@ -193,6 +199,14 @@ impl Screen<'_> {
             status_height,
         );
         remaining.height -= status_height;
+        let usage_height = u16::from(self.usage.is_some()).min(remaining.height);
+        let usage = Rect::new(
+            area.x,
+            remaining.bottom() - usage_height,
+            area.width,
+            usage_height,
+        );
+        remaining.height -= usage_height;
         let prompt_height = PromptBox::new(input, 0)
             .height(area.width, area.height)
             .min(remaining.height);
@@ -266,6 +280,7 @@ impl Screen<'_> {
             prompt,
             completions,
             status,
+            usage,
         }
     }
 
@@ -382,7 +397,10 @@ impl Screen<'_> {
         }
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
-        frame.render_widget(Paragraph::new(self.status.clone()), areas.status);
+        if let Some(usage) = self.usage {
+            frame.render_widget(usage, areas.usage);
+        }
+        frame.render_widget(&self.status, areas.status);
         let mut side = areas.side;
         let panels = [
             ("Diff", self.diff),

@@ -43,6 +43,7 @@ enum StagedInput<'a> {
 }
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+mod directory;
 /// The turn host of a binding's agents.
 pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 
@@ -781,18 +782,29 @@ where
         Ok((bytes.to_vec(), length))
     }
 
-    /// The approval `agent` waits on, with the exact action it shows. An
-    /// agent waits on at most one.
+    /// The approval `agent` waits on: its original status sequence and exact
+    /// action binding. The request body stays at its immutable source.
     ///
     /// # Errors
-    /// When `agent` is absent or its request file is unreadable.
+    /// When `agent` is absent or its waiting phase has no published status.
     pub async fn pending_approval(
         &self,
         agent: &AgentPath,
-    ) -> Result<Option<(IntentId, Interaction)>, Error> {
+    ) -> Result<Option<(IntentId, u64, ApprovalBinding)>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        self.turns.pending_approval(&state).await.map_err(turn)
+        let crate::agent::Phase::WaitingApproval {
+            id,
+            binding: Some(binding),
+        } = state.phase
+        else {
+            return Ok(None);
+        };
+        let status = state
+            .status_tail
+            .checked_sub(1)
+            .ok_or(Error::Record("waiting approval has no published status"))?;
+        Ok(Some((id, status, binding)))
     }
 
     /// `principal` decides approval `id` of `agent`, bound to the exact action
@@ -823,9 +835,9 @@ where
         let pending = self
             .pending_approval(agent)
             .await?
-            .and_then(|(pending, shown)| (&pending == id).then_some(shown));
+            .and_then(|(pending, _, shown)| (&pending == id).then_some(shown));
         let shown = match pending {
-            Some(shown) => binds(Some(shown)),
+            Some(shown) => &shown == binding,
             None => {
                 self.admit_path(agent)?;
                 let state = self.agents.state(agent).await?;
