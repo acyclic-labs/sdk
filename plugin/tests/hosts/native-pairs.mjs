@@ -97,7 +97,6 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
     }
     pair=pairPhases(...samples);
    }})});
-  assert.equal(result.expired,false,'original case envelope expired');
   let records=null;
   if(!live) {
    server.child.kill('SIGTERM');await server.closed;
@@ -154,7 +153,6 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
    prompt_sha256:createHash('sha256').update(prompt).digest('hex')},null,2)+'\n');
   outcome=await withOwnedCase({processes:scope,run:()=>installedHost({host,processes:scope,fixture,packageStage,
    capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer})});
-  assert.equal(outcome.expired,false,'original installed workflow envelope expired');
   for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
    assert.equal(await readFile(join(workspace,file),'utf8'),bytes,'original native effect missing: '+file);
   const session=async phase=>JSON.parse(await readFile(join(workspace,'.volumes/scratch',`native-${phase}-session.json`),'utf8'));

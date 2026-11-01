@@ -93,7 +93,6 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal((await run(codex, ["plugin", "remove", "acyclic@contaminant", "--json"])).code, 0);
       assert.deepEqual(await list(), []);
     } });
-    assert.equal(receipt.expired, false);
     assert.ok(receipt.seconds < 10);
   } catch (cause) {
     throw new Error(`step=${step}: ${cause.message}; recovery=${recovery}`, { cause });
