@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {openSync,closeSync} from 'node:fs';
 import {access,readFile,realpath,writeFile} from 'node:fs/promises';
-import {dirname,isAbsolute,join,relative,sep} from 'node:path';
+import {isAbsolute,join,relative,sep} from 'node:path';
 import {assertNativeResume,nativeSessionIdentity} from './native-session-proof.mjs';
 
 const [phase,workspace,host,...extra]=process.argv.slice(2);
@@ -43,7 +43,8 @@ try {
   parent();
   if(phase==='merge')await absent('child.txt');
   await absent('resumed.txt');
-  const binary=join(dirname(root),'package/bin',process.platform==='win32'?'acyclic.exe':'acyclic');
+  const binary=process.env.E2E_PLUGIN_BINARY;
+  assert.ok(isAbsolute(binary??''),'staged plugin executable must be an absolute admitted path');
   const args=['fs','merge','agents/native-child'];
   try {execFileSync(binary,args,{stdio:['ignore','inherit','inherit']});}
   catch(cause) {throw new Error('native merge failed; recovery argv: '+JSON.stringify([binary,...args])+'; '+cause.message,{cause});}

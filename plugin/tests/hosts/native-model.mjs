@@ -156,6 +156,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  };
  try {
   const {packageRoot,executable}=await (packageStage??nativePackage(binary,join(root,'package')))();
+  env.E2E_PLUGIN_BINARY=executable;
   step='install through shipping plugin';
   if(host==='codex') {
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);

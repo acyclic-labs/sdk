@@ -18,14 +18,26 @@ test('native filesystem effects reject parent-only execution and lost resume cus
   await mkdir(workspace);
   const script=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
   const task=randomUUID();
-  const run=async(phase,cwd,identity=task)=>{
+  const run=async(phase,cwd,identity=task,binary)=>{
    const result=await processes.run(process.execPath,[script,phase,workspace,'codex'],
-    {cwd,env:{...env,ACYCLIC_TASK:identity}});
+    {cwd,env:{...env,ACYCLIC_TASK:identity,E2E_PLUGIN_BINARY:binary}});
    t.diagnostic(JSON.stringify({phase,cwd,...result}));return result;
   };
   const receipt=await withOwnedCase({processes,run:async()=>{
    step='reject child work attempted by the parent';
    assert.equal((await run('parent',workspace)).code,0);
+   step='retain the explicit staged executable across separate workspace scopes';
+   for(const binary of [undefined,'relative']) {
+    const missing=await run('merge',workspace,task,binary);
+    assert.notEqual(missing.code,0);
+    assert.match(missing.stderr,/staged plugin executable must be an absolute admitted path/);
+   }
+   // The real Node executable is outside the workspace. Its original module
+   // error proves dispatch used the supplied executable, not a derived path.
+   // This is a dispatch negative, not a successful filesystem merge claim.
+   const dispatched=await run('merge',workspace,task,process.execPath);
+   assert.notEqual(dispatched.code,0);
+   assert.match(dispatched.stderr,/Cannot find module/);
    const parentOnly=await run('child',workspace);
    assert.notEqual(parentOnly.code,0);
    assert.match(parentOnly.stderr,/separate view/);
