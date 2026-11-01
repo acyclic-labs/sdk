@@ -99,6 +99,11 @@ fn interactive_completion_retains_input_producer_and_cleanup()
             }
         }
         fn retired(&mut self, cleanup_completed: bool) {
+            // Physical capture ending withdraws any marker it did not emit.
+            // The returned handler may outlive completion, so its diagnostic
+            // senders must not keep those original producer waits alive.
+            self.ready.take();
+            self.received.take();
             self.retired
                 .take()
                 .unwrap()
