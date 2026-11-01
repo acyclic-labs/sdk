@@ -230,6 +230,11 @@ impl FileTool {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
+        if input.0.notebook.is_some()
+            && (!input.0.old_text.is_empty() || !input.0.new_text.is_empty() || input.0.replace_all)
+        {
+            return Err(invalid("notebook and text edits are mutually exclusive"));
+        }
         let maximum = context.effective_scope().limits().file_bytes;
         if work.is_none() {
             super::edit::validate_edit_bound(maximum)?;
@@ -244,20 +249,16 @@ impl FileTool {
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        if input.0.notebook.is_some()
-            && (!input.0.old_text.is_empty() || !input.0.new_text.is_empty())
-        {
-            return Err(invalid("notebook and text edits are mutually exclusive"));
-        }
         let _notebook_hold;
         let (edited, notebook_hold) = if let Some(operation) = &input.0.notebook {
             super::notebook::edit(source, operation, work)?
         } else {
             (
-                super::edit::exact_replace(
+                super::edit::replace(
                     source,
                     &input.0.old_text,
                     &input.0.new_text,
+                    input.0.replace_all,
                     maximum,
                     &mut allocation,
                 )?,

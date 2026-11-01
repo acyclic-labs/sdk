@@ -679,6 +679,37 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert!(context.observe_tool_source_file_once(operation, None, Some("notes/other.txt"), None).await?.0.is_none());
         assert!(context.observe_tool_file_once(operation, None).await?.0.is_none());
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "later");
+        task.stage_file(None, OperationId::new(), "notes/one.txt", b"one one", "text/plain", "one.txt").await?;
+        assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","old_text":"one","new_text":"two"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "one one");
+        call(&task, &edit, json!({"path":"notes/one.txt","old_text":"one","new_text":"two","replace_all":true})).await?;
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "two two");
+
+        let notebook = json!({"nbformat":4,"nbformat_minor":5,"metadata":{"kept":"one"},"cells":[
+            {"cell_type":"code","id":"first","metadata":{"kept":true},"source":["one one"],"outputs":[{"output_type":"stream","text":"old"}],"execution_count":7},
+            {"cell_type":"markdown","id":"other","metadata":{},"source":["unchanged"]},
+        ]});
+        task.stage_file(None, OperationId::new(), "notes/book.ipynb", &serde_json::to_vec(&notebook).unwrap(), "application/x-ipynb+json", "book.ipynb").await?;
+        let (nb_call, nb_read) = call(&task, &read, json!({"path":"notes/book.ipynb","selection":{"kind":"cells","offset":0,"limit":1}})).await?;
+        let nb_projection = read.projection.project(&nb_call, &nb_read, None)?.0;
+        let nb_version = nb_projection["value"]["version"].as_str().expect("notebook version");
+        let cell_edit = json!({"kind":"replace","index":0,"id":"first","source":"two"});
+        for extra in [json!({"replace_all":true}), json!({"old_text":"one"}), json!({"new_text":"two"})] {
+            let mut arguments = json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit});
+            arguments.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            assert_eq!(call(&task, &edit, arguments).await.unwrap_err().code(), crate::wire::ErrorCode::Invalid);
+        }
+        let (nb_edit, nb_result) = call(&task, &edit, json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit})).await?;
+        let file: crate::tool::files::FileResult = serde_json::from_value(nb_result.value.clone()).unwrap();
+        let actual: Value = serde_json::from_slice(task.read_file(&file.file, None).await?.as_ref()).unwrap();
+        assert_eq!(actual["metadata"], notebook["metadata"]);
+        assert_eq!(actual["cells"][1], notebook["cells"][1]);
+        assert_eq!(actual["cells"][0]["source"], json!("two"));
+        assert_eq!(actual["cells"][0]["outputs"], json!([]));
+        assert_eq!(actual["cells"][0]["execution_count"], Value::Null);
+        assert_eq!(call(&task, &edit, json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
+        let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), nb_edit.operation_id, &nb_edit.call_id)?;
+        assert_eq!(edit.executor.reconcile(nb_edit, Some(context)).await?, Some(nb_result));
         Ok(())
     }}).await?;
     drop(storage);

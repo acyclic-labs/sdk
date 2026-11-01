@@ -188,6 +188,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "display_name",
         "old_text",
         "new_text",
+        "replace_all",
         "diff",
         "range",
         "query",

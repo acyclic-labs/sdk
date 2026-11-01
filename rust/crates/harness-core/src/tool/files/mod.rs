@@ -24,7 +24,8 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
-/// Replaces one exact, unambiguous match at a project path. An optional opaque
+/// Edits exact text or notebook cells at a project path. Text replacements require
+/// one unambiguous match unless all occurrences are requested. An optional opaque
 /// version rejects publication if that source generation is no longer current.
 pub fn edit() -> Result<Tool> {
     FileTool::Edit.assemble(super::schema::ProjectionMode::Full)

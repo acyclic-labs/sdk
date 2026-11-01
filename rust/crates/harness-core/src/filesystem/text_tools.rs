@@ -3,7 +3,7 @@ use super::FilesystemHost;
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, is_internal_path},
-    tool::edit::{allocation, exact_replace, validate_edit_bound},
+    tool::edit::{allocation, replace, validate_edit_bound},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
@@ -40,10 +40,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let bytes = self.read_content(source, read, maximum_bytes, None).await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
-        let result = exact_replace(
+        let result = replace(
             text,
             &replacement.old_text,
             &replacement.new_text,
+            false,
             maximum_bytes,
             &mut allocation(None, 0)?,
         )?;

@@ -3,6 +3,30 @@
 use crate::wire::ErrorCode::{Conflict, Invalid};
 use crate::{Error, NativeCustody, Result};
 
+/// A definitive exact-match refusal from the shared edit engine.
+#[derive(Debug)]
+pub struct EditRejection {
+    occurrences: usize,
+}
+
+impl EditRejection {
+    fn error(occurrences: usize) -> Error {
+        Error::ExactEdit(Self { occurrences })
+    }
+}
+
+impl std::fmt::Display for EditRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.occurrences == 0 {
+            formatter.write_str("exact edit text is missing")
+        } else {
+            formatter.write_str("exact edit text is ambiguous")
+        }
+    }
+}
+
+impl std::error::Error for EditRejection {}
+
 #[doc(hidden)]
 pub fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -166,14 +190,94 @@ pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
     Ok(())
 }
 
-/// Replaces one unambiguous exact occurrence within finite input/output bounds.
-pub(crate) fn exact_replace(
+/// The shared replacement engine for unique and all-occurrence edits.
+pub(crate) fn replace(
     source: &str,
     old_text: &str,
     new_text: &str,
+    replace_all: bool,
     maximum_bytes: u64,
     work: &mut NativeCustody,
 ) -> Result<String> {
+    replace_sequence(
+        source,
+        std::iter::once(Replacement {
+            old_text,
+            new_text,
+            replace_all,
+        }),
+        maximum_bytes,
+        work,
+    )
+}
+
+/// One borrowed transformation, interpreted against the preceding result.
+#[derive(Clone, Copy)]
+pub(crate) struct Replacement<'a> {
+    pub old_text: &'a str,
+    pub new_text: &'a str,
+    pub replace_all: bool,
+}
+
+/// Retires a synchronous planner's temporary buffers after they are destroyed.
+/// Earlier caller-owned claims and the one returned String remain untouched.
+pub(super) fn plan_output(
+    work: &mut NativeCustody,
+    plan: impl FnOnce(&mut NativeCustody) -> Result<String>,
+) -> Result<String> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let before = work.as_ref().map(|custody| custody.bytes());
+    let result = plan(work);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let (Some(custody), Some(before)) = (work, before) {
+        let retired = before
+            .checked_add(result.as_ref().map_or(0, |output| output.capacity() as u64))
+            .and_then(|retained| custody.bytes().checked_sub(retained))
+            .ok_or(Error::NativeBoundary {
+                code: Invalid,
+                reason: "text planner custody retirement failed; recovery: reconcile the original tool operation",
+            })?;
+        custody.release(retired)?;
+    }
+    result
+}
+
+/// Plans the complete sequence without I/O. A failed later transformation
+/// cannot expose an intermediate result. Single edits allocate one output;
+/// longer sequences alternate two buffers, independent of edit count.
+pub(crate) fn replace_sequence<'a>(
+    source: &str,
+    replacements: impl IntoIterator<Item = Replacement<'a>>,
+    maximum_bytes: u64,
+    work: &mut NativeCustody,
+) -> Result<String> {
+    plan_output(work, |work| {
+        let mut replacements = replacements.into_iter();
+        let first = replacements
+            .next()
+            .ok_or_else(|| invalid(work, "exact edit sequence is empty"))?;
+        let mut output = String::new();
+        let mut scratch = String::new();
+        replace_into(source, first, maximum_bytes, work, &mut output)?;
+        for replacement in replacements {
+            replace_into(&output, replacement, maximum_bytes, work, &mut scratch)?;
+            std::mem::swap(&mut output, &mut scratch);
+        }
+        Ok(output)
+    })
+}
+
+fn replace_into(
+    source: &str,
+    Replacement {
+        old_text,
+        new_text,
+        replace_all,
+    }: Replacement<'_>,
+    maximum_bytes: u64,
+    work: &mut NativeCustody,
+    output: &mut String,
+) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
@@ -184,80 +288,165 @@ pub(crate) fn exact_replace(
     {
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
-    charge(work, 0, 1)?;
-    let start = source
-        .find(old_text)
-        .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
-    let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
-    let next_start = start + first_character_bytes;
-    charge(work, 0, 1)?;
-    if source
-        .get(next_start..)
-        .is_some_and(|tail| tail.contains(old_text))
-    {
-        return Err(conflict(work, "exact edit text is ambiguous"));
-    }
+    charge(work, 0, source.len() as u64)?;
+    let (start, count) = if replace_all {
+        let mut matches = source.match_indices(old_text);
+        let (start, _) = matches.next().ok_or_else(|| EditRejection::error(0))?;
+        (start, 1 + matches.count())
+    } else {
+        let start = source
+            .find(old_text)
+            .ok_or_else(|| EditRejection::error(0))?;
+        // Unique replacement rejects overlapping matches too. Advancing one
+        // complete character preserves UTF-8 and finds every later start.
+        let next_start = start + old_text.chars().next().map_or(0, char::len_utf8);
+        charge(work, 0, (source.len() - next_start) as u64)?;
+        if let Some(next) = source[next_start..].find(old_text) {
+            // The original uniqueness search already found the second start.
+            // Count only the unconsumed suffix for the native diagnostic;
+            // successful edits retain their original search/copy work.
+            let next = next_start + next;
+            let first_end = start + old_text.len();
+            let (found, remaining) = if next >= first_end {
+                (2, next + old_text.len())
+            } else {
+                (1, first_end)
+            };
+            charge(work, 0, (source.len() - remaining) as u64)?;
+            let occurrences = found + source[remaining..].match_indices(old_text).count();
+            return Err(if occurrences > 1 {
+                EditRejection::error(occurrences)
+            } else {
+                conflict(work, "exact edit text has overlapping matches")
+            });
+        }
+        (start, 1)
+    };
     let output_bytes = source
         .len()
-        .checked_sub(old_text.len())
-        .and_then(|length| length.checked_add(new_text.len()))
+        .checked_sub(
+            old_text
+                .len()
+                .checked_mul(count)
+                .ok_or_else(|| invalid(work, "exact edit size overflow"))?,
+        )
+        .and_then(|length| {
+            new_text
+                .len()
+                .checked_mul(count)
+                .and_then(|added| length.checked_add(added))
+        })
         .filter(|length| *length as u64 <= maximum_bytes)
         .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
-    let mut output = String::new();
-    reserve_string(work, &mut output, output_bytes)?;
-    let end = start + old_text.len();
-    let prefix = source
-        .get(..start)
-        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
-    let suffix = source
-        .get(end..)
-        .ok_or_else(|| invalid(work, "exact edit match is not UTF-8 aligned"))?;
+    reserve_string(work, output, output_bytes)?;
+    output.clear();
     charge(work, (output_bytes) as u64, 0)?;
-    output.push_str(prefix);
-    output.push_str(new_text);
-    output.push_str(suffix);
-    Ok(output)
+    let mut cursor = 0;
+    if replace_all {
+        charge(work, 0, source.len() as u64)?;
+        for (position, _) in source.match_indices(old_text) {
+            output.push_str(&source[cursor..position]);
+            output.push_str(new_text);
+            cursor = position + old_text.len();
+        }
+    } else {
+        output.push_str(&source[..start]);
+        output.push_str(new_text);
+        cursor = start + old_text.len();
+    }
+    output.push_str(&source[cursor..]);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn edit_sequences_retain_only_their_output_and_refuse_invalid_later_edits() -> Result<()> {
+        for length in [1, 2, 33] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(64 * 1024, 64 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work.live_allocation_bytes();
+            let mut custody = allocation(Some(&work), 0)?;
+            let edits = (0..length).map(|index| Replacement {
+                old_text: if index % 2 == 0 { "one" } else { "two" },
+                new_text: if index % 2 == 0 { "two" } else { "one" },
+                replace_all: false,
+            });
+            let output = replace_sequence("one", edits, 64, &mut custody)?;
+            assert_eq!(output, if length % 2 == 0 { "one" } else { "two" });
+            // An allocation retained for every prior intermediate result would
+            // fail this same bound as the sequence grows.
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline + output.capacity() as u64
+            );
+            drop(output);
+            drop(custody);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+
+            let invalid = [
+                Replacement {
+                    old_text: "one",
+                    new_text: "two",
+                    replace_all: false,
+                },
+                Replacement {
+                    old_text: "missing",
+                    new_text: "three",
+                    replace_all: false,
+                },
+            ];
+            let mut custody = allocation(Some(&work), 0)?;
+            let result = replace_sequence("one", invalid, 64, &mut custody);
+            assert!(result.is_err());
+            // Failure retires its buffers while the original caller keeps
+            // the same custody alive for later planning.
+            assert_eq!(custody.as_ref().unwrap().bytes(), 0);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+        Ok(())
+    }
+
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         let mut work = None;
         assert_eq!(
-            exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut work)?,
+            replace("before 🦀 after", "🦀", "日本語", false, 64, &mut work)?,
             "before 日本語 after"
         );
         assert_eq!(
-            exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut work)?,
+            replace("a\r\nb\n", "\r\n", "\n", false, 8, &mut work)?,
             "a\nb\n"
         );
         assert!(matches!(
-            exact_replace("aaa", "aa", "b", 8, &mut work),
+            replace("aaa", "aa", "b", false, 8, &mut work),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            exact_replace("ééé", "éé", "b", 8, &mut work),
+            replace("ééé", "éé", "b", false, 8, &mut work),
             Err(Error::Conflict(_))
         ));
-        assert!(exact_replace("one one", "one", "two", 8, &mut work).is_err());
-        assert!(exact_replace("one", "missing", "two", 8, &mut work).is_err());
-        assert!(exact_replace("one", "", "two", 8, &mut work).is_err());
+        assert!(replace("one one", "one", "two", false, 8, &mut work).is_err());
+        assert!(replace("one", "missing", "two", false, 8, &mut work).is_err());
+        assert!(replace("one", "", "two", false, 8, &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
         let mut work = None;
-        assert_eq!(exact_replace("abc", "b", "", 3, &mut work)?, "ac");
-        assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut work)?, "xyz");
-        assert!(exact_replace("abc", "b", "long", 4, &mut work).is_err());
-        assert!(exact_replace("abc", "abc", "a", 2, &mut work).is_err());
-        assert!(exact_replace("abc", "a", "a", 0, &mut work).is_err());
-        assert!(exact_replace("abc", "a", "a", u64::MAX, &mut work).is_err());
-        assert!(exact_replace("é", "é", "🦀", 3, &mut work).is_err());
+        assert_eq!(replace("abc", "b", "", false, 3, &mut work)?, "ac");
+        assert_eq!(replace("abc", "abc", "xyz", false, 3, &mut work)?, "xyz");
+        assert!(replace("abc", "b", "long", false, 4, &mut work).is_err());
+        assert!(replace("abc", "abc", "a", false, 2, &mut work).is_err());
+        assert!(replace("abc", "a", "a", false, 0, &mut work).is_err());
+        assert!(replace("abc", "a", "a", false, u64::MAX, &mut work).is_err());
+        assert!(replace("é", "é", "🦀", false, 3, &mut work).is_err());
         Ok(())
     }
 
@@ -283,11 +472,24 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = exact_replace(&source, &needle, "X", 64, &mut work);
+                            let result = replace(&source, &needle, "X", false, 64, &mut work);
+                            assert_eq!(
+                                replace(&source, &needle, "X", true, 64, &mut work).unwrap(),
+                                source.replace(&needle, "X")
+                            );
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {
-                                assert!(matches!(result, Err(Error::Conflict(_))));
+                                let error = result.unwrap_err();
+                                assert_eq!(error.code(), crate::wire::ErrorCode::Conflict);
+                                let non_overlapping = source.match_indices(&needle).count();
+                                match error {
+                                    Error::ExactEdit(cause) => {
+                                        assert!(non_overlapping > 1);
+                                        assert_eq!(cause.occurrences, non_overlapping);
+                                    }
+                                    _ => assert_eq!(non_overlapping, 1),
+                                }
                             }
                         }
                     }

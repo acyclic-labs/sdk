@@ -170,8 +170,8 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-7",
-    description: "Replace one exact UTF-8 match or edit a notebook cell in a project path. Reuse a read's opaque version to reject edits against a changed source",
+    revision: "portable-8",
+    description: "Replace one exact UTF-8 match, all non-overlapping matches when replace_all is true, or edit a notebook cell. Reuse a read's opaque version to reject edits against a changed source",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,
     input: schema::input::<EditFileInput>,

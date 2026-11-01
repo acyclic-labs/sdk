@@ -99,12 +99,15 @@ pub struct EditFileInput {
     /// current path under the original directory read grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// One exact nonempty unambiguous needle.
+    /// Exact nonempty needle; one unambiguous match unless `replace_all` is set.
     #[serde(default)]
     pub old_text: String,
     /// Exact replacement, including an empty deletion.
     #[serde(default)]
     pub new_text: String,
+    /// Replace every non-overlapping occurrence; omission requires one unique match.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_all: bool,
     /// Cell edit against this same versioned file, exclusive with text replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notebook: Option<NotebookEdit>,
@@ -262,7 +265,7 @@ mod codec_tests {
                 FileDescriptor::new([1; 32], 128, "text/plain".into()).unwrap(), "file".into(), &mut None).unwrap();
             let version = super::super::version::encode_version(&file, None).unwrap().0;
             round_trip(ReadFileInput { path: path.clone(), version: Some(version.clone()), range: endpoints.map(|(start, end)| text::TextRange { start, end }), selection: None });
-            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, notebook: None });
+            round_trip(EditFileInput { path: path.clone(), version: Some(version), old_text: text.clone(), new_text: replacement, replace_all: endpoints.is_some(), notebook: None });
             round_trip(WriteFileInput { path, content: text });
         }
     }
