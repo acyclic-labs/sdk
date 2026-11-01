@@ -1014,6 +1014,7 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
         goal: None,
         targets: None,
         tool_results: None,
+        notices: None,
     }
     .encode()?;
     assert!(matches!(
