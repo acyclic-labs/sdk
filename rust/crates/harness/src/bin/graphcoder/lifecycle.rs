@@ -1,5 +1,8 @@
-use acyclic_native_runtime::obs::{ReportPort, WaitReport};
-use acyclic_observability::{TextOutput, TextReceiver};
+use acyclic_native_runtime::{
+    InheritedOutput,
+    obs::{ReportPort, WaitReport},
+};
+use acyclic_observability::{OutputFailure, TextOutput, TextReceiver};
 use futures::{FutureExt as _, future::BoxFuture, future::Shared};
 use std::{fmt, future::Future, io, sync::Arc};
 use tracing_subscriber::{EnvFilter, Layer, Registry, layer::SubscriberExt as _};
@@ -8,11 +11,36 @@ type Failure = Box<dyn std::error::Error>;
 pub(super) type Shutdown = Shared<BoxFuture<'static, Result<u8, Arc<io::Error>>>>;
 
 #[derive(Debug)]
-pub(super) enum DiagnosticConfigurationError {
+pub enum DiagnosticConfigurationError {
     StorageRequired,
     ConflictingStorage,
     Storage(io::Error),
     Filter(tracing_subscriber::filter::ParseError),
+}
+
+// Thin native adapter for the one shared delivery loop. No output is started
+// after the original terminal, including error or formatting-failure summaries.
+pub(super) async fn diagnostics<F: Future>(
+    original: F,
+    delivery: Option<(TextReceiver, InheritedOutput)>,
+) -> (F::Output, Option<OutputFailure>) {
+    let Some((receiver, output)) = delivery else {
+        return (original.await, None);
+    };
+    let mut writer = Some(output);
+    receiver
+        .observe_with(original, async |record| {
+            let output = writer
+                .take()
+                .expect("one original diagnostic write at a time");
+            let (output, record) = record
+                .write_owned(output, InheritedOutput::write_owned)
+                .await?;
+            writer = Some(output);
+            drop(record);
+            Ok(())
+        })
+        .await
 }
 
 impl fmt::Display for DiagnosticConfigurationError {

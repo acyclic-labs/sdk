@@ -40,4 +40,5 @@ fn main() -> std::process::ExitCode {
         },
         None,
     )
+    .unwrap_or(std::process::ExitCode::FAILURE)
 }
