@@ -269,6 +269,12 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         model_steps: std::num::NonZeroUsize::new(1),
         ..Limits::default()
     };
+    #[cfg(feature = "filesystem")]
+    let narrow = crate::preset::Preset {
+        max_steps: std::num::NonZeroUsize::new(10),
+        ..crate::preset::Preset::graphcoder()
+    }
+    .execution_limits(narrow);
     assert!(matches!(
         base.clone()
             .with_limits(narrow)
