@@ -388,7 +388,8 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
     let mut page_bytes = 64usize;
     let mut children = Vec::with_capacity(paths.len());
     for path in paths {
-        let (tail, tail_record) = projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+        let (tail, tail_record) =
+            projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
         let origin = state.paths.origin(&path)?;
         let child = Child {
             path,
