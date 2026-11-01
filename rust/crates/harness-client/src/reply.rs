@@ -598,9 +598,10 @@ fn validate_reply(
     };
     if page.0 > page.2.items() as usize
         || bytes > page.2.bytes() as usize
-        || page.1.as_ref().is_some_and(|cursor| {
-            cursor.is_empty() || cursor.len() > 4096 || Some(cursor.as_str()) == page.2.cursor()
-        })
+        || page
+            .1
+            .as_ref()
+            .is_some_and(|cursor| cursor.is_empty() || Some(cursor.as_str()) == page.2.cursor())
     {
         return Err(CommandError::Capacity);
     }

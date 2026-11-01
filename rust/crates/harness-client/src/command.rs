@@ -21,7 +21,6 @@ pub const MAX_COMMAND_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES - MAX_ROU
 pub const MAX_READ_BYTES: u64 = 32 * 1024;
 /// Longest tool-output path a read names.
 const MAX_READ_PATH_BYTES: usize = 1024;
-const MAX_CURSOR_BYTES: usize = 4096;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
 /// returns a page; the cursor binds the exact query, authorization and cut.
@@ -69,9 +68,7 @@ impl AgentPageRequest {
             || items > 128
             || bytes == 0
             || bytes > MAX_COMMAND_BYTES as u32
-            || cursor
-                .as_ref()
-                .is_some_and(|cursor| cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES)
+            || cursor.as_ref().is_some_and(|cursor| cursor.is_empty())
         {
             return Err(CommandError::Capacity);
         }
