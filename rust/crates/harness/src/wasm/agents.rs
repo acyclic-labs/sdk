@@ -70,6 +70,13 @@ fn agent_error(error: crate::agent::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 
+/// Decode a followed agent record with the same canonical codec as `read`.
+#[wasm_bindgen(js_name = decodeAgentRecord, unchecked_return_type = "unknown")]
+pub fn decode_agent_record(bytes: &[u8]) -> std::result::Result<JsValue, JsValue> {
+    let value = crate::agent::decode_record::<serde_json::Value>(bytes).map_err(agent_error)?;
+    to_js(&value)
+}
+
 fn stream_error(error: StreamError) -> JsValue {
     acyclic_stream::wasm_error(error)
 }
