@@ -2,6 +2,124 @@ use super::*;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
+async fn serving_summary_prefetch_failure_preserves_admitted_response_and_cancellation()
+-> Result<()> {
+    for failure in 0..4 {
+        let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (_owner, session) = crate::filesystem::SessionWork::admit(work)?;
+        let slot = session.agent(&crate::agent::AgentId::from_bytes([83; 16]))?;
+        let counts = Arc::new(AtomicUsize::new(0));
+        let observed_counts = Arc::clone(&counts);
+        let cancelled = cancellation.clone();
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("admitted answer".into())])
+                .with_context_capacity(crate::context::ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: Some(4_096),
+                })
+                .with_token_counter(move |request| {
+                    if observed_counts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        return Err(match failure {
+                            1 => Error::Cancelled,
+                            2 => Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                            _ => {
+                                if failure == 3 {
+                                    cancelled.cancel();
+                                }
+                                Error::ModelUnavailable {
+                                    failure: crate::ModelTransportFailure::Connect,
+                                    excerpt: String::new(),
+                                }
+                            }
+                        });
+                    }
+                    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                        request.request_digest(),
+                        100,
+                        vec![15_000, 15_000, 10_000],
+                    ))
+                }),
+        );
+        let stock = StockExecutor::new(
+            Model::new("synthetic".into(), "prefetch-failure".into(), "1".into())?,
+            provider.native(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_session(Some(Arc::clone(&slot)));
+        let messages: Vec<_> = [ModelRole::User, ModelRole::Assistant, ModelRole::User]
+            .into_iter()
+            .map(|role| ModelMessage {
+                role,
+                content: ModelContent::Text("selected input".into()),
+            })
+            .collect();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: messages.last().unwrap().content.clone(),
+            selected_context: Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: 3,
+                    message_ids: (1..=3).map(uuid::Uuid::from_u128).collect(),
+                    checkpoint: None,
+                },
+                messages: messages.clone(),
+            }),
+            max_steps: 1,
+        };
+        let journal = journal.with_bound_selection(input.selected_context.clone().unwrap());
+        let mut execution = StockExecution::ordinary(&stock);
+        execution.io = Some(slot.preparation()?);
+        execution.ensure_started(&journal, &input).await?;
+        let prepared = execution
+            .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+            .await;
+        assert_eq!(
+            counts.load(Ordering::SeqCst),
+            2,
+            "optional count was not reached"
+        );
+        if failure == 0 {
+            assert_eq!(prepared?.request().messages, messages);
+            assert_eq!(
+                stock.execute(input.clone(), &journal).await?.text,
+                "admitted answer"
+            );
+            assert_eq!(
+                stock.execute(input, &journal).await?.text,
+                "admitted answer"
+            );
+            assert_eq!(
+                provider.requests().len(),
+                1,
+                "accepted response was regenerated"
+            );
+        } else {
+            assert_eq!(
+                prepared.unwrap_err().code(),
+                if failure == 2 {
+                    crate::wire::ErrorCode::InteractionCancelled
+                } else {
+                    crate::wire::ErrorCode::Cancelled
+                }
+            );
+            assert!(
+                provider.requests().is_empty(),
+                "cancelled request dispatched"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
 async fn serving_summary_recovers_transient_pre_dispatch_failure() -> Result<()> {
     let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
     let cancellation = acyclic_fs::CancellationToken::new();

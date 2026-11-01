@@ -357,19 +357,45 @@ impl StockExecution<'_> {
                             ),
                     );
                     if input_tokens > hard.saturating_mul(3) / 5 {
-                        projection.context.messages =
-                            crate::model::clone_messages(&prepared.request().messages, self.io)?;
-                        let (source, pre_stage) = self
-                            .response_compaction_source(
+                        // The foreground request already has valid accounting.
+                        // Optional preparation cannot invalidate its admission;
+                        // demand compaction remains fallible below.
+                        let prefetch = async {
+                            projection.context.messages = crate::model::clone_messages(
+                                &prepared.request().messages,
+                                self.io,
+                            )?;
+                            let (source, pre_stage) = self
+                                .response_compaction_source(
+                                    journal,
+                                    turn,
+                                    &projection,
+                                    &accounting,
+                                    policy,
+                                )
+                                .await?;
+                            self.prefetch_compaction(
                                 journal,
-                                turn,
-                                &projection,
+                                &source,
                                 &accounting,
+                                pre_stage,
                                 policy,
                             )
-                            .await?;
-                        self.prefetch_compaction(journal, &source, &accounting, pre_stage, policy)
-                            .await?;
+                            .await
+                        }
+                        .await;
+                        if let Err(error) = prefetch
+                            && matches!(
+                                error.code(),
+                                crate::wire::ErrorCode::Cancelled
+                                    | crate::wire::ErrorCode::InteractionCancelled
+                            )
+                        {
+                            return Err(error);
+                        }
+                        if let Some(io) = self.io {
+                            io.check_cancellation()?;
+                        }
                     }
                 }
                 if !possible_message_pressure && !token_pressure {

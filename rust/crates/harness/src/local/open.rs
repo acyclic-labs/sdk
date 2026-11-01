@@ -554,8 +554,8 @@ impl PrivateVolumes {
             VolumeOwner::Agent(owner.agent),
             &mut None,
         )?;
-        files.create_volume(&scratch).await?;
-        files.create_volume(&journal).await?;
+        files.open_or_create_volume(&scratch).await?;
+        files.open_or_create_volume(&journal).await?;
         Ok(Self { scratch, journal })
     }
 }

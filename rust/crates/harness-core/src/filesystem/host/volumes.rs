@@ -251,18 +251,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         volume: &VolumeRef,
     ) -> Result<(String, acyclic_fs::OperationId)> {
+        let name = self.volume_name(volume)?;
+        let digest =
+            blake3::derive_key("acyclic harness volume initialization v1", name.as_bytes());
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&digest[..16]);
+        Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
+    }
+
+    fn volume_name(&self, volume: &VolumeRef) -> Result<String> {
         volume.validate(&mut None)?;
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
                 "volume belongs to another Filesystem provider".into(),
             ));
         }
-        let name = volume.storage_name(&mut None)?;
-        let digest =
-            blake3::derive_key("acyclic harness volume initialization v1", name.as_bytes());
-        let mut operation = [0; 16];
-        operation.copy_from_slice(&digest[..16]);
-        Ok((name, acyclic_fs::OperationId::from_bytes(operation)))
+        volume.storage_name(&mut None)
+    }
+
+    /// Opens the current head using its stored configuration, creating the
+    /// physical workspace only when the logical volume is absent.
+    pub async fn open_or_create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
+        let name = self.volume_name(volume)?;
+        let reference = workspace_ref(self.provider.clone(), &name)?;
+        match self.resolve(&reference, None).await {
+            Ok(observation) => Ok(observation),
+            Err(Error::NotFound(_)) => self.create_volume(volume).await,
+            Err(error) => Err(error),
+        }
     }
 
     /// Creates the unique physical workspace for a logical volume.
