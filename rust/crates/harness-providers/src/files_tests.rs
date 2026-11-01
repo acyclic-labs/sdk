@@ -170,7 +170,19 @@ proptest! {
                 let auth = crate::dispatch::authenticate(&provider, None).await.unwrap();
                 let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
                 let names = crate::tool_names::Names::new(request.request());
-                crate::dispatch::generate_encoded(&provider, &request, dispatch, prepared.generation.clone(), auth, names).try_collect::<Vec<_>>().await.unwrap();
+                let body = prepared.generation.clone();
+                let mut generation = None;
+                let allocated = acyclic_test_support::measure(|| {
+                    generation = Some(crate::dispatch::generate_encoded(&provider, &request, dispatch, body, auth, names));
+                });
+                assert_eq!(allocated.count_total, 0);
+                // Negative control: the former erased retry frame adds one allocation.
+                let mut boxed = None;
+                let allocated = acyclic_test_support::measure(|| {
+                    boxed = Some(Box::pin(generation.take().unwrap()));
+                });
+                assert_eq!(allocated.count_total, 1);
+                boxed.unwrap().try_collect::<Vec<_>>().await.unwrap();
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
                 let baseline_count = provider.count_tokens(&request).await.unwrap();
                 let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();

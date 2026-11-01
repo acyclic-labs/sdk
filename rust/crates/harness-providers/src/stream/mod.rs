@@ -52,7 +52,7 @@ pub(crate) fn events<'a>(
     maximum: usize,
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-    events_named(adapter, body, maximum, dispatch, None, None)
+    Box::pin(events_named(adapter, body, maximum, dispatch, None, None))
 }
 
 pub(crate) fn events_named<'a>(
@@ -62,8 +62,8 @@ pub(crate) fn events_named<'a>(
     dispatch: ModelDispatch,
     names: Option<&'a crate::tool_names::Names<'a>>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
-) -> BoxProviderStream<'a, Result<ModelEvent>> {
-    Box::pin(async_stream::try_stream! {
+) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
+    async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
         let mut state = State::new(maximum);
         state.set_origin(origin)?;
@@ -76,7 +76,7 @@ pub(crate) fn events_named<'a>(
         if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
         let events = finish(state, adapter, dispatch)?;
         for event in events { yield event; }
-    })
+    }
 }
 
 pub(crate) fn parse(state: &mut State, adapter: Adapter, data: &str) -> Result<Vec<ModelEvent>> {

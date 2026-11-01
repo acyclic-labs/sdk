@@ -77,9 +77,21 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
     for (adapter, fixture) in fixtures() {
         let dispatch = parser_dispatch();
         for width in [1, 7, 1024] {
-            let events: Vec<_> = stream::events(adapter, chunks(fixture, width), 4096, dispatch)
-                .try_collect()
-                .await?;
+            let body = chunks(fixture, width);
+            let mut parser = None;
+            let allocated = acyclic_test_support::measure(|| {
+                parser = Some(stream::events_named(
+                    adapter, body, 4096, dispatch, None, None,
+                ));
+            });
+            assert_eq!(allocated.count_total, 0);
+            // Restoring the former parser box pays one allocation before its first poll.
+            let mut boxed = None;
+            let allocated = acyclic_test_support::measure(|| {
+                boxed = Some(Box::pin(parser.take().unwrap()));
+            });
+            assert_eq!(allocated.count_total, 1);
+            let events: Vec<_> = boxed.unwrap().try_collect().await?;
             let visible: Vec<_> = events
                 .iter()
                 .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
