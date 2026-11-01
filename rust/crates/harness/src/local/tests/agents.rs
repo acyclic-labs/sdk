@@ -2060,8 +2060,28 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 
 #[tokio::test]
 async fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
+    use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
+    let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await
+    .map_err(agent)?;
+    let cancel = CancellationToken::new();
+    let workspace = fs
+        .open_workspace(
+            project.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    workspace
+        .write_text("/plan.md", "selected files")
+        .await
+        .map_err(agent)?;
     let provider = super::scripted(
         (0..4).map(|index| crate::test_support::ScriptedTurn::Text(format!("answer {index}"))),
     );
@@ -2079,6 +2099,12 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     for id in ["first", "second", "third"] {
         client.send(id, id).await?;
         settled(&agents, &root).await?;
+        if id == "first" {
+            workspace
+                .write_text("/plan.md", "later files")
+                .await
+                .map_err(agent)?;
+        }
     }
     let crate::client::AgentReply::Spawned { agent: child, .. } = connection
         .execute(&crate::client::AgentCommand::Fork {
@@ -2122,5 +2148,41 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
         3
     );
     assert_eq!(provider.request_count(), 4);
+    let request = provider
+        .last_request()
+        .ok_or_else(|| Error::Invalid("historical child made no model request".into()))?;
+    let context = serde_json::to_string(&request.messages).map_err(agent)?;
+    assert!(context.contains("answer 0"));
+    assert!(!context.contains("answer 1") && !context.contains("answer 2"));
+    let child_state = agents.state(&child).await.map_err(agent)?;
+    let project = child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project)
+        .ok_or_else(|| Error::Invalid("historical child has no project volume".into()))?;
+    let child_workspace = fs
+        .open_workspace(
+            project.volume.storage_name(&mut None)?,
+            WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    for (selected, expected) in [
+        (&child_workspace, b"selected files".as_slice()),
+        (&workspace, b"later files".as_slice()),
+    ] {
+        assert_eq!(
+            selected
+                .read("/plan.md", 32, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .map_err(|failure| agent(failure.error))?
+                .value
+                .as_ref(),
+            expected,
+            "fork must retain the selected files while its parent keeps later edits"
+        );
+    }
     Ok(())
 }
