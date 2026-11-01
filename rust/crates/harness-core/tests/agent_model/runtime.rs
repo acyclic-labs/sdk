@@ -103,14 +103,19 @@ async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn
         )?;
         let root = host.create(&intent("create"), adopted(id(1))).await?;
         assert!(host.runtime().drain().await.is_empty());
+        let staged = super::corpus::notice_file()?;
         let notice = |name: &str, wake| InboxRecord::Notice {
             id: intent(name),
-            notice: acyclic_harness_core::conversation::wire::Notice {
-                source: "filesystem".into(),
-                kind: "arbitrary.open.tag".into(),
-                body: serde_json::json!({"paths": [name]}),
-                wake,
-                coalesce_key: Some("files".into()),
+            notice: if wake {
+                NoticePayload::Waking(Box::new(staged.clone()))
+            } else {
+                NoticePayload::Quiet(acyclic_harness_core::conversation::wire::Notice {
+                    source: "filesystem".into(),
+                    kind: "arbitrary.open.tag".into(),
+                    body: serde_json::json!({"paths": [name]}),
+                    wake,
+                    coalesce_key: Some("files".into()),
+                })
             },
         };
         let quiet = notice("before", false);

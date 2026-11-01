@@ -893,9 +893,10 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                         "notice source range is not contiguous".into(),
                     ));
                 }
-                if let crate::agent::InboxRecord::Notice { notice, .. } =
-                    crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
-                    && !notice.wake
+                if let crate::agent::InboxRecord::Notice {
+                    notice: crate::agent::NoticePayload::Quiet(notice),
+                    ..
+                } = crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
                 {
                     pending.push(notice)?;
                 }

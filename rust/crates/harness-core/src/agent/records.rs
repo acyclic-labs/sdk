@@ -20,11 +20,6 @@ pub const MAX_INTENT_BYTES: usize = 128;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 /// Most volumes bound to one agent.
 pub const MAX_VOLUMES: usize = 8;
-/// Largest JSON encoding of a waking notice. Its turn input is retained whole
-/// by the conversation entry that settles it, so admission reserves the rest
-/// of [`MAX_RECORD_BYTES`] for that entry's widest other fields; `checkpoint`'s
-/// bound test builds the widest such entry.
-pub const MAX_WAKING_NOTICE_BYTES: usize = 24 * 1024;
 /// Format version of every persisted agent record and saved turn effect,
 /// carried by their one shared header. Any change to a persisted shape bumps
 /// it, and readers refuse every other version whole: there is no migration
@@ -33,7 +28,8 @@ pub const MAX_WAKING_NOTICE_BYTES: usize = 24 * 1024;
 /// terminal conversation entry. Version 4 lets a conversation entry name the
 /// execution-target roster its turn announced. Version 5 adds primitive Notices
 /// and the frozen original notice range retained by a settled turn.
-pub const RECORD_VERSION: u32 = 5;
+/// Version 6 retains waking Notice payloads by immutable file reference.
+pub const RECORD_VERSION: u32 = 6;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -391,6 +387,24 @@ pub struct ContextRequest {
     pub action: ContextAction,
 }
 
+/// Primitive event content. Waking payloads are staged like message bodies,
+/// so the queued turn and its settled entry never retain the event's bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum NoticePayload {
+    /// An event that does not schedule a turn.
+    Quiet(crate::conversation::wire::Notice),
+    /// The complete waking Notice, at its immutable staged version.
+    Waking(Box<FileRef>),
+}
+
+impl NoticePayload {
+    /// Whether delivery schedules a turn.
+    pub const fn wakes(&self) -> bool {
+        matches!(self, Self::Waking(_))
+    }
+}
+
 /// The only input to an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -404,7 +418,7 @@ pub enum InboxRecord {
         /// Original producer event identity, retained across delivery replay.
         id: IntentId,
         /// Appended event, also readable without running a model.
-        notice: crate::conversation::wire::Notice,
+        notice: NoticePayload,
     },
     /// A child finished.
     ChildDone(ChildDone),
@@ -601,13 +615,20 @@ impl AgentRecord for InboxRecord {
             }
             Self::ChildDone(done) => check_outcome(&done.outcome),
             Self::Notice { notice, .. } => {
-                notice
-                    .validate()
-                    .map_err(|_| Error::Record("invalid primitive event notice"))?;
-                if notice.wake && json_len(notice)? > MAX_WAKING_NOTICE_BYTES {
-                    return Err(Error::Record(
-                        "waking notice exceeds MAX_WAKING_NOTICE_BYTES",
-                    ));
+                match notice {
+                    NoticePayload::Quiet(notice) => {
+                        notice
+                            .validate()
+                            .map_err(|_| Error::Record("invalid primitive event notice"))?;
+                        if notice.wake {
+                            return Err(Error::Record("waking notice must be staged"));
+                        }
+                    }
+                    NoticePayload::Waking(file) => {
+                        if file.descriptor().media_type() != super::NOTICE_MEDIA_TYPE {
+                            return Err(Error::Record("waking notice has the wrong media type"));
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -623,23 +644,6 @@ impl AgentRecord for InboxRecord {
             | Self::ChildSettled(_) => Ok(()),
         }
     }
-}
-
-/// The JSON width of `value`, counted without buffering its encoding.
-fn json_len(value: &impl Serialize) -> Result<usize, Error> {
-    struct Count(usize);
-    impl std::io::Write for Count {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut count = Count(0);
-    serde_json::to_writer(&mut count, value).map_err(|_| Error::Record("record is malformed"))?;
-    Ok(count.0)
 }
 
 fn check_sender(sender: &Sender) -> Result<(), Error> {

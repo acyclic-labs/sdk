@@ -2,6 +2,28 @@
 use acyclic_harness_core::agent::*;
 use std::collections::BTreeMap;
 
+pub fn notice_file()
+-> Result<acyclic_harness_core::conversation::FileRef, Box<dyn std::error::Error>> {
+    use acyclic_harness_core::{
+        conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+    Ok(FileRef::new(
+        VolumeRef::new(
+            ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?,
+            "notices".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?,
+        "inputs/event.json".into(),
+        "revision".into(),
+        FileDescriptor::new([7; 32], 1 << 20, NOTICE_MEDIA_TYPE.into())?,
+        "event".into(),
+        &mut None,
+    )?)
+}
+
 pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Error>> {
     let root = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let child_id = AgentId::from_bytes([2; 16]);
@@ -12,26 +34,20 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
             "notice-quiet",
             InboxRecord::Notice {
                 id: IntentId::try_from("changed-1")?,
-                notice: acyclic_harness_core::conversation::wire::Notice {
+                notice: NoticePayload::Quiet(acyclic_harness_core::conversation::wire::Notice {
                     source: "filesystem".into(),
                     kind: "files.changed".into(),
                     body: serde_json::json!({"paths": ["plans/work.md"]}),
                     wake: false,
                     coalesce_key: Some("workspace".into()),
-                },
+                }),
             },
         ),
         (
             "notice-waking",
             InboxRecord::Notice {
                 id: IntentId::try_from("finished-1")?,
-                notice: acyclic_harness_core::conversation::wire::Notice {
-                    source: "child".into(),
-                    kind: "child.finished".into(),
-                    body: serde_json::json!({"status": "completed"}),
-                    wake: true,
-                    coalesce_key: None,
-                },
+                notice: NoticePayload::Waking(Box::new(notice_file()?)),
             },
         ),
         (

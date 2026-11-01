@@ -530,7 +530,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         Wake::Inbox {
             record: InboxRecord::Notice { notice, .. },
             ..
-        } if !notice.wake
+        } if !notice.wakes()
     );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
@@ -772,7 +772,8 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = admitted.control.closed;
-    if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wake) {
+    if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wakes())
+    {
         let end = sequence
             .checked_add(1)
             .ok_or(Error::Record("notice inbox cursor overflow"))?;
