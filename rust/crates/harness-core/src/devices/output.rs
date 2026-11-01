@@ -136,8 +136,8 @@ mod tests {
         bindings.scope = RuntimeScope::new(
             storage.owner_scope().capabilities().clone(),
             Limits {
-                file_bytes: 2,
-                render_bytes: 4,
+                file_bytes: Some(2),
+                render_bytes: Some(4),
                 ..Limits::default()
             },
         )?;

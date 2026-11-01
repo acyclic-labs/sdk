@@ -130,7 +130,7 @@ pub(crate) fn project_json<T: Serialize>(
     value: &T,
     work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
-    super::value(&JsonProjection::Json { value }, u64::MAX, work)
+    super::value(&JsonProjection::Json { value }, None, work)
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -157,7 +157,7 @@ pub(crate) fn project_text(
         &TextProjection::Parts {
             parts: [TextPart::Text { text }],
         },
-        u64::MAX,
+        None,
         work,
     )
 }
@@ -223,7 +223,7 @@ pub(crate) fn project_reference(
             },
         ],
     };
-    super::value(&projection, u64::MAX, _work)
+    super::value(&projection, None, _work)
 }
 
 pub(crate) fn summary_reference(

@@ -122,11 +122,6 @@ impl StockExecution<'_> {
             }
             append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
         }
-        Err(stock_boundary(
-            self.io,
-            crate::wire::ErrorCode::Conflict,
-            "executor step limit reached",
-        ))
     }
 
     pub(super) fn has_completed_message(&self, events: &[ModelEvent]) -> Result<bool> {

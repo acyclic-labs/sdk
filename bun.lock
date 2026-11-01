@@ -26,9 +26,9 @@
       "dependencies": {
         "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.16.0",
+        "@connectrpc/connect": "2.2.0",
       },
       "devDependencies": {
-        "@connectrpc/connect": "2.2.0",
         "@connectrpc/connect-node": "2.2.0",
         "@types/node": "26.6.5",
         "typescript": "7.0.2",
@@ -67,6 +67,7 @@
       "name": "@acyclic-labs/harness",
       "version": "0.2.0",
       "dependencies": {
+        "@acyclic-labs/actors": "0.2.0",
         "@acyclic-labs/machines": "0.2.0",
         "@acyclic-labs/objects": "0.2.0",
       },

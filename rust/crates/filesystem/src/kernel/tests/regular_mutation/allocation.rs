@@ -326,53 +326,6 @@ async fn inline_preallocation_handles_keep_size_and_growth()
 }
 
 #[tokio::test]
-async fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let sparse = apply(
-        &store,
-        FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
-        RegularMutation::Resize { logical_bytes: 256 },
-    )
-    .await?;
-    let content = blob(&store, b"x").await?;
-    let fragmented = apply(
-        &store,
-        sparse.payload,
-        RegularMutation::Write {
-            offset: 128,
-            length: 1,
-            content,
-            content_offset: 0,
-        },
-    )
-    .await?;
-    let mut constrained = config();
-    constrained.limits.maximum_mutations_per_batch = 1;
-    let failure = (apply_regular_mutation_async(
-        &store,
-        fragmented.payload,
-        RegularMutation::Preallocate {
-            offset: 0,
-            length: 256,
-            keep_size: false,
-        },
-        constrained,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .await
-    .err()
-    .ok_or("over-limit preallocation unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        RegularMutationError::Range(ExtentReadError::TooManySpans)
-    ));
-    assert_eq!(failure.work.backend_write_operations, 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

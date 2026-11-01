@@ -58,7 +58,6 @@ fn grant(file: &FileRef) -> Result<ContentGrant> {
         &scope,
         file.volume(),
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )
 }
@@ -306,15 +305,15 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                             .block_on(host.generation(&opened, &generation, None))
                                             .unwrap();
                                         accounted(native, 64 * 1024 * 1024, false, |io| {
-                                            let bytes = runtime
-                                                .block_on(read_generation(
+                                            runtime
+                                                .block_on(host::authentication::authenticate(
                                                     &pinned,
+                                                    &file,
                                                     &format!("/{}", file.path()),
-                                                    4096,
-                                                    Some(io),
+                                                    io,
+                                                    None,
                                                 ))
                                                 .unwrap();
-                                            assert_eq!(bytes.as_ref(), b"published bytes");
                                         })
                                         .unwrap()
                                         .1

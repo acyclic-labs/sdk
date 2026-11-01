@@ -524,15 +524,15 @@ pub fn read(path: &Path, maximum: u64) -> io::Result<crate::owner_record::Secret
     })
 }
 
-/// Bounded private-record read. The allocator callback admits storage before
-/// allocation, allowing native hosts to retain their original invocation ledger.
+/// Complete private-record read with an optional caller-selected byte policy.
+/// The callback admits storage before allocation, retaining its original ledger.
 pub fn read_with<T, E: From<io::Error>>(
     path: &Path,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
     let file = open(path, false)?;
-    read_held_with(file, maximum, read)
+    read_held_with(file, maximum.into(), read)
 }
 
 /// Read an existing owner for a format upgrade. On Windows, a legacy owner
@@ -543,10 +543,10 @@ pub fn read_with<T, E: From<io::Error>>(
 /// refused. This does not generate credentials.
 pub fn read_for_upgrade_with<T, E: From<io::Error>>(
     path: &Path,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
-    read_held_with(open_for_upgrade(path)?, maximum, read)
+    read_held_with(open_for_upgrade(path)?, maximum.into(), read)
 }
 
 fn open_for_upgrade(path: &Path) -> io::Result<File> {
@@ -565,12 +565,12 @@ fn open_for_upgrade(path: &Path) -> io::Result<File> {
 
 fn read_held_with<T, E: From<io::Error>>(
     file: File,
-    maximum: u64,
+    maximum: Option<u64>,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
     use std::io::Read as _;
     let length = file.metadata()?.len();
-    if length > maximum {
+    if maximum.is_some_and(|maximum| length > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     let mut bounded = file.take(

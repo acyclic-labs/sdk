@@ -1,7 +1,7 @@
 //! Descriptor-derived protobuf JSON boundary for native HTTP adapters.
 //!
 //! Enable `http-codec` independently of `host`. This module handles bounded
-//! serialization, not service authorization, semantic admission or caller-bound
+//! serialization and streaming output, not service authorization, semantic admission or caller-bound
 //! response validation. Adapters must apply those checks to the generated wire
 //! messages. For `runs/watch`, encode each event separately and frame it as NDJSON.
 
@@ -10,7 +10,7 @@ use std::{io::Write, sync::OnceLock};
 use prost::Message;
 use prost_reflect::{DescriptorPool, MethodDescriptor, Value};
 
-use crate::{MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES};
+use crate::MAXIMUM_MESSAGE_BYTES;
 
 /// One canonical POST route, relative to `/v1/inference/`.
 #[derive(Clone, Debug)]
@@ -84,42 +84,19 @@ fn method(path: &str) -> Result<MethodDescriptor, &'static str> {
 /// # Errors
 /// Rejects unknown routes/fields, malformed or trailing JSON and transport limits.
 pub fn decode_http_request(path: &str, json: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if json.len() > MAXIMUM_HTTP_JSON_BYTES {
-        return Err("inference HTTP request exceeds JSON ceiling");
-    }
-    let message =
-        acyclic_protobuf_json::decode(method(path)?.input(), json, MAXIMUM_HTTP_JSON_BYTES)
-            .map_err(|error| match error {
-                acyclic_protobuf_json::Error::Limit => {
-                    "inference HTTP request exceeds JSON ceiling"
-                }
-                acyclic_protobuf_json::Error::Trailing => "trailing inference HTTP request data",
-                acyclic_protobuf_json::Error::Json | acyclic_protobuf_json::Error::Wire => {
-                    "malformed inference protobuf JSON request"
-                }
-            })?;
+    let message = acyclic_protobuf_json::decode(method(path)?.input(), json, usize::MAX).map_err(
+        |error| match error {
+            acyclic_protobuf_json::Error::Limit => "inference HTTP request exceeds JSON ceiling",
+            acyclic_protobuf_json::Error::Trailing => "trailing inference HTTP request data",
+            acyclic_protobuf_json::Error::Json | acyclic_protobuf_json::Error::Wire => {
+                "malformed inference protobuf JSON request"
+            }
+        },
+    )?;
     if message.encoded_len() > MAXIMUM_MESSAGE_BYTES {
         return Err("inference HTTP request exceeds wire ceiling");
     }
     Ok(message.encode_to_vec())
-}
-
-struct BoundedJson(Vec<u8>);
-
-impl Write for BoundedJson {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAXIMUM_HTTP_JSON_BYTES.saturating_sub(self.0.len()) {
-            return Err(std::io::Error::other(
-                "inference HTTP response exceeds JSON ceiling",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Encode a bounded generated response or one server-streaming event as JSON.
@@ -128,13 +105,27 @@ impl Write for BoundedJson {
 /// base64 and enum names. The returned bytes contain no NDJSON line terminator.
 ///
 /// # Errors
-/// Rejects unknown routes, malformed protobuf and wire/JSON transport limits.
+/// Rejects unknown routes, malformed protobuf and wire frame limits.
 pub fn encode_http_response(path: &str, bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut output = Vec::new();
+    write_http_response(path, bytes, &mut output)?;
+    Ok(output)
+}
+
+/// Writes protobuf JSON directly to a caller-owned output stream.
+///
+/// Escaped strings and base64 bytes may expand without a second whole-value limit.
+/// # Errors
+/// Rejects unknown routes, invalid wire messages, the wire frame ceiling or output errors.
+pub fn write_http_response(
+    path: &str,
+    bytes: &[u8],
+    output: impl Write,
+) -> Result<(), &'static str> {
     if bytes.len() > MAXIMUM_MESSAGE_BYTES {
         return Err("inference HTTP response exceeds wire ceiling");
     }
-    let mut output = BoundedJson(Vec::new());
-    acyclic_protobuf_json::encode_to_writer(method(path)?.output(), bytes, &mut output).map_err(
+    acyclic_protobuf_json::encode_to_writer(method(path)?.output(), bytes, output).map_err(
         |error| match error {
             acyclic_protobuf_json::Error::Wire => "malformed inference protobuf response",
             acyclic_protobuf_json::Error::Json
@@ -143,6 +134,5 @@ pub fn encode_http_response(path: &str, bytes: &[u8]) -> Result<Vec<u8>, &'stati
                 "inference HTTP response serialization failed or exceeds JSON ceiling"
             }
         },
-    )?;
-    Ok(output.0)
+    )
 }

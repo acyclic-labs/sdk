@@ -36,8 +36,6 @@ pub const VOLUMES: &str = "harness/volumes";
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
-/// Deepest admitted nesting; bounds every path and every lineage walk.
-pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
 /// Generation-linked checkpoints, indexed like [`CONVERSATION`].
@@ -157,11 +155,17 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "String")]
 pub struct AgentPath {
     text: String,
     depth: usize,
+}
+
+impl Serialize for AgentPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
 }
 
 impl AgentPath {
@@ -176,12 +180,12 @@ impl AgentPath {
 
     /// The child `id` nested under this agent.
     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
-        if self.depth + 1 > MAX_DEPTH {
-            return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-        }
         Ok(Self {
             text: format!("{}/{CHILDREN}/{id}", self.text),
-            depth: self.depth + 1,
+            depth: self
+                .depth
+                .checked_add(1)
+                .ok_or(Error::Path("agent depth overflows this platform"))?,
         })
     }
 
@@ -317,9 +321,6 @@ impl TryFrom<String> for AgentPath {
             }
             AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
-            if depth > MAX_DEPTH {
-                return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-            }
         }
         Ok(Self { text, depth })
     }
@@ -391,7 +392,8 @@ mod tests {
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
             0x32, 0x10,
         ];
-        for depth in [1, 8, MAX_DEPTH] {
+        // Cross the former implicit depth of 64 with the same allocation oracle.
+        for depth in [1, 8, 65] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
                 descendant = descendant.child(&AgentId::from_bytes(leaf))?;

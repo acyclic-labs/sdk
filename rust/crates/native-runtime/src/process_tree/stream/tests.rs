@@ -455,7 +455,7 @@ fn start(
     let output = tree.stream_capture(
         &crate::TaskSpawner::current(),
         schedule,
-        usize::MAX,
+        None,
         None,
         Handler {
             wake: wake.clone(),

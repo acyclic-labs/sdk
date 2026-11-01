@@ -1,17 +1,20 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 
-use super::{PROBE_TIMEOUT, ProbeIo};
+use super::PROBE_TIMEOUT;
 
 /// Exclusive controlling-terminal connection with raw mode and descriptor flags
 /// restored by the owning lifecycle before releasing ownership. DEC
 /// modes are undone before the original line discipline is restored.
 pub(crate) struct RawTty {
     file: File,
+    input_changes: UnixStream,
+    input_waiter: Option<InputWait>,
     original: Termios,
     flags: OFlags,
     #[cfg(target_vendor = "apple")]
@@ -24,8 +27,14 @@ impl RawTty {
     pub fn from_file(file: File) -> io::Result<Self> {
         let original = tcgetattr(&file)?;
         let flags = fcntl_getfl(&file)?;
+        let (input_changes, changes) = UnixStream::pair()?;
+        input_changes.set_nonblocking(true)?;
+        changes.set_nonblocking(true)?;
+        let input_waiter = InputWait::new(file.try_clone()?, changes)?;
         let mut tty = Self {
             file,
+            input_changes,
+            input_waiter: Some(input_waiter),
             original,
             flags,
             #[cfg(target_vendor = "apple")]
@@ -36,6 +45,21 @@ impl RawTty {
             return Err(error);
         }
         Ok(tty)
+    }
+
+    pub(crate) fn take_input_waiter(&mut self) -> Option<InputWait> {
+        self.input_waiter.take()
+    }
+
+    pub(crate) fn notify_input(&mut self) {
+        loop {
+            match self.input_changes.write(&[1]) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                // A full socket already carries the notification; a closed
+                // receiver means the input half has retired.
+                _ => return,
+            }
+        }
     }
 
     pub(crate) fn size(&self) -> io::Result<ratatui::layout::Size> {
@@ -76,6 +100,75 @@ impl RawTty {
 
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
         write_until(self, bytes, deadline)
+    }
+}
+
+/// Input readiness and lifecycle changes share one OS wait. The retained
+/// descriptors keep the wait valid without holding the terminal owner lock.
+pub(crate) struct InputWait {
+    file: File,
+    changes: UnixStream,
+    #[cfg(target_vendor = "apple")]
+    readiness: acyclic_native_runtime::terminal::Readable,
+}
+
+impl InputWait {
+    fn new(file: File, changes: UnixStream) -> io::Result<Self> {
+        #[cfg(target_vendor = "apple")]
+        let readiness = {
+            use std::os::fd::AsFd;
+            acyclic_native_runtime::terminal::Readable::new(file.as_fd(), changes.as_fd())?
+        };
+        Ok(Self {
+            file,
+            changes,
+            #[cfg(target_vendor = "apple")]
+            readiness,
+        })
+    }
+
+    pub(crate) fn acknowledge_changes(&mut self) -> io::Result<()> {
+        loop {
+            match self.changes.read(&mut [0; 128]) {
+                Ok(0) => return Err(io::ErrorKind::NotConnected.into()),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    pub(crate) fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<()> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        let timeout = deadline
+            .map(|deadline| {
+                Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| io::ErrorKind::InvalidInput)
+            })
+            .transpose()?;
+        let mut descriptors = [
+            PollFd::new(&self.changes, PollFlags::IN),
+            PollFd::new(&self.file, PollFlags::IN),
+        ];
+        // Restored input must wait for resume even if canonical input is ready.
+        let count = if active { 2 } else { 1 };
+        match poll(&mut descriptors[..count], timeout.as_ref()) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<()> {
+        use std::os::fd::AsFd;
+        self.readiness.wait(
+            self.file.as_fd(),
+            self.changes.as_fd(),
+            active,
+            deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
+        )
     }
 }
 
@@ -141,8 +234,8 @@ impl NonblockingWrite for RawTty {
     }
 }
 
-impl ProbeIo for RawTty {
-    fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+impl RawTty {
+    pub(crate) fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
         while !bytes.is_empty() {
             let count = self.write_until(bytes, deadline)?;
             if count == 0 {
@@ -152,8 +245,10 @@ impl ProbeIo for RawTty {
         }
         self.flush()
     }
+}
 
-    fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
+impl Read for RawTty {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         // The lifecycle takes its state lock around this call. Never sleep
         // while holding it: a pending input read must not starve frame output.
         self.file.read(bytes)

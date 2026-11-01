@@ -50,7 +50,7 @@ impl<'a> FileChange<'a> {
     pub(crate) fn materialize(
         self,
         source: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         meter: &mut NativeCustody,
     ) -> Result<Option<String>> {
         match self {
@@ -217,19 +217,19 @@ mod tests {
             let changes = parse_document(&patch, &mut meter).unwrap();
             let FileChange::Update {diff, ..} = changes[1] else { unreachable!() };
             let actual = super::super::apply_update(&format!("{old}\n"), diff, super::super::PatchLimits {
-                maximum_bytes: 4096, maximum_work: 4096, maximum_hunks: 4,
+                maximum_bytes: Some(4096), maximum_work: 4096, maximum_hunks: 4,
             }, &mut meter).unwrap();
             prop_assert_eq!(actual, format!("{new}\n"));
-            prop_assert_eq!(changes[0].materialize("", 4096, &mut meter).unwrap(), Some(format!("{new}\n")));
-            prop_assert_eq!(changes[1].materialize(&format!("{old}\n"), 4096, &mut meter).unwrap(), Some(format!("{new}\n")));
-            prop_assert_eq!(changes[2].materialize("", 4096, &mut meter).unwrap(), None);
+            prop_assert_eq!(changes[0].materialize("", Some(4096), &mut meter).unwrap(), Some(format!("{new}\n")));
+            prop_assert_eq!(changes[1].materialize(&format!("{old}\n"), Some(4096), &mut meter).unwrap(), Some(format!("{new}\n")));
+            prop_assert_eq!(changes[2].materialize("", Some(4096), &mut meter).unwrap(), None);
             // Omit the final delimiter: no prefix of a multi-file document may
             // be admitted as a complete batch.
             prop_assert!(parse_document(patch.strip_suffix("*** End Patch\n").unwrap(), &mut meter).is_err());
             // The original engine rejects wrong context; an envelope does not
             // introduce a second, more permissive update implementation.
             prop_assert!(super::super::apply_update("# unrelated\n", diff, super::super::PatchLimits {
-                maximum_bytes: 4096, maximum_work: 4096, maximum_hunks: 4,
+                maximum_bytes: Some(4096), maximum_work: 4096, maximum_hunks: 4,
             }, &mut meter).is_err(), "unrelated source accepted the update");
         }
     }
@@ -258,9 +258,15 @@ mod tests {
         ));
         let change = parse_document(patch, &mut None).unwrap()[0];
         assert_eq!(
-            change.materialize("unchanged\n", 4096, &mut None).unwrap(),
+            change
+                .materialize("unchanged\n", Some(4096), &mut None)
+                .unwrap(),
             Some("unchanged\n".into())
         );
-        assert!(change.materialize("unchanged\n", 1, &mut None).is_err());
+        assert!(
+            change
+                .materialize("unchanged\n", Some(1), &mut None)
+                .is_err()
+        );
     }
 }

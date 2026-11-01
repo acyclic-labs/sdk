@@ -38,14 +38,22 @@ proptest! {
         let mut budget = Budget::new(maximum);
         for (remove_bytes, add_bytes, overflow) in replacements {
             let before = budget.used();
-            let old = usize::from(remove_bytes) % (before + 2);
-            let new = if overflow { usize::MAX } else { usize::from(add_bytes) % (maximum + 1) };
+            let old = Size {
+                bytes: usize::from(remove_bytes) % (before.0 + 2),
+                items: usize::from(remove_items) % (before.1 + 2),
+            };
+            let new = Size {
+                bytes: if overflow { usize::MAX } else { usize::from(add_bytes) % (maximum + 1) },
+                items: usize::from(add_items),
+            };
             let result = budget.replace(old, new);
             let after = budget.used();
-            let bytes = before as i128 - old as i128 + new as i128;
-            let admissible = old <= before && bytes <= maximum as i128;
+            let bytes = before.0 as i128 - old.bytes as i128 + new.bytes as i128;
+            let items = before.1 as i128 - old.items as i128 + new.items as i128;
+            let admissible = old.bytes <= before.0 && old.items <= before.1
+                && bytes <= maximum as i128 && items <= usize::MAX as i128;
             prop_assert_eq!(result.is_ok(), admissible);
-            prop_assert!(after <= maximum);
+            prop_assert!(after.0 <= maximum);
             if result.is_err() {
                 prop_assert_eq!(after, before);
             } else {

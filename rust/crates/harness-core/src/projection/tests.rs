@@ -56,12 +56,13 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         fn read<'a>(
             &'a self,
             _: &'a FileRef,
-            _: u64,
+            maximum: u64,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
         {
             assert!(io.and_then(PreparationIo::original_native_work).is_some());
+            assert_eq!(maximum, RECORD.len() as u64);
             crate::conversation::BoundedContentFuture::new(io, || async {
                 Ok(acyclic_stream::OwnedBytes::from_static(RECORD))
             })
@@ -79,9 +80,9 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         "application/json",
         RECORD,
     )?;
-    {
+    for maximum in [None, Some(RECORD.len() as u64)] {
         let io = PreparationIo::from_native_work(&work)?;
-        let call = artifacts::read_tool_call(&NativeRecord, &reference, 4096, Some(&io)).await?;
+        let call = artifacts::read_tool_call(&NativeRecord, &reference, maximum, Some(&io)).await?;
         assert_eq!(call.call_id, "call");
         assert_eq!(call.arguments, serde_json::json!({"value":1}));
         assert_eq!(
@@ -149,10 +150,15 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
     }
     let current = message(10_001, MessageKind::User, content, None);
     let limits = Limits {
-        context_messages: 3,
+        context_messages: std::num::NonZeroUsize::new(3),
         ..Limits::default()
     };
     assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
+    let all = select_turn_delta(&conversation, &current, true, None, Limits::default())?;
+    assert_eq!(all.message_ids.len(), 10_001);
+    assert_eq!(all.message_ids.last(), Some(&current.id));
+    assert_eq!(all.conversation_revision, 10_001);
+
     let payload = file(agent, "source.json", "application/json", b"data")?;
     let checkpoint = crate::context::CanonicalContextCheckpoint {
         operation_id: OperationId::new(),
@@ -194,7 +200,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
             true,
             Some((&checkpoint, pinned.clone())),
             Limits {
-                context_messages: 2,
+                context_messages: std::num::NonZeroUsize::new(2),
                 ..limits
             }
         )
@@ -243,7 +249,7 @@ fn dispatch_admission_checks_bounds_and_current_user() {
     assert!(
         selected
             .validate_for_dispatch(Limits {
-                render_bytes: 4,
+                render_bytes: Some(4),
                 ..Limits::default()
             })
             .is_err()
@@ -291,9 +297,9 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
         ..Resolver::default()
     };
     let limits = Limits {
-        context_messages: 256,
-        attachments: 1,
-        render_bytes: 128 * 1024,
+        context_messages: std::num::NonZeroUsize::new(256),
+        attachments: std::num::NonZeroUsize::new(1),
+        render_bytes: Some(128 * 1024),
         ..Limits::default()
     };
     assert!(
@@ -311,7 +317,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     );
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
     let limits = Limits {
-        attachments: 2,
+        attachments: std::num::NonZeroUsize::new(2),
         ..limits
     };
     assert!(
@@ -359,10 +365,19 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
         bytes: vec![0; 1_025],
         ..Resolver::default()
     };
-    assert!(matches!(
-        artifacts::read_value(&resolver, &reference, 1_024, None).await,
-        Err(Error::Invalid(_))
-    ));
+    assert!(
+        artifacts::read_value(&resolver, &reference, Some(1), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
+    for maximum in [None, Some(1_024)] {
+        assert!(matches!(
+            artifacts::read_value(&resolver, &reference, maximum, None).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
     Ok(())
 }
 
@@ -465,16 +480,21 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         Invalid
     };
     assert!(matches!(
-        attachments::resolve(&message, &resolver, 1, Some(&io)).await,
+        attachments::resolve(&message, &resolver, std::num::NonZeroUsize::new(1), Some(&io)).await,
         Err(Error::NativeBoundary { code, .. }) if code == expected
     ));
     assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     work.cancellation().cancel();
     assert!(
-        attachments::resolve(&message, &resolver, 1, Some(&io))
-            .await
-            .is_err()
+        attachments::resolve(
+            &message,
+            &resolver,
+            std::num::NonZeroUsize::new(1),
+            Some(&io)
+        )
+        .await
+        .is_err()
     );
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     Ok(())

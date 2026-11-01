@@ -13,7 +13,7 @@ fn rejected_projection_releases_its_private_pool_on_finite_and_native_ledgers() 
         projection_schema: Value::Bool(true),
     };
     let limits = crate::conversation::Limits {
-        render_bytes: 1,
+        render_bytes: Some(1),
         ..Default::default()
     };
     for native in [false, true] {

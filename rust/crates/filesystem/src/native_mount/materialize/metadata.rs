@@ -269,7 +269,7 @@ pub(super) fn validate_options(
 
 pub(super) fn validate_bounds(options: &MaterializeOptions) -> Result<(), MaterializeError> {
     if options.maximum_directory_entries == 0
-        || options.maximum_extent_spans == 0
+        || options.maximum_extent_spans == Some(0)
         || options.transfer_bytes == 0
         || usize::try_from(options.transfer_bytes).is_err()
     {

@@ -18,12 +18,6 @@ impl<T> CursorTable<T> {
             token = self.next.fetch_add(1, Ordering::Relaxed);
         }
         let mut entries = self.entries.lock().map_err(|_| MountSourceError::Stale)?;
-        while entries.len() >= MAXIMUM_LAZY_DIRECTORY_CURSORS {
-            let Some(oldest) = entries.first_key_value().map(|(&key, _)| key) else {
-                break;
-            };
-            entries.remove(&oldest);
-        }
         entries.insert(token, CursorEntry { generation, cursor });
         Ok(token.to_le_bytes())
     }

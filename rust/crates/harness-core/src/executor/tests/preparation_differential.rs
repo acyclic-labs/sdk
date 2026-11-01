@@ -53,7 +53,7 @@ async fn initialize(text: &[String; 3], invalid: bool) -> State {
         .await
         .unwrap();
     if invalid {
-        executor.limits.context_messages = 1;
+        executor.limits.context_messages = std::num::NonZeroUsize::new(1);
     }
     (journal, executor, input, calls)
 }

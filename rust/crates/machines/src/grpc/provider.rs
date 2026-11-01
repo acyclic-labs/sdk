@@ -116,9 +116,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
         obs::operation!("acyclic.machines.read_output", observation, async {
-            if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
-                return Err(ProviderError::Invalid("invalid console read limit".into()));
-            }
+            let limit = page_limit(u64::from(limit), MAX_OUTPUT_READ_BYTES)?;
             let value = self
                 .client()
                 .await?
@@ -236,11 +234,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
         obs::operation!("acyclic.machines.list_machines", observation, async {
-            if limit == 0 || limit > MAX_PAGE_SIZE {
-                return Err(ProviderError::Invalid(
-                    "machine page limit must be 1..=256".into(),
-                ));
-            }
+            let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
             let page = self
                 .client()
                 .await?
@@ -453,11 +447,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
         obs::operation!("acyclic.machines.events", observation, async {
-            if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-                return Err(ProviderError::Invalid(
-                    "event page limit must be 1..=1024".into(),
-                ));
-            }
+            let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
             let value = self
                 .client()
                 .await?

@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, Tasks, TurnLimits},
     filesystem::{TurnAdmission, TurnExecutors},
-    model::{Model, ModelContent, ModelContentPart, ModelRequest, ModelRole},
+    model::{Model, ModelContent, ModelRequest, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
@@ -26,8 +26,8 @@ use acyclic_stream::{
 use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
-    history_turns: 8,
+    maximum_bytes: Some(64 * 1024),
+    history_turns: Some(8),
 };
 
 /// A memory filesystem host with agent `path`'s private volume.
@@ -89,7 +89,7 @@ fn executors_with_render_bytes(
     preset.tools.clear();
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
-        base.render_bytes = render_bytes;
+        base.render_bytes = Some(render_bytes);
     }
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
@@ -99,7 +99,7 @@ fn executors_with_render_bytes(
                 base
             } else {
                 acyclic_harness_core::conversation::Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..base
                 }
             },
@@ -146,121 +146,6 @@ fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
 }
 
 #[tokio::test]
-async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Result {
-    use acyclic_harness_core::{
-        approvals::ApprovalPolicy,
-        conversation::{ContentAccess, ContentGrant},
-        interaction::{ApprovalRoute, ApprovalSubject, Interaction, InteractionOutcome},
-    };
-    let valid = serde_json::to_vec(&ApprovalPolicy::accept_all("configured"))?;
-    for bytes in [
-        b"{".as_slice(),
-        b"{\"approvers\":[]}".as_slice(),
-        valid.as_slice(),
-    ] {
-        let path = AgentPath::root(&id(219));
-        let (filesystem, binding) = private(&path).await?;
-        let issuer = AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        );
-        let authority = acyclic_harness_core::filesystem::agent_authority(
-            &issuer.clone().into(),
-            &TurnAdmission::LocalRoot,
-            &path,
-            std::slice::from_ref(&binding),
-            &[],
-        )
-        .await?;
-        let write = ContentGrant::verify(
-            &authority.verifier,
-            &authority.scope,
-            &binding.volume,
-            VolumeOperation::Write,
-            LIMITS.maximum_bytes,
-            &mut None,
-        )?;
-        let file = filesystem
-            .put_content(
-                &binding.volume,
-                &write,
-                "policy.json",
-                bytes,
-                "application/json",
-                "policy.json",
-                LIMITS.maximum_bytes,
-                &acyclic_harness_core::IdempotencyKey::new("policy")?,
-                None,
-                ContentAccess::default(),
-            )
-            .await?;
-        let model = Arc::new(ScriptedModelProvider::new([]));
-        let host = FilesystemTurnHost::new(
-            Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
-            filesystem,
-            issuer,
-            TurnAdmission::LocalRoot,
-            executors(model.clone())?,
-            LIMITS,
-            ApprovalPolicy::accept_all("preset"),
-        );
-        let mut adoption = adopted(id(219));
-        adoption.volumes = vec![binding];
-        adoption.policy = Some(file);
-        let state = AgentState::adopted(path, &adoption)?;
-        let open = host
-            .open(
-                &state,
-                OperationId::from_bytes([220; 16]),
-                &ModelContent::Text("test".into()),
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await?;
-        let approvals = open.approvals.as_ref().ok_or("approval owner absent")?;
-        for (n, route) in [ApprovalRoute::Policy, ApprovalRoute::Human]
-            .into_iter()
-            .enumerate()
-        {
-            let id = acyclic_harness_core::InteractionId::from_bytes([n as u8 + 1; 16]);
-            let request = Interaction::approval(
-                "review".into(),
-                OperationId::from_bytes([221; 16]),
-                [222; 32],
-                ApprovalSubject::Tool {
-                    route,
-                    tool: "write".into(),
-                    call_id: "call".into(),
-                    arguments: serde_json::json!({"path":"approved"}),
-                    target: None,
-                },
-            )?;
-            approvals.open(id, &request).await?;
-            let outcome = approvals.outcome(id, &*open.journal, None).await?;
-            if bytes != valid.as_slice() {
-                assert!(
-                    matches!(outcome, Some(InteractionOutcome::Denied {})),
-                    "malformed policy must neither accept the preset nor wait on a human"
-                );
-            } else if n == 0 {
-                assert!(matches!(outcome, Some(InteractionOutcome::Approved {})));
-            } else {
-                assert!(
-                    outcome.is_none(),
-                    "valid policy preserves the explicit human route"
-                );
-            }
-        }
-        assert!(model.requests().is_empty());
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     for matching_limits in [false, true] {
         let parent = AgentPath::root(&id(1));
@@ -271,8 +156,6 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let (host, binding) = private(&path).await?;
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             Arc::new(MemoryStream::default()),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
             host,
             AuthorityRoot::new(
                 "agents",
@@ -368,6 +251,1343 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
 }
 
 #[tokio::test]
+async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> Result {
+    use acyclic_harness_core::{
+        conversation::{ContentAccess, ContentGrant},
+        goal::{GoalContinuationPolicy, GoalView},
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct Edit {
+        host: Host,
+        volume: VolumeRef,
+        write: ContentGrant,
+        pending: AtomicBool,
+        reads: AtomicUsize,
+        replacement: &'static [u8],
+    }
+    impl Edit {
+        async fn publish(
+            &self,
+            bytes: &[u8],
+            key: &'static str,
+        ) -> acyclic_harness_core::Result<()> {
+            self.host
+                .put_content(
+                    &self.volume,
+                    &self.write,
+                    "GOAL.md",
+                    bytes,
+                    "text/markdown",
+                    "GOAL.md",
+                    None,
+                    &acyclic_harness_core::IdempotencyKey::new(key)?,
+                    None,
+                    ContentAccess::default(),
+                )
+                .await?;
+            Ok(())
+        }
+    }
+    struct EditedGoal {
+        original: Arc<dyn TurnGoal>,
+        edit: Arc<Edit>,
+    }
+    impl TurnGoal for EditedGoal {
+        fn policy(&self) -> GoalContinuationPolicy {
+            self.original.policy()
+        }
+        fn read(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
+            Box::pin(async move {
+                let observed = self.original.read().await?;
+                self.edit.reads.fetch_add(1, Ordering::SeqCst);
+                if self.edit.pending.swap(false, Ordering::SeqCst) {
+                    // An actual file publication changes the original observation
+                    // after its read and before its conditioned rewrite.
+                    self.edit
+                        .publish(self.edit.replacement, "goal-edit")
+                        .await?;
+                }
+                Ok(observed)
+            })
+        }
+        fn rewrite<'a>(
+            &'a self,
+            goal: &'a GoalView,
+            contents: &'a str,
+            key: &'a str,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.rewrite(goal, contents, key)
+        }
+    }
+    struct EditingHost<H> {
+        original: H,
+        edit: Arc<Edit>,
+    }
+    impl<H: TurnHost> TurnHost for EditingHost<H> {
+        fn open_control<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            action: &'a ContextAction,
+            cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+            self.original.open_control(agent, action, cancellation)
+        }
+
+        fn open<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+            input: &'a ModelContent,
+            cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
+            Box::pin(async move {
+                let mut open = self.original.open(agent, turn, input, cancellation).await?;
+                open.goal = open.goal.map(|original| {
+                    Arc::new(EditedGoal {
+                        original,
+                        edit: self.edit.clone(),
+                    }) as Arc<dyn TurnGoal>
+                });
+                Ok(open)
+            })
+        }
+    }
+
+    for replacement in [
+        b"---\nstatus: done\n---\nconcurrent body\n".as_slice(),
+        b"concurrent body\n".as_slice(),
+        b"---\nstatus: invalid\n---\nconcurrent body\n".as_slice(),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let path = super::create(&stream, id(3)).await?;
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "done".into(),
+        )]));
+        let (host, private) = private(&path).await?;
+        let volume = VolumeRef::new(
+            private.volume.provider().clone(),
+            "agent-scratch".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        );
+        let scope = issuer.bootstrap_scope(
+            "goal-editor",
+            &Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(
+                path.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        let verifier = issuer.verifier(&mut None)?;
+        let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)?;
+        let edit = Arc::new(Edit {
+            host: host.clone(),
+            write: ContentGrant::verify(
+                &verifier,
+                &scope,
+                &volume,
+                VolumeOperation::Write,
+                &mut None,
+            )?,
+            volume: volume.clone(),
+            pending: AtomicBool::new(true),
+            reads: AtomicUsize::new(0),
+            replacement,
+        });
+        edit.publish(b"original body\n", "goal-original").await?;
+        let driver = ExecutorDriver::new(EditingHost {
+            original: FilesystemTurnHost::new(
+                stream.clone(),
+                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
+                    .expect("actor binding"),
+                host.clone(),
+                issuer,
+                TurnAdmission::LocalRoot,
+                executors(model.clone())?,
+                LIMITS,
+                Default::default(),
+            )
+            .with_goals(Some(GoalContinuationPolicy {
+                max_continuations: Some(0),
+            })),
+            edit: edit.clone(),
+        });
+        let mut adoption = adopted(id(3));
+        adoption.volumes = vec![
+            private,
+            VolumeBinding {
+                name: "scratch".into(),
+                volume: volume.clone(),
+            },
+        ];
+        let first = step(
+            &driver,
+            &path,
+            Some(AgentState::adopted(path.clone(), &adoption)?),
+            2,
+            requested("goal", &path),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        // Restoring the read/rewrite retry settles in this first step instead.
+        assert_eq!(edit.reads.load(Ordering::SeqCst), 1);
+        assert!(first.state.turn.is_some());
+        assert_eq!(turn_segment(&first.state)?, 0);
+        assert_eq!(first.state.conversation_tail, 0);
+        assert!(
+            !first
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Conversation(_) | Out::GoalCompleted { .. }))
+        );
+        assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
+        assert_eq!(model.requests().len(), 1);
+        let commit = lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?;
+        assert!(matches!(
+            stream.commit(commit.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(matches!(
+            stream.commit(commit).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let second = step(
+            &driver,
+            &path,
+            Some(first.state),
+            2,
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(edit.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(second.state.phase, Phase::Idle);
+        assert_eq!(second.state.conversation_tail, 1);
+        assert_eq!(
+            model.requests().len(),
+            1,
+            "the original filesystem journal replays the completed model call"
+        );
+        assert_eq!(
+            second
+                .outs
+                .iter()
+                .filter(|out| matches!(out, Out::Conversation(_)))
+                .count(),
+            1
+        );
+        let commit = lower(&second, 2, delivery_key(&second.state, "goal-settled")?)?;
+        assert!(matches!(
+            stream.commit(commit).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let (_, bytes) = host
+            .read_private_path(
+                &volume,
+                &read,
+                "GOAL.md",
+                None,
+                None,
+                ContentAccess::default(),
+            )
+            .await?;
+        let text = std::str::from_utf8(&bytes)?;
+        assert!(text.ends_with("concurrent body\n"));
+        assert!(!text.contains("original body"));
+        if replacement
+            .windows(b"status: invalid".len())
+            .any(|part| part == b"status: invalid")
+        {
+            assert_eq!(bytes.as_ref(), replacement);
+            assert!(second.outs.iter().any(|out| matches!(out,
+                Out::Send { record: InboxRecord::Notice { notice: NoticePayload::Quiet(notice), .. }, .. }
+                if notice.kind == "harness.invalid" && !notice.wake && notice.body["path"] == "GOAL.md"
+            )));
+        } else {
+            assert!(text.contains(if replacement.starts_with(b"---") {
+                "status: done"
+            } else {
+                "status: blocked"
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else() -> Result {
+    let path = AgentPath::root(&id(3));
+    let stream = Arc::new(MemoryStream::default());
+    let model = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Text("one".into()),
+        ScriptedTurn::Text("two".into()),
+    ]));
+    let (host, binding) = private(&path).await?;
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        host,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    ));
+    let mut adoption = adopted(id(3));
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+    // Settling the conversation creates the subtree; its inbox stays empty,
+    // so these directly driven turns retain cursor 0.
+    let first = step(
+        &driver,
+        &path,
+        Some(state),
+        (0, 0),
+        requested("r1", &path),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    // Settle the first turn's conversation record as its step commit would.
+    let records = first
+        .outs
+        .iter()
+        .filter_map(|out| match out {
+            Out::Conversation(bytes) => Some(bytes.clone().into()),
+            _ => None,
+        })
+        .collect();
+    stream
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Absent {
+                path: path.conversation()?,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path.conversation()?,
+                records,
+            }],
+            idempotency_key: intent_key("settle", &[path.as_str()])?,
+        })
+        .await?;
+    assert_eq!(first.state.conversation_tail, 1);
+    step(
+        &driver,
+        &path,
+        Some(first.state),
+        (0, 0),
+        requested("r2", &path),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let roles = |index: usize| -> Vec<ModelRole> {
+        requests[index]
+            .messages
+            .iter()
+            .map(|message| message.role)
+            .collect()
+    };
+    let last = |index: usize| {
+        roles(index)
+            .into_iter()
+            .filter(|r| *r != ModelRole::System)
+            .count()
+    };
+    assert_eq!(last(1), last(0) + 2);
+    let assistant = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.role == ModelRole::Assistant)
+        .ok_or("no assistant history")?;
+    assert_eq!(assistant.content, ModelContent::Text("one".into()));
+    // Shared instructions remain the same prefix after a turn settles.
+    for request in &requests {
+        let first = request.messages.first().ok_or("empty request")?;
+        assert_eq!(first.role, ModelRole::System);
+        assert_eq!(first.content, requests[0].messages[0].content);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_request_retains_the_roster_across_history_and_compaction_boundaries() -> Result {
+    use acyclic_harness_core::runtime::InProcessTargets;
+
+    // The finite window loses turn one's announcement before turn three.
+    // The larger window is the control: retain the original prefix unchanged.
+    for history_turns in [1, 8] {
+        let path = AgentPath::root(&id(31));
+        let stream = Arc::new(MemoryStream::default());
+        let model = Arc::new(
+            ScriptedModelProvider::new((0..6).map(|n| ScriptedTurn::Text(format!("answer {n}"))))
+                .reading_content(),
+        );
+        let targets = Arc::new(InProcessTargets::home(
+            TargetRecord {
+                name: "laptop".into(),
+                owner: "ana".into(),
+                class: TargetClass::Attached,
+                os: "linux".into(),
+                shell: "bash".into(),
+                path_style: PathStyle::Posix,
+                device_kind: DeviceKind::Desktop,
+                state: TargetState::Online,
+            },
+            acyclic_harness_core::tools::defaults()?
+                .get("shell", None, None)?
+                .ok_or("no shell")?
+                .executor
+                .clone(),
+        )?);
+        let (host, binding) = private(&path).await?;
+        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+            stream.clone(),
+            host,
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors_with_targets(model.clone(), true, Some(targets))?,
+            TurnLimits {
+                history_turns,
+                ..LIMITS
+            },
+            Default::default(),
+        ));
+        let mut adoption = adopted(id(31));
+        adoption.volumes = vec![binding];
+        let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+        let mut announced = Vec::new();
+        let mut roster_file = None;
+        for n in 0..6 {
+            let wake = if n == 3 {
+                Wake::Inbox {
+                    sequence: 1,
+                    record: InboxRecord::Context(ContextRequest {
+                        by: super::user(),
+                        id: intent("compact"),
+                        action: ContextAction::Compact { instructions: None },
+                    }),
+                }
+            } else {
+                requested(&format!("r{n}"), &path)
+            };
+            let settled = step(
+                &driver,
+                &path,
+                Some(state),
+                (0, 0),
+                wake,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+            let bytes = settled
+                .outs
+                .iter()
+                .find_map(|out| match out {
+                    Out::Conversation(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .ok_or("turn did not settle")?;
+            let entry = ConversationEntry::decode(bytes)?;
+            announced.push(entry.targets.is_some());
+            if roster_file.is_none() {
+                roster_file = entry.targets.clone();
+            }
+            if let Some(file) = &entry.targets {
+                assert_eq!(
+                    Some(file),
+                    roster_file.as_ref(),
+                    "reuse the immutable roster"
+                );
+            }
+            stream
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: vec![],
+                    mutations: vec![CommitMutation::Append {
+                        path: path.conversation()?,
+                        records: vec![bytes.clone().into()],
+                    }],
+                    idempotency_key: intent_key("settle-roster", &[&n.to_string()])?,
+                })
+                .await?;
+            state = settled.state;
+        }
+        let requests = model.requests();
+        assert_eq!(requests.len(), 6);
+        let roster_file = roster_file.ok_or("no roster staged")?;
+        for (n, request) in requests.iter().enumerate() {
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_parts())
+                    .filter(|(file, _)| **file == roster_file)
+                    .count(),
+                1,
+                "request {n}, history_turns={history_turns}"
+            );
+        }
+        // The second request only appends to the first. For the larger window,
+        // turn three also retains that exact prefix, without an extra roster.
+        assert!(requests[1].messages.starts_with(&requests[0].messages));
+        if history_turns == 8 {
+            assert!(requests[2].messages.starts_with(&requests[1].messages));
+            assert_eq!(announced, [true, false, false, false, true, false]);
+        } else {
+            assert_eq!(announced, [true, false, true, false, true, false]);
+        }
+    }
+    Ok(())
+}
+
+/// A spawned child is a clone of its parent at the fork cut: its first model
+/// request holds the parent's settled turn, whose output the parent staged on
+/// its own private volume.
+#[tokio::test]
+async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
+    let parent = AgentPath::root(&id(5));
+    let child = parent.child(&id(6))?;
+    let stream = Arc::new(MemoryStream::default());
+    let model = Arc::new(ScriptedModelProvider::new([
+        ScriptedTurn::Text("parent answer".into()),
+        ScriptedTurn::Text("child answer".into()),
+    ]));
+    let (host, binding) = private(&parent).await?;
+    let own = VolumeRef::new(
+        binding.volume.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+            child.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
+    host.create_volume(&own).await?;
+    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+        stream.clone(),
+        host,
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
+        TurnAdmission::LocalRoot,
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    ));
+    let mut adoption = adopted(id(5));
+    adoption.volumes = vec![binding];
+    let state = AgentState::adopted(parent.clone(), &adoption).expect("adopts");
+    let first = step(
+        &driver,
+        &parent,
+        Some(state),
+        (0, 0),
+        requested("p1", &parent),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let entry: Vec<_> = first
+        .outs
+        .iter()
+        .filter_map(|out| match out {
+            Out::Conversation(bytes) => Some(bytes.clone()),
+            _ => None,
+        })
+        .collect();
+    // The parent's settled turn, and the child's conversation as the spawn
+    // fork leaves it: the same entry, inherited at the cut.
+    for path in [parent.conversation()?, child.conversation()?] {
+        stream
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                mutations: vec![CommitMutation::Append {
+                    path: path.clone(),
+                    records: entry.iter().cloned().map(Into::into).collect(),
+                }],
+                idempotency_key: intent_key("settle", &[path.as_str()])?,
+            })
+            .await?;
+    }
+    let forked = ForkAdopted {
+        profile: None,
+        agent: id(6),
+        parent: Some(parent.clone()),
+        forked_at: 0,
+        conversation_tail: 1,
+        checkpoint: None,
+        volumes: vec![VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume: own,
+        }],
+        brief: None,
+        policy: None,
+    };
+    let state = AgentState::adopted(child.clone(), &forked).expect("adopts");
+    step(
+        &driver,
+        &child,
+        Some(state),
+        (0, 0),
+        requested("c1", &child),
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.role == ModelRole::Assistant
+                && message.content == ModelContent::Text("parent answer".into())),
+        "the child's first request lacks its parent's settled turn: {:?}",
+        requests[1].messages
+    );
+    Ok(())
+}
+
+/// Which input reaches an admitted root first after its child settles.
+#[derive(Clone, Copy, Debug)]
+enum Arrival {
+    ChildResultFirst,
+    FollowUpFirst,
+}
+
+/// An admitted root's two turns after its child settles: the child's result
+/// (its settled turn output, staged as inherited conversation on the child's
+/// private volume) and a follow-up, in `arrival` order. `structured` is the
+/// admission's structured filesystem grant over every volume; without it the
+/// admission grants only the root's own volume. Returns the model requests,
+/// the child's result and the root's final phase.
+async fn admitted_root_after_its_child(
+    arrival: Arrival,
+    structured: bool,
+    base: u8,
+) -> std::result::Result<(Vec<ModelRequest>, FileRef, Phase), String> {
+    let run = async {
+        let root = AgentPath::root(&id(base));
+        let child = root.child(&id(base + 1))?;
+        let stream = Arc::new(MemoryStream::default());
+        let model = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("child answer".into()),
+            ScriptedTurn::Text("first".into()),
+            ScriptedTurn::Text("second".into()),
+        ]));
+        let (host, binding) = private(&root).await?;
+        let own = VolumeRef::new(
+            binding.volume.provider().clone(),
+            "child-private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                child.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        host.create_volume(&own).await?;
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: "workload".into(),
+        };
+        let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+        // Each agent's admission: the structured grant, or its own volume.
+        let admission = |volume: &VolumeRef| -> Result<_> {
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            if structured {
+                grants.push(
+                    acyclic_fs::access::Capability::whole_volume(
+                        None,
+                        acyclic_fs::access::ActionSet::MountWrite.actions(),
+                    )
+                    .to_scope_label()?,
+                );
+            } else {
+                grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+                grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
+            }
+            Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
+        };
+        let (child_scope, root_scope) = (admission(&own)?, admission(&binding.volume)?);
+        let driver = |scope| {
+            ExecutorDriver::new(FilesystemTurnHost::new(
+                stream.clone(),
+                host.clone(),
+                issuer.clone(),
+                TurnAdmission::Admitted {
+                    audience: audience.clone(),
+                    scope,
+                },
+                executors(model.clone()).expect("executors"),
+                LIMITS,
+                Default::default(),
+            ))
+        };
+        // The child settles its turn; its result is that turn's output.
+        let mut adoption = adopted(id(base + 1));
+        adoption.parent = Some(root.clone());
+        adoption.volumes = vec![VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume: own,
+        }];
+        let settled = step(
+            &driver(child_scope),
+            &child,
+            Some(AgentState::adopted(child.clone(), &adoption).expect("adopts")),
+            (0, 0),
+            requested("c1", &child),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        if settled.state.phase != Phase::Idle {
+            return Err(format!("child did not settle: {:?}", settled.state.phase).into());
+        }
+        let Some(result) = settled.outs.iter().find_map(|out| match out {
+            Out::Conversation(bytes) => ConversationEntry::decode(bytes)
+                .ok()
+                .map(|entry| Box::new(entry.output)),
+            _ => None,
+        }) else {
+            return Err("child settled no conversation entry".into());
+        };
+        let done = Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::ChildDone(ChildDone {
+                child: child.clone(),
+                outcome: AgentOutcome::Succeeded {
+                    result: Some(result.clone()),
+                },
+            }),
+        };
+        let [first, second] = match arrival {
+            Arrival::ChildResultFirst => [done, requested("p1", &root)],
+            Arrival::FollowUpFirst => [requested("p1", &root), done],
+        };
+        let driver = driver(root_scope);
+        let mut adoption = adopted(id(base));
+        adoption.volumes = vec![binding];
+        let stepped = step(
+            &driver,
+            &root,
+            Some(AgentState::adopted(root.clone(), &adoption).expect("adopts")),
+            (0, 0),
+            first,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        if matches!(stepped.state.phase, Phase::Done { .. }) {
+            return Ok((model.requests(), *result, stepped.state.phase));
+        }
+        // Settle the first turn as its step commit would.
+        let records = stepped
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Conversation(bytes) => Some(bytes.clone().into()),
+                _ => None,
+            })
+            .collect();
+        stream
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent {
+                    path: root.conversation()?,
+                }],
+                mutations: vec![CommitMutation::Append {
+                    path: root.conversation()?,
+                    records,
+                }],
+                idempotency_key: intent_key("settle", &[root.as_str()])?,
+            })
+            .await?;
+        let settled = step(
+            &driver,
+            &root,
+            Some(stepped.state),
+            (0, 0),
+            second,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.state.phase))
+    };
+    run.await.map_err(|error| error.to_string())
+}
+
+/// The e2e race, forced both ways: an admitted root reads its child's result
+/// whichever of the result and a follow-up arrives first, because the turn's
+/// grant is derived from its whole context and every content path decides the
+/// read with one check.
+#[tokio::test]
+async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first() -> Result {
+    for (base, arrival) in [
+        (30, Arrival::ChildResultFirst),
+        (40, Arrival::FollowUpFirst),
+    ] {
+        let (requests, result, phase) = admitted_root_after_its_child(arrival, true, base)
+            .await
+            .map_err(|error| format!("{arrival:?}: {error}"))?;
+        assert_eq!(phase, Phase::Idle, "{arrival:?}: the admitted turn settles");
+        assert!(
+            result
+                .path()
+                .starts_with(".system/inherited-conversation/turns/"),
+            "{arrival:?}: the result is the child's staged turn output"
+        );
+        assert_eq!(
+            requests.len(),
+            3,
+            "{arrival:?}: the child's and both root turns"
+        );
+        // The second root request holds the result, as its current input or
+        // in its settled history.
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|message| message.content.file_refs().any(|file| *file == result)),
+            "{arrival:?}: the root's context lacks its child's result"
+        );
+    }
+    Ok(())
+}
+
+/// Negative control: an admission granting only the root's own volume (no
+/// structured scope, no grant over the child's) cannot read the result, in
+/// either order; the read is checked, not bypassed.
+#[tokio::test]
+async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Result {
+    for (base, arrival) in [
+        (50, Arrival::ChildResultFirst),
+        (60, Arrival::FollowUpFirst),
+    ] {
+        let (requests, result, phase) = admitted_root_after_its_child(arrival, false, base)
+            .await
+            .map_err(|error| format!("{arrival:?}: {error}"))?;
+        assert!(
+            matches!(
+                phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            ),
+            "{arrival:?}: {phase:?}"
+        );
+        let admitted = match arrival {
+            Arrival::ChildResultFirst => 1,
+            Arrival::FollowUpFirst => 2,
+        };
+        assert_eq!(
+            requests.len(),
+            admitted,
+            "{arrival:?}: refused before dispatch"
+        );
+        assert!(
+            requests.iter().all(|request| request
+                .messages
+                .iter()
+                .all(|message| message.content.file_refs().all(|file| *file != result))),
+            "{arrival:?}: the ungranted result never reaches the model"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
+    let parent = AgentPath::root(&id(4));
+    let path = parent.child(&id(5))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "workload".into(),
+    };
+    let root = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    let run = |operations: &'static [VolumeOperation]| {
+        let (parent, path, audience, root) =
+            (parent.clone(), path.clone(), audience.clone(), root.clone());
+        async move {
+            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                "done".into(),
+            )]));
+            let (host, binding) = private(&path).await?;
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            for operation in operations {
+                grants.push(binding.volume.capability(*operation, &mut None)?);
+            }
+            let scope =
+                root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
+            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+                Arc::new(MemoryStream::default()),
+                host,
+                root,
+                TurnAdmission::Admitted { audience, scope },
+                executors(model.clone())?,
+                LIMITS,
+                Default::default(),
+            ));
+            let mut adoption = adopted(id(5));
+            adoption.parent = Some(parent.clone());
+            adoption.volumes = vec![binding];
+            let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+            let stepped = step(
+                &driver,
+                &path,
+                Some(state),
+                (2, 0),
+                requested("r1", &parent),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await;
+            Ok::<_, Box<dyn std::error::Error>>((
+                stepped.map(|stepped| stepped.state.phase),
+                model.requests().len(),
+            ))
+        }
+    };
+    let (admitted, calls) = run(&[VolumeOperation::Read, VolumeOperation::Write]).await?;
+    assert!(
+        matches!(admitted?, Phase::Idle),
+        "a read-write admission runs the turn"
+    );
+    assert_eq!(calls, 1);
+    let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
+    assert!(
+        matches!(
+            read_only?,
+            Phase::Done {
+                outcome: AgentOutcome::Failed { .. }
+            }
+        ),
+        "a read-only admission cannot write"
+    );
+    assert_eq!(calls, 0, "refused before the model runs");
+    Ok(())
+}
+
+/// A stream that refuses, and counts, every call.
+#[derive(Default)]
+pub(super) struct Refusing {
+    claims: acyclic_stream::OperationClaims,
+    pub(super) calls: std::sync::atomic::AtomicUsize,
+}
+
+impl Refusing {
+    fn refuse<T>(&self) -> std::result::Result<T, StreamError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(StreamError::Unsupported)
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamProvider for Refusing {
+    async fn heads(
+        &self,
+        _request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.refuse()
+    }
+
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.claims)
+    }
+    async fn inspect_idempotency(
+        &self,
+        _: IdempotencyKey,
+    ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
+        self.refuse()
+    }
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::CommitAccepted(_) => {
+                Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
+            }
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Append,
+            )),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Commit,
+            )),
+        }
+    }
+
+    async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
+        self.refuse()
+    }
+    async fn follow(
+        &self,
+        _: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.refuse()
+    }
+
+    async fn read_commit(
+        &self,
+        _: CommitId,
+    ) -> std::result::Result<CommittedEnvelope, StreamError> {
+        self.refuse()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Refusing {}
+
+/// An admission's private-volume grant: exact volume labels, or one
+/// structured `filesystem:` grant over the whole volume.
+#[derive(Clone, Copy)]
+enum Grant {
+    Exact(&'static [VolumeOperation]),
+    Structured(acyclic_fs::access::ActionSet),
+}
+
+#[tokio::test]
+async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
+    let parent = AgentPath::root(&id(6));
+    let path = parent.child(&id(7))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "workload".into(),
+    };
+    let other = Authority {
+        kind: AggregateKind::Conversation,
+        id: "other".into(),
+    };
+    let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
+    // Each case: the audience the admission is issued for, the one the host
+    // is given, its bound agent, and its private-volume grant.
+    let run = |issued: Authority,
+               given: Authority,
+               agent: Option<acyclic_harness_core::AgentId>,
+               grant: Grant| {
+        let (parent, path) = (parent.clone(), path.clone());
+        async move {
+            let root = AuthorityRoot::new("agents", [7; 32], issued);
+            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+                "done".into(),
+            )]));
+            let (host, binding) = private(&path).await?;
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            match grant {
+                Grant::Exact(operations) => {
+                    for operation in operations {
+                        grants.push(binding.volume.capability(*operation, &mut None)?);
+                    }
+                }
+                Grant::Structured(actions) => grants.push(
+                    acyclic_fs::access::Capability::whole_volume(None, actions.actions())
+                        .to_scope_label()?,
+                ),
+            }
+            let scope =
+                root.bootstrap_scope("admitted", &Capabilities::new(grants), agent, &mut None)?;
+            let stream = Arc::new(Refusing::default());
+            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+                stream.clone(),
+                host,
+                root,
+                TurnAdmission::Admitted {
+                    audience: given,
+                    scope,
+                },
+                executors(model.clone())?,
+                LIMITS,
+                Default::default(),
+            ));
+            let mut adoption = adopted(id(7));
+            adoption.parent = Some(parent.clone());
+            adoption.volumes = vec![binding];
+            let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
+            // Settled history the turn would read first.
+            state.conversation_tail = 3;
+            let stepped = step(
+                &driver,
+                &path,
+                Some(state),
+                (2, 0),
+                requested("r1", &parent),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await;
+            let calls = stream.calls.load(std::sync::atomic::Ordering::SeqCst);
+            match stepped {
+                Ok(stepped) => {
+                    assert_eq!(calls, 0, "admission refuses before stream IO");
+                    assert!(matches!(
+                        stepped.state.phase,
+                        Phase::Done {
+                            outcome: AgentOutcome::Failed { .. }
+                        }
+                    ));
+                    assert!(
+                        !stepped
+                            .outs
+                            .iter()
+                            .any(|out| matches!(out, Out::Conversation(_)))
+                    );
+                    assert_eq!(
+                        stepped.status.expect("failure publishes status").phase,
+                        stepped.state.phase
+                    );
+                    assert!(
+                        stepped.outs.iter().all(|out| matches!(
+                            out,
+                            Out::Send {
+                                record: InboxRecord::ChildDone(ChildDone {
+                                    outcome: AgentOutcome::Failed { .. },
+                                    ..
+                                }),
+                                ..
+                            }
+                        )),
+                        "a refused turn emits only its terminal failure"
+                    );
+                }
+                Err(error) => {
+                    assert!(calls > 0, "valid admission reaches the refusing stream");
+                    assert!(error.uncertain(), "storage refusal cannot settle the input");
+                    assert!(matches!(&error, Error::Turn(cause)
+                        if matches!(**cause, acyclic_harness_core::Error::Storage(_))));
+                }
+            }
+            assert_eq!(model.requests().len(), 0);
+            Ok::<_, Box<dyn std::error::Error>>(calls)
+        }
+    };
+    use acyclic_fs::access::ActionSet;
+    let both = Grant::Exact(&[VolumeOperation::Read, VolumeOperation::Write]);
+    // Controls: a valid exact or structured admission reaches the stream (and
+    // fails there).
+    for grant in [both, Grant::Structured(ActionSet::MountWrite)] {
+        let reached = run(audience.clone(), audience.clone(), None, grant).await?;
+        assert!(reached > 0, "a valid admission reads its history");
+    }
+    for (case, issued, given, agent, grant) in [
+        (
+            "read-only",
+            audience.clone(),
+            audience.clone(),
+            None,
+            Grant::Exact(&[VolumeOperation::Read]),
+        ),
+        (
+            "structured read-only",
+            audience.clone(),
+            audience.clone(),
+            None,
+            Grant::Structured(ActionSet::MountRead),
+        ),
+        (
+            "wrong audience",
+            other.clone(),
+            audience.clone(),
+            None,
+            both,
+        ),
+        (
+            "other agent",
+            audience.clone(),
+            audience.clone(),
+            Some(stranger),
+            both,
+        ),
+    ] {
+        let calls = run(issued, given, agent, grant).await?;
+        assert_eq!(calls, 0, "{case}: refused before any stream IO");
+    }
+    Ok(())
+}
+
+/// Effects recorded in memory, once per call.
+#[derive(Default)]
+struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
+
+impl TurnEffects for Recorded {
+    fn record<'a>(
+        &'a self,
+        call: &'a str,
+        effect: &'a TurnEffect,
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
+        let mut recorded = self.0.lock().expect("effects");
+        let first = recorded
+            .entry(call.to_owned())
+            .or_insert_with(|| effect.clone());
+        let first = first.clone();
+        Box::pin(async move { Ok(first) })
+    }
+
+    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
+        let recorded = self.0.lock().expect("effects").values().cloned().collect();
+        Box::pin(async move { Ok(recorded) })
+    }
+
+    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
+}
+
+/// A writer that names the agent's private volume and stages every brief as
+/// one fixed file.
+struct Writer(VolumeRef);
+
+impl acyclic_harness_core::conversation::ContentPublisher for Writer {
+    fn volume(&self) -> &VolumeRef {
+        &self.0
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        _: OperationId,
+        _: &'a str,
+        _: &'a [u8],
+        _: &'a str,
+        _: &'a str,
+        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
+    ) -> acyclic_harness_core::Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            (
+                FileRef,
+                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
+            ),
+        >,
+    > {
+        let file = super::driver::file("brief.md")?;
+        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
+            Ok((file, None))
+        })
+    }
+}
+
+#[tokio::test]
+async fn spawn_admits_children_by_role_within_an_explicit_child_limit() -> Result {
+    use acyclic_harness_core::{agent::SpawnProfiles, profile::Profiles};
+    let path = AgentPath::root(&id(9));
+    let (_, binding) = private(&path).await?;
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
+    state.open_children.insert(path.child(&id(10))?).await?;
+    let profiles = Profiles::builtin();
+    state.profile = Some(profiles.root()?);
+    const CHILD_LIMIT: usize = 4;
+    // Each spawn call in order: which ones the tool refused.
+    let refused = |state: AgentState, calls: [(u8, &'static str, &'static str); 3]| {
+        let volume = binding.volume.clone();
+        let profiles = profiles.clone() as Arc<dyn SpawnProfiles>;
+        async move {
+            let effects = Arc::new(Recorded::default());
+            let mut tools = ToolRegistry::default();
+            acyclic_harness_core::tools::bind_agent_tools(
+                &mut tools,
+                &state,
+                (effects.clone() as Arc<dyn TurnEffects>, None),
+                Arc::new(Writer(volume)),
+                Some(1024),
+                (
+                    &acyclic_harness_core::tools::default_names(),
+                    Some(CHILD_LIMIT as u32),
+                    Some(profiles),
+                ),
+            )?;
+            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
+            let mut refused = Vec::new();
+            for (call, name, role) in calls {
+                let result = spawn
+                    .executor
+                    .execute(
+                        acyclic_harness_core::tool::ToolInvocation {
+                            operation_id: OperationId::from_bytes([call; 16]),
+                            call_id: format!("call-{call}"),
+                            name: "spawn".into(),
+                            arguments: serde_json::json!({"task": "work", "name": name, "role": role}),
+                        },
+                        None,
+                    )
+                    .await?;
+                refused.push(result.value.get("error").is_some());
+            }
+            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
+        }
+    };
+    let roles = [(1, "b", "worker"), (2, "b", "worker"), (3, "c", "reviewer")];
+    // Every admitted spawn is recorded; `b`'s second call names the same child.
+    assert_eq!(
+        refused(state.clone(), roles).await?,
+        (vec![false, false, false], 3)
+    );
+    // The parent's role decides: the top-level role and unknown roles refuse.
+    let disallowed = [
+        (1, "b", "worker"),
+        (2, "c", "orchestrator"),
+        (3, "d", "planner"),
+    ];
+    assert_eq!(
+        refused(state.clone(), disallowed).await?,
+        (vec![false, true, true], 1)
+    );
+    // Negative control: an agent without a role pin spawns nothing.
+    let mut unpinned = state.clone();
+    unpinned.profile = None;
+    assert_eq!(refused(unpinned, roles).await?, (vec![true, true, true], 0));
+    // The agent's hard limit still holds: one below it, `b` fits and `c` is
+    // refused to the model rather than dropped by the step.
+    let mut full = state;
+    for n in 0..CHILD_LIMIT - 2 {
+        let mut bytes = [0; 16];
+        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
+        full.open_children
+            .insert(path.child(&AgentId::from_bytes(bytes))?)
+            .await?;
+    }
+    assert_eq!(full.open_children.len(), CHILD_LIMIT - 1);
+    assert_eq!(refused(full, roles).await?, (vec![false, false, true], 2));
+    Ok(())
+}
+
+#[tokio::test]
 async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -> Result {
     use acyclic_harness_core::{conversation::wire::Notice, model::ModelContentPart};
 
@@ -426,8 +1646,6 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let reopen = || -> Result<_> {
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
             filesystem.clone(),
             AuthorityRoot::new(
                 "agents",
@@ -612,7 +1830,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     assert_eq!(first.len(), 2, "parts share the original finite allowance");
     let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
     let limits = acyclic_harness_core::conversation::Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Default::default()
     };
     assert!(
@@ -670,1222 +1888,22 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     Ok(())
 }
 
-#[tokio::test]
-async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else() -> Result {
-    let path = AgentPath::root(&id(3));
-    let stream = Arc::new(MemoryStream::default());
-    let model = Arc::new(ScriptedModelProvider::new([
-        ScriptedTurn::Text("one".into()),
-        ScriptedTurn::Text("two".into()),
-    ]));
-    let (host, binding) = private(&path).await?;
-    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-        stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
-        host,
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-        Default::default(),
-    ));
-    let mut adoption = adopted(id(3));
-    adoption.volumes = vec![binding];
-    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-    // Settling the conversation creates the subtree; its inbox stays empty,
-    // so these directly driven turns retain cursor 0.
-    let first = step(
-        &driver,
-        &path,
-        Some(state),
-        (0, 0),
-        requested("r1", &path),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    // Settle the first turn's conversation record as its step commit would.
-    let records = first
-        .outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Conversation(bytes) => Some(bytes.clone().into()),
-            _ => None,
-        })
-        .collect();
-    stream
-        .commit(CommitRequest {
-            deadline_unix_millis: None,
-            conditions: vec![CommitCondition::Absent {
-                path: path.conversation()?,
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: path.conversation()?,
-                records,
-            }],
-            idempotency_key: intent_key("settle", &[path.as_str()])?,
-        })
-        .await?;
-    assert_eq!(first.state.conversation_tail, 1);
-    step(
-        &driver,
-        &path,
-        Some(first.state),
-        (0, 0),
-        requested("r2", &path),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let requests = model.requests();
-    assert_eq!(requests.len(), 2);
-    let roles = |index: usize| -> Vec<ModelRole> {
-        requests[index]
-            .messages
-            .iter()
-            .map(|message| message.role)
-            .collect()
-    };
-    let last = |index: usize| {
-        roles(index)
-            .into_iter()
-            .filter(|r| *r != ModelRole::System)
-            .count()
-    };
-    assert_eq!(last(1), last(0) + 2);
-    let assistant = requests[1]
-        .messages
-        .iter()
-        .find(|message| message.role == ModelRole::Assistant)
-        .ok_or("no assistant history")?;
-    assert_eq!(assistant.content, ModelContent::Text("one".into()));
-    // Shared instructions remain the same prefix after a turn settles.
-    for request in &requests {
-        let first = request.messages.first().ok_or("empty request")?;
-        assert_eq!(first.role, ModelRole::System);
-        assert_eq!(first.content, requests[0].messages[0].content);
-    }
-    Ok(())
-}
 
 #[tokio::test]
-async fn every_request_retains_the_roster_across_history_and_compaction_boundaries() -> Result {
-    use acyclic_harness_core::runtime::InProcessTargets;
-
-    // The finite window loses turn one's announcement before turn three.
-    // The larger window is the control: retain the original prefix unchanged.
-    for history_turns in [1, 8] {
-        let path = AgentPath::root(&id(31));
-        let stream = Arc::new(MemoryStream::default());
-        let model = Arc::new(
-            ScriptedModelProvider::new((0..6).map(|n| ScriptedTurn::Text(format!("answer {n}"))))
-                .reading_content(),
-        );
-        let targets = Arc::new(InProcessTargets::home(
-            TargetRecord {
-                name: "laptop".into(),
-                owner: "ana".into(),
-                class: TargetClass::Attached,
-                os: "linux".into(),
-                shell: "bash".into(),
-                path_style: PathStyle::Posix,
-                device_kind: DeviceKind::Desktop,
-                state: TargetState::Online,
-            },
-            acyclic_harness_core::tools::defaults()?
-                .get("shell", None, None)?
-                .ok_or("no shell")?
-                .executor
-                .clone(),
-        )?);
-        let (host, binding) = private(&path).await?;
-        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-            stream.clone(),
-            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                .expect("actor binding"),
-            host,
-            AuthorityRoot::new(
-                "agents",
-                [7; 32],
-                Authority {
-                    kind: AggregateKind::Conversation,
-                    id: "agents".into(),
-                },
-            ),
-            TurnAdmission::LocalRoot,
-            executors_with_targets(model.clone(), true, Some(targets))?,
-            TurnLimits {
-                history_turns,
-                ..LIMITS
-            },
-            Default::default(),
-        ));
-        let mut adoption = adopted(id(31));
-        adoption.volumes = vec![binding];
-        let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-        let mut announced = Vec::new();
-        let mut roster_file = None;
-        for n in 0..6 {
-            let wake = if n == 3 {
-                Wake::Inbox {
-                    sequence: 1,
-                    record: InboxRecord::Context(ContextRequest {
-                        by: super::user(),
-                        id: intent("compact"),
-                        action: ContextAction::Compact { instructions: None },
-                    }),
-                }
-            } else {
-                requested(&format!("r{n}"), &path)
-            };
-            let settled = step(
-                &driver,
-                &path,
-                Some(state),
-                (0, 0),
-                wake,
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await?;
-            let bytes = settled
-                .outs
-                .iter()
-                .find_map(|out| match out {
-                    Out::Conversation(bytes) => Some(bytes),
-                    _ => None,
-                })
-                .ok_or("turn did not settle")?;
-            let entry = ConversationEntry::decode(bytes)?;
-            announced.push(entry.targets.is_some());
-            if roster_file.is_none() {
-                roster_file = entry.targets.clone();
-            }
-            if let Some(file) = &entry.targets {
-                assert_eq!(
-                    Some(file),
-                    roster_file.as_ref(),
-                    "reuse the immutable roster"
-                );
-            }
-            stream
-                .commit(CommitRequest {
-                    deadline_unix_millis: None,
-                    conditions: vec![],
-                    mutations: vec![CommitMutation::Append {
-                        path: path.conversation()?,
-                        records: vec![bytes.clone().into()],
-                    }],
-                    idempotency_key: intent_key("settle-roster", &[&n.to_string()])?,
-                })
-                .await?;
-            state = settled.state;
-        }
-        let requests = model.requests();
-        assert_eq!(requests.len(), 6);
-        let roster_file = roster_file.ok_or("no roster staged")?;
-        for (n, request) in requests.iter().enumerate() {
-            assert_eq!(
-                request
-                    .messages
-                    .iter()
-                    .flat_map(|message| message.content.file_parts())
-                    .filter(|(file, _)| **file == roster_file)
-                    .count(),
-                1,
-                "request {n}, history_turns={history_turns}"
-            );
-        }
-        // The second request only appends to the first. For the larger window,
-        // turn three also retains that exact prefix, without an extra roster.
-        assert!(requests[1].messages.starts_with(&requests[0].messages));
-        if history_turns == 8 {
-            assert!(requests[2].messages.starts_with(&requests[1].messages));
-            assert_eq!(announced, [true, false, false, false, true, false]);
-        } else {
-            assert_eq!(announced, [true, false, true, false, true, false]);
-        }
-    }
-    Ok(())
-}
-
-/// A spawned child is a clone of its parent at the fork cut: its first model
-/// request holds the parent's settled turn, whose output the parent staged on
-/// its own private volume.
-#[tokio::test]
-async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
-    let parent = AgentPath::root(&id(5));
-    let child = parent.child(&id(6))?;
-    let stream = Arc::new(MemoryStream::default());
-    let model = Arc::new(ScriptedModelProvider::new([
-        ScriptedTurn::Text("parent answer".into()),
-        ScriptedTurn::Text("child answer".into()),
-    ]));
-    let (host, binding) = private(&parent).await?;
-    let own = VolumeRef::new(
-        binding.volume.provider().clone(),
-        "agent-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-            child.id().to_bytes(),
-        )),
-        &mut None,
-    )?;
-    host.create_volume(&own).await?;
-    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-        stream.clone(),
-        acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-            .expect("actor binding"),
-        host,
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-        Default::default(),
-    ));
-    let mut adoption = adopted(id(5));
-    adoption.volumes = vec![binding];
-    let state = AgentState::adopted(parent.clone(), &adoption).expect("adopts");
-    let first = step(
-        &driver,
-        &parent,
-        Some(state),
-        (0, 0),
-        requested("p1", &parent),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let entry: Vec<_> = first
-        .outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Conversation(bytes) => Some(bytes.clone()),
-            _ => None,
-        })
-        .collect();
-    // The parent's settled turn, and the child's conversation as the spawn
-    // fork leaves it: the same entry, inherited at the cut.
-    for path in [parent.conversation()?, child.conversation()?] {
-        stream
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent { path: path.clone() }],
-                mutations: vec![CommitMutation::Append {
-                    path: path.clone(),
-                    records: entry.iter().cloned().map(Into::into).collect(),
-                }],
-                idempotency_key: intent_key("settle", &[path.as_str()])?,
-            })
-            .await?;
-    }
-    let forked = ForkAdopted {
-        profile: None,
-        agent: id(6),
-        parent: Some(parent.clone()),
-        forked_at: 0,
-        conversation_tail: 1,
-        checkpoint: None,
-        volumes: vec![VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: own,
-        }],
-        brief: None,
-        policy: None,
-    };
-    let state = AgentState::adopted(child.clone(), &forked).expect("adopts");
-    step(
-        &driver,
-        &child,
-        Some(state),
-        (0, 0),
-        requested("c1", &child),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    let requests = model.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(
-        requests[1]
-            .messages
-            .iter()
-            .any(|message| message.role == ModelRole::Assistant
-                && message.content == ModelContent::Text("parent answer".into())),
-        "the child's first request lacks its parent's settled turn: {:?}",
-        requests[1].messages
-    );
-    Ok(())
-}
-
-/// Which input reaches an admitted root first after its child settles.
-#[derive(Clone, Copy, Debug)]
-enum Arrival {
-    ChildResultFirst,
-    FollowUpFirst,
-}
-
-/// An admitted root's two turns after its child settles: the child's result
-/// (its settled turn output, staged as inherited conversation on the child's
-/// private volume) and a follow-up, in `arrival` order. `structured` is the
-/// admission's structured filesystem grant over every volume; without it the
-/// admission grants only the root's own volume. Returns the model requests,
-/// the child's result and the root's final phase.
-async fn admitted_root_after_its_child(
-    arrival: Arrival,
-    structured: bool,
-    base: u8,
-) -> std::result::Result<(Vec<ModelRequest>, FileRef, Phase), String> {
-    let run = async {
-        let root = AgentPath::root(&id(base));
-        let child = root.child(&id(base + 1))?;
-        let stream = Arc::new(MemoryStream::default());
-        let model = Arc::new(ScriptedModelProvider::new([
-            ScriptedTurn::Text("child answer".into()),
-            ScriptedTurn::Text("first".into()),
-            ScriptedTurn::Text("second".into()),
-        ]));
-        let (host, binding) = private(&root).await?;
-        let own = VolumeRef::new(
-            binding.volume.provider().clone(),
-            "child-private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-                child.id().to_bytes(),
-            )),
-            &mut None,
-        )?;
-        host.create_volume(&own).await?;
-        let audience = Authority {
-            kind: AggregateKind::Conversation,
-            id: "workload".into(),
-        };
-        let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
-        // Each agent's admission: the structured grant, or its own volume.
-        let admission = |volume: &VolumeRef| -> Result<_> {
-            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
-            if structured {
-                grants.push(
-                    acyclic_fs::access::Capability::whole_volume(
-                        None,
-                        acyclic_fs::access::ActionSet::MountWrite.actions(),
-                    )
-                    .to_scope_label()?,
-                );
-            } else {
-                grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
-                grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
-            }
-            Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
-        };
-        let (child_scope, root_scope) = (admission(&own)?, admission(&binding.volume)?);
-        let driver = |scope| {
-            ExecutorDriver::new(FilesystemTurnHost::new(
-                stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
-                host.clone(),
-                issuer.clone(),
-                TurnAdmission::Admitted {
-                    audience: audience.clone(),
-                    scope,
-                },
-                executors(model.clone()).expect("executors"),
-                LIMITS,
-                Default::default(),
-            ))
-        };
-        // The child settles its turn; its result is that turn's output.
-        let mut adoption = adopted(id(base + 1));
-        adoption.parent = Some(root.clone());
-        adoption.volumes = vec![VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: own,
-        }];
-        let settled = step(
-            &driver(child_scope),
-            &child,
-            Some(AgentState::adopted(child.clone(), &adoption).expect("adopts")),
-            (0, 0),
-            requested("c1", &child),
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        if settled.state.phase != Phase::Idle {
-            return Err(format!("child did not settle: {:?}", settled.state.phase).into());
-        }
-        let Some(result) = settled.outs.iter().find_map(|out| match out {
-            Out::Conversation(bytes) => ConversationEntry::decode(bytes)
-                .ok()
-                .map(|entry| Box::new(entry.output)),
-            _ => None,
-        }) else {
-            return Err("child settled no conversation entry".into());
-        };
-        let done = Wake::Inbox {
-            sequence: 1,
-            record: InboxRecord::ChildDone(ChildDone {
-                child: child.clone(),
-                outcome: AgentOutcome::Succeeded {
-                    result: Some(result.clone()),
-                },
-            }),
-        };
-        let [first, second] = match arrival {
-            Arrival::ChildResultFirst => [done, requested("p1", &root)],
-            Arrival::FollowUpFirst => [requested("p1", &root), done],
-        };
-        let driver = driver(root_scope);
-        let mut adoption = adopted(id(base));
-        adoption.volumes = vec![binding];
-        let stepped = step(
-            &driver,
-            &root,
-            Some(AgentState::adopted(root.clone(), &adoption).expect("adopts")),
-            (0, 0),
-            first,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        if matches!(stepped.state.phase, Phase::Done { .. }) {
-            return Ok((model.requests(), *result, stepped.state.phase));
-        }
-        // Settle the first turn as its step commit would.
-        let records = stepped
-            .outs
-            .iter()
-            .filter_map(|out| match out {
-                Out::Conversation(bytes) => Some(bytes.clone().into()),
-                _ => None,
-            })
-            .collect();
-        stream
-            .commit(CommitRequest {
-                deadline_unix_millis: None,
-                conditions: vec![CommitCondition::Absent {
-                    path: root.conversation()?,
-                }],
-                mutations: vec![CommitMutation::Append {
-                    path: root.conversation()?,
-                    records,
-                }],
-                idempotency_key: intent_key("settle", &[root.as_str()])?,
-            })
-            .await?;
-        let settled = step(
-            &driver,
-            &root,
-            Some(stepped.state),
-            (0, 0),
-            second,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.state.phase))
-    };
-    run.await.map_err(|error| error.to_string())
-}
-
-/// The e2e race, forced both ways: an admitted root reads its child's result
-/// whichever of the result and a follow-up arrives first, because the turn's
-/// grant is derived from its whole context and every content path decides the
-/// read with one check.
-#[tokio::test]
-async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first() -> Result {
-    for (base, arrival) in [
-        (30, Arrival::ChildResultFirst),
-        (40, Arrival::FollowUpFirst),
-    ] {
-        let (requests, result, phase) = admitted_root_after_its_child(arrival, true, base)
-            .await
-            .map_err(|error| format!("{arrival:?}: {error}"))?;
-        assert_eq!(phase, Phase::Idle, "{arrival:?}: the admitted turn settles");
-        assert!(
-            result
-                .path()
-                .starts_with(".system/inherited-conversation/turns/"),
-            "{arrival:?}: the result is the child's staged turn output"
-        );
-        assert_eq!(
-            requests.len(),
-            3,
-            "{arrival:?}: the child's and both root turns"
-        );
-        // The second root request holds the result, as its current input or
-        // in its settled history.
-        assert!(
-            requests[2]
-                .messages
-                .iter()
-                .any(|message| message.content.file_refs().any(|file| *file == result)),
-            "{arrival:?}: the root's context lacks its child's result"
-        );
-        let child = AgentPath::root(&id(base)).child(&id(base + 1))?;
-        let notices: Vec<_> = requests[2]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.parts())
-            .filter_map(|part| match part {
-                ModelContentPart::Notices { notices } => Some(notices),
-                _ => None,
-            })
-            .flatten()
-            .filter(|notice| notice.kind == "child.finished")
-            .collect();
-        assert_eq!(notices.len(), 1, "{arrival:?}: one original completion");
-        assert_eq!(notices[0].source, child.as_str());
-        assert_eq!(
-            notices[0].body,
-            serde_json::to_value(ChildDone {
-                child,
-                outcome: AgentOutcome::Succeeded {
-                    result: Some(Box::new(result.clone())),
-                },
-            })?
-        );
-        assert!(notices[0].wake);
-    }
-    Ok(())
-}
-
-/// Negative control: an admission granting only the root's own volume (no
-/// structured scope, no grant over the child's) cannot read the result, in
-/// either order; the read is checked, not bypassed.
-#[tokio::test]
-async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Result {
-    for (base, arrival) in [
-        (50, Arrival::ChildResultFirst),
-        (60, Arrival::FollowUpFirst),
-    ] {
-        let (requests, result, phase) = admitted_root_after_its_child(arrival, false, base)
-            .await
-            .map_err(|error| format!("{arrival:?}: {error}"))?;
-        assert!(
-            matches!(
-                phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Failed { .. }
-                }
-            ),
-            "{arrival:?}: {phase:?}"
-        );
-        let admitted = match arrival {
-            Arrival::ChildResultFirst => 1,
-            Arrival::FollowUpFirst => 2,
-        };
-        assert_eq!(
-            requests.len(),
-            admitted,
-            "{arrival:?}: refused before dispatch"
-        );
-        assert!(
-            requests.iter().all(|request| request
-                .messages
-                .iter()
-                .all(|message| message.content.file_refs().all(|file| *file != result))),
-            "{arrival:?}: the ungranted result never reaches the model"
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_write() -> Result {
-    let parent = AgentPath::root(&id(4));
-    let path = parent.child(&id(5))?;
-    let audience = Authority {
-        kind: AggregateKind::Conversation,
-        id: "workload".into(),
-    };
-    let root = AuthorityRoot::new("agents", [7; 32], audience.clone());
-    let run = |operations: &'static [VolumeOperation]| {
-        let (parent, path, audience, root) =
-            (parent.clone(), path.clone(), audience.clone(), root.clone());
-        async move {
-            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-                "done".into(),
-            )]));
-            let (host, binding) = private(&path).await?;
-            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
-            for operation in operations {
-                grants.push(binding.volume.capability(*operation, &mut None)?);
-            }
-            let scope =
-                root.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?;
-            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-                Arc::new(MemoryStream::default()),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
-                host,
-                root,
-                TurnAdmission::Admitted { audience, scope },
-                executors(model.clone())?,
-                LIMITS,
-                Default::default(),
-            ));
-            let mut adoption = adopted(id(5));
-            adoption.parent = Some(parent.clone());
-            adoption.volumes = vec![binding];
-            let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-            let stepped = step(
-                &driver,
-                &path,
-                Some(state),
-                (2, 0),
-                requested("r1", &parent),
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await;
-            Ok::<_, Box<dyn std::error::Error>>((
-                stepped.map(|stepped| stepped.state.phase),
-                model.requests().len(),
-            ))
-        }
-    };
-    let (admitted, calls) = run(&[VolumeOperation::Read, VolumeOperation::Write]).await?;
-    assert!(
-        matches!(admitted?, Phase::Idle),
-        "a read-write admission runs the turn"
-    );
-    assert_eq!(calls, 1);
-    let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
-    assert!(
-        matches!(
-            read_only?,
-            Phase::Done {
-                outcome: AgentOutcome::Failed { .. }
-            }
-        ),
-        "a read-only admission cannot write"
-    );
-    assert_eq!(calls, 0, "refused before the model runs");
-    Ok(())
-}
-
-/// A stream that refuses, and counts, every call.
-#[derive(Default)]
-pub(super) struct Refusing {
-    claims: acyclic_stream::OperationClaims,
-    pub(super) calls: std::sync::atomic::AtomicUsize,
-}
-
-impl Refusing {
-    fn refuse<T>(&self) -> std::result::Result<T, StreamError> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(StreamError::Unsupported)
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl StreamProvider for Refusing {
-    async fn heads(
-        &self,
-        _request: acyclic_stream::HeadsRequest,
-    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
-        self.refuse()
-    }
-
-    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
-        acyclic_stream::ProviderContext::new(&self.claims)
-    }
-    async fn inspect_idempotency(
-        &self,
-        _: IdempotencyKey,
-    ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
-        self.refuse()
-    }
-    fn write(
-        &self,
-        request: acyclic_stream::WriteRequest,
-    ) -> acyclic_stream::BoxProviderFuture<
-        '_,
-        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
-    > {
-        match request {
-            acyclic_stream::WriteRequest::CommitAccepted(_) => {
-                Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
-            }
-            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
-                async move { self.refuse() },
-                acyclic_stream::WriteOutcome::Append,
-            )),
-            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
-                async move { self.refuse() },
-                acyclic_stream::WriteOutcome::Fork,
-            )),
-            acyclic_stream::WriteRequest::Commit(_) => Box::pin(futures::TryFutureExt::map_ok(
-                async move { self.refuse() },
-                acyclic_stream::WriteOutcome::Commit,
-            )),
-        }
-    }
-
-    async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
-        self.refuse()
-    }
-    async fn follow(
-        &self,
-        _: acyclic_stream::FollowRequest,
-    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
-        self.refuse()
-    }
-
-    async fn read_commit(
-        &self,
-        _: CommitId,
-    ) -> std::result::Result<CommittedEnvelope, StreamError> {
-        self.refuse()
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl acyclic_stream::NativeStreamProvider for Refusing {}
-
-/// An admission's private-volume grant: exact volume labels, or one
-/// structured `filesystem:` grant over the whole volume.
-#[derive(Clone, Copy)]
-enum Grant {
-    Exact(&'static [VolumeOperation]),
-    Structured(acyclic_fs::access::ActionSet),
-}
-
-#[tokio::test]
-async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
-    let parent = AgentPath::root(&id(6));
-    let path = parent.child(&id(7))?;
-    let audience = Authority {
-        kind: AggregateKind::Conversation,
-        id: "workload".into(),
-    };
-    let other = Authority {
-        kind: AggregateKind::Conversation,
-        id: "other".into(),
-    };
-    let stranger = acyclic_harness_core::AgentId::from_bytes(id(8).to_bytes());
-    // Each case: the audience the admission is issued for, the one the host
-    // is given, its bound agent, and its private-volume grant.
-    let run = |issued: Authority,
-               given: Authority,
-               agent: Option<acyclic_harness_core::AgentId>,
-               grant: Grant| {
-        let (parent, path) = (parent.clone(), path.clone());
-        async move {
-            let root = AuthorityRoot::new("agents", [7; 32], issued);
-            let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-                "done".into(),
-            )]));
-            let (host, binding) = private(&path).await?;
-            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
-            match grant {
-                Grant::Exact(operations) => {
-                    for operation in operations {
-                        grants.push(binding.volume.capability(*operation, &mut None)?);
-                    }
-                }
-                Grant::Structured(actions) => grants.push(
-                    acyclic_fs::access::Capability::whole_volume(None, actions.actions())
-                        .to_scope_label()?,
-                ),
-            }
-            let scope =
-                root.bootstrap_scope("admitted", &Capabilities::new(grants), agent, &mut None)?;
-            let stream = Arc::new(Refusing::default());
-            let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-                stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
-                host,
-                root,
-                TurnAdmission::Admitted {
-                    audience: given,
-                    scope,
-                },
-                executors(model.clone())?,
-                LIMITS,
-                Default::default(),
-            ));
-            let mut adoption = adopted(id(7));
-            adoption.parent = Some(parent.clone());
-            adoption.volumes = vec![binding];
-            let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
-            // Settled history the turn would read first.
-            state.conversation_tail = 3;
-            let stepped = step(
-                &driver,
-                &path,
-                Some(state),
-                (2, 0),
-                requested("r1", &parent),
-                acyclic_actors::guest::CancellationToken::new(),
-            )
-            .await;
-            let calls = stream.calls.load(std::sync::atomic::Ordering::SeqCst);
-            match stepped {
-                Ok(stepped) => {
-                    assert_eq!(calls, 0, "admission refuses before stream IO");
-                    assert!(matches!(
-                        stepped.state.phase,
-                        Phase::Done {
-                            outcome: AgentOutcome::Failed { .. }
-                        }
-                    ));
-                    assert!(
-                        !stepped
-                            .outs
-                            .iter()
-                            .any(|out| matches!(out, Out::Conversation(_)))
-                    );
-                    assert_eq!(
-                        stepped.status.expect("failure publishes status").phase,
-                        stepped.state.phase
-                    );
-                    assert!(
-                        stepped.outs.iter().all(|out| matches!(
-                            out,
-                            Out::Send {
-                                record: InboxRecord::ChildDone(ChildDone {
-                                    outcome: AgentOutcome::Failed { .. },
-                                    ..
-                                }),
-                                ..
-                            }
-                        )),
-                        "a refused turn emits only its terminal failure"
-                    );
-                }
-                Err(error) => {
-                    assert!(calls > 0, "valid admission reaches the refusing stream");
-                    assert!(error.uncertain(), "storage refusal cannot settle the input");
-                    assert!(matches!(&error, Error::Turn(cause)
-                        if matches!(**cause, acyclic_harness_core::Error::Storage(_))));
-                }
-            }
-            assert_eq!(model.requests().len(), 0);
-            Ok::<_, Box<dyn std::error::Error>>(calls)
-        }
-    };
-    use acyclic_fs::access::ActionSet;
-    let both = Grant::Exact(&[VolumeOperation::Read, VolumeOperation::Write]);
-    // Controls: a valid exact or structured admission reaches the stream (and
-    // fails there).
-    for grant in [both, Grant::Structured(ActionSet::MountWrite)] {
-        let reached = run(audience.clone(), audience.clone(), None, grant).await?;
-        assert!(reached > 0, "a valid admission reads its history");
-    }
-    for (case, issued, given, agent, grant) in [
-        (
-            "read-only",
-            audience.clone(),
-            audience.clone(),
-            None,
-            Grant::Exact(&[VolumeOperation::Read]),
-        ),
-        (
-            "structured read-only",
-            audience.clone(),
-            audience.clone(),
-            None,
-            Grant::Structured(ActionSet::MountRead),
-        ),
-        (
-            "wrong audience",
-            other.clone(),
-            audience.clone(),
-            None,
-            both,
-        ),
-        (
-            "other agent",
-            audience.clone(),
-            audience.clone(),
-            Some(stranger),
-            both,
-        ),
-    ] {
-        let calls = run(issued, given, agent, grant).await?;
-        assert_eq!(calls, 0, "{case}: refused before any stream IO");
-    }
-    Ok(())
-}
-
-/// Effects recorded in memory, once per call.
-#[derive(Default)]
-struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
-
-impl TurnEffects for Recorded {
-    fn record<'a>(
-        &'a self,
-        call: &'a str,
-        effect: &'a TurnEffect,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
-        let mut recorded = self.0.lock().expect("effects");
-        let first = recorded
-            .entry(call.to_owned())
-            .or_insert_with(|| effect.clone());
-        let first = first.clone();
-        Box::pin(async move { Ok(first) })
-    }
-
-    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
-        let recorded = self.0.lock().expect("effects").values().cloned().collect();
-        Box::pin(async move { Ok(recorded) })
-    }
-
-    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-}
-
-/// A writer that names the agent's private volume and stages every brief as
-/// one fixed file.
-struct Writer(VolumeRef);
-
-impl acyclic_harness_core::conversation::ContentPublisher for Writer {
-    fn volume(&self) -> &VolumeRef {
-        &self.0
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: &'a [u8],
-        _: &'a str,
-        _: &'a str,
-        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
-    ) -> acyclic_harness_core::Result<
-        acyclic_harness_core::conversation::BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        let file = super::driver::file("brief.md")?;
-        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
-            Ok((file, None))
-        })
-    }
-}
-
-#[tokio::test]
-async fn spawn_admits_children_by_role_within_the_open_children_limit() -> Result {
-    use acyclic_harness_core::{agent::SpawnProfiles, profile::Profiles};
-    let path = AgentPath::root(&id(9));
-    let (_, binding) = private(&path).await?;
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
-    let profiles = Profiles::builtin();
-    state.profile = Some(profiles.root()?);
-    // Each spawn call in order: which ones the tool refused.
-    let refused = |state: AgentState, calls: [(u8, &'static str, &'static str); 3]| {
-        let volume = binding.volume.clone();
-        let profiles = profiles.clone() as Arc<dyn SpawnProfiles>;
-        async move {
-            let effects = Arc::new(Recorded::default());
-            let mut tools = ToolRegistry::default();
-            acyclic_harness_core::tools::bind_agent_tools(
-                &mut tools,
-                &state,
-                (effects.clone() as Arc<dyn TurnEffects>, None),
-                Arc::new(Writer(volume)),
-                1024,
-                (
-                    &acyclic_harness_core::tools::default_names(),
-                    Some(profiles),
-                ),
-            )?;
-            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
-            let mut refused = Vec::new();
-            for (call, name, role) in calls {
-                let result = spawn
-                    .executor
-                    .execute(
-                        acyclic_harness_core::tool::ToolInvocation {
-                            operation_id: OperationId::from_bytes([call; 16]),
-                            call_id: format!("call-{call}"),
-                            name: "spawn".into(),
-                            arguments: serde_json::json!({"task": "work", "name": name, "role": role}),
-                        },
-                        None,
-                    )
-                    .await?;
-                refused.push(result.value.get("error").is_some());
-            }
-            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
-        }
-    };
-    let roles = [(1, "b", "worker"), (2, "b", "worker"), (3, "c", "reviewer")];
-    // Every admitted spawn is recorded; `b`'s second call names the same child.
-    assert_eq!(
-        refused(state.clone(), roles).await?,
-        (vec![false, false, false], 3)
-    );
-    // The parent's role decides: the top-level role and unknown roles refuse.
-    let disallowed = [
-        (1, "b", "worker"),
-        (2, "c", "orchestrator"),
-        (3, "d", "planner"),
-    ];
-    assert_eq!(
-        refused(state.clone(), disallowed).await?,
-        (vec![false, true, true], 1)
-    );
-    // Negative control: an agent without a role pin spawns nothing.
-    let mut unpinned = state.clone();
-    unpinned.profile = None;
-    assert_eq!(refused(unpinned, roles).await?, (vec![true, true, true], 0));
-    // The agent's hard limit still holds: one below it, `b` fits and `c` is
-    // refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, roles).await?, (vec![false, false, true], 2));
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> Result {
+async fn a_malformed_pinned_policy_denies_both_policy_and_human_routes() -> Result {
     use acyclic_harness_core::{
+        approvals::ApprovalPolicy,
         conversation::{ContentAccess, ContentGrant},
-        goal::{GoalContinuationPolicy, GoalView},
+        interaction::{ApprovalRoute, ApprovalSubject, Interaction, InteractionOutcome},
     };
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-    struct Edit {
-        host: Host,
-        volume: VolumeRef,
-        write: ContentGrant,
-        pending: AtomicBool,
-        reads: AtomicUsize,
-        replacement: &'static [u8],
-    }
-    impl Edit {
-        async fn publish(
-            &self,
-            bytes: &[u8],
-            key: &'static str,
-        ) -> acyclic_harness_core::Result<()> {
-            self.host
-                .put_content(
-                    &self.volume,
-                    &self.write,
-                    "GOAL.md",
-                    bytes,
-                    "text/markdown",
-                    "GOAL.md",
-                    LIMITS.maximum_bytes,
-                    &acyclic_harness_core::IdempotencyKey::new(key)?,
-                    None,
-                    ContentAccess::default(),
-                )
-                .await?;
-            Ok(())
-        }
-    }
-    struct EditedGoal {
-        original: Arc<dyn TurnGoal>,
-        edit: Arc<Edit>,
-    }
-    impl TurnGoal for EditedGoal {
-        fn policy(&self) -> GoalContinuationPolicy {
-            self.original.policy()
-        }
-        fn read(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Option<GoalView>>> {
-            Box::pin(async move {
-                let observed = self.original.read().await?;
-                self.edit.reads.fetch_add(1, Ordering::SeqCst);
-                if self.edit.pending.swap(false, Ordering::SeqCst) {
-                    // An actual file publication changes the original observation
-                    // after its read and before its conditioned rewrite.
-                    self.edit
-                        .publish(self.edit.replacement, "goal-edit")
-                        .await?;
-                }
-                Ok(observed)
-            })
-        }
-        fn rewrite<'a>(
-            &'a self,
-            goal: &'a GoalView,
-            contents: &'a str,
-            key: &'a str,
-        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
-            self.original.rewrite(goal, contents, key)
-        }
-    }
-    struct EditingHost<H> {
-        original: H,
-        edit: Arc<Edit>,
-    }
-    impl<H: TurnHost> TurnHost for EditingHost<H> {
-        fn open_control<'a>(
-            &'a self,
-            agent: &'a AgentState,
-            action: &'a ContextAction,
-            cancellation: acyclic_actors::guest::CancellationToken,
-        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenControl>> {
-            self.original.open_control(agent, action, cancellation)
-        }
-
-        fn open<'a>(
-            &'a self,
-            agent: &'a AgentState,
-            turn: OperationId,
-            input: &'a ModelContent,
-            cancellation: acyclic_actors::guest::CancellationToken,
-        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
-            Box::pin(async move {
-                let mut open = self.original.open(agent, turn, input, cancellation).await?;
-                open.goal = open.goal.map(|original| {
-                    Arc::new(EditedGoal {
-                        original,
-                        edit: self.edit.clone(),
-                    }) as Arc<dyn TurnGoal>
-                });
-                Ok(open)
-            })
-        }
-    }
-
-    for replacement in [
-        b"---\nstatus: done\n---\nconcurrent body\n".as_slice(),
-        b"concurrent body\n".as_slice(),
-        b"---\nstatus: invalid\n---\nconcurrent body\n".as_slice(),
+    let valid = serde_json::to_vec(&ApprovalPolicy::accept_all("configured"))?;
+    for bytes in [
+        b"{".as_slice(),
+        b"{\"approvers\":[]}".as_slice(),
+        valid.as_slice(),
     ] {
-        let stream = Arc::new(MemoryStream::default());
-        let path = super::create(&stream, id(3)).await?;
-        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-            "done".into(),
-        )]));
-        let (host, private) = private(&path).await?;
-        let volume = VolumeRef::new(
-            private.volume.provider().clone(),
-            "agent-scratch".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-                path.id().to_bytes(),
-            )),
-            &mut None,
-        )?;
-        host.create_volume(&volume).await?;
+        let path = AgentPath::root(&id(219));
+        let (filesystem, binding) = private(&path).await?;
         let issuer = AuthorityRoot::new(
             "agents",
             [7; 32],
@@ -1894,150 +1912,94 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
                 id: "agents".into(),
             },
         );
-        let scope = issuer.bootstrap_scope(
-            "goal-editor",
-            &Capabilities::new([
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(acyclic_harness_core::AgentId::from_bytes(
-                path.id().to_bytes(),
-            )),
+        let authority = acyclic_harness_core::filesystem::agent_authority(
+            &issuer.clone().into(),
+            &TurnAdmission::LocalRoot,
+            &path,
+            std::slice::from_ref(&binding),
+            &[],
+        )
+        .await?;
+        let write = ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &binding.volume,
+            VolumeOperation::Write,
+            LIMITS.maximum_bytes,
             &mut None,
         )?;
-        let verifier = issuer.verifier(&mut None)?;
-        let read = ContentGrant::verify_directory_read(&verifier, &scope, &volume, "", &mut None)?;
-        let edit = Arc::new(Edit {
-            host: host.clone(),
-            write: ContentGrant::verify(
-                &verifier,
-                &scope,
-                &volume,
-                VolumeOperation::Write,
+        let file = filesystem
+            .put_content(
+                &binding.volume,
+                &write,
+                "policy.json",
+                bytes,
+                "application/json",
+                "policy.json",
                 LIMITS.maximum_bytes,
-                &mut None,
-            )?,
-            volume: volume.clone(),
-            pending: AtomicBool::new(true),
-            reads: AtomicUsize::new(0),
-            replacement,
-        });
-        edit.publish(b"original body\n", "goal-original").await?;
-        let driver = ExecutorDriver::new(EditingHost {
-            original: FilesystemTurnHost::new(
-                stream.clone(),
-                acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")
-                    .expect("actor binding"),
-                host.clone(),
-                issuer,
-                TurnAdmission::LocalRoot,
-                executors(model.clone())?,
-                LIMITS,
-                Default::default(),
-            )
-            .with_goals(Some(GoalContinuationPolicy {
-                max_continuations: Some(0),
-            })),
-            edit: edit.clone(),
-        });
-        let mut adoption = adopted(id(3));
-        adoption.volumes = vec![
-            private,
-            VolumeBinding {
-                name: acyclic_harness_core::filesystem::HOME_VOLUME.into(),
-                volume: volume.clone(),
-            },
-        ];
-        let first = step(
-            &driver,
-            &path,
-            Some(AgentState::adopted(path.clone(), &adoption)?),
-            (2, 0),
-            requested("goal", &path),
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        // Restoring the read/rewrite retry settles in this first step instead.
-        assert_eq!(edit.reads.load(Ordering::SeqCst), 1);
-        assert!(first.state.turn.is_some());
-        assert_eq!(turn_segment(&first.state)?, 0);
-        assert_eq!(first.state.conversation_tail, 0);
-        assert!(
-            !first
-                .outs
-                .iter()
-                .any(|out| matches!(out, Out::Conversation(_) | Out::GoalCompleted { .. }))
-        );
-        assert_eq!(first.alarm, Alarm::At(CONTINUE_NOW));
-        assert_eq!(model.requests().len(), 1);
-        let commit = lower(&first, 2, delivery_key(&first.state, "goal-changed")?)?;
-        assert!(matches!(
-            stream.commit(commit.clone()).await?,
-            CommitOutcome::Committed(_)
-        ));
-        assert!(matches!(
-            stream.commit(commit).await?,
-            CommitOutcome::Committed(_)
-        ));
-        let second = step(
-            &driver,
-            &path,
-            Some(first.state),
-            (2, 0),
-            Wake::Alarm,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-        assert_eq!(edit.reads.load(Ordering::SeqCst), 2);
-        assert_eq!(second.state.phase, Phase::Idle);
-        assert_eq!(second.state.conversation_tail, 1);
-        assert_eq!(
-            model.requests().len(),
-            1,
-            "the original filesystem journal replays the completed model call"
-        );
-        assert_eq!(
-            second
-                .outs
-                .iter()
-                .filter(|out| matches!(out, Out::Conversation(_)))
-                .count(),
-            1
-        );
-        let commit = lower(&second, 2, delivery_key(&second.state, "goal-settled")?)?;
-        assert!(matches!(
-            stream.commit(commit).await?,
-            CommitOutcome::Committed(_)
-        ));
-        let (_, bytes) = host
-            .read_private_path(
-                &volume,
-                &read,
-                "GOAL.md",
+                &acyclic_harness_core::IdempotencyKey::new("policy")?,
                 None,
-                LIMITS.maximum_bytes,
                 ContentAccess::default(),
             )
             .await?;
-        let text = std::str::from_utf8(&bytes)?;
-        assert!(text.ends_with("concurrent body\n"));
-        assert!(!text.contains("original body"));
-        if replacement
-            .windows(b"status: invalid".len())
-            .any(|part| part == b"status: invalid")
+        let model = Arc::new(ScriptedModelProvider::new([]));
+        let host = FilesystemTurnHost::new(
+            Arc::new(MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"account", b"agents", b"owner")?,
+            filesystem,
+            issuer,
+            TurnAdmission::LocalRoot,
+            executors(model.clone())?,
+            LIMITS,
+            ApprovalPolicy::accept_all("preset"),
+        );
+        let mut adoption = adopted(id(219));
+        adoption.volumes = vec![binding];
+        adoption.policy = Some(file);
+        let state = AgentState::adopted(path, &adoption)?;
+        let open = host
+            .open(
+                &state,
+                OperationId::from_bytes([220; 16]),
+                &ModelContent::Text("test".into()),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        let approvals = open.approvals.as_ref().ok_or("approval owner absent")?;
+        for (n, route) in [ApprovalRoute::Policy, ApprovalRoute::Human]
+            .into_iter()
+            .enumerate()
         {
-            assert_eq!(bytes.as_ref(), replacement);
-            assert!(second.outs.iter().any(|out| matches!(out,
-                Out::Send { record: InboxRecord::Notice { notice: NoticePayload::Quiet(notice), .. }, .. }
-                if notice.kind == "harness.invalid" && !notice.wake && notice.body["path"] == "GOAL.md"
-            )));
-        } else {
-            assert!(text.contains(if replacement.starts_with(b"---") {
-                "status: done"
+            let id = acyclic_harness_core::InteractionId::from_bytes([n as u8 + 1; 16]);
+            let request = Interaction::approval(
+                "review".into(),
+                OperationId::from_bytes([221; 16]),
+                [222; 32],
+                ApprovalSubject::Tool {
+                    route,
+                    tool: "write".into(),
+                    call_id: "call".into(),
+                    arguments: serde_json::json!({"path":"approved"}),
+                    target: None,
+                },
+            )?;
+            approvals.open(id, &request).await?;
+            let outcome = approvals.outcome(id, &*open.journal, None).await?;
+            if bytes != valid.as_slice() {
+                assert!(
+                    matches!(outcome, Some(InteractionOutcome::Denied {})),
+                    "malformed policy must neither accept the preset nor wait on a human"
+                );
+            } else if n == 0 {
+                assert!(matches!(outcome, Some(InteractionOutcome::Approved {})));
             } else {
-                "status: blocked"
-            }));
+                assert!(
+                    outcome.is_none(),
+                    "valid policy preserves the explicit human route"
+                );
+            }
         }
+        assert!(model.requests().is_empty());
     }
     Ok(())
 }

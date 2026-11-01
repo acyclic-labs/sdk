@@ -5,12 +5,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
     pub async fn plan_extents<W: FsWork>(
         &self,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
         self.reader
-            .plan_record_extents(self.record, range, maximum_spans, budget, cancellation)
+            .plan_record_extents(
+                self.record,
+                range,
+                maximum_spans.into(),
+                budget,
+                cancellation,
+            )
             .await
     }
 }
@@ -21,15 +27,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         &self,
         record: FileRecord,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Option<ExtentPlan>> {
+        let maximum_spans = maximum_spans.into();
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            if maximum_spans == 0
-                || range.length > self.volume.config.limits.maximum_generation_bytes
-            {
+            if maximum_spans == Some(0) {
                 return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -73,10 +78,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         &self,
         path: &NamespacePath,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<ExtentPlan>> {
+        let maximum_spans = maximum_spans.into();
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self.resolve_file(path, &mut accounting, cancellation).await;
         let work = accounting.spent();
@@ -155,10 +161,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         record: FileRecord,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(Option<ExtentPlan>, KernelOwnedAllocation), FsError> {
+        let maximum_spans = maximum_spans.into();
         let mut planned = match record.payload {
             FilePayload::InlineRegular(data) => {
                 validate_planned_file_range(data.as_bytes().len() as u64, range)?;
@@ -206,11 +213,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         file: F,
         range: ByteRange,
-        maximum_spans: u32,
+        maximum_spans: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<ExtentPlan>> {
-        if maximum_spans == 0 || range.length > self.volume.config.limits.maximum_generation_bytes {
+        let maximum_spans = maximum_spans.into();
+        if maximum_spans == Some(0) {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));

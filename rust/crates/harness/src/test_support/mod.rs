@@ -48,7 +48,7 @@ pub fn local_harness_config(
 pub enum PromptOutcome {
     /// The turn settled; its conversation entry and decoded output.
     Settled(crate::agent::ConversationEntry, crate::executor::TurnOutput),
-    /// The turn failed, which ends the root agent.
+    /// The prompt delivery or turn execution failed.
     Failed(String),
 }
 
@@ -61,6 +61,7 @@ pub async fn prompt_settled(
     id: &str,
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
+    let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     use crate::agent::{AgentOutcome, Phase, Reply};
     use crate::local::Event;
     let conversation =
@@ -82,6 +83,9 @@ pub async fn prompt_settled(
             Some(Phase::Done {
                 outcome: AgentOutcome::Failed { message },
             }) => return Ok(PromptOutcome::Failed(message)),
+            Some(Phase::Done { outcome: AgentOutcome::FailedDiagnostic { diagnostic } }) => {
+                return Ok(PromptOutcome::Failed(format!("diagnostic: {} ({} bytes)", diagnostic.path().map_err(agent)?, diagnostic.bytes)));
+            }
             Some(Phase::Done { outcome }) => {
                 return Err(crate::Error::Conflict(format!(
                     "root agent ended before its prompt settled: {outcome:?}"
@@ -106,7 +110,7 @@ pub async fn prompt_settled(
     };
     let bytes = harness
         .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
+        .read(&entry.output, entry.output.descriptor().byte_length(), None, None)?
         .await?;
     let output =
         serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;

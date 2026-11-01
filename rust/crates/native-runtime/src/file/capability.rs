@@ -87,6 +87,8 @@ impl NativeFile {
             file,
             #[cfg(target_vendor = "apple")]
             device: Default::default(),
+            #[cfg(windows)]
+            completion_attached: std::sync::atomic::AtomicBool::new(false),
             _allocation: allocation,
         });
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]

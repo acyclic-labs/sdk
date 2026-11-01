@@ -14,11 +14,19 @@ pub(super) struct BoundedCodec<T> {
     decoder_maximum: u32,
 }
 
+fn decoder<T>(maximum: u32) -> JsonRpcMessageCodec<T> {
+    if maximum == 0 {
+        JsonRpcMessageCodec::new()
+    } else {
+        JsonRpcMessageCodec::new_with_max_length(maximum as usize)
+    }
+}
+
 impl<T> BoundedCodec<T> {
     pub(super) fn new(maximum: Arc<AtomicU32>) -> Self {
         let decoder_maximum = maximum.load(Ordering::Acquire);
         Self {
-            decoder: JsonRpcMessageCodec::new_with_max_length(decoder_maximum as usize),
+            decoder: decoder(decoder_maximum),
             maximum,
             decoder_maximum,
         }
@@ -27,7 +35,7 @@ impl<T> BoundedCodec<T> {
     fn refresh_decoder_bound(&mut self) {
         let maximum = self.maximum.load(Ordering::Acquire);
         if maximum != self.decoder_maximum {
-            self.decoder = JsonRpcMessageCodec::new_with_max_length(maximum as usize);
+            self.decoder = decoder(maximum);
             self.decoder_maximum = maximum;
         }
     }
@@ -64,9 +72,16 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
 
     fn encode(&mut self, item: T, buffer: &mut BytesMut) -> io::Result<()> {
         let start = buffer.len();
-        let maximum = start
-            .checked_add(self.maximum.load(Ordering::Acquire) as usize)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let allowance = self.maximum.load(Ordering::Acquire);
+        let maximum = if allowance == 0 {
+            None
+        } else {
+            Some(
+                start
+                    .checked_add(allowance as usize)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
+            )
+        };
         let result = serde_json::to_writer(
             BoundedWrite {
                 buffer: &mut *buffer,
@@ -85,7 +100,7 @@ impl<T: Serialize> Encoder<T> for BoundedCodec<T> {
 
 struct BoundedWrite<'a> {
     buffer: &'a mut BytesMut,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 impl Write for BoundedWrite<'_> {
@@ -94,7 +109,7 @@ impl Write for BoundedWrite<'_> {
             .buffer
             .len()
             .checked_add(bytes.len())
-            .is_none_or(|length| length > self.maximum)
+            .is_none_or(|length| self.maximum.is_some_and(|maximum| length > maximum))
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
