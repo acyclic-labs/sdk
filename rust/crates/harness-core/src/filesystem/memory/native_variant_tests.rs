@@ -131,7 +131,11 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
 #[tokio::test]
 async fn native_patch_publishes_all_members_once_or_leaves_every_file_unchanged() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
-    run_admitted_file_case(&storage, Limits::default(), |task| async move {
+    let limits = Limits {
+        file_bytes: 4096,
+        ..Limits::default()
+    };
+    run_admitted_file_case(&storage, limits, |task| async move {
         let profile = NativeToolProfile::Openai;
         let revision = profile.tools()?.into_iter().find(|tool| tool.capability == "edit").unwrap();
         let original = Arc::new(crate::tools::variants::apply_patch()?);
