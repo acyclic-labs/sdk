@@ -298,13 +298,14 @@ pub fn capability_from_text(text: &str) -> Result<Vec<u8>, CredentialError> {
 
 /// Encode bearer metadata in one exactly sized buffer. This does not admit a
 /// request: validate static credentials first, or retain resolved custody and
-/// check it at dispatch. The transport consumes this buffer without copying it.
-pub fn bearer_bytes(value: &str) -> Vec<u8> {
+/// check it at dispatch. A shared-buffer header constructor retains the same
+/// protected allocation through its final clone, without copying the payload.
+pub fn bearer_bytes(value: &str) -> bytes::Bytes {
     const PREFIX: &[u8] = b"Bearer ";
-    let mut bytes = Vec::with_capacity(PREFIX.len() + value.len());
+    let mut bytes = Zeroizing::new(Vec::with_capacity(PREFIX.len() + value.len()));
     bytes.extend_from_slice(PREFIX);
     bytes.extend_from_slice(value.as_bytes());
-    bytes
+    crate::operation::ProtectedBytes::new(bytes).into_bytes()
 }
 
 /// Admit an origin only: no embedded credential, query, fragment or path.

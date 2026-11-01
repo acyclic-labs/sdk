@@ -16,9 +16,8 @@ impl ProtectedBytes {
         Self(bytes)
     }
 
-    /// Transfer the same allocation to a native transport. Clones and slices of
+    /// Transfer the same allocation to a transport. Clones and slices of
     /// the returned bytes retain this owner until the last reference retires.
-    #[cfg(all(feature = "client", not(target_arch = "wasm32")))]
     pub fn into_bytes(self) -> bytes::Bytes {
         bytes::Bytes::from_owner(self)
     }
