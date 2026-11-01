@@ -387,7 +387,7 @@ impl<T: Transport> Client<T> {
         path: &'static str,
         body: &impl Serialize,
     ) -> Result<R, Error> {
-        let body = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::InvalidRequest)?);
+        let body = ProtectedBytes::from_json(body).map_err(|_| Error::InvalidRequest)?;
         let changed = self
             .credentials
             .watch()
@@ -400,10 +400,7 @@ impl<T: Transport> Client<T> {
                 .await
                 .map_err(|_| Error::Credential)?;
             bearer.check().await.map_err(|_| Error::Credential)?;
-            let response = self
-                .transport
-                .post(path, &bearer, ProtectedBytes::new(body))
-                .await?;
+            let response = self.transport.post(path, &bearer, body).await?;
             match response.status {
                 200..=299 => {
                     bearer.check().await.map_err(|_| Error::Credential)?;
