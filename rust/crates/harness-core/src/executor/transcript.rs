@@ -222,6 +222,22 @@ impl PreparationRecord for MessageSegment {
     fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
         crate::executor::json::JsonValueSchema::MessageSegment
     }
+
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        let bytes = crate::core::owned_sum([
+            std::mem::size_of::<Self>() as u64,
+            crate::core::owned_buffer::<ModelMessage>(self.suffix.capacity())?,
+            self.parent
+                .as_ref()
+                .map_or(Ok(0), |parent| parent.reference.logical_owned_bytes())?,
+        ])?;
+        self.suffix
+            .iter()
+            .try_fold(bytes, |bytes, message| {
+                crate::core::owned_sum([bytes, message.content.retained_payload_bytes()?])
+            })
+            .map(Some)
+    }
 }
 
 fn invalid(io: Option<&PreparationIo>) -> Error {
@@ -513,35 +529,9 @@ async fn load_segment(
     let segment = retain_preparation(load_json::<MessageSegment>(journal, reference, io).await?)?;
     #[cfg(feature = "filesystem")]
     {
-        if io.is_none() {
-            return Ok(segment);
-        }
-        // Serde's admission reserves scratch for its largest possible typed
-        // alternative. Release it after each segment, retaining only funded
-        // message and cursor copies rather than a decoder per historical turn.
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let parent = segment
-            .parent
-            .as_ref()
-            .map(|parent| {
-                Ok::<_, Error>(MessagePrefix {
-                    reference: crate::model::clone_file(&parent.reference, io)?,
-                    count: parent.count,
-                    content_digest: parent.content_digest,
-                    chain_digest: parent.chain_digest,
-                })
-            })
-            .transpose()?;
-        let suffix = crate::model::clone_messages(&segment.suffix, io)?;
-        let retained = io.map_or(Ok(0), |io| {
-            io.owned_bytes()?
-                .checked_sub(before)
-                .ok_or_else(|| invalid(Some(io)))
-        })?;
+        let retained = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         scope.finish(retained)?;
-        Ok(MessageSegment { parent, suffix })
     }
-    #[cfg(not(feature = "filesystem"))]
     Ok(segment)
 }
 
@@ -684,21 +674,18 @@ pub(super) async fn working_reference(
     let io = original;
     let stored =
         retain_preparation(load_json::<ResponseProjection>(journal, reference, io).await?)?;
-    #[cfg(feature = "filesystem")]
-    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    let working = stored
-        .working
-        .as_ref()
-        .map(|file| crate::model::clone_file(file, io))
-        .transpose()?;
-    drop(stored);
+    let working = stored.working;
+    drop((
+        stored.context,
+        stored.canonical,
+        stored.checkpoint,
+        stored.accounting,
+    ));
     #[cfg(feature = "filesystem")]
     {
-        let retained = io.map_or(Ok(0), |io| {
-            io.owned_bytes()?
-                .checked_sub(before)
-                .ok_or_else(|| invalid(Some(io)))
-        })?;
+        let retained = working
+            .as_ref()
+            .map_or(Ok(0), FileRef::logical_owned_bytes)?;
         scope.finish(retained)?;
     }
     Ok(working)
