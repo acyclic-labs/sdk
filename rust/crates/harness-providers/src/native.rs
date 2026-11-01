@@ -196,35 +196,16 @@ pub(crate) fn generate<'a>(
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
-                    let mut response = response;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
-                    loop {
-                        let (failure, retry_after) = match attempt.response(response, provider.config.max_event_bytes, Some(work)).await {
-                            Err((error, retry_after)) => (Some(error), retry_after),
-                            Ok(response) => {
-                            let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
-                            let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
-                            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                            let events = parse_response(provider, request, &names, dispatch_id, work, response,
-                                input_bytes, origin, origin_custody);
-                            futures::pin_mut!(events);
-                            let mut failure = None;
-                            while let Some(event) = events.next().await {
-                                match event {
-                                    Ok(event) => { yield event; }
-                                    Err(error) => { failure = Some(error); break; }
-                                }
-                            }
-                            (failure, None)
-                            }
-                        };
-                        let Some(error) = failure else { break; };
-                        attempt.recover(provider, &mut auth, error, retry_after,
-                            Some(&mut auth_custody), Some(work)).await?;
-                        work.remaining()?;
-                        response = dispatch::send(provider, body.clone(), dispatch_id,
-                            auth.0.as_deref(), auth.1.as_deref(), Some(work)).await;
-                    }
+                    let response = attempt.exchange(provider, &body, dispatch_id, &mut auth,
+                        response, Some(&mut auth_custody), Some(work)).await?;
+                    let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
+                    let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
+                    let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+                    let events = parse_response(provider, request, &names, dispatch_id, work, response,
+                        input_bytes, origin, origin_custody);
+                    futures::pin_mut!(events);
+                    while let Some(event) = events.next().await { yield event?; }
                 }
             })
         };
