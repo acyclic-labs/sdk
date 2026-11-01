@@ -273,6 +273,7 @@ test("runner rejects stale source and substituted package inputs before qualific
     for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs"]) {
       copyFileSync(new URL(`./${name}`, import.meta.url), join(root, "scripts", name));
     }
+    copyFileSync(new URL("./process-capture.mjs", import.meta.url), join(root, "scripts/process-capture.mjs"));
     mkdirSync(join(root, "rust/crates/harness/conformance"), { recursive: true });
     copyFileSync(new URL(`../${compatibilityArtifacts.harness.conformanceDigest}`, import.meta.url), join(root, compatibilityArtifacts.harness.conformanceDigest));
     writeFileSync(join(root, ".gitignore"), "/artifacts/\n/launcher/\n");

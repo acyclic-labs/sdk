@@ -25,10 +25,10 @@ impl CommitId {
 pub struct IdempotencyKey(pub(crate) Bytes);
 
 impl IdempotencyKey {
-    /// Constructs a nonempty bounded key.
+    /// Constructs a nonempty exact caller key.
     pub fn new(value: impl Into<Bytes>) -> Result<Self, StreamError> {
         let value = value.into();
-        if value.is_empty() || value.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        if value.is_empty() {
             return Err(StreamError::InvalidArgument);
         }
         Ok(Self(value))
@@ -715,13 +715,16 @@ pub enum FollowUpdate {
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
 
 /// Projects records from an existing follow without subscribing again.
-pub fn records_only(updates: FollowStream) -> RecordStream {
-    use futures::StreamExt as _;
-    Box::pin(updates.filter_map(|update| {
-        futures::future::ready(match update {
+pub fn records_only<S>(updates: S) -> RecordStream
+where
+    S: futures::Stream<Item = Result<FollowUpdate, StreamError>> + ProviderTask + 'static,
+{
+    Box::pin(crate::projection::filter_map(
+        updates,
+        |update| match update {
             Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
             Ok(FollowUpdate::Progress { .. } | FollowUpdate::Opening { .. }) => None,
             Err(error) => Some(Err(error)),
-        })
-    }))
+        },
+    ))
 }

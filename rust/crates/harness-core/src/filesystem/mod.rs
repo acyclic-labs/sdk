@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         input: &'a B,
         media_type: &'a str,
         display_name: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
@@ -178,6 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        let maximum_bytes = maximum_bytes.into();
         // Refuse invalid or unauthorized input before admitting an allocated future.
         let bytes = input.as_ref();
         grant.require(volume, VolumeOperation::Write, io)?;
@@ -192,7 +193,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "content caller lacks a filesystem write grant",
             ));
         }
-        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+        if volume.provider() != &self.provider
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -273,7 +276,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     true,
                 )?,
                 None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(
@@ -361,12 +364,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
-                const RECORD_BYTES: u64 = 6
-                    * (crate::conversation::MAX_PATH_BYTES as u64
-                        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                        + 1024);
-                let original_receipt =
-                    read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = read_metadata(&prior, &receipt_path, io).await?;
                 let original_receipt = if internal_class.is_some() {
                     recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
                         .await?
@@ -407,16 +405,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })
                 }?;
-                let committed = self
-                    .read_retained_file(&prior, &reference, maximum_bytes, io)?
+                self.authenticate_retained_file(&prior, &reference, Some(bytes), io)?
                     .await?;
-                if committed.as_ref() != bytes {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to different content",
-                    ));
-                }
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
@@ -506,7 +496,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            self.read_retained_file(&generation, &reference, maximum_bytes, io)?
+            self.authenticate_retained_file(&generation, &reference, Some(bytes), io)?
                 .await?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;

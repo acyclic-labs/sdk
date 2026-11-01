@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +14,8 @@ const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 const negatives = { InvalidActorBytes: "code_sha256", InvalidOptionalInteger: "if_tail" };
 
 // Injected commands/pins support offline controls. The CLI uses real pinned tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
-  if (process.platform !== "win32" && command === spawnSync) throw new Error("installed Ruby qualification currently requires the pinned Windows runtime");
+export function qualify(args, { command = captureCommand, toolchain = pinned } = {}) {
+  if (process.platform !== "win32" && command === captureCommand) throw new Error("installed Ruby qualification currently requires the pinned Windows runtime");
   const packageRoot = realpathSync(args.package);
   const authorityRoot = realpathSync(args.authority);
   const rubyHome = realpathSync(args["ruby-home"]);
@@ -57,7 +57,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   Object.assign(env, { GEM_HOME: installedCache,
     GEM_PATH: [installedCache, join(rubyHome, "lib/ruby/gems", toolchain.ruby_api_version)].join(delimiter),
     HOME: join(output, "home"), USERPROFILE: join(output, "home"), SOURCE_DATE_EPOCH: toolchain.source_date_epoch });
-  const execute = (argv, cwd) => command(ruby, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  const execute = (argv, cwd) => command(ruby, argv, { cwd, env, encoding: "utf8", timeout: 180_000 });
   const runtimeVersion = execute(["--version"], directory);
   const versionText = (runtimeVersion.stdout ?? "") + (runtimeVersion.stderr ?? "");
   if (runtimeVersion.error || runtimeVersion.status !== 0 || !versionText.startsWith(`ruby ${toolchain.ruby_version} `)

@@ -93,9 +93,6 @@ pub(super) async fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std:
         root_id,
         ClosureLimits {
             decode: limits,
-            maximum_objects: config.limits.maximum_objects_per_generation,
-            maximum_files: config.limits.maximum_files_per_generation,
-            maximum_object_bytes: config.limits.maximum_generation_bytes,
             profile: config.profile,
             symbolic_links: config.symbolic_links,
             hard_links: config.hard_links,

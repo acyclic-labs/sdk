@@ -145,7 +145,7 @@ struct PreparedCommand {
     shell: Option<crate::tools::ShellInput>,
     fs: Option<crate::tools::FsCommand>,
     request: Vec<u8>,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 struct ShellCommand<'a> {
@@ -153,7 +153,7 @@ struct ShellCommand<'a> {
     context: &'a ToolContext,
     shell: Option<crate::tools::ShellInput>,
     request: Vec<u8>,
-    maximum: usize,
+    maximum: Option<usize>,
 }
 
 impl CheckoutTools {
@@ -411,7 +411,7 @@ impl ToolExecutor for CheckoutTools {
                 None
             };
             let maximum = context.effective_scope().limits().render_bytes;
-            let maximum = usize::try_from(maximum).map_err(storage)?;
+            let maximum = maximum.map(usize::try_from).transpose().map_err(storage)?;
             self.run_checkout_command(
                 PreparedCommand {
                     invocation,

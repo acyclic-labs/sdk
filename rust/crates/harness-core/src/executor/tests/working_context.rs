@@ -78,7 +78,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
             },
             messages: selected,
         }),
-        max_steps: 3,
+        max_steps: Some(3),
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;

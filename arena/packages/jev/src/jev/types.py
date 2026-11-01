@@ -12,7 +12,7 @@ class Question:
     """One typed question. The answer is always one of `options`.
 
     type:
-      choice  free option set (2..32 options)
+      choice  free option set (at least two distinct options)
       noul    yes/no; options are forced to ["yes", "no"]
       score   ordered options (e.g. "1".."5"); the decision also carries an expected value
     """
@@ -116,7 +116,6 @@ class Plan:
     cached_tokens: int = 0
     naive_tokens: int = 0
     beyond_train_len: bool = False
-    truncated: bool = False
     over_option_cap: list[str] = field(default_factory=list)
 
     @property

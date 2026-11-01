@@ -147,7 +147,11 @@ impl FileTool {
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",
@@ -167,7 +171,12 @@ impl FileTool {
                     || input.0.query.len() as u64 > options.maximum_query_bytes
                     || u64::from(options.maximum_matches)
                         * std::mem::size_of::<super::text::TextRange>() as u64
-                        > maximum_result_bytes.min(scope.limits().file_bytes)
+                        > scope
+                            .limits()
+                            .file_bytes
+                            .map_or(maximum_result_bytes, |maximum| {
+                                maximum_result_bytes.min(maximum)
+                            })
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
@@ -199,7 +208,11 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         self.public_path(path, io)?;
-        if path.len() > scope.limits().path_bytes {
+        if scope
+            .limits()
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(super::executor::rejection(
                 work,
                 "file path exceeds original task bound",

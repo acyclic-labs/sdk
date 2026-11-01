@@ -13,7 +13,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub volume: &'a VolumeRef,
     pub key: &'a IdempotencyKey,
     pub expected_path: Option<&'a str>,
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     pub internal_class: Option<InternalContentClass>,
     pub purpose: PublicationPurpose,
     pub scope: &'a Scope,
@@ -77,8 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
-        let receipt =
-            read_generation(&original, &receipt_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
+        let receipt = read_metadata(&original, &receipt_path.0, Some(io)).await?;
         let receipt = if internal_class.is_some() {
             recover_internal_upload_receipt(&original, receipt_identity, receipt, Some(io)).await?
         } else {
@@ -243,11 +242,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-pub(super) const UPLOAD_RECORD_BYTES: u64 = 6
-    * (crate::conversation::MAX_PATH_BYTES as u64
-        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-        + 1024);
-
 // Older internal writes kept the FileRef index and the canonical receipt at
 // separate paths. New writes use the tuple-shaped index as their receipt.
 pub(in crate::filesystem) async fn recover_internal_upload_receipt<
@@ -267,7 +261,7 @@ pub(in crate::filesystem) async fn recover_internal_upload_receipt<
     let _hold = io
         .map(|io| io.guard_owned(path.capacity() as u64))
         .transpose()?;
-    read_generation(original, &path, UPLOAD_RECORD_BYTES, io).await
+    read_metadata(original, &path, io).await
 }
 
 pub(in crate::filesystem) fn content_metadata_matches(
@@ -280,7 +274,7 @@ pub(in crate::filesystem) fn content_metadata_matches(
         return Ok(true);
     }
     let legacy = match io {
-        Some(io) => io.encode(file, UPLOAD_RECORD_BYTES, false)?,
+        Some(io) => io.encode(file, Some(io.remaining()?.peak_allocation_bytes), false)?,
         None => acyclic_stream::OwnedBytes::from(
             serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
         ),
@@ -294,7 +288,11 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     receipt: &acyclic_stream::OwnedBytes,
     io: &PreparationIo,
 ) -> Result<()> {
-    let canonical = io.encode(&(&recorded.0, &recorded.1), UPLOAD_RECORD_BYTES, true)?;
+    let canonical = io.encode(
+        &(&recorded.0, &recorded.1),
+        Some(io.remaining()?.peak_allocation_bytes),
+        true,
+    )?;
     let hold = io.guard_bytes(&canonical)?;
     let canonical = (canonical, hold);
     if canonical.0.as_ref() != receipt.as_ref() {
@@ -307,8 +305,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata_path = content_metadata_path_io(recorded.0.path(), true, Some(io))?;
     let hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, hold);
-    let metadata =
-        read_generation(original, &metadata_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
+    let metadata = read_metadata(original, &metadata_path.0, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
     if !content_metadata_matches(&metadata.0, &recorded.0, &canonical.0, Some(io))? {
@@ -357,11 +354,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .0
             .0
             .pin_version(version, &mut Some(&mut io.history_io()))?;
-        let bytes = self
-            .read_retained_file(original, &recorded.0.0, request.maximum_bytes, Some(io))?
-            .await?;
-        let hold = io.guard_bytes(&bytes)?;
-        let bytes = (bytes, hold);
+        let bytes = if request.purpose == PublicationPurpose::Content {
+            let bytes = self
+                .read_retained_file(
+                    original,
+                    &recorded.0.0,
+                    request
+                        .maximum_bytes
+                        .unwrap_or(recorded.0.0.descriptor().byte_length().max(1)),
+                    Some(io),
+                )?
+                .await?;
+            let hold = io.guard_bytes(&bytes)?;
+            Some((bytes, hold))
+        } else {
+            if request
+                .maximum_bytes
+                .is_some_and(|maximum| recorded.0.0.descriptor().byte_length() > maximum)
+            {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Invalid,
+                    "content provider or size limit mismatch",
+                ));
+            }
+            self.authenticate_retained_file(original, &recorded.0.0, None, Some(io))?
+                .await?;
+            None
+        };
         bounded_io::retain(original, Some(io)).await?;
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
@@ -369,11 +389,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(recorded.0.1.take());
         recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
-        let payload = if request.purpose == PublicationPurpose::Content {
-            if let Some(hold) = bytes.1 {
+        let payload = if let Some((bytes, hold)) = bytes {
+            if let Some(hold) = hold {
                 hold.into_retained()?;
             }
-            Some(bytes.0)
+            Some(bytes)
         } else {
             None
         };

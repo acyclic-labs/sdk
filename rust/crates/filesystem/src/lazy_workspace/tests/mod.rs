@@ -226,7 +226,7 @@ impl DemandSource for CountingSource {
                 let mut guard = ctx
                     .claim_owned(name.capacity() as u64, 1)
                     .map_err(DemandError::from)?;
-                let name = LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255)
+                let name = LogicalName::new(NameEncoding::Utf8, name.into_bytes())
                     .map_err(|_| DemandError::InvalidRequest)?;
                 entries
                     .allocation

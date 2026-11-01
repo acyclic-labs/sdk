@@ -29,8 +29,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
-
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
 
 struct CursorEntry<T> {

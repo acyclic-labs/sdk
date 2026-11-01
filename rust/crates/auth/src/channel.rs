@@ -242,24 +242,21 @@ pub async fn connect(
 /// host's event and timer; an unbound call retains its monotonic deadline.
 #[derive(Clone, Copy)]
 pub enum Budget<'a> {
-    /// No caller deadline. Dropping the call still cancels its local interest.
-    Unbounded,
-    /// One monotonic deadline covering refresh, readiness and the response.
-    Deadline(tokio::time::Instant),
+    /// Optional caller-selected deadline covering refresh, readiness and the response.
+    Deadline(Option<tokio::time::Instant>),
     /// The original operation event and its projected wire deadline.
     Operation {
         /// Caller-owned stop event shared with every other stage.
         context: &'a crate::operation::Context,
         /// Original absolute deadline projected to the native clock.
-        deadline: tokio::time::Instant,
+        deadline: Option<tokio::time::Instant>,
     },
 }
 
 impl Budget<'_> {
     fn deadline(self) -> Option<tokio::time::Instant> {
         match self {
-            Self::Unbounded => None,
-            Self::Deadline(deadline) | Self::Operation { deadline, .. } => Some(deadline),
+            Self::Deadline(deadline) | Self::Operation { deadline, .. } => deadline,
         }
     }
 
@@ -267,8 +264,7 @@ impl Budget<'_> {
     /// typed reason and establishes no remote mutation outcome.
     pub async fn run<T>(self, work: impl Future<Output = Result<T, Status>>) -> Result<T, Status> {
         match self {
-            Self::Unbounded => work.await,
-            Self::Deadline(deadline) => {
+            Self::Deadline(Some(deadline)) => {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(Status::deadline_exceeded("operation deadline expired"));
                 }
@@ -282,13 +278,15 @@ impl Budget<'_> {
                 }
                 result
             }
+            Self::Deadline(None) => work.await,
             Self::Operation { context, .. } => context.run(work).await.map_err(stopped_status)?,
         }
     }
 }
 
 /// Apply a source partition's exact lease under the operation's original
-/// monotonic deadline, including credential refresh, channel readiness and RPC.
+/// optional monotonic deadline, including credential refresh, channel readiness and RPC.
+/// None waits for outcome or cancellation without installing a deadline.
 /// Dropping this future cancels its interest. No retries or renewed timeout.
 pub async fn call<T, U, F, Fut>(
     channel: Channel,
@@ -308,13 +306,10 @@ where
             if let Budget::Operation { context, .. } = budget {
                 context.check().map_err(stopped_status)?;
             }
-            let request = match deadline {
-                Some(deadline) => request(body, &lease, deadline)?,
-                None => retained_request(body, &lease)?,
-            };
+            let request = request(body, &lease, deadline)?;
             let context = match budget {
                 Budget::Operation { context, .. } => Some(context.clone()),
-                Budget::Deadline(_) | Budget::Unbounded => None,
+                Budget::Deadline(_) => None,
             };
             let response = dispatch(guard(channel).with_context(context), request).await;
             if response.as_ref().is_err_and(|error| {
@@ -336,14 +331,20 @@ where
 pub fn request<T>(
     body: T,
     lease: &ResolvedCredential,
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<Request<T>, Status> {
     let remaining = deadline
-        .checked_duration_since(tokio::time::Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))?;
+        .map(|deadline| {
+            deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .filter(|duration| !duration.is_zero())
+                .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))
+        })
+        .transpose()?;
     let mut request = retained_request(body, lease)?;
-    request.set_timeout(remaining);
+    if let Some(remaining) = remaining {
+        request.set_timeout(remaining);
+    }
     Ok(request)
 }
 

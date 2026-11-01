@@ -1,4 +1,4 @@
-import {execFileSync} from 'node:child_process';
+import { commandOutput } from "./process-capture.mjs";
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -26,7 +26,7 @@ export function selectArtifacts(artifacts, run, attempt) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const {GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: run, GITHUB_RUN_ATTEMPT: attempt, GITHUB_OUTPUT: output} = process.env;
   if (!output) throw new Error('GITHUB_OUTPUT is required for qualification artifact outputs');
-  const pages = JSON.parse(execFileSync('gh', ['api', '--paginate', '--slurp',
+  const pages = JSON.parse(commandOutput('gh', ['api', '--paginate', '--slurp',
     `repos/${repo}/actions/runs/${run}/artifacts?per_page=100`], {encoding:'utf8'}));
   const artifacts = selectArtifacts(pages.flatMap(page => page.artifacts), run, attempt);
   fs.appendFileSync(output, `artifacts=${JSON.stringify(artifacts)}\n`);

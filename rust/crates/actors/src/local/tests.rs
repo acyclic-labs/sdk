@@ -1030,10 +1030,17 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
         binding.apply(crate::guest::ActorStateCommit {
-            writes: vec![crate::guest::ActorMetadataWrite {
-                key: "metadata".into(),
-                value: Bytes::from_static(b"accepted"),
-            }],
+            writes: vec![
+                crate::guest::ActorMetadataWrite {
+                    key: "metadata".into(),
+                    value: Bytes::from_static(b"accepted"),
+                },
+                crate::guest::ActorMetadataWrite {
+                    key: "removed".into(),
+                    value: Bytes::from_static(b"delete-after-commit"),
+                },
+            ],
+            deletions: vec!["absent".into()],
             journal_from: "0".into(),
             journal: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
             alarm: crate::guest::ActorStateAlarm::Set {
@@ -1045,10 +1052,12 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 state.get("metadata").map(Bytes::as_ref),
                 Some(b"accepted".as_slice())
             );
-            assert_eq!(state.entries().count(), 1);
+            assert_eq!(state.entries().count(), 2);
             Ok(())
         })?;
         let refused: Result<(), Error> = binding.transaction(|state| {
+            state.delete("metadata");
+            assert!(state.get("metadata").is_none());
             state.put("metadata".into(), Bytes::from_static(b"rolled-back"));
             state.append_journal(2, vec![Bytes::from_static(b"rolled-back")])?;
             state.alarm(None)?;
@@ -1105,6 +1114,17 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
                 key("state-transaction/checkpoint")?,
             )
             .await?;
+        // Deletion is part of the original packet and survives provider reopen.
+        let mut deleting = store.bind_state(store.load(&address).await?, 1)?;
+        deleting.apply(crate::guest::ActorStateCommit {
+            writes: vec![],
+            deletions: vec!["removed".into()],
+            journal_from: "2".into(),
+            journal: vec![],
+            alarm: crate::guest::ActorStateAlarm::Keep,
+        })?;
+        deleting.flush(key("state-transaction/delete")?).await?;
+        deleting.finish()?;
         // A changed native journal tail must refuse metadata and alarm too.
         let mut stale = store.bind_state(store.load(&address).await?, 1)?;
         let current = store.load(&address).await?;

@@ -47,7 +47,6 @@ impl HostWorkspaceOwner {
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::Invalid("native session id absent".into()))?;
                 if id.is_empty()
-                    || id.len() > 256
                     || id.chars().any(char::is_control)
                     || object
                         .keys()

@@ -219,8 +219,8 @@ fn copy_approval_subject(
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
             crate::executor::json::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined,
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),
@@ -801,7 +801,11 @@ impl ToolContext {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
-            if path.len() > self.effective_scope().limits().path_bytes
+            if self
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
                 || crate::conversation::is_internal_path(path)
             {
                 return Err(crate::store::guarded_boundary(

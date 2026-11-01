@@ -204,11 +204,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     /// Advances a private candidate only when its observed dependencies remain valid.
     pub async fn rebase(
         &mut self,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionRebase<A, O>>, WorkspaceError>
     {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let receipt = self
             .checkout
             .rebase_head(maximum_conflicts, budget, cancellation)

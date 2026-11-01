@@ -37,7 +37,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
                 &mut None,
             )
             .unwrap(),
-            "project".into(),
+            "project-λ".repeat(8193),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
             &mut None,
@@ -48,7 +48,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
     let plain =
         acyclic_native_runtime::owner_record::SecretBytes(serde_json::to_vec(&owner).unwrap());
     let mut bytes =
-        acyclic_native_runtime::owner_record::encode_with(&plain.0, 65_536, None, |parts| {
+        acyclic_native_runtime::owner_record::encode_with(&plain.0, None, None, |parts| {
             Ok::<_, std::io::Error>(parts.concat())
         })
         .unwrap();
@@ -82,7 +82,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
             // Negative control: independently decode a visible record while
             // omitting the shared private reader's mandatory parent sync.
             let bytes = fs::read(&path).unwrap();
-            acyclic_native_runtime::owner_record::decode_with(&bytes, 65_536, None, |plain| {
+            acyclic_native_runtime::owner_record::decode_with(&bytes, None, None, |plain| {
                 Ok::<_, std::io::Error>(serde_json::from_slice::<Owner>(plain).unwrap())
             })
             .map_err(storage)
@@ -95,6 +95,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
                 assert!(cut >= 3);
                 assert_eq!(read.key_ref, owner.key_ref);
                 assert_eq!(read.task, owner.task);
+                assert_eq!(read.project, owner.project);
                 let synced = flushes.0.load(Ordering::Relaxed);
                 assert_eq!(synced, usize::from(!omit_reader_sync));
                 safe &= cut == 4 || synced == 1;

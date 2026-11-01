@@ -121,7 +121,7 @@ impl Fixture {
             &self.grant,
             &source.path,
             Some(&source.generation),
-            4096,
+            None,
             crate::conversation::ContentAccess {
                 ceiling,
                 io: Some(&io),
@@ -206,7 +206,7 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         &grant,
         &skills[0].source.path,
         Some(&skills[0].source.generation),
-        4096,
+        Some(4096),
         crate::conversation::ContentAccess {
             ceiling: None,
             io: Some(&io_a),
@@ -232,7 +232,7 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         &grant,
         &skills[1].source.path,
         Some(&skills[1].source.generation),
-        4096,
+        Some(4096),
         crate::conversation::ContentAccess {
             ceiling: None,
             io: Some(&io_b),

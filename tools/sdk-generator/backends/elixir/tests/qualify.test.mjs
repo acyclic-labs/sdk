@@ -9,7 +9,7 @@ import { sha256 } from "../../../shared/authority.mjs";
 import { fixture as packageFixture } from "./fixtures/package.mjs";
 import { dependencyFixture } from "./fixtures/dependencies.mjs";
 
-const messageMarker = "PASS Elixir Rust message/enum/service descriptors, 23 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections";
+const messageMarker = "PASS Elixir Rust message/enum/service descriptors, 21 populated RPC message pairs, bytes, unsigned bounds, optional presence, oneofs and 2 runtime type rejections";
 const sourceMarker = "PASS Elixir exact compiled SDK module inventory, source paths and loaded BEAM paths";
 function fixture(t) {
   const pkg = packageFixture(t), deps = dependencyFixture(t), root = dirname(pkg.args.package);
@@ -42,9 +42,9 @@ function fixture(t) {
   return { args, options, pkg, deps, hooks, calls, runtime };
 }
 
-test("qualifier stages only admitted archives, pins offline tools and writes success after controls", t => {
-  const f = fixture(t), receipt = qualify(f.args, f.options);
-  assert.equal(receipt.populated_rpc_message_pairs, 23); assert.equal(receipt.runtime_type_rejections, 2);
+test("qualifier stages only admitted archives, pins offline tools and writes success after controls", async t => {
+  const f = fixture(t), receipt = await qualify(f.args, f.options);
+  assert.equal(receipt.populated_rpc_message_pairs, 21); assert.equal(receipt.runtime_type_rejections, 2);
   assert.equal(receipt.native_rpc_calls_executed, false); assert.equal(receipt.compiled_sdk_provenance, true);
   assert.equal(Object.keys(receipt.installed_dependencies).length, 6);
   assert.equal(f.calls.length, 6);
@@ -52,24 +52,24 @@ test("qualifier stages only admitted archives, pins offline tools and writes suc
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), receipt);
 });
 
-test("changed tools, runtime and missing dependency archives reject before native commands", t => {
+test("changed tools, runtime and missing dependency archives reject before native commands", async t => {
   for (const mutate of [
     f => writeFileSync(join(f.runtime, "OTP-fixture/bin/erl"), "changed"),
     f => writeFileSync(join(f.deps.toolHome, ".mix/archives/hex-fixture/ebin/hex.beam"), "changed"),
     f => rmSync(join(f.deps.cache, "protobuf-1.0.0.tar")),
     f => { f.options.toolchain.lock_sha256 = "0".repeat(64); },
-  ]) { const f = fixture(t); mutate(f); assert.throws(() => qualify(f.args, f.options)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false); }
+  ]) { const f = fixture(t); mutate(f); await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(f.calls.length, 0); assert.equal(existsSync(f.args.output), false); }
 });
 
-test("native command failures, wrong versions and missing completion markers cannot qualify", t => {
+test("native command failures, wrong versions and missing completion markers cannot qualify", async t => {
   for (const [phase, mutate] of [
     ["version", r => { r.stdout = "wrong version"; }], ["hex", r => { r.stdout = "Hex: other"; }],
     ...["deps", "compile", "provenance", "consumer"].map(phase => [phase, r => { r.status = 1; r.stderr = "intended command failure"; }]),
     ["provenance", r => { r.stdout = "no marker"; }], ["consumer", r => { r.stdout = "no marker"; }],
-  ]) { const f = fixture(t); f.hooks[phase] = mutate; assert.throws(() => qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
+  ]) { const f = fixture(t); f.hooks[phase] = mutate; await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
 });
 
-test("source, dependency, lock and copied tool mutation after execution cannot qualify", t => {
+test("source, dependency, lock and copied tool mutation after execution cannot qualify", async t => {
   for (const mutate of [
     f => writeFileSync(join(f.args.output, "sdk/lib/acyclic/actors/v1/actors.pb.ex"), "changed"),
     f => writeFileSync(join(f.args.output, "sdk/extra.ex"), "extra"),
@@ -78,18 +78,18 @@ test("source, dependency, lock and copied tool mutation after execution cannot q
     f => writeFileSync(join(f.args.output, "home/.mix/archives/hex-fixture/ebin/hex.beam"), "changed"),
     f => writeFileSync(join(f.args.output, "home/.mix/archives/hex-fixture/ebin/extra.beam"), "extra"),
     f => writeFileSync(join(f.runtime, "OTP-fixture/bin/erl"), "changed"),
-  ]) { const f = fixture(t); f.hooks.consumer = () => mutate(f); assert.throws(() => qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
+  ]) { const f = fixture(t); f.hooks.consumer = () => mutate(f); await assert.rejects(async () => await qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
 });
 
-test("existing and overlapping outputs preserve inputs without native execution", t => {
+test("existing and overlapping outputs preserve inputs without native execution", async t => {
   const existing = fixture(t); mkdirSync(existing.args.output); writeFileSync(join(existing.args.output, "keep"), "keep");
-  assert.throws(() => qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
+  await assert.rejects(async () => await qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
   const overlap = fixture(t); overlap.args.output = join(overlap.runtime, "new");
-  assert.throws(() => qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
+  await assert.rejects(async () => await qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
 });
 
 
-test("consumer inventory and printed evidence match the supplied canonical contracts", t => {
+test("consumer inventory and printed evidence match the supplied canonical contracts", async t => {
   const consumer = readFileSync(new URL("./fixtures/consumer/Consumer.exs", import.meta.url), "utf8");
   const names = consumer.match(/expected_names = (\[[^\n]+\])/);
   assert.ok(names);
@@ -103,15 +103,15 @@ test("consumer inventory and printed evidence match the supplied canonical contr
   const marker = JSON.parse(printed[1]);
   const f = fixture(t);
   f.hooks.consumer = result => { result.stdout = marker + "\n"; };
-  const receipt = qualify(f.args, f.options);
+  const receipt = await qualify(f.args, f.options);
   const call = f.calls.find(call => call.argv.includes("Consumer.exs"));
   assert.equal(call.argv.length - call.argv.indexOf("Consumer.exs") - 1, targets.length);
   assert.equal(receipt.populated_rpc_message_pairs, methods);
   assert.equal(receipt.runtime_type_rejections, rejections);
 });
 
-test("retired consumer completion evidence cannot produce a receipt", t => {
+test("retired consumer completion evidence cannot produce a receipt", async t => {
   const f = fixture(t);
-  f.hooks.consumer = result => { result.stdout = result.stdout.replace("23 populated", "25 populated").replace("2 runtime", "3 runtime"); };
-  assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("21 populated", "25 populated").replace("2 runtime", "3 runtime"); };
+  await assert.rejects(async () => await qualify(f.args, f.options), /completion marker missing/);
 });

@@ -77,7 +77,7 @@ impl HookOutput {
         policy: HookFailure,
         result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
     ) {
-        let mut budget = super::budget::Budget::existing(65_536, self).unwrap();
+        let mut budget = super::budget::Budget::existing(None, self).unwrap();
         budget.apply(self, event, policy, result);
         budget.finish(self);
     }
@@ -90,7 +90,7 @@ impl HookOutput {
         stdout: &[u8],
         stderr: &[u8],
     ) -> Result<bool> {
-        super::budget::Budget::new(65_536)?.observe(self, event, code, stdout, stderr)
+        super::budget::Budget::new(None)?.observe(self, event, code, stdout, stderr)
     }
 }
 

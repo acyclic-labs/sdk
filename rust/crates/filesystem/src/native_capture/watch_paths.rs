@@ -23,7 +23,7 @@ pub(super) fn watch_ancestor_candidates<'a>(
     ordinary: &[(NamespacePath, (CurrentRecord, CaptureIntent))],
     rename_records: &[(NamespacePath, Option<FileRecord>)],
     policy: &CapturePolicy,
-    maximum_paths: usize,
+    maximum_paths: Option<usize>,
     limits: crate::model::VolumeLimits,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, ())>, CaptureError> {
@@ -186,7 +186,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,
-    maximum_paths: usize,
+    maximum_paths: Option<usize>,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
     let mut missing = Vec::new();
@@ -290,26 +290,42 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
     rename_records: &[(NamespacePath, Option<FileRecord>)],
     source_root: &HostRoot,
-    maximum_paths: u32,
+    maximum_paths: Option<u32>,
     policy: &CapturePolicy,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
-    if ordinary.len() > maximum {
+    let maximum = maximum_paths
+        .map(|maximum| usize::try_from(maximum).map_err(|_| CaptureError::InvalidOptions))
+        .transpose()?;
+    if maximum.is_some_and(|maximum| ordinary.len() > maximum) {
         return Err(CaptureError::InvalidOptions);
     }
     let limits = checkout.volume_config().limits;
     let profile = checkout.volume_config().profile;
     let mut paths = Vec::new();
     for (path, _) in ordinary.iter() {
-        capture_replace(&mut paths, clone_capture_path(path, meter)?, (), meter)?;
+        capture_push_entry(&mut paths, clone_capture_path(path, meter)?, (), meter)?;
     }
+    let mut expanded: Option<&NamespacePath> = None;
     for (path, (_, intent)) in ordinary.iter() {
         // Expand arriving directories; other hints already name their changed children.
         if !cfg!(target_os = "macos")
             && !matches!(intent, CaptureIntent::Replace | CaptureIntent::Arrived)
         {
             continue;
+        }
+        if let Some(ancestor) = expanded {
+            capture_charge(
+                meter,
+                WorkCounters {
+                    items_examined: 1,
+                    source_path_components: ancestor.depth().min(path.depth()) as u64,
+                    ..WorkCounters::UNCHARGED
+                },
+            )?;
+            if path.is_within(ancestor) {
+                continue;
+            }
         }
         let host_path = namespace_to_host_path_measured(path, meter)?;
         let observation = observe_host_path(source_root, &host_path, meter)?;
@@ -318,6 +334,7 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
             continue;
         }
         capture_drop_host_path(host_path, meter)?;
+        expanded = Some(path);
         collect_host_walk_measured(
             source_root,
             profile,
@@ -325,7 +342,7 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
             clone_capture_path(path, meter)?,
             policy,
             meter,
-            |path, _, meter| append_scanned_path(&mut paths, path, maximum, meter),
+            |path, _, meter| capture_push_entry(&mut paths, path, (), meter),
         )?;
         let lookup = checkout
             .lookup_no_follow(path, meter, meter.cancellation())
@@ -339,23 +356,28 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
                 limits,
                 clone_capture_path(path, meter)?,
                 policy,
-                maximum,
                 &mut paths,
                 meter,
             )
             .await?;
         }
     }
+    capture_order_entries(&mut paths, maximum, meter)?;
+    let original_count = ordinary.len();
     let paths_bytes = vector_bytes(&paths);
     for (path, ()) in paths {
         let current = current_record(rename_records, &path, meter)?;
-        capture_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
+        if capture_position(&ordinary[..original_count], &path, meter)?.is_ok() {
+            capture_drop_path(path, meter)?;
+        } else {
+            capture_push_entry(ordinary, path, (current, CaptureIntent::Complete), meter)?;
+        }
     }
     meter
         .clone()
         .release(paths_bytes)
         .map_err(capture_demand_error)?;
-    Ok(())
+    capture_sort_by(ordinary, |left, right| left.0.cmp(&right.0), meter)
 }
 
 #[cfg(test)]

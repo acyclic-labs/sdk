@@ -23,7 +23,7 @@ function scan(t, files, untracked = {}) {
       writeFileSync(join(directory, path), content);
     }
   };
-  write({ "scripts/check-boundaries.mjs": checker, ...files });
+  write({ "scripts/check-boundaries.mjs": checker, "scripts/process-capture.mjs": readFileSync(join(root, "scripts/process-capture.mjs")), ...files });
   execFileSync("git", ["init", "--quiet", directory]);
   execFileSync("git", ["add", "."], { cwd: directory });
   write(untracked);

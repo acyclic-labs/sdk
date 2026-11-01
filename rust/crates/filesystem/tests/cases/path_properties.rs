@@ -67,18 +67,18 @@ fn path_oracle() -> acyclic_test_support::differential::oracle::Oracle<Vec<u8>, 
             _ => LogicalName::case_fold_key,
         };
         let new: input::New = match fault {
-            Some(Fault::RejectedPosix) => |encoding, bytes, maximum| {
+            Some(Fault::RejectedPosix) => |encoding, bytes| {
                 if encoding == NameEncoding::PosixBytes {
                     Err(TreePageError::InvalidName)
                 } else {
-                    LogicalName::new(encoding, bytes, maximum)
+                    LogicalName::new(encoding, bytes)
                 }
             },
-            Some(Fault::RejectedUtf16) => |encoding, bytes, maximum| {
+            Some(Fault::RejectedUtf16) => |encoding, bytes| {
                 if encoding == NameEncoding::WindowsUtf16Le {
                     Err(TreePageError::InvalidName)
                 } else {
-                    LogicalName::new(encoding, bytes, maximum)
+                    LogicalName::new(encoding, bytes)
                 }
             },
             _ => LogicalName::new,

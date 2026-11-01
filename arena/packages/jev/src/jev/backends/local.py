@@ -117,7 +117,7 @@ class LocalBackend(Backend):
         return scores, prefill_ms, branch_ms, 1 + len(chunks)
 
     def _decide(self, state: str, questions: list[Question]) -> DecideResult:
-        head = self._ids(fmt.head_text(state))[: fmt.MAX_STATE_TOKENS]
+        head = self._ids(fmt.head_text(state))
         branches, owner = [], []
         for qi, q in enumerate(questions):
             for o in q.options:

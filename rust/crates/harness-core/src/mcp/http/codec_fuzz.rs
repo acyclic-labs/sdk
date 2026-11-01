@@ -27,7 +27,7 @@ fn parse(
         headers: [("content-type".into(), media.into())].into(),
         body: Box::pin(body),
     };
-    futures::executor::block_on(response::decode(response, operation, maximum, None))
+    futures::executor::block_on(response::decode(response, operation, Some(maximum), None))
         .map_err(|error| error.code())
 }
 

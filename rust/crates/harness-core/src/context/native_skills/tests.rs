@@ -21,38 +21,21 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         "---\nname: other\ndescription: Another skill\n---\nbody",
     )
     .map_err(storage)?;
-    let provider = crate::resources::ProviderRef::new(
-        "retained-record".into(),
-        "filesystem".into(),
-        "1".into(),
-        &mut None,
-    )?;
-    let volume = VolumeRef::new(
-        provider,
-        "journal".into(),
-        crate::conversation::VolumeClass::AgentPrivate,
-        crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
-        &mut None,
-    )?;
-    let sources = NativeSkills::new(
-        root.path().join("retained"),
-        volume,
-        None,
-        vec![root.path().join("skills")],
-    )?;
+    let sources = sources(root.path())?;
     let skills = sources
         .user_catalog(&mut crate::context::DiscoveryWork::default())?
         .await?;
     assert_eq!(skills.len(), 2);
     let mut exhausted = DiscoveryWork::default();
-    exhausted.entries = exhausted.limits.entries;
+    exhausted.limits.entries = Some(1);
+    exhausted.entries = 1;
     assert!(matches!(
         sources.user_catalog(&mut exhausted)?.await,
         Err(Error::Invalid(_))
     ));
     let mut narrow = DiscoveryWork {
         limits: crate::context::ContextDiscoveryLimits {
-            header_bytes: 1,
+            header_bytes: Some(1),
             ..Default::default()
         },
         ..Default::default()
@@ -142,5 +125,66 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         handoffs,
         "cached sibling reads must not submit more I/O work"
     );
+    Ok(())
+}
+
+fn sources(root: &std::path::Path) -> Result<Arc<NativeSkills>> {
+    let provider = crate::resources::ProviderRef::new(
+        "retained-record".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let volume = VolumeRef::new(
+        provider,
+        "journal".into(),
+        crate::conversation::VolumeClass::AgentPrivate,
+        crate::conversation::VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+        &mut None,
+    )?;
+    NativeSkills::new(
+        root.join("retained"),
+        volume,
+        None,
+        vec![root.join("skills")],
+    )
+}
+
+#[tokio::test]
+async fn user_catalog_retains_every_skill_across_the_former_directory_total() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+    let root = tempfile::tempdir().map_err(storage)?;
+    let mut expected = std::collections::BTreeSet::new();
+    for index in 0..300 {
+        let name = format!("s{index:04}");
+        let path = root.path().join("skills").join(&name).join("SKILL.md");
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(storage)?;
+        std::fs::write(
+            path,
+            format!("---\nname: {name}\ndescription: Read this skill\n---\nbody"),
+        )
+        .map_err(storage)?;
+        expected.insert(name);
+    }
+    let sources = sources(root.path())?;
+    let mut work = DiscoveryWork::default();
+    let skills = sources.user_catalog(&mut work)?.await?;
+    assert_eq!(skills.len(), expected.len());
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected
+    );
+    // Cache reuse consumes the same complete discovery work. A downstream
+    // caller may still explicitly choose the former finite directory policy.
+    let mut finite = DiscoveryWork::default();
+    finite.limits.directories = Some(256);
+    assert!(matches!(
+        sources.user_catalog(&mut finite)?.await,
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }

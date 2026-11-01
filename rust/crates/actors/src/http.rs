@@ -68,11 +68,11 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     Ok(value)
 }
 
-/// Configures bounded authenticated HTTP without redirects.
+/// Configures authenticated HTTP without redirects and optional response policy.
 fn configure(
     endpoint: &str,
     token: Option<&str>,
-    maximum: usize,
+    maximum: Option<usize>,
 ) -> Result<(Transport, Url, Option<HeaderValue>), Error> {
     let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
     let loopback = endpoint.host_str().is_some_and(|host| {
@@ -88,7 +88,7 @@ fn configure(
         || endpoint.password().is_some()
         || endpoint.query().is_some()
         || endpoint.fragment().is_some()
-        || maximum == 0
+        || maximum == Some(0)
     {
         return Err(Error::InvalidArgument);
     }
@@ -131,20 +131,21 @@ fn decode<O: Message + Default>(
         .map_err(|_| Error::MalformedResponse)
 }
 
-/// Collects a response within `maximum`, returning `None` when it exceeds the bound.
+/// Collects a response, returning `None` when an explicit byte policy is exceeded.
 async fn response_body(
     response: &mut reqwest::Response,
-    maximum: usize,
+    maximum: Option<usize>,
 ) -> Result<Option<Vec<u8>>, reqwest::Error> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > maximum as u64)
-    {
+    if maximum.is_some_and(|maximum| {
+        response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+    }) {
         return Ok(None);
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
-        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+        if maximum.is_some_and(|maximum| chunk.len() > maximum.saturating_sub(bytes.len())) {
             return Ok(None);
         }
         bytes.extend_from_slice(&chunk);
@@ -152,14 +153,14 @@ async fn response_body(
     Ok(Some(bytes))
 }
 
-/// Typed HTTP operations with bearer authentication and bounded responses.
+/// Typed HTTP operations with bearer authentication and optional response policies.
 #[derive(Clone)]
 pub struct Client {
     transport: Transport,
     endpoint: Url,
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
-    maximum: usize,
+    maximum: Option<usize>,
     descriptors: DescriptorPool,
     context: Option<acyclic_auth::operation::Context>,
 }
@@ -197,24 +198,28 @@ impl Client {
     }
 
     /// Create a client. HTTPS or loopback HTTP is required.
-    pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        Self::build(endpoint, Some(token), None, maximum_response_bytes)
+    pub fn new(
+        endpoint: &str,
+        token: &str,
+        maximum_response_bytes: impl Into<Option<usize>>,
+    ) -> Result<Self, Error> {
+        Self::build(endpoint, Some(token), None, maximum_response_bytes.into())
     }
 
     /// Resolve the current callback before each operation without caching its result.
     pub fn with_credential_provider(
         endpoint: &str,
         credential: CredentialProvider,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
     ) -> Result<Self, Error> {
-        Self::build(endpoint, None, Some(credential), maximum)
+        Self::build(endpoint, None, Some(credential), maximum.into())
     }
 
     fn build(
         endpoint: &str,
         token: Option<&str>,
         credential: Option<CredentialProvider>,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: Option<usize>,
     ) -> Result<Self, Error> {
         let (transport, endpoint, authorization) =
             configure(endpoint, token, maximum_response_bytes)?;

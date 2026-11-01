@@ -276,12 +276,14 @@ impl Host for Sim {
         Ok(())
     }
 
-    fn read(&self, file: &SimFile) -> io::Result<Vec<u8>> {
+    fn read(&self, file: &SimFile) -> io::Result<super::record::ReadRecord> {
         let mut world = self.running()?;
         if world.unreadable.get(self.pid).copied().unwrap_or(false) {
             return Err(io::Error::other("read failed"));
         }
-        Ok(world.inode(file.inode)?.bytes.clone())
+        Ok(super::record::ReadRecord::from_bytes(
+            world.inode(file.inode)?.bytes.clone(),
+        ))
     }
 
     /// Truncates, then writes in two steps, so a death between them leaves a
@@ -304,20 +306,20 @@ impl Host for Sim {
         self.process.as_ref()
     }
 
-    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
+    fn liveness(&self, process: &Process<&[u8]>, probes: &mut u64) -> io::Result<Liveness> {
         *probes += 1;
         let world = enter(&self.world);
         if world.unproven {
-            return Liveness::Unknown;
+            return Ok(Liveness::Unknown);
         }
         let alive = usize::try_from(process.pid)
             .ok()
             .and_then(|pid| world.alive.get(pid).copied());
-        match alive {
+        Ok(match alive {
             Some(true) => Liveness::Alive,
             Some(false) => Liveness::Dead,
             None => Liveness::Unknown,
-        }
+        })
     }
 
     fn token(&self) -> u64 {
@@ -355,8 +357,11 @@ impl Host for FailOpen {
     fn unlock(&self, file: &SimFile) -> io::Result<()> {
         self.0.unlock(file)
     }
-    fn read(&self, file: &SimFile) -> io::Result<Vec<u8>> {
-        Ok(self.0.read(file).unwrap_or_default())
+    fn read(&self, file: &SimFile) -> io::Result<super::record::ReadRecord> {
+        Ok(self
+            .0
+            .read(file)
+            .unwrap_or_else(|_| super::record::ReadRecord::from_bytes(Vec::new())))
     }
     fn write(&self, file: &SimFile, bytes: &[u8]) -> io::Result<()> {
         self.0.write(file, bytes)
@@ -367,11 +372,11 @@ impl Host for FailOpen {
     fn established(&self) -> Option<&Process> {
         self.0.established()
     }
-    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness {
-        match self.0.liveness(process, probes) {
+    fn liveness(&self, process: &Process<&[u8]>, probes: &mut u64) -> io::Result<Liveness> {
+        Ok(match self.0.liveness(process, probes)? {
             Liveness::Unknown => Liveness::Dead,
             known => known,
-        }
+        })
     }
     fn token(&self) -> u64 {
         self.0.token()
@@ -581,9 +586,8 @@ fn a_release_never_clears_another_claims_record() {
     });
 }
 
-/// A claim file longer than any record refuses, whatever whole record it
-/// begins with; and a process whose record would be that long writes none,
-/// so no reader ever takes part of a record for another.
+/// Trailing data after a complete dead-owner record is corruption. An
+/// independent long valid record remains admitted by the same protocol.
 #[test]
 fn a_record_is_never_read_in_part() {
     explore(|findings| {
@@ -594,7 +598,7 @@ fn a_record_is_never_read_in_part() {
             token: 1,
         }
         .encode();
-        bytes.resize(super::record::RECORD_LIMIT + 1, 0);
+        bytes.push(0);
         kill(&world, 0);
         {
             let mut world = enter(&world);
@@ -609,30 +613,13 @@ fn a_record_is_never_read_in_part() {
         let refused =
             loom::thread::spawn(move || protocol::acquire(reader, Path::new("store")).is_err());
         if !refused.join().map_err(failed)? {
-            report(
-                findings,
-                "a claim file longer than a record admitted".to_owned(),
-            );
+            report(findings, "corrupt trailing data admitted".to_owned());
         }
         if let Some(process) = long.process.as_mut() {
-            process.lock = vec![b'/'; super::record::RECORD_LIMIT];
+            process.lock = vec![b'/'; 8193];
         }
-        if protocol::acquire(long, Path::new("other")).is_ok() {
-            report(
-                findings,
-                "a record longer than the bound was claimed".to_owned(),
-            );
-        }
-        if !enter(&world)
-            .inodes
-            .get(1)
-            .is_some_and(|inode| inode.bytes.is_empty())
-        {
-            report(
-                findings,
-                "a record longer than the bound was written".to_owned(),
-            );
-        }
+        let claim = protocol::acquire(long, Path::new("other")).map_err(failed)?;
+        drop(claim);
         Ok(())
     });
 }

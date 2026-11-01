@@ -31,7 +31,8 @@ function validateCredentialSlot(slot: number): void {
 /** Platform I/O adapter; all session state and recovery belong to Rust. */
 export class StreamSessions {
   readonly #inner: WasmSession;
-  constructor(connect: SessionConnect, acknowledge = true, revisionScope?: Uint8Array) {
+  constructor(connect: SessionConnect, acknowledge = true, revisionScope?: Uint8Array, registrationTimeoutMs?: number) {
+    if (registrationTimeoutMs !== undefined && (!Number.isInteger(registrationTimeoutMs) || registrationTimeoutMs < 0 || registrationTimeoutMs > 0xffff_ffff)) throw new RangeError("registration timeout must be an unsigned 32-bit millisecond policy");
     this.#inner = new WasmSession(async (bytes: Uint8Array | null, signal: AbortSignal) => {
       const transport = await connect(bytes === null ? undefined : fromBinary(wire.SessionNodeSchema, bytes), signal);
       if (signal.aborted) { transport.close(); throw signal.reason; }
@@ -44,7 +45,7 @@ export class StreamSessions {
         send(bytes: Uint8Array<ArrayBuffer>, writeSignal: AbortSignal) { return transport.send(bytes, writeSignal); },
         close() { transport.close(); },
       };
-    }, acknowledge, revisionScope);
+    }, acknowledge, revisionScope, registrationTimeoutMs);
   }
 
   /** The pool's read-your-writes floor: one revision per observed authority, never a max. */

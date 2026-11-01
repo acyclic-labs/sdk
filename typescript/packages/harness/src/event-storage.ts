@@ -5,7 +5,9 @@
 export interface EventStorage {
   get(key: string): string | undefined;
   put(key: string, value: string): void;
-  entries(): [string, string][];
+  delete(key: string): void;
+  /** A key-ordered page, strictly after the cursor and restricted to the prefix. */
+  entries(prefix: string, after: string, limit: number): [string, string][];
   transaction<T>(operation: () => T): T;
   flush(): Promise<void>;
   alarm(time: number | undefined): Promise<void>;

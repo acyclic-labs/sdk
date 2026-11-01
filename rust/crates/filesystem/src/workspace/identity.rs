@@ -38,9 +38,6 @@ impl WorkspaceName {
         // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
         // the zero-work admission before reporting canonical-name errors.
         normalize::admit_scratch(0, accounting)?;
-        if name.len() > MAXIMUM_WORKSPACE_NAME_BYTES {
-            return Err(WorkspaceNameError::TooLong.into());
-        }
         if name.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }

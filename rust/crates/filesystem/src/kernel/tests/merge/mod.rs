@@ -41,8 +41,8 @@ fn request(
         theirs_generation: object(ObjectKind::GenerationRoot, 11),
         theirs,
         retain_theirs_parent: true,
-        maximum_changes: 8,
-        maximum_conflicts: 8,
+        maximum_changes: Some(8),
+        maximum_conflicts: Some(8),
         resolutions: BTreeMap::new(),
     }
 }
@@ -113,8 +113,8 @@ async fn stored_request(
         theirs_generation: put_generation(store, &theirs).await?,
         theirs,
         retain_theirs_parent: true,
-        maximum_changes: 8,
-        maximum_conflicts: 8,
+        maximum_changes: Some(8),
+        maximum_conflicts: Some(8),
         resolutions: BTreeMap::new(),
     })
 }
@@ -161,7 +161,7 @@ async fn adjust_test_link_counts(
         for (file, value) in &state.records.value {
             *records.get_mut(file).ok_or(FsError::InvalidDiff)? = *value;
         }
-        *remaining_changes = state.remaining_changes;
+        *remaining_changes = state.changes.remaining.ok_or(FsError::InvalidDiff)?;
         state.records.retire(&mut accounting)?;
         state.conflicts.retire(&mut accounting)?;
         state.folds.retire(&mut accounting)?;

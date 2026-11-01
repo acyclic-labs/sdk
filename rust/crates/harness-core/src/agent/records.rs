@@ -9,17 +9,6 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
-/// maxima, texts by their own limits), so every record a step builds is
-/// within this; `checkpoint`'s bound test checks each kind at its worst.
-pub const MAX_RECORD_BYTES: usize = 56 * 1024;
-/// Largest intent identity.
-pub const MAX_INTENT_BYTES: usize = 128;
-/// Largest failure message carried in a record.
-pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
-/// Most volumes bound to one agent.
-pub const MAX_VOLUMES: usize = 8;
 /// Format version of every persisted agent record and saved turn effect,
 /// carried by their one shared header. Any change to a persisted shape bumps
 /// it, and readers refuse every other version whole: there is no migration
@@ -51,17 +40,33 @@ pub(crate) enum Unopened {
     Malformed,
 }
 
+#[derive(Serialize)]
+struct Sealed<'a, T: ?Sized> {
+    record: &'a T,
+    version: u32,
+}
+
 /// `record` under the shared header, as canonical JSON.
 pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Sealed<'a, T: ?Sized> {
-        record: &'a T,
-        version: u32,
-    }
     crate::contract::canonical_json_bytes(&Sealed {
         record,
         version: RECORD_VERSION,
     })
+}
+
+/// A driver-supplied frame must fit the same physical Streams record
+/// before the machine accepts its effects. Count the original envelope without
+/// allocating another encoding; logical payloads use their existing references.
+pub(super) fn fits_frame<T: Serialize + ?Sized>(record: &T) -> bool {
+    crate::executor::json::json_byte_length(
+        &Sealed {
+            record,
+            version: RECORD_VERSION,
+        },
+        Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+        &mut None,
+    )
+    .is_ok()
 }
 
 /// The record under the shared header. The version is checked before any of
@@ -84,12 +89,9 @@ pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unop
 }
 
 /// The record of any agent stream as `T`, such as a JSON value for a
-/// reader of every record kind: bounded by [`MAX_RECORD_BYTES`], and of any
-/// version but [`RECORD_VERSION`] refused whole.
+/// reader of every record kind. Versions other than [`RECORD_VERSION`]
+/// are refused whole.
 pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error> {
-    if bytes.len() > MAX_RECORD_BYTES {
-        return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
-    }
     open(bytes).map_err(|unopened| match unopened {
         Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
         Unopened::Malformed => Error::Record("record is malformed"),
@@ -143,9 +145,15 @@ impl<'de> Deserialize<'de> for Header<'de> {
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(try_from = "String")]
 pub struct IntentId(String);
+
+impl Serialize for IntentId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 impl IntentId {
     /// Canonical text.
@@ -159,14 +167,11 @@ impl TryFrom<String> for IntentId {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Error> {
-        if !value.is_empty()
-            && value.len() <= MAX_INTENT_BYTES
-            && value.bytes().all(|byte| byte.is_ascii_graphic())
-        {
+        if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic()) {
             Ok(Self(value))
         } else {
             Err(Error::Record(
-                "intent id must be 1-128 printable ASCII bytes",
+                "intent id must contain printable ASCII bytes",
             ))
         }
     }
@@ -306,10 +311,16 @@ pub enum AgentOutcome {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef | null"))]
         result: Option<Box<FileRef>>,
     },
-    /// Failed with a bounded description.
+    /// Failed with a description.
     Failed {
         /// Failure description.
         message: String,
+    },
+    /// Failed with complete text spanning ordinary Stream records. The same
+    /// reference is retained by the checkpoint, status and parent notification.
+    FailedDiagnostic {
+        /// Original diagnostic, readable in bounded pages.
+        diagnostic: super::Diagnostic,
     },
     /// Stopped by archive before completing.
     Archived,
@@ -596,21 +607,18 @@ pub struct Closed {
     pub id: IntentId,
 }
 
-/// Canonical bounded encoding shared by every agent record.
+/// Canonical encoding shared by every agent record.
 pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
-    /// Structural bounds beyond the type itself.
+    /// Structural invariants beyond the type itself.
     fn check(&self) -> Result<(), Error> {
         Ok(())
     }
 
     /// Canonical JSON with sorted keys under the shared [`RECORD_VERSION`]
-    /// header, refused above [`MAX_RECORD_BYTES`].
+    /// header.
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.check()?;
         let bytes = seal(self).map_err(|_| Error::Record("record is not encodable"))?;
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
-        }
         Ok(bytes)
     }
 
@@ -623,31 +631,19 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     }
 }
 
-fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
-    match outcome {
-        AgentOutcome::Failed { message } if message.len() > MAX_MESSAGE_BYTES => {
-            Err(Error::Record("failure message exceeds MAX_MESSAGE_BYTES"))
-        }
-        _ => Ok(()),
-    }
-}
-
-/// At most [`MAX_VOLUMES`] bindings, each with a valid name.
+/// Volume bindings, each with a valid name.
 pub(super) fn check_volumes<'a>(
-    mut volumes: impl ExactSizeIterator<Item = &'a VolumeBinding>,
+    mut volumes: impl Iterator<Item = &'a VolumeBinding>,
 ) -> Result<(), Error> {
-    if volumes.len() > MAX_VOLUMES {
-        return Err(Error::Record("too many volumes"));
-    }
     volumes.try_for_each(|binding| check_text(&binding.name))
 }
 
 /// A name: a binding, principal or host. Like a label, it admits no control
-/// character, so its encoding is at most twice its length.
+/// character.
 pub(super) fn check_text(text: &str) -> Result<(), Error> {
-    if text.is_empty() || text.len() > MAX_INTENT_BYTES || text.chars().any(char::is_control) {
+    if text.is_empty() || text.chars().any(char::is_control) {
         return Err(Error::Record(
-            "name must be 1-128 bytes without control characters",
+            "name must be nonempty without control characters",
         ));
     }
     Ok(())
@@ -658,16 +654,9 @@ impl AgentRecord for InboxRecord {
         match self {
             Self::ForkAdopted(adopted) => {
                 check_volumes(adopted.volumes.iter())?;
-                if adopted
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent.child(&adopted.agent).is_err())
-                {
-                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
-                }
                 Ok(())
             }
-            Self::ChildDone(done) => check_outcome(&done.outcome),
+            Self::ChildDone(_) => Ok(()),
             Self::Notice { notice, .. } => {
                 match notice {
                     NoticePayload::Quiet(notice) => {
@@ -736,7 +725,7 @@ fn check_sender(sender: &Sender) -> Result<(), Error> {
 impl AgentRecord for StatusRecord {
     fn check(&self) -> Result<(), Error> {
         match &self.phase {
-            Phase::Done { outcome } => check_outcome(outcome),
+            Phase::Done { .. } => Ok(()),
             Phase::WaitingHost { host } => check_text(host),
             Phase::Idle
             | Phase::Running

@@ -53,7 +53,7 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     let result = futures::executor::block_on(artifacts::read_tool_call(
         &resolver,
         &reference,
-        4096,
+        Some(4096),
         Some(&io),
     ));
     if must_reject {
@@ -72,7 +72,7 @@ fn check_bytes(bytes: Vec<u8>, must_reject: bool) {
     let result = futures::executor::block_on(artifacts::read_reasoning(
         &resolver,
         &reference,
-        4096,
+        Some(4096),
         Some(&io),
     ));
     match result {
@@ -174,9 +174,13 @@ fn premature_retention_negative_control_is_visible_before_io_scope_drop() {
     .unwrap();
     let io = PreparationIo::from_native_work(&work).unwrap();
     let baseline = work.live_allocation_bytes();
-    let (value, hold) =
-        futures::executor::block_on(artifacts::read_value(&resolver, &file, 4096, Some(&io)))
-            .unwrap();
+    let (value, hold) = futures::executor::block_on(artifacts::read_value(
+        &resolver,
+        &file,
+        Some(4096),
+        Some(&io),
+    ))
+    .unwrap();
     // Broken original ordering: release the guard before discovering missing metadata.
     hold.unwrap().into_retained().unwrap();
     assert!(value.get("metadata").is_none());

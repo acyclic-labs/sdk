@@ -83,7 +83,6 @@ fn generation_root_round_trip_and_identity_are_locked() -> Result<(), Box<dyn st
         .len(),
         1
     );
-    assert!(u64::try_from(encoded.len())? <= MAXIMUM_GENERATION_ROOT_BYTES);
     assert_eq!(
         decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
             _,
@@ -156,17 +155,6 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
         .is_err()
     );
 
-    let mut too_many = root();
-    too_many.parents = vec![
-        GenerationId::new(Digest::from_bytes([4; 32])),
-        GenerationId::new(Digest::from_bytes([5; 32])),
-        GenerationId::new(Digest::from_bytes([6; 32])),
-    ];
-    assert!(matches!(
-        too_many.validate(),
-        Err(CanonicalDecodeError::Invariant(_))
-    ));
-
     let mut encoded = encode_generation_root(
         &root(),
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
@@ -179,20 +167,14 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
             _,
             crate::kernel::CanonicalDecodeError,
         >(())),
-        Err(CanonicalDecodeError::FieldTooLarge {
-            observed: 3,
-            maximum: 2
-        })
+        Err(CanonicalDecodeError::Truncated)
     ));
     assert!(matches!(
         decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
             _,
             CanonicalDecodeError,
         >(())),
-        Err(CanonicalDecodeError::FieldTooLarge {
-            observed: 3,
-            maximum: 2
-        })
+        Err(CanonicalDecodeError::Truncated)
     ));
     Ok(())
 }
@@ -240,7 +222,6 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
     assert_eq!(object.kind, ObjectKind::GenerationRoot);
     assert_eq!(generation.digest(), object.digest);
     assert_eq!(generation_root_id(&value)?, (object, generation));
-    assert!(generation_root_id(&too_many_parent_root()).is_err());
 
     let mut trailing = encode_generation_root(
         &value,
@@ -271,11 +252,96 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
     Ok(())
 }
 
-fn too_many_parent_root() -> GenerationRoot {
+#[test]
+fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut value = root();
-    value.parents.extend([
-        GenerationId::new(Digest::from_bytes([5; 32])),
-        GenerationId::new(Digest::from_bytes([6; 32])),
-    ]);
-    value
+    value.parents = (0_u64..8193)
+        .rev()
+        .map(|index| {
+            let mut digest = [0; 32];
+            digest[..8].copy_from_slice(&index.to_le_bytes());
+            GenerationId::from_root(ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: Digest::from_bytes(digest),
+                storage: (index % 2 == 0).then_some(crate::ObjectStorage {
+                    locator: Digest::from_bytes(digest),
+                    root_file_id: value.root_file_id,
+                    origin_generation: Digest::from_bytes([91; 32]),
+                }),
+            })
+        })
+        .collect();
+    let encoded = encode_generation_root(
+        &value,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    assert_eq!(
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
+            _,
+            CanonicalDecodeError,
+        >(()))?,
+        value
+    );
+    let mut corrupted = encoded;
+    let parents_offset = DOMAIN.len() + 2 + 16 + 16 + value.file_table.encoded_len() + 4;
+    let last = parents_offset
+        + value.parents[..value.parents.len() - 1]
+            .iter()
+            .map(|parent| parent.object_id().encoded_len())
+            .sum::<usize>();
+    let first = value.parents[0].object_id().to_bytes();
+    assert_eq!(
+        first.as_slice().len(),
+        value
+            .parents
+            .last()
+            .ok_or("missing last parent")?
+            .object_id()
+            .encoded_len()
+    );
+    corrupted[last..last + first.as_slice().len()].copy_from_slice(first.as_slice());
+    assert!(matches!(
+        decode_generation_root(&corrupted, DecodeLimits::default(), |_| Ok::<
+            _,
+            CanonicalDecodeError,
+        >(())),
+        Err(CanonicalDecodeError::Invariant(_))
+    ));
+    let last = value.parents.len() - 1;
+    value.parents[last] = value.parents[0];
+    assert!(matches!(
+        encode_generation_root(
+            &value,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed
+        ),
+        Err(CanonicalDecodeError::Invariant(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn forged_parent_count_is_rejected_before_allocating() -> Result<(), Box<dyn std::error::Error>> {
+    let mut encoded = encode_generation_root(
+        &root(),
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )?;
+    let count_offset = DOMAIN.len() + 2 + 16 + 16 + root().file_table.encoded_len();
+    encoded[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut allocations = 0;
+    let result = decode_generation_root(&encoded, DecodeLimits::default(), |step| {
+        if matches!(step, ReadAllocationStep::Allocate { .. }) {
+            allocations += 1;
+        }
+        Ok::<_, CanonicalDecodeError>(())
+    });
+    assert!(matches!(
+        result,
+        Err(CanonicalDecodeError::Truncated | CanonicalDecodeError::LengthOverflow)
+    ));
+    assert_eq!(allocations, 0);
+    Ok(())
 }

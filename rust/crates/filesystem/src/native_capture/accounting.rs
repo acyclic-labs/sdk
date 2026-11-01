@@ -33,11 +33,7 @@ impl CaptureWorkScope {
         let Some(custody) = self.custody.take() else {
             return Ok(());
         };
-        while std::sync::Arc::strong_count(&custody) != 1 {
-            std::thread::yield_now();
-        }
-        let bytes = custody.take_retained_bytes();
-        drop(custody);
+        let (bytes, _controls) = custody.retire();
         self.native
             .with_original_leaf(|work| {
                 work.scope(
@@ -280,4 +276,49 @@ pub(super) fn capture_remove<V>(
         crate::materializer::NativeResourceCredit::Copy.delta(copied),
     )?;
     Ok(Some(entries.remove(index)))
+}
+
+// A traversal appends in source order, then canonicalizes once. Moving each
+// newly discovered path into a sorted vector would copy its entire suffix.
+pub(super) fn capture_push_entry<V>(
+    entries: &mut Vec<(NamespacePath, V)>,
+    path: NamespacePath,
+    value: V,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    capture_charge(
+        meter,
+        crate::materializer::NativeResourceCredit::Items.delta(1),
+    )?;
+    capture_reserve(entries, 1, meter)?;
+    entries.push((path, value));
+    Ok(())
+}
+
+pub(super) fn capture_order_entries<V>(
+    entries: &mut Vec<(NamespacePath, V)>,
+    maximum: Option<usize>,
+    meter: &NativeMaterializationWork,
+) -> Result<(), CaptureError> {
+    capture_sort_by(entries, |left, right| left.0.cmp(&right.0), meter)?;
+    let mut unique = usize::from(!entries.is_empty());
+    for index in 1..entries.len() {
+        capture_charge(
+            meter,
+            crate::materializer::NativeResourceCredit::Items.delta(2),
+        )?;
+        if entries[index].0 != entries[unique - 1].0 {
+            entries.swap(unique, index);
+            unique += 1;
+        }
+    }
+    while entries.len() > unique {
+        let (path, value) = entries.pop().ok_or(WorkError::Overflow)?;
+        drop(value);
+        capture_drop_path(path, meter)?;
+    }
+    if maximum.is_some_and(|maximum| unique > maximum) {
+        return Err(CaptureError::InvalidOptions);
+    }
+    Ok(())
 }

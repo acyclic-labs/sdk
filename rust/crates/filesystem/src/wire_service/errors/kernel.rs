@@ -46,7 +46,7 @@ project!(RetentionCreatedError, {
 project!(FileRecordReadError, {
     E::Cancelled => Code::Cancelled,
     E::EmptyBatch | E::InvalidHeightLimit => Code::InvalidArgument,
-    E::TooManyQueries | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::Cycle | E::HeightExceeded | E::InvalidRouting | E::ChildBoundsMismatch => Code::DataLoss,
     E::Storage(error) => object_code(error),
     E::Decode(error) => kernel_code(error),
@@ -54,7 +54,7 @@ project!(FileRecordReadError, {
 project!(TreeReadError, {
     E::Cancelled => Code::Cancelled,
     E::EmptyBatch | E::InvalidHeightLimit => Code::InvalidArgument,
-    E::TooManyQueries | E::AllocationFailed | E::PageTooLarge { .. } | E::Work(_) => Code::ResourceExhausted,
+    E::AllocationFailed | E::PageTooLarge { .. } | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::Cycle | E::HeightExceeded | E::InvalidRouting | E::ChildBoundsMismatch => Code::DataLoss,
     E::Storage(error) => object_code(error),
     E::Decode(error) => kernel_code(error),
@@ -84,14 +84,14 @@ project!(BlobReadError, {
 project!(AttributeLookupError, {
     E::Cancelled => Code::Cancelled,
     E::EmptyBatch | E::InvalidLimits => Code::InvalidArgument,
-    E::TooManyQueries | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::HeightExceeded | E::CycleOrAlias | E::ChildBoundsMismatch | E::InvalidRouting => Code::DataLoss,
     E::Storage(error) => object_code(error),
     E::Decode(error) => kernel_code(error),
 });
 project!(AttributeMutationError, {
     E::Empty | E::InvalidLimits | E::InvalidEntry | E::NameMismatch => Code::InvalidArgument,
-    E::TooManyMutations | E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::HeightExceeded | E::CycleOrAlias | E::ChildBoundsMismatch => Code::DataLoss,
     E::MutationContract => Code::Internal,
     E::AlreadyExists => Code::AlreadyExists,
@@ -102,7 +102,7 @@ project!(AttributeMutationError, {
 });
 project!(FileTableMutationError, {
     E::Empty | E::InvalidLimits | E::InvalidRecord | E::IdentityMismatch => Code::InvalidArgument,
-    E::TooManyMutations | E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::HeightExceeded | E::CycleOrAlias | E::ChildBoundsMismatch => Code::DataLoss,
     E::MutationContract => Code::Internal,
     E::AlreadyExists => Code::AlreadyExists,
@@ -113,7 +113,7 @@ project!(FileTableMutationError, {
 });
 project!(TreeMutationError, {
     E::Empty | E::InvalidLimits => Code::InvalidArgument,
-    E::TooManyMutations | E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::HeightExceeded | E::CycleOrAlias | E::ChildBoundsMismatch => Code::DataLoss,
     E::MutationContract => Code::Internal,
     E::AlreadyExists => Code::AlreadyExists,
@@ -134,7 +134,7 @@ project!(ExtentReadError, {
 });
 project!(ExtentMutationError, {
     E::Empty | E::InvalidLimits | E::EmptyRange | E::RangeOverflow | E::OutsideFile | E::WrongContentKind => Code::InvalidArgument,
-    E::TooManyMutations | E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+    E::PageItemTooLarge | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
     E::WrongRootKind | E::HeightExceeded | E::CycleOrAlias | E::ChildBoundsMismatch => Code::DataLoss,
     E::PatchInvariant => Code::Internal,
     E::Storage(error) => object_code(error),
@@ -149,8 +149,8 @@ project!(ExtentCloneError, {
 });
 project!(AuthenticatedProbeError, {
     E::Cancelled => Code::Cancelled,
-    E::InvalidLimits | E::ZeroBatchLimit | E::RecordIdentityMismatch => Code::InvalidArgument,
-    E::TooManyRegions { .. } | E::AllocationFailed | E::EncodedAllocationFailed(_)
+    E::InvalidLimits | E::RecordIdentityMismatch => Code::InvalidArgument,
+    E::AllocationFailed | E::EncodedAllocationFailed(_)
     | E::ContentRangeTooLarge | E::DirectoryPageTooLarge | E::Work(_) => Code::ResourceExhausted,
     E::CachePoisoned => Code::Internal,
     E::InvalidDependency(error) => filesystem_code(&FsError::Dependency(*error)),
@@ -199,7 +199,7 @@ project!(GenerationExportManifestError, {
     E::Config(_) => Code::InvalidArgument,
     E::Decode(error) => kernel_code(error),
     E::WrongRootKind | E::GenerationMismatch | E::MissingRoot => Code::DataLoss,
-    E::TooManyObjects | E::TooManyFiles => Code::ResourceExhausted,
+    E::TooManyObjects => Code::ResourceExhausted,
 });
 project!(CanonicalDecodeError, {
     E::AllocationFailed | E::ObjectTooLarge { .. } | E::FieldTooLarge { .. } | E::LengthOverflow => Code::ResourceExhausted,
@@ -208,8 +208,7 @@ project!(CanonicalDecodeError, {
     | E::UnknownTag { .. } | E::Invariant(_) => Code::DataLoss,
 });
 project!(ClosureError, {
-    E::TooManyObjects { .. } | E::TooManyFiles { .. } | E::ClosureBytesExceeded { .. }
-    | E::LogicalBytesOverflow | E::RangeOverflow | E::Work(_) => Code::ResourceExhausted,
+    E::LogicalBytesOverflow | E::RangeOverflow | E::Work(_) => Code::ResourceExhausted,
     E::WrongObjectKind | E::RoutingAlias | E::RoutingBoundsMismatch | E::DuplicateFileRecord(_)
     | E::MissingRootFile | E::RootIsNotDirectory | E::UnsupportedVolumeSemantics
     | E::MissingFileRecord(_) | E::NamespaceKindMismatch(_) | E::LinkCountMismatch(_) | E::BindingRelationMismatch(_)

@@ -58,7 +58,7 @@ proptest! {
                 compose_tools: false,
                 model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
-            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
+            let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, None).unwrap();
             let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
             let after = crate::projection::body_with_files(&provider, request.request(), &mut resolved).unwrap();
             prop_assert_eq!(extra, text.len() * 6);
@@ -293,7 +293,7 @@ proptest! {
             assert!(error.to_string().contains("model file byte resolution is unavailable"));
             assert!(script.sent.lock().unwrap().is_empty());
             let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
-            let bound = provider.bind_content(reader.clone(), 4096).unwrap();
+            let bound = provider.bind_content(reader.clone(), Some(4096)).unwrap();
             bound.generate(&request, dispatch).try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
             let sent = script.sent.lock().unwrap();
@@ -315,7 +315,7 @@ proptest! {
             for (adapter, _) in fixtures() {
                 let (mut provider, _) = provider(adapter, 200);
                 let reader = Arc::new(Reader {data:data.as_bytes().to_vec(), reads:AtomicUsize::new(0)});
-                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:4096};
+                provider.files = crate::files::Files {reader:Some(reader.clone()),maximum_bytes:Some(4096)};
                 let request = with_parts(&provider, vec![ModelContentPart::File {
                     file: file(data.as_bytes(), "text/plain").unwrap(), policy: FileProjectionPolicy::BoundedFull,
                 }]).unwrap();
@@ -395,7 +395,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -471,7 +471,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 4,
+        maximum_bytes: Some(4),
     };
     for bad in [
         (
@@ -532,7 +532,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
         });
         provider.files = crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 64,
+            maximum_bytes: Some(64),
         };
         let prepared = with_parts(
             &provider,
@@ -569,7 +569,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
     });
     provider.files = crate::files::Files {
         reader: Some(reader.clone()),
-        maximum_bytes: 64,
+        maximum_bytes: Some(64),
     };
     let content = ToolResultContent::Parts {
         parts: vec![
@@ -682,7 +682,7 @@ async fn resolved_instruction(body: &str, path: &str, broken: bool) -> Result<St
     let mut resolved = crate::files::resolve(
         &crate::files::Files {
             reader: Some(reader.clone()),
-            maximum_bytes: 4096,
+            maximum_bytes: Some(4096),
         },
         request.request(),
         None,
@@ -722,4 +722,71 @@ fn raw_instruction_projection_negative_control() {
     let actual =
         futures::executor::block_on(resolved_instruction("body", "AGENTS.md", true)).unwrap();
     check_instruction_frame(&actual, "AGENTS.md", "body");
+}
+
+#[tokio::test]
+async fn optional_file_policy_preserves_aggregate_admission_and_rebinding() -> Result<()> {
+    for (initial, rebound, admitted) in [
+        (None, None, true),
+        (None, Some(6), true),
+        (Some(6), None, true),
+        (Some(4), None, false),
+        (None, Some(4), false),
+    ] {
+        let (mut provider, script) = provider(Adapter::Responses, 200);
+        let reader = Arc::new(Reader {
+            data: b"abc".to_vec(),
+            reads: AtomicUsize::new(0),
+        });
+        provider.files.maximum_bytes = initial;
+        let reference = file(b"abc", "text/plain")?;
+        let request = with_parts(
+            &provider,
+            vec![
+                ModelContentPart::File {
+                    file: reference.clone(),
+                    policy: FileProjectionPolicy::BoundedFull,
+                },
+                ModelContentPart::File {
+                    file: reference,
+                    policy: FileProjectionPolicy::BoundedFull,
+                },
+            ],
+        )?;
+        let bound = provider
+            .bind_content(reader.clone(), rebound)
+            .ok_or_else(|| invalid("fixture content binding missing"))?;
+        let dispatch = ModelDispatch {
+            request_digest: request.request_digest(),
+            ..parser_dispatch()
+        };
+        let result = bound
+            .generate(&request, dispatch)
+            .try_collect::<Vec<_>>()
+            .await;
+        if admitted {
+            result?;
+            assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+            let sent = script.sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let body = crate::json(&sent[0].body)?;
+            assert_eq!(
+                body["input"],
+                json!([
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"abc"}]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"abc"}]},
+                ])
+            );
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("aggregate byte limit")
+            );
+            assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+            assert!(script.sent.lock().unwrap().is_empty());
+        }
+    }
+    Ok(())
 }

@@ -58,7 +58,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
     assert_eq!(reopened, history);
     let operation = OperationId::new();
     let narrow = Limits {
-        context_messages: 2,
+        context_messages: std::num::NonZeroUsize::new(2),
         ..Limits::default()
     };
     prepare_turn(
@@ -80,7 +80,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         content,
         ReferencedAttachments::Inline { items: Vec::new() },
         Limits {
-            context_messages: 3,
+            context_messages: std::num::NonZeroUsize::new(3),
             ..narrow
         },
         None,

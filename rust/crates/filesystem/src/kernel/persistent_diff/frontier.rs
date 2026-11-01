@@ -242,13 +242,8 @@ impl<F: Format> Side<F> {
                     return Err(FsError::InvalidDiff);
                 };
                 let value = values.get(frame.position).ok_or(FsError::InvalidDiff)?;
-                let (value, allocation) = persistent_io::clone_value::<F>(
-                    value,
-                    limits.maximum_name_bytes,
-                    accounting,
-                    None,
-                    0,
-                )?;
+                let (value, allocation) =
+                    persistent_io::clone_value::<F>(value, accounting, None, 0)?;
                 frame.position += 1;
                 let bytes = F::value_owned_bytes(&value);
                 Ok(Owned::new(value, allocation, bytes))
@@ -300,7 +295,6 @@ pub(crate) struct Cursor<F: Format> {
     before: Side<F>,
     after: Side<F>,
     limits: DecodeLimits,
-    pages_read: u64,
 }
 
 enum Step {
@@ -336,7 +330,6 @@ impl<F: Format> Cursor<F> {
             before: before_side,
             after: after_side,
             limits,
-            pages_read: 0,
         })
     }
 
@@ -414,13 +407,6 @@ impl<F: Format> Cursor<F> {
                 count += 1;
             }
         }
-        let pages = self
-            .pages_read
-            .checked_add(count as u64)
-            .ok_or(WorkError::Overflow)?;
-        if pages > u64::from(self.limits.maximum_visited_pages) {
-            return Err(FsError::InvalidDiff);
-        }
         let mut batch = persistent_io::read_pages_with_accounting::<S, F, _>(
             store,
             ids.into_iter().take(count),
@@ -430,7 +416,6 @@ impl<F: Format> Cursor<F> {
             None,
         )
         .await?;
-        self.pages_read = pages;
         let result = (|| {
             for side in [
                 if before { Some(&mut self.before) } else { None },
@@ -537,13 +522,7 @@ impl<F: Format> Cursor<F> {
         let Head::Value(value) = head else {
             return Err(FsError::InvalidDiff);
         };
-        let (key, allocation) = persistent_io::clone_key::<F>(
-            F::key(value),
-            self.limits.maximum_name_bytes,
-            accounting,
-            None,
-            0,
-        )?;
+        let (key, allocation) = persistent_io::clone_key::<F>(F::key(value), accounting, None, 0)?;
         let bytes = F::key_owned_bytes(&key);
         let mut result = Owned::new(
             ValueChange {

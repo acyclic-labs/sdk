@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future as _;
 
 pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     lock: Option<RestoreLock>,
@@ -15,6 +16,50 @@ pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))
         .map_err(|error| original.runtime_error(error))?;
     task.await.map_err(|error| original.runtime_error(error))
+}
+
+pub(super) async fn prepare_restore_io(
+    destination_root: (PathBuf, crate::NativeAllocation),
+    relative: (PathBuf, crate::NativeAllocation),
+    expected_root_identity: Option<crate::NativeRootIdentity>,
+    replacement: HostPathReplacement,
+    work: crate::NativeMaterializationWork,
+) -> Result<PreparedRestore, MaterializeError> {
+    let credit = acyclic_native_runtime::blocking_wait_credit(async {
+        let authority_cancelled = work.cancellation_wait()?;
+        let invocation_cancelled = work
+            .cancellation()
+            .prepare_cancelled_with_native_work(&work)
+            .map_err(crate::cancellation::CancellationWaitError::into_native)?;
+        let mut authority = std::pin::pin!(authority_cancelled);
+        let mut invocation = std::pin::pin!(invocation_cancelled);
+        std::future::poll_fn(|context| {
+            if authority.as_mut().poll(context).is_ready()
+                || invocation.as_mut().poll(context).is_ready()
+            {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        work.admit(WorkCounters::UNCHARGED)
+            .map_err(MaterializeError::from)?;
+        Ok::<(), MaterializeError>(())
+    })
+    .await?;
+    host_io(None, work, move |work| {
+        let _credit = credit;
+        prepare_restore(
+            destination_root,
+            relative,
+            expected_root_identity,
+            replacement,
+            work,
+        )
+    })
+    .await
+    .map_err(MaterializeError::from)?
 }
 
 pub(super) struct PreparedRestore {

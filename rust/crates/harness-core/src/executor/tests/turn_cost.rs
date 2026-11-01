@@ -26,7 +26,7 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
         operation_id: operation,
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 1000,
+        max_steps: Some(1000),
     };
     execution.ensure_started(&journal, &input).await?;
     execution.ensure_started(&journal, &input).await?;
@@ -94,7 +94,7 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
         );
         let before = journal.3.load(Ordering::SeqCst);
         let start = std::time::Instant::now();
-        let (old_tail, old_records, _) = replay_execution(&journal, operation, 1,
+        let (old_tail, old_records, _) = replay_execution(&journal, operation, Some(1),
             |event| matches!(event, ExecutionEvent::ModelStopped { step: observed, .. } if *observed == step), None).await?;
         old_times.push(start.elapsed());
         assert_eq!((old_tail, old_records), (tail, records));
@@ -414,7 +414,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
                             operation_id: operation,
                             input: ModelContent::Text("different binding".into()),
                             selected_context: None,
-                            max_steps: 1,
+                            max_steps: Some(1),
                         }
                     )
                     .await

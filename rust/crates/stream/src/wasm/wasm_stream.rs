@@ -221,7 +221,7 @@ impl WasmStream {
         &self,
         invocation: &[u8],
         credential: u32,
-        maximum_reply_bytes: u32,
+        maximum_reply_bytes: Option<u32>,
     ) -> Result<Vec<u8>, JsValue> {
         check_command_size(invocation)?;
         self.session
@@ -230,7 +230,7 @@ impl WasmStream {
             .actor_call(
                 &bytes::Bytes::copy_from_slice(invocation),
                 credential,
-                maximum_reply_bytes as usize,
+                maximum_reply_bytes.map(|maximum| maximum as usize),
             )
             .await
             .map(|reply| reply.to_vec())
@@ -356,22 +356,7 @@ impl WasmStream {
         }
         let path = request.path.clone();
         let stream = crate::records_only(self.provider.follow(request).await.map_err(js_error)?);
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                stream
-                    .map(move |record| {
-                        record.map(|record| {
-                            wire_codec::read_response_wire(vec![wire_codec::record_wire(
-                                record,
-                                Some(&path),
-                            )])
-                            .encode_to_vec()
-                        })
-                    })
-                    .boxed_local(),
-                StreamError::Unavailable,
-            )),
-        })
+        Ok(WasmFollow::from_records(stream, path))
     }
 }
 

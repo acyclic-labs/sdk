@@ -107,6 +107,12 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
     let mut sequence = prior_conversation;
     for out in &step.outs {
         match out {
+            Out::Diagnostic { diagnostic, .. } => {
+                builder.condition(CommitCondition::Tail {
+                    path: diagnostic.path()?,
+                    expected: diagnostic.records(),
+                });
+            }
             Out::Conversation(record) => {
                 builder.append(conversation.clone(), record.clone());
                 sequence = sequence

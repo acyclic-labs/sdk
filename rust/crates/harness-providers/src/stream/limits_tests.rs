@@ -41,7 +41,7 @@ fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() ->
 }
 
 #[test]
-fn small_events_cannot_accumulate_unbounded_calls_or_thinking() -> Result<()> {
+fn explicit_byte_policy_admits_before_allocating_calls() -> Result<()> {
     let mut state = State::new(256);
     let mut rejected = false;
     for index in 0..10_000 {
@@ -63,23 +63,49 @@ fn small_events_cannot_accumulate_unbounded_calls_or_thinking() -> Result<()> {
         "reject before allocating a call slot"
     );
 
-    let mut state = State::new(1024 * 1024);
-    let mut rejected = false;
-    for index in 0..10_000 {
-        let event = json!({"type":"content_block_start","index":index,"content_block":{"type":"thinking","thinking":"","signature":""}});
-        assert!(event.to_string().len() < 256);
-        if anthropic::parse(&mut state, &event, &event.to_string()).is_err() {
-            rejected = true;
-            break;
-        }
+    Ok(())
+}
+
+#[test]
+fn unrestricted_stream_preserves_large_events_and_all_retained_calls() -> Result<()> {
+    use futures::TryStreamExt as _;
+    let payload = "λ".repeat(524_289);
+    let arguments = json!({"value":payload}).to_string();
+    let mut wire = String::new();
+    for index in 0..2049 {
+        let arguments = if index == 0 { arguments.as_str() } else { "{}" };
+        let event = json!({"choices":[{"delta":{"tool_calls":[{
+            "index":index,"id":format!("call{index}"),
+            "function":{"name":"echo","arguments":arguments}
+        }]}}]});
+        use std::fmt::Write as _;
+        writeln!(wire, "data: {event}\n").unwrap();
     }
-    assert!(rejected);
-    assert!(state.thinking.len() < 10_000);
-    assert!(
-        state.budget.used().0 < 1024 * 1024,
-        "item bound fires independently of bytes"
-    );
-    assert!(state.budget.used().1 <= 1024);
+    wire.push_str("data: [DONE]\n\n");
+    let bytes = Bytes::from(wire);
+    let chunks = (0..bytes.len())
+        .step_by(8192)
+        .map(|offset| Ok(bytes.slice(offset..(offset + 8192).min(bytes.len()))))
+        .collect::<Vec<_>>();
+    let body = Box::pin(futures::stream::iter(chunks));
+    let dispatch = ModelDispatch {
+        operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+        step: 0,
+        request_digest: [0; 32],
+    };
+    let events = futures::executor::block_on(
+        events(Adapter::Chat, body, None, dispatch).try_collect::<Vec<_>>(),
+    )?;
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2049);
+    assert_eq!(calls[0].arguments["value"], payload);
+    assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
     Ok(())
 }
 

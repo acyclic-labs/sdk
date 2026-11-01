@@ -97,8 +97,11 @@ fn fixture(path: &Path, kind: u8, length: usize, byte: u8) {
                 windows::Win32::System::Ioctl::FSCTL_SET_COMPRESSION,
                 &2_u16.to_le_bytes(),
                 &mut [],
+                acyclic_native_runtime::NativeOperationKind::Write,
                 None,
             )
+            .unwrap()
+            .into_complete()
             .unwrap();
         } else if kind == 4 {
             std::fs::write(path.with_file_name("file:dense"), [byte; 3]).unwrap();
@@ -164,8 +167,8 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
-                        maximum_extent_spans: 8,
+                        maximum_paths: Some(8),
+                        maximum_extent_spans: Some(8),
                     };
                     // Share the authored identity; independent creation deliberately mints
                     // different FileIds, unrelated to allocation-range discovery.
@@ -305,8 +308,8 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
-                        maximum_extent_spans: 8,
+                        maximum_paths: Some(8),
+                        maximum_extent_spans: Some(8),
                     };
                     let (checkout, result, _) = capture(
                         &initial,

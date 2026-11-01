@@ -25,6 +25,8 @@ struct MultipartSnapshot {
     key: String,
     tail: u64,
     minimum_part_bytes: u64,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
     parts: BTreeMap<u32, MultipartPart>,
     operations: BTreeMap<[u8; 16], (u32, String)>,
     terminal: Option<MultipartTerminal>,
@@ -62,9 +64,6 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
             staged.logical_bytes(),
             ClosureLimits {
                 decode: DecodeLimits::default(),
-                maximum_objects: retention_limits.maximum_objects,
-                maximum_files: 0,
-                maximum_object_bytes: retention_limits.maximum_object_bytes,
                 profile: FilesystemProfile::Portable,
                 symbolic_links: false,
                 hard_links: false,
@@ -78,13 +77,19 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
         work = work
             .checked_add(nested)
             .map_err(|_| s3s::s3_error!(InternalError))?;
-        if work.object_bytes_read > retention_limits.maximum_object_bytes {
+        if retention_limits
+            .maximum_object_bytes
+            .is_some_and(|maximum| work.object_bytes_read > maximum)
+        {
             return Err(s3s::s3_error!(SlowDown));
         }
         for object in closure {
             retained.insert(object, ());
         }
-        if retained.len() as u64 > retention_limits.maximum_objects {
+        if retention_limits
+            .maximum_objects
+            .is_some_and(|maximum| retained.len() as u64 > maximum)
+        {
             return Err(s3s::s3_error!(SlowDown));
         }
     }
@@ -121,7 +126,9 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
         .ok_or_else(|| s3s::s3_error!(InternalError))?;
     let mut from = 0_u64;
     while from < tail {
-        let available = retention_limits.maximum_uploads.saturating_sub(*examined);
+        let available = retention_limits
+            .maximum_uploads
+            .map_or(tail - from, |maximum| maximum.saturating_sub(*examined));
         if available == 0 {
             return Err(s3s::s3_error!(SlowDown));
         }

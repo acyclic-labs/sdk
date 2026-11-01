@@ -19,7 +19,6 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
-    maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<OwnedSourceChunk>, FsError> {
@@ -50,9 +49,6 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let Some((value, length)) = value else {
             return Ok(None);
         };
-        if length > maximum_bytes.min(volume.config.limits.maximum_read_bytes) {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let read = read_blob_range_with_accounting(
             &volume.fs.inner.objects,
             value,
@@ -122,7 +118,6 @@ pub(super) async fn change_attribute<
     mut metadata: FileMetadata,
     name: &AttributeName,
     value: Option<(&[u8], NamedAttributeWriteMode)>,
-    maximum_value_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<FileMetadata, FsError> {
@@ -152,9 +147,6 @@ pub(super) async fn change_attribute<
         require_attribute_mode(value.map(|(_, mode)| mode), current.value.is_some())?;
         let blob = if let Some((bytes, _)) = value {
             let length = usize_to_u64(bytes.len());
-            if length > maximum_value_bytes {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             Some(
                 stage_content_for_volume_with_accounting(
                     volume,
@@ -169,7 +161,7 @@ pub(super) async fn change_attribute<
             None
         };
         let (name, allocation) = decode_owned(accounting, |observe| {
-            name.try_clone(limits.maximum_name_bytes, &mut |step| observe(step))
+            name.try_clone(&mut |step| observe(step))
         })?;
         let mut name = Owned::new(name, allocation, 0);
         name.bytes = usize_to_u64(name.value.retained_bytes());
@@ -206,7 +198,6 @@ pub(super) async fn change_attribute<
             &volume.fs.inner.objects,
             root,
             std::slice::from_ref(&mutation),
-            1,
             limits,
             accounting,
             cancellation,
@@ -255,7 +246,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     0,
                     &mut accounting,
                 )?;
-            let mut total = 0_u64;
             loop {
                 let after = attributes.value.last().map(|(name, _)| name);
                 let (listing, mut allocation) = list_attributes_async_with_accounting(
@@ -278,10 +268,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                     .ok_or(WorkError::Overflow)?;
                 attributes.allocation.absorb(&mut allocation)?;
                 for entry in listing.entries.drain(..) {
-                    total = total.saturating_add(entry.value_bytes);
-                    if total > self.volume.config.limits.maximum_read_bytes {
-                        return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-                    }
                     attributes.ensure_for_push(usize::MAX, &mut accounting)?;
                     let read = read_blob_range_with_accounting(
                         &self.volume.fs.inner.objects,
@@ -334,15 +320,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let metadata = self
                 .read_metadata_with_accounting(file, &mut accounting, cancellation)
                 .await?;
-            read_attribute(
-                &self.volume,
-                metadata,
-                name,
-                self.volume.config.limits.maximum_read_bytes,
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
         }
         .await;
         budget.finish(result, &accounting)
@@ -407,12 +385,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            let (id, metadata, maximum) = match file.address() {
+            let (id, metadata) = match file.address() {
                 ContentAddress::File(id) => (
                     id,
                     self.read_metadata_with_accounting(id, &mut accounting, cancellation)
                         .await?,
-                    u64::MAX,
                 ),
                 ContentAddress::Path(path) => {
                     let lookup = self
@@ -423,11 +400,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                         )
                         .await?
                         .ok_or(FsError::NotFound)?;
-                    (
-                        lookup.record.file_id,
-                        lookup.metadata,
-                        self.volume.config.limits.maximum_read_bytes,
-                    )
+                    (lookup.record.file_id, lookup.metadata)
                 }
             };
             let metadata = change_attribute(
@@ -435,7 +408,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 metadata,
                 name,
                 value,
-                maximum,
                 &mut accounting,
                 cancellation,
             )
@@ -465,15 +437,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
                 cancellation,
             )
             .await?;
-            read_attribute(
-                &self.volume,
-                metadata,
-                name,
-                self.volume.config.limits.maximum_read_bytes,
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
         }
         .await;
         budget.finish(result, &accounting)
@@ -546,7 +510,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
                 metadata,
                 name,
                 value,
-                u64::MAX,
                 &mut accounting,
                 cancellation,
             )

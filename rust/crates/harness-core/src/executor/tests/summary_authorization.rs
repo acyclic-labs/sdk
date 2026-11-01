@@ -53,7 +53,7 @@ fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> 
                             operation_id: operation,
                             input: instruction.clone(),
                             selected_context: None,
-                            max_steps: 1,
+                            max_steps: Some(1),
                         };
                         executor
                             .summarize_in_turn(&journal, &input, 0, source, instruction)
@@ -106,7 +106,7 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
         operation_id: operation,
         input: ModelContent::Text("summarize".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let journal = Journal::default();
     execution.ensure_started(&journal, &input).await?;

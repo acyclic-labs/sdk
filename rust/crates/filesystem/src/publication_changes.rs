@@ -241,9 +241,8 @@ impl PublicationChanges {
             .ok_or(FsError::InvalidDiff)?
             .root
             .volume_id;
-        let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
         let (paths, allocation) =
-            crate::workspace::complete_changed_paths(endpoints, maximum, accounting, cancellation)
+            crate::workspace::complete_changed_paths(endpoints, None, accounting, cancellation)
                 .await
                 .map_err(change_error)?;
         let standalone_bytes = if let Some(before) = before {

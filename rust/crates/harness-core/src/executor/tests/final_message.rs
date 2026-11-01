@@ -44,7 +44,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             operation_id: OperationId::new(),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
-            max_steps: 2,
+            max_steps: Some(2),
         };
         let result = executor.execute(input.clone(), &journal).now_or_never();
         if completed {
@@ -106,11 +106,17 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
 #[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     let mut admission = ModelEventAdmission::default();
-    admission.observe(&ModelEvent::Content { delta: "é".into() }, limits, None)?;
+    admission.observe(
+        &ModelEvent::Content {
+            delta: "Ã©".into()
+        },
+        limits,
+        None,
+    )?;
     admission.observe(&ModelEvent::Content { delta: "ok".into() }, limits, None)?;
     assert_eq!(admission.text_bytes, 4);
     assert!(
@@ -129,7 +135,7 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
         admission
             .observe(
                 &ModelEvent::MessageCompleted {
-                    text: "ééx".into()
+                    text: "Ã©Ã©x".into()
                 },
                 limits,
                 None
@@ -143,10 +149,10 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
 #[test]
 fn completed_message_is_bounded_before_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
-    for text in ["", "λ λ"] {
+    for text in ["", "Î» Î»"] {
         let mut admission = ModelEventAdmission::default();
         let event = ModelEvent::MessageCompleted { text: text.into() };
         let accepted = text.len() <= 4;
@@ -159,7 +165,7 @@ fn completed_message_is_bounded_before_admission() -> Result<()> {
 #[tokio::test]
 async fn sampling_returns_the_completed_message_instead_of_streamed_prefixes() -> Result<()> {
     use crate::mcp::callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks};
-    for answer in ["", "final λ\n"] {
+    for answer in ["", "final Î»\n"] {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let context = Arc::new(admitted_context(scope.clone())?);
         let parent = OperationId::new();
@@ -238,7 +244,7 @@ proptest! {
             Capabilities::new(["tool:call:example.echo"]), Limits::default())?, allowed()?)?;
         let journal = Journal::default();
         let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()),
-            selected_context: None, max_steps: 4 };
+            selected_context: None, max_steps: Some(4) };
         let actual = futures::executor::block_on(executor.execute(input.clone(), &journal))?;
         let expected = completed.unwrap_or_else(|| final_chunks.concat());
         prop_assert_eq!(&actual.text, &expected);
@@ -316,7 +322,7 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 2,
+        max_steps: Some(2),
     };
     let output = executor
         .execute(input, &Journal::default())

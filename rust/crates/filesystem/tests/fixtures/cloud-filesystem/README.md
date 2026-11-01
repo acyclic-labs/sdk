@@ -1,32 +1,36 @@
-# Cloud filesystem contract capture
+# Filesystem contract capture
 
-`source.json` pins Cloud #3230's handler test, source files and SDK revision.
-The canonical Filesystem descriptor is byte-identical in that pinned SDK and
-this checkout. There is no parallel schema: `golden.json` uses protobuf JSON
-from the existing descriptor, including base64 bytes, decimal-text uint64s,
-enum names and oneof fields. Cloud's public transport is gRPC.
+`source.json` retains the original Cloud handler-test commit, source blobs and
+SDK pin. Its `sdk_capture` records the SDK revision and canonical descriptor
+used by the current `golden.json`. These are separate provenance: refreshing
+SDK wire-engine output does not qualify a live Cloud deployment.
 
-The capture copies the create/write/read/list/remove/delete sequence and
-assertions from `write_read_list_and_delete_through_reconstructed_replica` in
-Cloud's `svc/fs/tests/multi_tenant.rs`. It replays those requests through
-`FilesystemWireService`, the exact canonical wire engine to which Cloud's
-authenticated handler delegates without translating requests or responses.
-The recorder also captures handshake and head lookup for hosted-client setup.
-Generated workspace/generation identities are frozen in the JSON capture.
+The recorder replays the create/write/read/list/remove/delete sequence from
+`write_read_list_and_delete_through_reconstructed_replica` through the SDK's
+`FilesystemWireService`. It also records handshake and head lookup for hosted
+client setup. Generated identities, complete typed generation-root references
+and the handshake descriptor are frozen in the JSON capture. Protobuf JSON
+uses the existing canonical descriptor; it is not another protocol or endpoint.
 
-This scoped capture exercises the canonical engine. It does **not** run Cloud's
-authentication, replica reconstruction, storage adapters, Edge routing or a
-deployment. Those checks remain in Cloud's own suite and coordinator qualification.
+Rust hosted/generated clients and the TypeScript Node gRPC client replay the
+same capture over real local gRPC. Their request/response comparisons retain
+identity relationships and exact bytes. Descriptor changes require a fresh
+capture; replay never rewrites the captured handshake.
 
-Both the TypeScript Node gRPC client and Rust hosted/generated clients replay
-these shared goldens over real local gRPC. Refresh `source.json` and the goldens
-with the same Cloud SDK pin bump after reviewing the new handler tests:
+Regenerate with the existing recorder, record its exact source revision and
+current descriptor blob in `source.json`'s `sdk_capture`, then qualify both clients:
 
 ```sh
-cargo run -p acyclic-fs --example record_cloud_contract --locked
-cargo test -p acyclic-fs --test cloud_contract --locked
+cd rust
+cargo run -p acyclic-fs --example record_cloud_contract --features local,test-support --locked
+cargo test -p acyclic-fs --test main --features local,test-support --locked
+```
+
+After generating and building the TypeScript filesystem package:
+
+```sh
 node --test typescript/packages/filesystem/test/cloud-contract.test.mjs
 ```
 
-Build TypeScript before its Node test. On Linux systems, run each cargo
-command through the shell in a Linux source checkout; run formatting directly.
+This capture does not run Cloud authentication, replica reconstruction, storage
+adapters or Edge routing. Those remain qualified by their owning service tests.

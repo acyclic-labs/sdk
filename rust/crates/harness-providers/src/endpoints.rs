@@ -14,7 +14,7 @@ fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec
         headers: BTreeMap::new(),
         models: BTreeMap::new(),
         token_counter: None,
-        max_event_bytes: 1024 * 1024,
+        max_event_bytes: None,
         retry: RetrySpec::DEFAULT,
         timeouts: TimeoutSpec::DEFAULT,
     })

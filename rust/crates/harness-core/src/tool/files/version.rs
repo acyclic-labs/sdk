@@ -111,7 +111,7 @@ fn encode_token<T: Serialize>(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let bytes = io.encode(file, work.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(file, Some(work.remaining()?.bytes_encoded), false)?;
         // The shared codec produces UTF-8 JSON; display retains the string on
         // the same original ledger while its encoded scratch is still alive.
         let text = std::str::from_utf8(&bytes).map_err(|_| Error::NativeBoundary {

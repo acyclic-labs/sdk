@@ -381,12 +381,8 @@ where
     ) -> Result<Response<wire::RebaseTransactionResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.mutations.is_empty()
-            || u32::try_from(request.mutations.len()).unwrap_or(u32::MAX)
-                > self.limits.maximum_transaction_mutations
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
-        {
+        self.require_transaction_count(request.mutations.len())?;
+        if request.maximum_conflicts == Some(0) {
             return Err(Status::invalid_argument(
                 "transaction rebase bounds are invalid",
             ));
@@ -499,8 +495,7 @@ where
     ) -> Result<Response<wire::DiffResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_changes == 0 || request.maximum_changes > self.limits.maximum_page_items
-        {
+        if request.maximum_changes == Some(0) {
             return Err(Status::invalid_argument("diff bound is invalid"));
         }
         let from = self.generation(request.from).await?;
@@ -543,12 +538,9 @@ where
     ) -> Result<Response<wire::RebaseResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_generations == 0
-            || request.maximum_generations > self.limits.maximum_page_items
-            || request.maximum_changes == 0
-            || request.maximum_changes > self.limits.maximum_page_items
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
+        if request.maximum_generations == Some(0)
+            || request.maximum_changes == Some(0)
+            || request.maximum_conflicts == Some(0)
         {
             return Err(Status::invalid_argument("rebase bounds are invalid"));
         }

@@ -117,8 +117,22 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary through the shared native capture, exit and physical-close
-/// owner, retaining the original outer deadline without readiness polling.
+struct Capture;
+
+impl acyclic_native_runtime::CaptureHandler for Capture {
+    fn check(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        _: acyclic_native_runtime::ProcessOutput<'_>,
+    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+        Ok(acyclic_native_runtime::ProcessInput::default())
+    }
+}
+
+/// Captures both pipes while delivering input, with a one-minute deadline.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
     fixture.custody.configure(|key, value| {
@@ -146,32 +160,25 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let stdin = stdin.to_owned();
-    tokio::task::spawn_blocking(move || {
-        use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTree};
-        let mut child = ProcessTree::spawn(&mut command).expect("spawn GraphCoder process tree");
-        child
-            .wait_with_output(
-                std::time::Duration::from_secs(60),
-                usize::MAX,
-                Some(CaptureInput::Literal(stdin.as_bytes())),
-                || Ok(()),
-                |_| Ok(ProcessInput::default()),
-                None,
-                None,
-                None,
-            )
-            .unwrap_or_else(|failure| {
-                panic!(
-                    "GraphCoder capture failed: {}; physical_tree_retired={}; stdout={}; stderr={}",
-                    failure.error,
-                    failure.cleanup_completed,
-                    String::from_utf8_lossy(&failure.stdout),
-                    String::from_utf8_lossy(&failure.stderr)
-                )
-            })
+    let tree = acyclic_native_runtime::spawn_blocking(move || {
+        acyclic_native_runtime::ProcessTree::spawn(&mut command)
     })
     .await
+    .unwrap()
+    .unwrap();
+    // The owned capture keeps physical cleanup alive if its caller is dropped.
+    acyclic_native_runtime::spawn(tree.capture(
+        acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_secs(60)),
+        None,
+        Some(acyclic_native_runtime::OwnedCaptureInput::Literal(
+            stdin.as_bytes().to_vec(),
+        )),
+        Capture,
+    ))
+    .await
+    .unwrap()
+    .unwrap()
+    .result
     .unwrap()
 }
 

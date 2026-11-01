@@ -11,11 +11,14 @@ fuzz_target!(|bytes: &[u8]| {
         *to = *from;
     }
     follow_data::exercise(u64::from_le_bytes(next), bytes.len() as u16, bytes, false);
-    let limits = tonic_web_wasm_client::limits::UnaryResponseLimits::new(bytes.len()).unwrap();
+    let limits = tonic_web_wasm_client::limits::UnaryResponseLimits::new(bytes.len());
+    let metadata = limits.with_metadata_limits(16_384, 16_384).unwrap();
     for text in [false, true] {
         assert_eq!(limits.body_bytes(true, text), None);
+        assert_eq!(limits.body_bytes(false, text), None);
+        assert_eq!(metadata.body_bytes(true, text), None);
         assert_eq!(
-            limits.body_bytes(false, text),
+            metadata.body_bytes(false, text),
             Some((bytes.len() + 16_384 + 10) * if text { 4 } else { 1 })
         );
         assert_eq!(limits.message_bytes(), bytes.len());

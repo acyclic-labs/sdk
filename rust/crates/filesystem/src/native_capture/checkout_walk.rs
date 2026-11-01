@@ -2,41 +2,77 @@ use super::*;
 
 pub(super) fn order_host_checkout_union(
     mut observed: Vec<(NamespacePath, Option<HostStat>)>,
-    checkout_paths: Vec<(NamespacePath, ())>,
-    maximum: usize,
+    mut checkout_paths: Vec<(NamespacePath, ())>,
+    maximum: Option<usize>,
     meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
+    capture_order_entries(&mut checkout_paths, maximum, meter)?;
     let checkout_bytes = vector_bytes(&checkout_paths);
-    for (path, ()) in checkout_paths {
-        capture_charge(
-            meter,
-            WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            },
-        )?;
-        match capture_position(&observed, &path, meter)? {
-            Ok(_) => capture_drop_path(path, meter)?,
-            Err(index) => {
-                if observed.len() >= maximum {
-                    return Err(CaptureError::InvalidOptions);
-                }
-                capture_insert_at(&mut observed, index, path, None, meter)?;
+    let observed_bytes = vector_bytes(&observed);
+    // Count only checkout paths missing from the host, using one monotone scan.
+    let mut host = observed.iter().peekable();
+    let mut count = observed.len();
+    for (path, ()) in &checkout_paths {
+        while let Some((candidate, _)) = host.peek() {
+            capture_charge(
+                meter,
+                crate::materializer::NativeResourceCredit::Items.delta(2),
+            )?;
+            if candidate < path {
+                host.next();
+            } else {
+                break;
             }
         }
+        if host.peek().is_none_or(|(candidate, _)| candidate != path) {
+            count = count.checked_add(1).ok_or(WorkError::Overflow)?;
+        }
     }
+    if maximum.is_some_and(|maximum| count > maximum) {
+        return Err(CaptureError::InvalidOptions);
+    }
+    let mut observations = capture_vec(count, meter)?;
+    let mut paths = capture_vec(count, meter)?;
+    let mut host = observed.drain(..).peekable();
+    let mut checkout = checkout_paths.into_iter().peekable();
+    loop {
+        meter.clone().check().map_err(capture_demand_error)?;
+        let (path, observation) = match (host.peek(), checkout.peek()) {
+            (Some((left, _)), Some((right, ()))) => {
+                capture_charge(
+                    meter,
+                    crate::materializer::NativeResourceCredit::Items.delta(2),
+                )?;
+                match left.cmp(right) {
+                    std::cmp::Ordering::Less => host.next().ok_or(WorkError::Overflow)?,
+                    std::cmp::Ordering::Greater => {
+                        let (path, ()) = checkout.next().ok_or(WorkError::Overflow)?;
+                        (path, None)
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let (duplicate, ()) = checkout.next().ok_or(WorkError::Overflow)?;
+                        capture_drop_path(duplicate, meter)?;
+                        host.next().ok_or(WorkError::Overflow)?
+                    }
+                }
+            }
+            (Some(_), None) => host.next().ok_or(WorkError::Overflow)?,
+            (None, Some(_)) => {
+                let (path, ()) = checkout.next().ok_or(WorkError::Overflow)?;
+                (path, None)
+            }
+            (None, None) => break,
+        };
+        observations.push(observation);
+        paths.push(path);
+    }
+    drop(host);
+    drop(checkout);
+    drop(observed);
     meter
         .clone()
         .release(checkout_bytes)
         .map_err(capture_demand_error)?;
-    let observed_bytes = vector_bytes(&observed);
-    let mut observations = capture_vec(observed.len(), meter)?;
-    let mut paths = capture_vec(observed.len(), meter)?;
-    for (path, observation) in observed {
-        meter.clone().check().map_err(capture_demand_error)?;
-        observations.push(observation);
-        paths.push(path);
-    }
     meter
         .clone()
         .release(observed_bytes)
@@ -47,11 +83,11 @@ pub(super) fn order_host_checkout_union(
 pub(super) fn combined_path_count_exceeds(
     observed: usize,
     checkout_only: usize,
-    maximum: usize,
+    maximum: Option<usize>,
 ) -> bool {
     observed
         .checked_add(checkout_only)
-        .is_none_or(|combined| combined > maximum)
+        .is_none_or(|combined| maximum.is_some_and(|maximum| combined > maximum))
 }
 
 pub(super) async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -122,7 +158,6 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     limits: crate::model::VolumeLimits,
     root: NamespacePath,
     policy: &CapturePolicy,
-    maximum: usize,
     paths: &mut Vec<(NamespacePath, ())>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -145,10 +180,10 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
         let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
         if move_leaf {
             meter.clone().check().map_err(capture_demand_error)?;
-            return append_scanned_path(paths, child, maximum, meter);
+            return capture_push_entry(paths, child, (), meter);
         }
         let scanned = clone_capture_path(&child, meter)?;
-        append_scanned_path(paths, scanned, maximum, meter)?;
+        capture_push_entry(paths, scanned, (), meter)?;
         if entry.record.kind == FileKind::Directory {
             capture_reserve(pending, 1, meter)?;
             pending.push(child);
@@ -160,35 +195,15 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     .await
 }
 
-pub(super) fn append_scanned_path(
-    paths: &mut Vec<(NamespacePath, ())>,
-    path: NamespacePath,
-    maximum: usize,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    let Err(index) = capture_position(paths, &path, meter)? else {
-        return capture_drop_path(path, meter);
-    };
-    if paths.len() >= maximum {
-        return Err(CaptureError::InvalidOptions);
-    }
-    capture_charge(
-        meter,
-        WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        },
-    )?;
-    capture_insert_at(paths, index, path, (), meter)
-}
-
 pub(super) fn validate_path_count(
     paths: &[NamespacePath],
     options: &CaptureOptions,
 ) -> Result<(), CaptureError> {
-    if options.maximum_paths == 0
-        || options.maximum_extent_spans == 0
-        || paths.len() > usize::try_from(options.maximum_paths).unwrap_or(usize::MAX)
+    if options.maximum_paths == Some(0)
+        || options.maximum_extent_spans == Some(0)
+        || options
+            .maximum_paths
+            .is_some_and(|maximum| paths.len() as u64 > u64::from(maximum))
     {
         return Err(CaptureError::InvalidOptions);
     }

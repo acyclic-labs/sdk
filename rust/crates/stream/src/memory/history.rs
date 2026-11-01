@@ -110,7 +110,8 @@ impl Drop for History {
     fn drop(&mut self) {
         let mut cursor = self.take_parent();
         while let Some(node) = cursor {
-            let Ok(mut history) = Arc::try_unwrap(node) else {
+            // A losing concurrent claim must not implicitly drop this chain.
+            let Some(mut history) = Arc::into_inner(node) else {
                 break;
             };
             cursor = history.take_parent();

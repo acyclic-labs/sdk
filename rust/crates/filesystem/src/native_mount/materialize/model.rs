@@ -9,8 +9,8 @@ pub struct MaterializeOptions {
     pub expected_root_identity: Option<crate::NativeRootIdentity>,
     /// Maximum directory entries fetched per authenticated page.
     pub maximum_directory_entries: u32,
-    /// Maximum sparse spans fetched per authenticated range plan.
-    pub maximum_extent_spans: u32,
+    /// Optional caller policy for sparse spans in one authenticated range plan.
+    pub maximum_extent_spans: Option<u32>,
     /// Maximum bytes read or zero-filled in one allocation.
     pub transfer_bytes: u64,
 }
@@ -46,14 +46,14 @@ pub(super) fn host_metadata(metadata: FileMetadata) -> (FileMetadata, Option<cra
 }
 
 impl MaterializeOptions {
-    /// Creates the canonical bounded native materialization policy.
+    /// Creates the native materialization policy with bounded physical transfers.
     #[must_use]
     pub fn native(destination: impl Into<PathBuf>) -> Self {
         Self {
             destination: destination.into(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
             transfer_bytes: 8 * 1024 * 1024,
         }
     }

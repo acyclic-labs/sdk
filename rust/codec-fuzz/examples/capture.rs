@@ -9,11 +9,7 @@ fn json_seed(
     payload: &[u8],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     if let Some(name) = decoder.name.strip_prefix("acyclic.objects.v1.") {
-        return Ok(acyclic_objects::json::encode_binary(
-            name,
-            payload,
-            usize::MAX,
-        )?);
+        return Ok(acyclic_objects::json::encode_binary(name, payload, None)?);
     }
     acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), payload)
         .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name).into())

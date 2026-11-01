@@ -14,7 +14,8 @@ struct Fixture {
 fn fixture(bytes: &[u8], capacity: usize, denied: u8, cancelled: bool) -> Fixture {
     let cancellation = CancellationToken::new();
     let budget = WorkBudget {
-        allocation_operations: 2 + u64::from(capacity != 0) + u64::from(denied != 1),
+        // Original ledger, custody header and its retirement condition.
+        allocation_operations: 3 + u64::from(capacity != 0) + u64::from(denied != 1),
         bytes_copied: if denied == 2 { 0 } else { u64::MAX },
         ..WorkBudget::UNBOUNDED
     };
@@ -77,13 +78,13 @@ fn expected(
     cancelled: bool,
 ) -> (WorkCounters, u64, u64, usize) {
     let header = NativeMaterializationWork::accounting_state_bytes()
-        + std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64;
+        + crate::demand::CaptureTransientCustody::allocation_bytes();
     let growing = !cancelled && length + additional > capacity;
     let allocated = growing && denied != 1;
     let copied = allocated && (denied != 2 || length == 0);
     let grown = (length + additional).max((capacity * 2).max(4));
     let work = WorkCounters {
-        allocation_operations: 2 + u64::from(capacity != 0) + u64::from(allocated),
+        allocation_operations: 3 + u64::from(capacity != 0) + u64::from(allocated),
         peak_allocation_bytes: header + capacity as u64 + if allocated { grown as u64 } else { 0 },
         bytes_copied: if copied { length as u64 } else { 0 },
         ..WorkCounters::UNCHARGED

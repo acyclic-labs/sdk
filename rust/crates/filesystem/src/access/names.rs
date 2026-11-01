@@ -35,10 +35,9 @@ pub(super) fn validate(path: &str, config: VolumeConfig) -> Result<(), InvalidPo
         )
         .is_err()
         || (!path.is_empty()
-            && path.split('/').any(|part| {
-                LogicalName::validate_unicode(encoding, part, config.limits.maximum_component_bytes)
-                    .is_err()
-            }))
+            && path
+                .split('/')
+                .any(|part| LogicalName::validate_unicode(encoding, part).is_err()))
     {
         return Err(InvalidPolicy("path violates volume name semantics"));
     }

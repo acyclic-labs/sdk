@@ -39,9 +39,9 @@ pub(crate) struct WorkspaceJoinRequest<'a, A: 'static, O: 'static> {
     pub history: crate::workspace::JoinHistory,
     pub operation_id: OperationId,
     pub permit: PublicationPermit,
-    pub maximum_generations: u32,
-    pub maximum_changes: u32,
-    pub maximum_conflicts: u32,
+    pub maximum_generations: Option<u32>,
+    pub maximum_changes: Option<u32>,
+    pub maximum_conflicts: Option<u32>,
     pub resolutions: WorkspaceJoinResolutions<'a>,
 }
 
@@ -73,11 +73,14 @@ pub(super) fn workspace_join_context(
     expected_target: GenerationId,
     base: WorkspaceCommonAncestor,
     history: crate::workspace::JoinHistory,
-    maximum_generations: u32,
-    maximum_changes: u32,
-    maximum_conflicts: u32,
+    maximum_generations: Option<u32>,
+    maximum_changes: impl Into<Option<u32>>,
+    maximum_conflicts: impl Into<Option<u32>>,
     resolutions: Digest,
 ) -> Digest {
+    let maximum_changes = maximum_changes.into();
+    let maximum_conflicts = maximum_conflicts.into();
+
     let mut hasher = blake3::Hasher::new();
     hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
     hasher.update(&source_workspace.into_bytes());
@@ -92,9 +95,12 @@ pub(super) fn workspace_join_context(
         crate::workspace::JoinHistory::Squash => 3,
         crate::workspace::JoinHistory::CherryPick => 4,
     }]);
-    hasher.update(&maximum_generations.to_le_bytes());
-    hasher.update(&maximum_changes.to_le_bytes());
-    hasher.update(&maximum_conflicts.to_le_bytes());
+    for maximum in [maximum_generations, maximum_changes, maximum_conflicts] {
+        hasher.update(&[u8::from(maximum.is_some())]);
+        if let Some(maximum) = maximum {
+            hasher.update(&maximum.to_le_bytes());
+        }
+    }
     hasher.update(resolutions.as_bytes());
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }

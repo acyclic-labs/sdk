@@ -1,5 +1,5 @@
 /** One race: fork N ways, run a worker per fork, probe, let Jev judge, keep the winner. */
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./generated/process-capture.mjs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Fork, Change } from "./acyclic.js";
@@ -12,13 +12,15 @@ export interface RaceOptions {
   task: string;
   models: string[];                 // one worker per entry; repeat a model to race it against itself
   kind?: string;                    // task kind label for the board
-  testCommand?: string;             // run in each fork; its tail becomes the probe
+  testCommand?: string;             // run in each fork; its complete output becomes the probe
   promote?: boolean;                // land the winner (default false: judge only, drop all)
   minConfidence?: number;           // promote only if P(winner) >= this (default 0.6)
   requireSafe?: boolean;            // and only if the winner's "safe" >= 0.5 (default true)
   testsOverrideSafety?: boolean;    // a passing probe satisfies requireSafe (default true: tests are ground truth)
   redact?: boolean;                 // scrub credential-shaped strings from the state before it leaves the machine (default true)
   workerTimeoutMs?: number;
+  /** Optional caller-selected deadline for each test command. */
+  testTimeoutMs?: number;
   maxFiles?: number;
   maxDiffChars?: number;
   onEvent?: (line: string) => void;
@@ -37,13 +39,13 @@ export interface RaceResult {
 const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const SAME = "no meaningful difference";
 
-function unifiedDiff(base: string, fork: string, rel: string, maxChars: number): string {
-  const p = spawnSync("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
+function unifiedDiff(base: string, fork: string, rel: string, maxChars?: number): string {
+  const p = captureCommand("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
   let out = p.stdout || "";
   if (!out && p.status !== 0 && p.stderr) {
     try { out = "+++ b/" + rel + "\n" + readFileSync(join(fork, rel), "utf8").split("\n").map((l) => "+" + l).join("\n"); } catch { out = ""; }
   }
-  return out.length > maxChars ? out.slice(0, maxChars) + `\n... (+${out.length - maxChars} chars)\n` : out;
+  return maxChars !== undefined && out.length > maxChars ? out.slice(0, maxChars) + `\n... (+${out.length - maxChars} chars)\n` : out;
 }
 
 /** Credential-shaped strings never leave the machine: the state is posted to a third party. */
@@ -60,13 +62,14 @@ export function redact(text: string): string {
   return SECRET_PATTERNS.reduce((t, re) => t.replace(re, (m) => (m.includes("PRIVATE KEY") ? "[REDACTED PRIVATE KEY]" : m.replace(/[^\s:=]{8,}$/, "[REDACTED]"))), text);
 }
 
-export function renderState(task: string, repo: string, reports: Array<{ fork: Fork; model: string; changes: Change[]; probe: string; worker?: { ok: boolean; error?: string } }>, maxFiles: number, maxDiffChars: number): string {
+export function renderState(task: string, repo: string, reports: Array<{ fork: Fork; model: string; changes: Change[]; probe: string; worker?: { ok: boolean; error?: string } }>, maxFiles?: number, maxDiffChars?: number): string {
   const blocks = reports.map(({ fork, model, changes, probe, worker }) => {
     const lines = [`=== fork ${fork.label} (${model})`, `Changed paths: ${changes.length}`];
-    if (worker && !worker.ok) lines.push(`Worker status: FAILED${worker.error ? " (" + worker.error.slice(0, 200) + ")" : ""}; the edits below may be partial`);
-    changes.slice(0, maxFiles).forEach((c) => lines.push(`  ${c.status} ${c.path}`));
-    if (changes.length > maxFiles) lines.push(`  ... ${changes.length - maxFiles} more`);
-    changes.slice(0, maxFiles).filter((c) => c.status === "A" || c.status === "M").forEach((c) => lines.push(unifiedDiff(repo, fork.path, c.path, maxDiffChars).trimEnd()));
+    if (worker && !worker.ok) lines.push(`Worker status: FAILED${worker.error ? " (" + worker.error + ")" : ""}; the edits below may be partial`);
+    const selected = maxFiles === undefined ? changes : changes.slice(0, maxFiles);
+    selected.forEach((c) => lines.push(`  ${c.status} ${c.path}`));
+    if (maxFiles !== undefined && changes.length > maxFiles) lines.push(`  ... ${changes.length - maxFiles} more`);
+    selected.filter((c) => c.status === "A" || c.status === "M").forEach((c) => lines.push(unifiedDiff(repo, fork.path, c.path, maxDiffChars).trimEnd()));
     if (probe) lines.push("Test output:", probe.trim());
     return lines.join("\n");
   });
@@ -108,9 +111,9 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
         probe = "(no changes in this fork; tests not run)";
         say(`probe ${f.label}: skipped, no changes`);
       } else if (opts.testCommand) {
-        const p = spawnSync("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: 300_000 });
+        const p = captureCommand("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: opts.testTimeoutMs });
         probeOk = p.status === 0;
-        probe = ((p.stdout || "") + (p.stderr || "")).trim().split("\n").slice(-12).join("\n");
+        probe = ((p.stdout || "") + (p.stderr || "")).trim();
         say(`probe ${f.label}: ${probeOk ? "pass" : "fail"}`);
       }
       return { fork: f, model: opts.models[i]!, worker: workers[i]!, changes, probe, probeOk };
@@ -126,7 +129,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
     for (const ordered of orders) {
       const byId = new Map(ordered.map((r, i) => [r.fork.id, LABELS[i] ?? String(i)]));
       const relabelled = ordered.map((r) => ({ ...r, fork: { ...r.fork, label: byId.get(r.fork.id)! } }));
-      const st = scrub(renderState(opts.task, forker.repo, relabelled, opts.maxFiles ?? 12, opts.maxDiffChars ?? 1500));
+      const st = scrub(renderState(opts.task, forker.repo, relabelled, opts.maxFiles, opts.maxDiffChars));
       if (!state) state = st;
       const labels = relabelled.map((r) => `fork ${r.fork.label}`);
       const questions: Record<string, ReturnType<typeof choice> | ReturnType<typeof score> | ReturnType<typeof noul>> = {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../scripts/process-capture.mjs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -14,7 +14,7 @@ test("CLI executes only as the main module and preserves required string argumen
   const authority = new URL("../authority.mjs", import.meta.url).href;
   writeFileSync(file, `import { runCli } from ${JSON.stringify(authority)};\n` +
     'runCli(import.meta.url, values => values, ["input", "output"]);\n');
-  const run = argv => spawnSync(process.execPath, argv, { encoding: "utf8", timeout: 60_000 });
+  const run = argv => captureCommand(process.execPath, argv, { encoding: "utf8", timeout: 60_000 });
   const direct = run([file, "--input", "source with spaces", "--output", "destination"]);
   assert.equal(direct.status, 0, direct.stderr);
   assert.deepEqual(JSON.parse(direct.stdout), { input: "source with spaces", output: "destination" });

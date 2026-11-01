@@ -76,7 +76,7 @@ pub(crate) fn copy_response(
     response: &SearchResponse,
     work: &NativeMaterializationWork,
 ) -> Result<(SearchResponse, NativeAllocation)> {
-    let json = crate::tool::value(response, u64::MAX, Some(work))?;
+    let json = crate::tool::value(response, None, Some(work))?;
     let io = crate::executor::PreparationIo::from_native_work(work)?;
     let copied = io.value_decode(&json.0, crate::wire::ErrorCode::Invalid)?;
     let custody = io.into_native_custody(response_bytes(&copied)?)?;

@@ -55,7 +55,6 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
         let mut session = properties::empty_session(true);
         // The caller's explicit budget admits the fixture's many small frames.
         session.limits = Limits {
-            channels: count + 1,
             pending_frames: count + 1,
             pending_bytes: crate::MAX_COMMAND_BYTES,
         };

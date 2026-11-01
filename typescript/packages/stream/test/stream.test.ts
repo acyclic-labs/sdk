@@ -6,13 +6,25 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm } from "../src/contract.js";
+import { ensureStreamWasm, wireAppendRequest } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+
+async function issuedRevisionFixture() {
+  const result = await new MemoryStreamProvider().append("fixture/revision", [new Uint8Array([1])], { idempotencyKey: key("fixture-revision") });
+  if (!result.ok) throw new Error("fixture append conflicted");
+  const revision = result.revision;
+  if (revision === undefined) throw new Error("fixture append did not issue a revision");
+  return { wire: revision, json: {
+    scope: btoa(String.fromCharCode(...revision.scope)),
+    incarnation: btoa(String.fromCharCode(...revision.incarnation)),
+    index: revision.index.toString(),
+  } };
+}
 
 async function withBrowserDefault<T>(fetcher: typeof fetch, action: () => Promise<T>): Promise<T> {
   const processDescriptor = Object.getOwnPropertyDescriptor(globalThis, "process");
@@ -123,19 +135,17 @@ describe("website Stream contract", () => {
 
   test("enforces the Rust Stream path, batch, and read bounds before mutation", async () => {
     const client = StreamClient.memory();
-    for (const path of ["space in/path", "bad\\path", "emoji/ðŸš€", "control/\u000b", "a".repeat(65_536), Array(1_025).fill("a").join("/")]) {
+    for (const path of ["space in/path", "bad\\path", "emoji/ðŸš€", "control/\u000b", Array(1_025).fill("a").join("/")]) {
       expect(() => client.bytes(path)).toThrow();
     }
+    const longPath = client.bytes("a".repeat(65_536));
+    await longPath.append(new Uint8Array([1]), { idempotencyKey: key("long-path") });
+    expect((await longPath.read({ from: 0n, limit: 1 }).next()).value?.value).toEqual(new Uint8Array([1]));
     const stream = client.bytes("bounded");
     await expect(stream.appendBatch([], { idempotencyKey: key("stream.test-110") })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(stream.appendBatch([new Uint8Array(65_537)], { idempotencyKey: key("stream.test-111") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    await expect(stream.appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-112") })).rejects.toMatchObject({ code: "limit_exceeded" });
     const customProvider = new MemoryStreamProvider();
     let customCalls = 0;
-    const originalAppend = customProvider.append.bind(customProvider);
-    customProvider.append = (...args) => { customCalls += 1; return originalAppend(...args); };
-    await expect(new StreamClient(customProvider).bytes("custom").appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-117") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    expect(customCalls).toBe(0);
     const customStream = new StreamClient({
       append: () => { customCalls += 1; throw new Error("custom provider called"); },
     } as never).bytes("custom");
@@ -149,11 +159,13 @@ describe("website Stream contract", () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(hosted.append("bounded", [], { idempotencyKey: key("empty-hosted") })).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
-    await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow();
     const cursor = client.bytes("cursor-bounds");
     await cursor.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-136") });
+    const replay = [];
+    for await (const record of cursor.read({ from: 0n, limit: 0xffff_ffff })) replay.push(record.value);
+    expect(replay).toEqual([new Uint8Array([1])]);
     await expect(cursor.read({ from: 2n, limit: 1 }).next()).rejects.toMatchObject({ code: "out_of_range" });
     await expect(cursor.follow({ from: 2n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(await stream.tail().catch(() => "absent")).toBe("absent");
@@ -181,7 +193,7 @@ describe("website Stream contract", () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)))).rejects.toThrow();
+    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)), { idempotencyKey: key("large-hosted") })).rejects.toThrow();
     const hostedMutations = conditions.map(condition => ({ append: { path: condition.path, values: [body] } }));
     await expect(hosted.commit({ conditions, mutations: hostedMutations }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
     expect(hostedCalls).toBe(0);
@@ -207,13 +219,15 @@ describe("website Stream contract", () => {
     expect(is_stream_error_code("not_a_stream_error")).toBe(false);
   });
 
-  test("requires matching conditions and canonicalizes coordinated retry identity", async () => {
+  test("requires fork destination absence and canonicalizes coordinated retry identity", async () => {
     const client = StreamClient.memory();
     const first = client.bytes("coordinated/a");
     const second = client.bytes("coordinated/b");
+    const source = client.bytes("coordinated/source");
+    await source.append(new Uint8Array([1]), { idempotencyKey: key("fork-source") });
     await expect(client.commit({ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
-      { append: { stream: second, values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
+      { fork: { source, destination: second.path, atTail: 1n } },
+    ] }, { idempotencyKey: key("missing-condition") })).rejects.toMatchObject({ code: "invalid_argument" });
     const options = { idempotencyKey: key("ordered") };
     const conditions = [{ path: first.path, ifAbsent: true as const }, { path: second.path, ifAbsent: true as const }];
     const mutations = [
@@ -357,7 +371,7 @@ describe("website Stream contract", () => {
     append.commitId[0] = 99;
     expect((await provider.readCommit(appendId)).commitId).toEqual(appendId);
 
-    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { ifTail: 0n });
+    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { ifTail: 0n, idempotencyKey: key("projection-conflict") });
     expect(appendConflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 1n });
     const forkKey = key("projection-fork");
     const fork = await provider.fork("projection/events", "projection/copy", { idempotencyKey: forkKey });
@@ -389,10 +403,11 @@ describe("website Stream contract", () => {
     expect(secondRead?.value).toEqual(new Uint8Array([4]));
   });
 
-  test("Rust memory response projector owns widths, copies, and missing oneofs", () => {
+  test("Rust memory response projector owns widths, copies, and missing oneofs", async () => {
+    const { wire: revision } = await issuedRevisionFixture();
     const sourceCommitId = new Uint8Array(32).fill(9);
     const projected = projectMemoryResponse("append", toBinary(AppendResponseSchema, create(AppendResponseSchema, {
-      outcome: { case: "committed", value: { start: 0xffff_ffff_ffff_ffffn, end: 0xffff_ffff_ffff_ffffn, tail: 0xffff_ffff_ffff_ffffn, commitId: sourceCommitId } },
+      outcome: { case: "committed", value: { start: 0xffff_ffff_ffff_ffffn, end: 0xffff_ffff_ffff_ffffn, tail: 0xffff_ffff_ffff_ffffn, commitId: sourceCommitId, revision } },
     }))) as { readonly ok: true; readonly start: bigint; readonly commitId: Uint8Array };
     expect(projected).toMatchObject({ ok: true, start: 0xffff_ffff_ffff_ffffn });
     expect(projected.commitId).toEqual(sourceCommitId);
@@ -450,8 +465,8 @@ describe("website Stream contract", () => {
   });
 
   test("binds commit identities to request content", async () => {
-    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])]);
-    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])]);
+    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])], { idempotencyKey: key("content-identity") });
+    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])], { idempotencyKey: key("content-identity") });
     if (!left.ok || !right.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect(left.commitId).not.toEqual(right.commitId);
   });
@@ -478,8 +493,8 @@ describe("website Stream contract", () => {
     expect(observed?.outcome).toEqual({ type: "append", outcome: first });
 
     const [second, third] = await Promise.all([
-      provider.append("events", [new Uint8Array([2])]),
-      provider.append("events", [new Uint8Array([3])]),
+      provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("second-event") }),
+      provider.append("events", [new Uint8Array([3])], { idempotencyKey: key("third-event") }),
     ]);
     if (!second.ok || !third.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect([second.start, third.start]).toEqual([1n, 2n]);
@@ -496,7 +511,7 @@ describe("website Stream contract", () => {
 
   test("does not create a path when its first conditional append conflicts", async () => {
     const provider = new MemoryStreamProvider();
-    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
+    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n, idempotencyKey: key("first-conflict") });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
     expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
@@ -504,7 +519,7 @@ describe("website Stream contract", () => {
 
   test("removes cancelled memory followers without waiting for a later append", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("events", [new Uint8Array([1])]);
+    await provider.append("events", [new Uint8Array([1])], { idempotencyKey: key("first-event") });
     const controller = new AbortController();
     let removed = 0;
     let followerReady!: () => void;
@@ -518,14 +533,14 @@ describe("website Stream contract", () => {
     controller.abort();
     await expect(next).resolves.toEqual({ done: true, value: undefined });
     expect(removed).toBe(1);
-    await provider.append("events", [new Uint8Array([2])]);
+    await provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("second-event") });
     expect(removed).toBe(1);
   });
 
   test("closed Rust follow handles end before or during a pending read", async () => {
     await ensureStreamWasm();
     const wasm = new WasmStream();
-    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
+    await wasm.dispatch("append", wireAppendRequest("events", [new Uint8Array([1])], { idempotencyKey: key("rust-follow-source") }));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
     const closed = await wasm.open_follow(request);
     closed.close();
@@ -549,6 +564,7 @@ describe("website Stream contract", () => {
   });
 
   test("retains a valid prototype-named tail in memory and hosted commit results", async () => {
+    const { json: revision } = await issuedRevisionFixture();
     const request = {
       conditions: [{ path: "__proto__", ifAbsent: true as const }],
       mutations: [{ append: { path: "__proto__", values: [new Uint8Array([1])] } }],
@@ -558,17 +574,18 @@ describe("website Stream contract", () => {
     expect(local.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
 
     const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(`{"ok":true,"commitId":"${encodedCommitId}","committedAtMicros":"1","appends":[{"path":"__proto__","start":"0","tail":"1"}],"forks":[]}`) });
+      new Response(JSON.stringify({ ok: true, commitId: encodedCommitId, committedAtMicros: "1", revision, appends: [{ path: "__proto__", start: "0", tail: "1" }], forks: [] })) });
     const hosted = await remote.commit(request, { idempotencyKey: key("prototype-hosted") });
     if (!hosted.ok) throw new Error("hosted commit unexpectedly conflicted");
     expect(hosted.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
   });
 
   test("hosted append sends the bytes and key validated at call time", async () => {
+    const { json: revision } = await issuedRevisionFixture();
     let sent: { values: string[]; options: { idempotencyKey: string } } | undefined;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_url, init) => {
       sent = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: "0", end: "1", tail: "1", commitId: encodedCommitId, revision }));
     } });
     const value = new Uint8Array([1]);
     const retryKey = key("snap");
@@ -581,6 +598,7 @@ describe("website Stream contract", () => {
   });
 
   test("default transport snapshots append inputs before delayed provider selection", async () => {
+    const { json: revision } = await issuedRevisionFixture();
     let release!: () => void;
     const selection = new Promise<void>(resolve => { release = resolve; });
     let sent: Record<string, unknown> | undefined;
@@ -589,7 +607,7 @@ describe("website Stream contract", () => {
     await withBrowserDefault(async (_input, init) => {
       await selection;
       sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      return new Response(JSON.stringify({ ok: true, start: "0", end: "0", tail: "1", commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: "0", end: "0", tail: "1", commitId: encodedCommitId, revision }));
     }, async () => {
       const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
       const pending = provider.append("events", [value], { idempotencyKey: retryKey });
@@ -623,6 +641,28 @@ describe("website Stream contract", () => {
     expect(sent).toEqual(expected);
   });
 
+  test("default transport snapshots lazy read cursors when the iterator is created", async () => {
+    let release!: () => void;
+    const selection = new Promise<void>(resolve => { release = resolve; });
+    const requests: Record<string, unknown>[] = [];
+    const options = { from: 0n, limit: 1 };
+    await withBrowserDefault(async (input, init) => {
+      await selection;
+      const route = new URL(String(input)).pathname.split("/").pop();
+      if (route === "tail") return new Response('{"tail":"0"}');
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response('{"records":[]}');
+    }, async () => {
+      const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+      const next = provider.read("events", options)[Symbol.asyncIterator]().next();
+      options.from = 7n;
+      options.limit = 8;
+      release();
+      await expect(next).resolves.toEqual({ done: true, value: undefined });
+    });
+    expect(requests).toEqual([{ path: "events", from: "0", limit: 1, key: null }]);
+  });
+
   test("Rust encodes every protobuf-backed hosted request shape", async () => {
     await ensureStreamWasm();
     const retry = new Uint8Array([0, 255, 128, 1]);
@@ -632,7 +672,7 @@ describe("website Stream contract", () => {
     expect(encoded("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
     expect(encoded("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([1, 2]) })], ifTail: 0xffff_ffff_ffff_ffffn, idempotencyKey: retry })))).toEqual({ path: "events", records: [{ value: "AQI=", keys: [], attributes: [] }], options: { ifTail: "18446744073709551615", idempotencyKey: retryWire } });
     expect(encoded("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, { source: "events", destination: "copy", atTail: 3n, idempotencyKey: retry })))).toEqual({ source: "events", destination: "copy", exclude: [], options: { atTail: "3", idempotencyKey: retryWire } });
-    expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
+    expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6, key: null });
     expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
     const commit = create(CommitRequestSchema, {
       conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })],
@@ -647,12 +687,15 @@ describe("website Stream contract", () => {
 
 
   test("hosted children pages use the Rust response contract", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
-      expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 2 });
-      return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
-    } });
-    const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
-    expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+    for (const limit of [2, 0xffff_ffff]) {
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+        expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: Math.min(limit, 1024) });
+        return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
+      } });
+      const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit });
+      expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+
+    }
 
     const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
     await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
@@ -833,7 +876,7 @@ describe("website Stream contract", () => {
   test("read captures one cursor before asynchronous validation", async () => {
     let localReads = 0;
     const local = new MemoryStreamProvider();
-    await local.append("events", [new Uint8Array([1])]);
+    await local.append("events", [new Uint8Array([1])], { idempotencyKey: key("cursor-snapshot") });
     const localOptions = { get from() { localReads += 1; return 0n; }, limit: 1 };
     for await (const _record of local.read("events", localOptions)) { /* consume */ }
     expect(localReads).toBe(1);
@@ -841,11 +884,11 @@ describe("website Stream contract", () => {
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true })) });
-    await expect(malformed.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(malformed.append("events", [new Uint8Array([1])], { idempotencyKey: key("malformed-response") })).rejects.toMatchObject({ code: "invalid_response" });
     const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId })) });
-    await expect(impossible.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(impossible.append("events", [new Uint8Array([1])], { idempotencyKey: key("impossible-response") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId })) });
-    await expect(invalidPath.fork("events", "copy")).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(invalidPath.fork("events", "copy", { idempotencyKey: key("invalid-response-path") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
@@ -933,7 +976,7 @@ describe("website Stream contract", () => {
     let requests = 0;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => {
       requests += 1;
-      return new Response('"0"');
+      return new Response(JSON.stringify({ tail: "0", applied: null }));
     } });
 
     await expect(provider.follow("events", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]().next())
@@ -973,12 +1016,12 @@ describe("website Stream contract", () => {
       () => provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }),
     ]) await expect(Promise.resolve().then(operation)).rejects.toThrow();
     await expect(provider.read("bad path", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toThrow();
-    await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.read("valid", { from: 0n, limit: 1.5 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.follow("bad path", { from: 0n })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.follow("valid", { from: -1n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.childrenPage({ parent: "bad path", limit: 1 })).rejects.toThrow();
-    await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(calls).toBe(0);
   });
@@ -1042,26 +1085,30 @@ describe("website Stream contract", () => {
     expect(cancelled).toBeTrue();
   });
 
-  test("HTTP transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
-    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
+  test("HTTP transport refuses redirects and header-unsafe bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b"]) {
       expect(() => new HttpStreamProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
     }
     let redirect: RequestRedirect | undefined;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       redirect = init?.redirect;
-      return new Response('"0"');
+      return new Response(JSON.stringify({ tail: "0", applied: null }));
     } });
     expect(await provider.tail("events")).toBe(0n);
     expect(redirect).toBe("error");
   });
 
   test("round-trips full uint64 positions and opaque identities through the HTTP wire codec", async () => {
+    const { json: revision } = await issuedRevisionFixture();
     const maximum = 0xffff_ffff_ffff_ffffn;
-    const identity = idempotencyKey(new Uint8Array([0, 255, 128, 1]));
+    const identityBytes = new Uint8Array(16_385);
+    identityBytes.set([0, 255, 128, 1]);
+    identityBytes[identityBytes.length - 1] = 127;
+    const identity = idempotencyKey(identityBytes);
     let requestBody: unknown;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ ok: true, start: maximum.toString(), end: maximum.toString(), tail: maximum.toString(), commitId: encodedCommitId }));
+      return new Response(JSON.stringify({ ok: true, start: maximum.toString(), end: maximum.toString(), tail: maximum.toString(), commitId: encodedCommitId, revision }));
     } });
     const result = await provider.append("events", [new Uint8Array([1])], { ifTail: maximum, idempotencyKey: identity });
     expect(requestBody).toMatchObject({ options: { ifTail: maximum.toString(), idempotencyKey: btoa(String.fromCharCode(...identity)) } });

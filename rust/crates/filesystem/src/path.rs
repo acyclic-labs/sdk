@@ -29,11 +29,8 @@ impl PortablePath {
     }
 
     /// Validates the borrowed spelling without creating an owned path.
-    pub(crate) fn validate(value: &str, limits: VolumeLimits) -> Result<usize, PathError> {
-        let path_bytes = u32::try_from(value.len()).map_err(|_| PathError::PathTooLong)?;
-        if path_bytes > limits.maximum_path_bytes {
-            return Err(PathError::PathTooLong);
-        }
+    pub(crate) fn validate(value: &str, _limits: VolumeLimits) -> Result<usize, PathError> {
+        u32::try_from(value.len()).map_err(|_| PathError::PathTooLong)?;
         if value == Self::ROOT {
             return Ok(0);
         }
@@ -44,7 +41,7 @@ impl PortablePath {
             return Err(PathError::TrailingSeparator);
         }
 
-        let mut depth = 0_u16;
+        let mut depth = 0_usize;
         for component in value.strip_prefix('/').unwrap_or(value).split('/') {
             if component.is_empty() {
                 return Err(PathError::EmptyComponent);
@@ -58,17 +55,10 @@ impl PortablePath {
             if component.as_bytes().contains(&0) {
                 return Err(PathError::Nul);
             }
-            let component_bytes =
-                u32::try_from(component.len()).map_err(|_| PathError::ComponentTooLong)?;
-            if component_bytes > limits.maximum_component_bytes {
-                return Err(PathError::ComponentTooLong);
-            }
-            depth = depth.checked_add(1).ok_or(PathError::TooDeep)?;
-            if depth > limits.maximum_path_depth {
-                return Err(PathError::TooDeep);
-            }
+            u32::try_from(component.len()).map_err(|_| PathError::ComponentLengthOverflow)?;
+            depth += 1;
         }
-        Ok(usize::from(depth))
+        Ok(depth)
     }
 
     /// Borrows the canonical wire string.
@@ -194,15 +184,12 @@ pub enum PathError {
     /// NUL cannot be represented by host adapters.
     #[error("portable path contains NUL")]
     Nul,
-    /// Encoded path exceeds its configured byte bound.
-    #[error("portable path exceeds its byte bound")]
+    /// Encoded path cannot be represented by its canonical u32 length.
+    #[error("portable path length cannot be encoded")]
     PathTooLong,
-    /// One encoded component exceeds its configured byte bound.
-    #[error("portable path component exceeds its byte bound")]
-    ComponentTooLong,
-    /// Component depth exceeds its configured bound.
-    #[error("portable path exceeds its depth bound")]
-    TooDeep,
+    /// Encoded component cannot be represented by its canonical u32 length.
+    #[error("portable path component length cannot be encoded")]
+    ComponentLengthOverflow,
 }
 
 #[cfg(test)]

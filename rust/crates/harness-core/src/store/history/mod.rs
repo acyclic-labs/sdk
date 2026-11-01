@@ -265,24 +265,14 @@ pub struct HistoryReadLimits {
 /// The original canonical codec, admitting logical storage before growth.
 pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     value: &T,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
-    if work.is_none() {
-        return crate::contract::canonical_json_bytes(value);
-    }
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(super::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "canonical encoder allowance must be finite and positive",
-        ));
-    }
     canonical_bytes_for_bounds_with_work(
         value,
         crate::executor::json::JsonBounds {
             maximum_bytes,
-            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_items: maximum_bytes.map(|maximum| maximum.saturating_add(1)),
             maximum_depth: 256,
         },
         work,
@@ -295,7 +285,15 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let Some(work) = work.as_deref_mut() else {
-        return crate::contract::canonical_json_bytes(value);
+        if bounds.maximum_bytes.is_none() && bounds.maximum_items.is_none() {
+            return crate::contract::canonical_json_bytes(value);
+        }
+        return crate::executor::json::canonical_json_bytes_bounded(
+            value,
+            bounds,
+            None,
+            &mut |_| Ok(()),
+        );
     };
     let code = super::operations::original_native_decode_mode(work)
         .then_some(crate::wire::ErrorCode::Invalid);

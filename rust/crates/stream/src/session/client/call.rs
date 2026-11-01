@@ -12,12 +12,12 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: impl Into<Option<usize>>,
     ) -> Result<Bytes, StreamError> {
+        let maximum_reply_bytes = maximum_reply_bytes.into();
         if invocation.is_empty()
             || invocation.len() > crate::MAX_COMMAND_BYTES
-            || maximum_reply_bytes == 0
-            || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+            || maximum_reply_bytes == Some(0)
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -44,7 +44,7 @@ impl Client {
             .reply(
                 Kind::ChildrenPage(wire_codec::children_page_request_to_wire(request)),
                 credential,
-                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                None,
             )
             .await?;
         wire_codec::children_page_from_response(
@@ -66,7 +66,7 @@ impl Client {
             .reply(
                 Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),
                 credential,
-                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                None,
             )
             .await?;
         let view = wire_codec::heads_from_response(
@@ -81,7 +81,7 @@ impl Client {
         &self,
         kind: Kind,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<Bytes, StreamError> {
         // No acknowledgement/resume cursor is useful for a one-shot reply.
         // Dropping this cursor still returns all queued frame credit and removes
@@ -97,13 +97,12 @@ impl Client {
                 .into_data()
                 .map_err(|_| StreamError::InvalidResponse)?;
             let length = wire_codec::session::actor_call_total(&data)?;
-            if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+            if maximum_reply_bytes.is_some_and(|maximum| length > maximum)
+                || total.is_some_and(|old| old != length)
+            {
                 return Err(StreamError::InvalidResponse);
             }
             if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
                 total = Some(length);
             }
             let chunk = wire_codec::session::reply_chunk(data.item.as_ref())
@@ -111,6 +110,11 @@ impl Client {
             if chunk.len() > length - reply.len() {
                 return Err(StreamError::InvalidResponse);
             }
+            // Fund only received fragments. The announced total cannot trigger
+            // a large speculative allocation before its bytes arrive.
+            reply
+                .try_reserve(chunk.len())
+                .map_err(|_| StreamError::Capacity)?;
             reply.extend_from_slice(chunk);
             if reply.len() == length {
                 return Ok(reply.into());

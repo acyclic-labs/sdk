@@ -20,7 +20,7 @@ async fn private_cut() -> Result<CutFixture> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("current question".into()),
         selected_context: None,
-        max_steps: 3,
+        max_steps: Some(3),
     };
     let source = crate::context::Context {
         messages: vec![

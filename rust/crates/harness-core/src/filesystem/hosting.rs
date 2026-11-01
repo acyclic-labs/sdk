@@ -162,7 +162,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     within: ActorReference,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     agents: Arc<AgentHost<P>>,
     turns: Arc<Turner<P, O>>,
     volumes: Arc<Host<P, O>>,
@@ -704,7 +704,6 @@ where
             &authority.scope,
             &authority.private.volume,
             crate::conversation::VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )
         .map_err(turn)?;

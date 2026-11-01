@@ -98,7 +98,7 @@ where
             &current,
             &self.repository,
             &resolved,
-            u32::MAX,
+            None,
             &CancellationToken::new(),
         )
         .await

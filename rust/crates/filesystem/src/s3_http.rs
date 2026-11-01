@@ -44,53 +44,40 @@ const SESSION_TOKEN_HEADER: &str = "x-amz-security-token";
 const MULTIPART_DOMAIN: &[u8] = b"acyclic-fs-s3-multipart-v1\0";
 const MULTIPART_RECORD_VERSION: u8 = 1;
 
-/// Hard request bounds for the S3 protocol edge.
+/// Streaming chunk sizes and optional caller policies for the S3 edge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FilesystemS3Limits {
     /// Largest single request body accepted before publication.
-    pub maximum_request_bytes: u64,
+    pub maximum_request_bytes: Option<u64>,
     /// Largest response chunk returned from the canonical range reader.
     pub response_chunk_bytes: u64,
     /// Largest combined object/prefix page.
     pub maximum_list_keys: u32,
-    /// Largest authenticated namespace frontier examined by one list request.
-    pub maximum_list_entries_examined: u32,
-    /// Largest encoded object key or continuation marker.
-    pub maximum_key_bytes: u32,
     /// Largest number of parts retained by one durable multipart upload.
-    pub maximum_multipart_parts: u32,
-    /// Largest durable state-machine record count, including part replacements.
-    pub maximum_multipart_records: u32,
+    pub maximum_multipart_parts: Option<u32>,
     /// Largest logical byte count admitted for one multipart part.
-    pub maximum_multipart_part_bytes: u64,
+    pub maximum_multipart_part_bytes: Option<u64>,
     /// Minimum size of every completed part except the final part.
     pub minimum_multipart_part_bytes: u64,
 }
 
-/// Administrative bounds for discovering active multipart object roots before immutable-object reclamation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Optional caller policy for discovering active multipart roots before reclamation.
+/// Absence admits the complete scan under the supplied work budget.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct S3MultipartRetentionLimits {
     /// Largest number of durable upload registry entries examined.
-    pub maximum_uploads: u64,
+    pub maximum_uploads: Option<u64>,
     /// Largest number of distinct staged immutable objects retained.
-    pub maximum_objects: u64,
+    pub maximum_objects: Option<u64>,
     /// Largest cumulative canonical bytes authenticated while tracing roots.
-    pub maximum_object_bytes: u64,
-}
-
-impl Default for S3MultipartRetentionLimits {
-    fn default() -> Self {
-        Self {
-            maximum_uploads: 1_000_000,
-            maximum_objects: 10_000_000,
-            maximum_object_bytes: 1024 * 1024 * 1024 * 1024,
-        }
-    }
+    pub maximum_object_bytes: Option<u64>,
 }
 
 impl S3MultipartRetentionLimits {
     fn validate(self) -> S3Result<Self> {
-        if self.maximum_uploads == 0 || self.maximum_objects == 0 || self.maximum_object_bytes == 0
+        if self.maximum_uploads == Some(0)
+            || self.maximum_objects == Some(0)
+            || self.maximum_object_bytes == Some(0)
         {
             return Err(s3s::s3_error!(InvalidArgument));
         }
@@ -101,14 +88,11 @@ impl S3MultipartRetentionLimits {
 impl Default for FilesystemS3Limits {
     fn default() -> Self {
         Self {
-            maximum_request_bytes: 5 * 1024 * 1024 * 1024,
+            maximum_request_bytes: None,
             response_chunk_bytes: 8 * 1024 * 1024,
             maximum_list_keys: 1_000,
-            maximum_list_entries_examined: 100_000,
-            maximum_key_bytes: 32 * 1024,
-            maximum_multipart_parts: 10_000,
-            maximum_multipart_records: 20_003,
-            maximum_multipart_part_bytes: 5 * 1024 * 1024 * 1024,
+            maximum_multipart_parts: None,
+            maximum_multipart_part_bytes: None,
             minimum_multipart_part_bytes: 5 * 1024 * 1024,
         }
     }
@@ -117,16 +101,14 @@ impl Default for FilesystemS3Limits {
 impl FilesystemS3Limits {
     /// Validates every protocol bound before a listener is created.
     pub fn validate(self) -> S3Result<Self> {
-        if self.maximum_request_bytes == 0
+        if self.maximum_request_bytes == Some(0)
             || self.response_chunk_bytes == 0
             || self.maximum_list_keys == 0
-            || self.maximum_list_entries_examined == 0
-            || self.maximum_key_bytes == 0
-            || self.maximum_multipart_parts == 0
-            || self.maximum_multipart_records < self.maximum_multipart_parts.saturating_add(3)
-            || self.maximum_multipart_part_bytes == 0
-            || self.minimum_multipart_part_bytes > self.maximum_multipart_part_bytes
-            || self.response_chunk_bytes > self.maximum_request_bytes
+            || self.maximum_multipart_parts == Some(0)
+            || self.maximum_multipart_part_bytes == Some(0)
+            || self
+                .maximum_multipart_part_bytes
+                .is_some_and(|maximum| self.minimum_multipart_part_bytes > maximum)
         {
             return Err(s3s::s3_error!(InvalidArgument));
         }

@@ -19,7 +19,6 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
         vec![LogicalName::new(
             NameEncoding::Utf8,
             b"sparse-control.bin".to_vec(),
-            limits.maximum_component_bytes,
         )?],
         limits,
     )?;
@@ -65,11 +64,7 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
 #[test]
 fn posix_profile_names_materialize_through_utf8_on_windows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let valid = LogicalName::new(
-        NameEncoding::PosixBytes,
-        "uni-é中.txt".as_bytes().to_vec(),
-        255,
-    )?;
+    let valid = LogicalName::new(NameEncoding::PosixBytes, "uni-é中.txt".as_bytes().to_vec())?;
     let limits = crate::model::VolumeLimits::default();
     let mut receipt = GenerationReceipt::from_work(
         &crate::NativeMaterializationWork::new(
@@ -82,7 +77,7 @@ fn posix_profile_names_materialize_through_utf8_on_windows()
     let path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     assert_eq!(path.0, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());
 
-    let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
+    let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff])?;
     assert!(matches!(
         materialize_host_path(
             None,

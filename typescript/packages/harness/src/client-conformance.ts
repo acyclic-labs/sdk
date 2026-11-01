@@ -92,16 +92,15 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     if (retained.nextSequence !== before.nextSequence || retained.revision !== before.revision || retained.recordCount !== 1n) {
       throw new Error("CLIENT_CONFORMANCE retain_selection: unchanged demand reset the fold or cursor");
     }
-    // The production interest policy admits eight selected agents. Nine inputs
-    // must be refused atomically, including when their identities overlap.
-    const overCapacity = Array<string>(9).fill(fixture.agent);
+    // Repeated selections beyond former defaults retain one exact follow.
+    const repeated = Array<string>(257).fill(fixture.agent);
     const composition = client.viewRevision();
-    refused("atomic_capacity_refusal", "selected_capacity", () => client.setView(overCapacity,
-      new BigUint64Array(9).fill(fixture.conversation_from), new BigUint64Array(9).fill(fixture.status_from)));
+    client.setView(repeated, new BigUint64Array(257).fill(fixture.conversation_from),
+      new BigUint64Array(257).fill(fixture.status_from));
     const unchanged = client.agentWindow(fixture.agent);
     if (unchanged.nextSequence !== before.nextSequence || client.viewRevision() !== composition
       || exactJson(client.selectedAgents()) !== exactJson([fixture.agent])) {
-      throw new Error("CLIENT_CONFORMANCE atomic_capacity_refusal: refusal changed admitted demand");
+      throw new Error("CLIENT_CONFORMANCE retain_repeated_selection: repeated selection changed admitted demand");
     }
     // This is the same fixed test identity used by the native suite, not a
     // frontend agent-address constructor. Rust admits each selected path.
@@ -116,7 +115,7 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     if (reselected.nextSequence !== before.nextSequence || reselected.recordCount !== 0n) {
       throw new Error("CLIENT_CONFORMANCE reselection_cursor: evicted history retained or cursor reset");
     }
-    return {passed: ["exact_conversation", "exact_status", "retain_selection", "atomic_capacity_refusal",
+    return {passed: ["exact_conversation", "exact_status", "retain_selection", "retain_repeated_selection",
       "unknown_authority", "reselection_cursor"]};
   } finally { client.close(); client.free(); }
 }
@@ -129,7 +128,7 @@ export async function verifyClientToolOutput(stream: WasmStream, credential: num
   const observed = fixture.observation;
   observationCursors(observed);
   const subscription = bytes(fixture.subscription, PreparedAgentCommand.maximumInvocationBytes());
-  const record = bytes(fixture.record, PreparedAgentCommand.maximumReplyBytes());
+  const record = bytes(fixture.record, undefined);
   const client = new AgentClient(stream, observed.agent, observed.conversation_from, observed.status_from, credential);
   let conversation = false, status = false, output = false;
   try {
@@ -178,8 +177,8 @@ export async function verifyClientToolOutput(stream: WasmStream, credential: num
 const cases = ["root", "prompt", "cancel", "prompt_after_cancel", "spawn", "children_page",
   "approvals_page", "approval_decision", "typed_refusal", "unknown_custody"] as const;
 type Outcome = {value: unknown} | {error: {name: string; source?: string; request?: Uint8Array; status?: number}};
-function bytes(value: readonly unknown[], maximum: number): Uint8Array {
-  if (!Array.isArray(value) || value.length > maximum || value.some(n =>
+function bytes(value: readonly unknown[], maximum?: number): Uint8Array {
+  if (!Array.isArray(value) || maximum !== undefined && value.length > maximum || value.some(n =>
     typeof n === "bigint" ? n < 0n || n > 255n : typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 255)) {
     throw new Error("CLIENT_CONFORMANCE control_fixture: invalid bounded bytes");
   }
@@ -221,9 +220,9 @@ export async function verifyClientControls(stream: WasmStream, credential: numbe
         throw new Error("CLIENT_CONFORMANCE control_fixture: invalid case/order");
       }
       seen.add(vector.case);
-      const commandBytes = bytes(vector.command, PreparedAgentCommand.maximumCommandBytes());
+      const commandBytes = bytes(vector.command, undefined);
       const invocation = bytes(vector.invocation, PreparedAgentCommand.maximumInvocationBytes());
-      const encoded = vector.expected.kind === "reply" ? bytes(vector.expected.bytes, PreparedAgentCommand.maximumReplyBytes()) : undefined;
+      const encoded = vector.expected.kind === "reply" ? bytes(vector.expected.bytes, undefined) : undefined;
       retained += commandBytes.length + invocation.length + (encoded?.length ?? 0);
       if (retained > 8 * 1024 * 1024) throw new Error("CLIENT_CONFORMANCE control_fixture: byte capacity exceeded");
       const command = new PreparedAgentCommand(commandBytes);

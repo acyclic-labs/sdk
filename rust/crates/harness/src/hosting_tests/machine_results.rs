@@ -128,7 +128,7 @@ impl TurnExecutors for NativeTurns {
                 &crate::tools::shell::PLATFORM,
             )?;
             let limits = Limits {
-                model_steps: 4,
+                model_steps: std::num::NonZeroUsize::new(4),
                 ..Default::default()
             };
             let bindings = Bindings {

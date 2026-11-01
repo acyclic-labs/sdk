@@ -59,7 +59,7 @@ proptest::proptest! {
                         commit.clone(), None, work.runtime_meter(), || std::future::ready(Ok(())))
                         .await.expect("native transport");
                     assert!(matches!(guarded, Err(super::StreamError::AccessDenied)));
-                    assert!(matches!(attested.native_prepare_commit(commit.clone(), 256, work.runtime_meter())
+                    assert!(matches!(attested.native_prepare_commit(commit.clone(), acyclic_stream::PreparedRecordCapacity { payload_bytes: 256, keys: 64, attributes: 16 }, work.runtime_meter())
                         .await.expect("native transport"), Err(super::StreamError::Unsupported)));
                 }
                 let reached = probe.reached.lock().expect("probe ledger");

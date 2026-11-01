@@ -83,7 +83,6 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
         AgentBinding::new(&fixture.binding).map_err(|cause| failure("control_fixture", cause))?;
     let controls = AgentControls::new(session.clone(), credential, binding);
     let mut used = std::collections::BTreeSet::new();
-    let mut total = fixture.binding.len();
     // Validate every vector before dispatching any command with side effects.
     for (index, vector) in fixture.cases.iter().enumerate() {
         if CASES.get(index) != Some(&vector.case.as_str()) || !used.insert(vector.case.as_str()) {
@@ -98,14 +97,6 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
                 "prompt_after_cancel requires the preceding cancel vector",
             ));
         }
-        if vector.command.len() > acyclic_harness_client::MAX_AGENT_COMMAND_BYTES
-            || vector.invocation.len() > acyclic_stream::MAX_COMMAND_BYTES
-        {
-            return Err(failure(
-                "control_fixture",
-                "command/invocation byte capacity exceeded",
-            ));
-        }
         let command = PreparedCommand::from_bytes(vector.command.clone())
             .map_err(|cause| failure("control_fixture", cause))?;
         let invocation = controls
@@ -118,7 +109,7 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
                 "vector differs from the public host binding",
             ));
         }
-        let expected_bytes = match &vector.expected {
+        match &vector.expected {
             ControlExpected::Reply { bytes } => {
                 let command = PreparedCommand::decode(&vector.command)
                     .map_err(|cause| failure("control_fixture", cause))?;
@@ -184,13 +175,9 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
                         "case label does not match its command and result oracle",
                     ));
                 }
-                bytes.len()
             }
             ControlExpected::ActorStatus { status }
-                if vector.case == "typed_refusal" && (400..=599).contains(status) =>
-            {
-                0
-            }
+                if vector.case == "typed_refusal" && (400..=599).contains(status) => {}
             ControlExpected::ActorStatus { .. } => {
                 return Err(failure(
                     "control_fixture",
@@ -198,12 +185,6 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
                 ));
             }
         };
-        total = total
-            .checked_add(vector.command.len())
-            .and_then(|n| n.checked_add(vector.invocation.len()))
-            .and_then(|n| n.checked_add(expected_bytes))
-            .filter(|n| *n <= 8 * 1024 * 1024)
-            .ok_or_else(|| failure("control_fixture", "fixture byte capacity exceeded"))?;
     }
     let mut passed = Vec::new();
     for vector in &fixture.cases {

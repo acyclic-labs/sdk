@@ -60,7 +60,7 @@ where
         self.require_operation(operation, io)?;
         let namespace = crate::executor::with_history_io(io, |work| {
             self.volume
-                .identity_digest(super::MAXIMUM_PAYLOAD_BYTES, work)
+                .identity_digest(Some(super::MAXIMUM_PAYLOAD_BYTES), work)
         })?;
         crate::executor::execution_claim::acquire(
             self.host.filesystem.operation_claims(),
@@ -185,7 +185,6 @@ where
                     &self.scope,
                     &self.volume,
                     VolumeOperation::Read,
-                    reference.descriptor().byte_length(),
                     work,
                 )
             })?;

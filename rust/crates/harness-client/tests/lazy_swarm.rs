@@ -536,7 +536,7 @@ fn row_agent(client: &Client, index: usize) -> AgentPath {
 
 fn policy() -> ReaderPolicy {
     ReaderPolicy {
-        timeout_ms: 1_500,
+        timeout_ms: Some(1_500),
         ..ReaderPolicy::default()
     }
 }
@@ -1183,4 +1183,15 @@ fn cached_records_do_not_end_a_stream() {
     let step = u64::from(policy.read_limit);
     assert_eq!(starts, [0, step, 2 * step], "a full read is not the end");
     assert_eq!(reader.cache().tail(&stream), None, "no end was observed");
+}
+
+#[test]
+fn selected_expansions_survive_beyond_256_agents() {
+    let mut client = Client::new(policy(), RTT);
+    for index in 0..300 {
+        client.explorer.expand(&agent(index, None));
+    }
+    assert_eq!(client.explorer.expanded(), 300);
+    client.explorer.collapse(&agent(0, None));
+    assert_eq!(client.explorer.expanded(), 299);
 }

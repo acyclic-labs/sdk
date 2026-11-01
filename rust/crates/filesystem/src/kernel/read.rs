@@ -16,7 +16,6 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     names: &[LogicalName],
-    maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -26,7 +25,6 @@ pub async fn lookup_tree_entries<S: AsyncObjectStore>(
             store,
             root,
             names,
-            maximum_queries,
             limits,
             budget,
             cancellation,
@@ -45,7 +43,6 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
     store: &S,
     root: ObjectId,
     names: &[LogicalName],
-    maximum_queries: u32,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -61,7 +58,6 @@ pub(crate) async fn lookup_tree_entries_async_with_accounting<S: AsyncObjectStor
         store,
         root,
         names,
-        maximum_queries,
         limits,
         accounting,
         cancellation,
@@ -80,7 +76,6 @@ fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {
     match error {
         persistent_batch::Error::Cancelled => TreeReadError::Cancelled,
         persistent_batch::Error::Empty => TreeReadError::EmptyBatch,
-        persistent_batch::Error::TooManyQueries => TreeReadError::TooManyQueries,
         persistent_batch::Error::WrongRootKind => TreeReadError::WrongRootKind,
         persistent_batch::Error::InvalidLimits => TreeReadError::InvalidHeightLimit,
         persistent_batch::Error::HeightExceeded => TreeReadError::HeightExceeded,
@@ -160,9 +155,6 @@ pub enum TreeReadError {
     /// Batch lookup requires at least one requested name.
     #[error("tree lookup batch is empty")]
     EmptyBatch,
-    /// Batch lookup exceeds its explicit query limit.
-    #[error("tree lookup batch exceeds its admitted query bound")]
-    TooManyQueries,
     /// Root object is not an authenticated tree page.
     #[error("tree lookup root is not a tree page")]
     WrongRootKind,

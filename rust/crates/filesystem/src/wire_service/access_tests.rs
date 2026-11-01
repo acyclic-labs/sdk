@@ -85,16 +85,22 @@ impl FilesystemCredentialIssuer for DeadlineIssuer {
 #[tokio::test]
 async fn credential_deadlines_are_intersected_and_a_wider_issuer_is_rejected()
 -> Result<(), Box<dyn std::error::Error>> {
-    for widen in [false, true] {
+    for (maximum, widen) in [(None, false), (None, true), (Some(3_600), false)] {
         let deadline = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs()
             + 60;
-        let service = FilesystemWireService::new(Fs::memory(), FilesystemWireLimits::default())?
-            .with_credential_issuer(Arc::new(DeadlineIssuer {
-                maximum: deadline,
-                widen,
-            }));
+        let service = FilesystemWireService::new(
+            Fs::memory(),
+            FilesystemWireLimits {
+                maximum_credential_seconds: maximum.and_then(std::num::NonZeroU64::new),
+                ..FilesystemWireLimits::default()
+            },
+        )?
+        .with_credential_issuer(Arc::new(DeadlineIssuer {
+            maximum: deadline,
+            widen,
+        }));
         let created = service
             .create_workspace(Request::new(wire::CreateWorkspaceRequest {
                 name: "expiring".into(),
@@ -120,11 +126,13 @@ async fn credential_deadlines_are_intersected_and_a_wider_issuer_is_rejected()
                 workspace: created.workspace,
                 generation: None,
                 writable: true,
-                expires_after_seconds: 600,
+                expires_after_seconds: 6_000,
                 operation: operation(2),
             }))
             .await;
-        if widen {
+        if maximum.is_some() {
+            assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+        } else if widen {
             assert_eq!(result.unwrap_err().code(), tonic::Code::PermissionDenied);
         } else {
             assert_eq!(
@@ -171,7 +179,7 @@ async fn export_revocation_cut(
                 },
             ))],
             operation: operation(2),
-            maximum_conflicts: 8,
+            maximum_conflicts: Some(8),
         }))
         .await?
         .into_inner()

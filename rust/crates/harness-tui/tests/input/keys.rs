@@ -66,7 +66,7 @@ fn repeat_policy_selection_modifiers_and_platform_keys() {
 #[test]
 fn user_overrides_drive_dispatch_help_and_disabling() -> Result<(), Box<dyn std::error::Error>> {
     let map =
-        InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start","Ctrl+c":null,"a":null}}"#)
+        InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start","Ctrl+c":null,"a":null,"F35":"cursor.line-start"}}"#)
             .map_err(|errors| format!("{errors:?}"))?;
     assert_eq!(
         decode_key(KeyEvent::new(KeyCode::Char('l'), M::CONTROL), &map),
@@ -84,6 +84,13 @@ fn user_overrides_drive_dispatch_help_and_disabling() -> Result<(), Box<dyn std:
         None
     );
     assert!(map.help().contains("Ctrl+l\tLine start\n"));
+    assert_eq!(
+        decode_key(KeyEvent::new(KeyCode::F(35), M::NONE), &map),
+        Some(DecodedKey::Action {
+            action: Action::Move(Motion::LineStart),
+            select: false
+        })
+    );
     assert!(!map.help().contains("Ctrl+c\t"));
     assert_eq!(InputKeymap::parse(&map.encode()), Ok(map));
     assert!(InputKeymap::parse(r#"{"bindings":{"Shift+Ctrl+l":"cursor.line-start"}}"#).is_err());

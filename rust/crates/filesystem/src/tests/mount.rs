@@ -103,13 +103,10 @@ async fn routing_owns_checkouts_and_translates_relative_paths()
 }
 
 #[tokio::test]
-async fn borrowed_routes_enforce_selected_profile_and_limits_without_mutation()
+async fn borrowed_routes_preserve_selected_profile_without_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
     config.profile = crate::model::FilesystemProfile::Windows;
-    config.limits.maximum_path_bytes = 16;
-    config.limits.maximum_component_bytes = 8;
-    config.limits.maximum_path_depth = 2;
     let mut view = MountedView::builder()
         .mount("/", checkout().await?)?
         .mount("/w", checkout_with_config(config).await?)?
@@ -127,26 +124,19 @@ async fn borrowed_routes_enforce_selected_profile_and_limits_without_mutation()
             .collect::<Vec<_>>(),
         vec![&[0xe9, 0x00][..], &[0x34, 0xd8, 0x1e, 0xdd][..]]
     );
-    assert!(matches!(
-        view.route_mut(&PortablePath::parse("/w/abcde", limits)?),
-        Err(MountError::InvalidNamespacePath(NamespacePathError::Name(
-            _
-        )))
-    ));
-    assert!(matches!(
-        view.route_mut(&PortablePath::parse("/w/aabb/ccdd", limits)?),
-        Err(MountError::InvalidNamespacePath(
-            NamespacePathError::PathTooLong
-        ))
-    ));
-    assert!(matches!(
-        view.route_mut(&PortablePath::parse("/w/123456789", limits)?),
-        Err(MountError::InvalidPath(PathError::ComponentTooLong))
-    ));
-    assert!(matches!(
-        view.route_mut(&PortablePath::parse("/w/a/b/c", limits)?),
-        Err(MountError::InvalidPath(PathError::TooDeep))
-    ));
+    for (path, depth) in [
+        ("/w/abcde", 1),
+        ("/w/aabb/ccdd", 2),
+        ("/w/123456789", 1),
+        ("/w/a/b/c", 3),
+    ] {
+        assert_eq!(
+            view.route_mut(&PortablePath::parse(path, limits)?)?
+                .path
+                .depth(),
+            depth
+        );
+    }
     let sibling = PortablePath::parse("/wide/abcde", limits)?;
     assert_eq!(view.route_mut(&sibling)?.path.depth(), 2);
     assert_eq!(view.snapshot(), before);

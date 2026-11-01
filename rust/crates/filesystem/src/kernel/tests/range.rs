@@ -58,7 +58,7 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
             offset: 150,
             length: 10,
         },
-        maximum_spans: 1,
+        maximum_spans: Some(1),
         limits: DecodeLimits::default(),
         budget: unlimited(),
     };
@@ -110,7 +110,7 @@ async fn owned_extent_pages_preserve_sparse_results_and_exact_retention()
             offset: 2,
             length: 4,
         },
-        maximum_spans: 1,
+        maximum_spans: Some(1),
         limits: DecodeLimits::default(),
         budget: WorkBudget::UNBOUNDED,
     };
@@ -148,7 +148,7 @@ async fn owned_extent_page_releases_retention_when_decoded_cache_rejects_admissi
                 offset: 0,
                 length: 8,
             },
-            maximum_spans: 1,
+            maximum_spans: Some(1),
             limits: DecodeLimits::default(),
             budget: WorkBudget::UNBOUNDED,
         },
@@ -214,7 +214,7 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
                 offset: 90,
                 length: 10,
             },
-            maximum_spans: 1,
+            maximum_spans: Some(1),
             limits,
             budget: unlimited(),
         },
@@ -482,7 +482,7 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
                 offset: 0,
                 length: 2,
             },
-            maximum_spans: 1,
+            maximum_spans: Some(1),
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
@@ -504,7 +504,7 @@ async fn span_bound_stops_alternating_sparse_output() -> Result<(), Box<dyn std:
                 offset: 0,
                 length: 1,
             },
-            maximum_spans: 0,
+            maximum_spans: Some(0),
             limits: DecodeLimits::default(),
             budget: unlimited(),
         },
@@ -555,7 +555,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
             offset: 0,
             length: 4,
         },
-        maximum_spans: 1,
+        maximum_spans: Some(1),
         limits: DecodeLimits::default(),
         budget: WorkBudget::UNBOUNDED,
     };
@@ -624,7 +624,6 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
     .await?;
     let limits = DecodeLimits {
         maximum_page_height: 1,
-        maximum_visited_pages: 2,
         ..DecodeLimits::default()
     };
     let request = ExtentRangeRequest {
@@ -634,7 +633,7 @@ async fn decoded_pages_and_output_spans_are_admitted_before_allocation()
             offset: 0,
             length: 3,
         },
-        maximum_spans: 3,
+        maximum_spans: Some(3),
         limits,
         budget: WorkBudget::UNBOUNDED,
     };
@@ -692,7 +691,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
             offset: 0,
             length: 1,
         },
-        maximum_spans: 1,
+        maximum_spans: Some(1),
         limits: DecodeLimits::default(),
         budget: WorkBudget::UNBOUNDED,
     };
@@ -808,7 +807,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
                 offset: 0,
                 length: 2,
             },
-            maximum_spans: 2,
+            maximum_spans: Some(2),
             limits: DecodeLimits {
                 maximum_page_height: 3,
                 ..DecodeLimits::default()
@@ -860,7 +859,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
             offset: 0,
             length: 2,
         },
-        maximum_spans: 2,
+        maximum_spans: Some(2),
         limits,
         budget: WorkBudget::UNBOUNDED,
     };

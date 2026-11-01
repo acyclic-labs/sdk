@@ -220,21 +220,12 @@ fn renamed(mut responses: Vec<Value>) -> Vec<Value> {
     responses
 }
 
-/// Cloud's handler-test JSON. Its handshake names the descriptor it was captured
-/// against, which the SDK's descriptor has since moved past, so the replay names
-/// the SDK's own. The live test checks that the real Filesystem service names it too.
+/// The current SDK wire engine's capture of the pinned Cloud handler inputs.
+/// Replay the captured bytes exactly; descriptor drift requires a fresh capture.
 fn golden() -> TestResult<Vec<Value>> {
-    let mut cases: Vec<Value> =
-        serde_json::from_str(include_str!("../fixtures/cloud-filesystem/golden.json"))?;
-    *cases
-        .first_mut()
-        .and_then(|handshake| handshake.pointer_mut("/response/protocol/protocol/descriptorDigest"))
-        .ok_or("missing handshake golden")? = Value::String(
-        blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET)
-            .to_hex()
-            .to_string(),
-    );
-    Ok(cases)
+    Ok(serde_json::from_str(include_str!(
+        "../fixtures/cloud-filesystem/golden.json"
+    ))?)
 }
 
 /// Cloud's handler-test responses for the generated roundtrip.

@@ -43,7 +43,7 @@ impl ModelRequest {
         &mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<u64> {
+    ) -> Result<Option<u64>> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
@@ -55,7 +55,11 @@ impl ModelRequest {
                 .saturating_add(self.model.revision.len() as u64),
         )?;
         self.model.validate()?;
-        if self.messages.is_empty() || self.messages.len() > limits.context_messages {
+        if self.messages.is_empty()
+            || limits
+                .context_messages
+                .is_some_and(|maximum| self.messages.len() > maximum.get())
+        {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
         if self.max_output_tokens == Some(0) {
@@ -180,7 +184,7 @@ impl ModelRequest {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 let _hold;
-                let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
+                let bytes = io.encode(content, Some(io.remaining()?.bytes_encoded), false)?;
                 _hold = io.guard_bytes(&bytes)?;
                 let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
                 crate::executor::with_history_io(Some(io), |work| {
@@ -324,7 +328,7 @@ pub struct PreparedModelRequest {
     request_digest: [u8; 32],
     projection_nodes: AtomicUsize,
     admitted_limits: Limits,
-    instruction_remaining: u64,
+    instruction_remaining: Option<u64>,
     encoding: Vec<encoding::EncodingPrefix>,
     content_admission: Option<admission::ContentAdmission>,
     #[cfg(feature = "filesystem")]
@@ -451,7 +455,7 @@ impl PreparedModelRequest {
             let request_hold;
             let bytes_hold;
             // Bound JSON depth before the recursive capacity inventory.
-            let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
+            let bytes = io.encode(&request, Some(io.remaining()?.bytes_encoded), true)?;
             bytes_hold = io.guard_bytes(&bytes)?;
             let retained_payload = request.retained_payload_bytes()?;
             request_hold = io.reserve_decode(add(size_of::<Self>() as u64, retained_payload)?)?;
@@ -511,14 +515,14 @@ impl PreparedModelRequest {
     fn encode_validated(
         request: ModelRequest,
         limits: Limits,
-        instruction_remaining: u64,
+        instruction_remaining: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&request, io.remaining()?.bytes_encoded, true)?,
+            Some(io) => io.encode(&request, Some(io.remaining()?.bytes_encoded), true)?,
             _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
         #[cfg(feature = "filesystem")]
@@ -604,11 +608,14 @@ impl PreparedModelRequest {
                     let maximum = io.remaining()?.bytes_encoded;
                     with_history_io(Some(io), |work| {
                         crate::executor::json::json_byte_length_at_depth(
-                            message, maximum, 256, work,
+                            message,
+                            Some(maximum),
+                            256,
+                            work,
                         )
                     })?
                 }
-                _ => crate::executor::json::json_byte_length(message, u64::MAX, &mut None)?,
+                _ => crate::executor::json::json_byte_length(message, None, &mut None)?,
             };
             fixed_bytes = fixed_bytes
                 .checked_sub(bytes)
