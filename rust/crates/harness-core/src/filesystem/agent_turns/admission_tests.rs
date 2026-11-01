@@ -3,7 +3,7 @@ use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef
 
 #[tokio::test]
 async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()> {
-    use crate::agent::{AgentId, InboxRecord, IntentId, NoticeSelection};
+    use crate::agent::{AgentId, InboxRecord, IntentId, NoticePayload, NoticeSelection};
     use crate::conversation::wire::Notice;
     use crate::model::ModelContentPart;
     use acyclic_stream::{
@@ -21,13 +21,13 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
         records.push(
             InboxRecord::Notice {
                 id: IntentId::try_from(format!("event-{index}")).map_err(agent_error)?,
-                notice: Notice {
+                notice: NoticePayload::Quiet(Notice {
                     source: "events".into(),
                     kind: "source.changed".into(),
                     body: serde_json::json!({"index": index}),
                     wake: false,
                     coalesce_key: Some("source".into()),
-                },
+                }),
             }
             .encode()
             .map_err(agent_error)?,
