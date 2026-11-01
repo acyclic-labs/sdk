@@ -49,6 +49,17 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?,
     );
     let connection = harness.connect().await?;
+    let custody = harness
+        .agents
+        .get()
+        .expect("original hosted runtime")
+        .runtime
+        .custody();
+    let closed = custody.terminated();
+    futures::pin_mut!(closed);
+    assert!(custody.check().is_ok());
+    // The actual serving producer stays live; registration creates no sender.
+    assert!(futures::poll!(closed.as_mut()).is_pending());
     let mut observer = Observer::open(&connection, 0, 0)?;
     // Wait for the original adoption, not a guessed delay before cutting storage.
     loop {
@@ -116,6 +127,8 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         "remote session invented a local cause"
     );
     assert!(!message(terminal(&mut remote_observer).await).contains(&cause));
+    assert_eq!(closed.await, StreamError::Unavailable);
+    assert_eq!(custody.check(), Err(StreamError::Unavailable));
     // A rejected command still reports its own admission error after storage fails.
     let invalid = AgentCommand::Read {
         agent: connection.root.clone(),
@@ -137,5 +150,27 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         "unrelated command refusal was rewritten: {error}"
     );
     assert_eq!(provider.request_count(), 0);
+
+    // Dropping an otherwise healthy original host must also terminate its
+    // retained policy owner. The guard itself cannot keep that producer alive.
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let healthy =
+        Arc::new(LocalHarness::open(volume_config(directory.path(), project, text())?).await?);
+    let connection = healthy.connect().await?;
+    let custody = healthy
+        .agents
+        .get()
+        .expect("original hosted runtime")
+        .runtime
+        .custody();
+    let closed = custody.terminated();
+    futures::pin_mut!(closed);
+    assert!(custody.check().is_ok());
+    assert!(futures::poll!(closed.as_mut()).is_pending());
+    drop(connection);
+    drop(healthy);
+    assert_eq!(closed.await, StreamError::Unavailable);
+    assert_eq!(custody.check(), Err(StreamError::Unavailable));
     Ok(())
 }

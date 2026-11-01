@@ -68,8 +68,20 @@ impl crate::hosting::Platform for LocalUser {
         &'a self,
         _: &'a Principal,
         _: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
-        Box::pin(async { Ok(PolicyDecision::Allow) })
+        retain: bool,
+    ) -> BoxProviderFuture<'a, std::result::Result<crate::hosting::CommandPolicy, StreamError>>
+    {
+        Box::pin(async move {
+            if !retain {
+                return Ok(crate::hosting::CommandPolicy::once(PolicyDecision::Allow));
+            }
+            let harness = self.0.upgrade().ok_or(StreamError::Unavailable)?;
+            let hosted = harness.agents.get().ok_or(StreamError::Unavailable)?;
+            Ok(crate::hosting::CommandPolicy::retained(
+                PolicyDecision::Allow,
+                hosted.runtime.custody(),
+            ))
+        })
     }
 
     fn prompt_command<'a>(

@@ -28,8 +28,15 @@ impl hosting::Platform for Owner {
         &'a self,
         _: &'a Principal,
         _: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
-        Box::pin(async { Ok(PolicyDecision::Allow) })
+        retain: bool,
+    ) -> BoxProviderFuture<'a, std::result::Result<hosting::CommandPolicy, StreamError>> {
+        Box::pin(async move {
+            if retain {
+                Err(StreamError::Unsupported)
+            } else {
+                Ok(hosting::CommandPolicy::once(PolicyDecision::Allow))
+            }
+        })
     }
 }
 

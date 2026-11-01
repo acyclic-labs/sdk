@@ -48,21 +48,66 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
     ProviderPlatform, RevisionCut, StreamError, StreamPath,
-    session::{CallAuthorization, CallProvider, CallReply},
+    session::{CallAuthorization, CallProvider, CallReply, CredentialCustody},
 };
 use bytes::Bytes;
 use std::sync::Arc;
+
+/// One original command-policy admission. A finite decision cannot authorize
+/// continued observation after its call has ended. Retained admissions keep
+/// the same policy's live owner through issuance, enrollment and disclosure.
+pub struct CommandPolicy {
+    decision: PolicyDecision,
+    custody: Option<Arc<dyn CredentialCustody>>,
+}
+
+impl CommandPolicy {
+    /// A current decision for this dispatch only, with no continued authority.
+    pub fn once(decision: PolicyDecision) -> Self {
+        Self {
+            decision,
+            custody: None,
+        }
+    }
+
+    /// Retain the original policy for this exact principal and command. The
+    /// guard must recheck that policy synchronously and terminate on its real
+    /// invalidation/loss event. A separate notifier or policy copy cannot do so.
+    pub fn retained(decision: PolicyDecision, custody: Arc<dyn CredentialCustody>) -> Self {
+        Self {
+            decision,
+            custody: Some(custody),
+        }
+    }
+
+    /// The owner's current decision, consumed by canonical Auth authorization.
+    pub fn decision(&self) -> PolicyDecision {
+        self.decision
+    }
+
+    /// Transfer the original live policy owner. A one-dispatch decision refuses
+    /// enrollment before any selected-source issuance or disclosure.
+    pub fn into_custody(self) -> Result<Arc<dyn CredentialCustody>, StreamError> {
+        let custody = self.custody.ok_or(StreamError::Unsupported)?;
+        custody.check()?;
+        Ok(custody)
+    }
+}
 
 /// What a hosting platform decides at every dispatch: the owner's current
 /// policy for the verified principal's command. Identity comes only from the
 /// session credential; the platform never supplies a caller here.
 pub trait Platform: ProviderPlatform + 'static {
-    /// The current policy for `principal` issuing `command`.
+    /// The current policy for `principal` issuing `command`. With `retain`,
+    /// return its original live custody or refuse `Unsupported` before effects;
+    /// an ordinary finite policy result supplies no continuing source grant.
+    /// Without it, the original dispatch requires no lifetime allocation.
     fn policy<'a>(
         &'a self,
         principal: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>>;
+        retain: bool,
+    ) -> BoxProviderFuture<'a, Result<CommandPolicy, StreamError>>;
 
     /// Whether this platform runs the children a spawn creates. One that runs
     /// none refuses every spawn command before it stages or commits anything.
@@ -1046,8 +1091,8 @@ where
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
                 .map_err(|_| StreamError::InvalidArgument)?;
             let authorize = async |command: &AgentCommand| {
-                let policy = server.platform.policy(&principal, command).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)
+                let policy = server.platform.policy(&principal, command, false).await?;
+                authorization.authorize(&server.resource, &[], &attributes, policy.decision())
             };
             // Every command, a staged head included, is authorized as it
             // arrives: a head names its agent and kind, so a denied caller
@@ -1101,8 +1146,11 @@ where
                 // The source may have awaited IO. No path or patch leaves after
                 // its original call credential or current host policy is revoked.
                 let principal = authorization.principal()?;
-                let policy = server.platform.policy(&principal, call.command()).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)?;
+                let policy = server
+                    .platform
+                    .policy(&principal, call.command(), false)
+                    .await?;
+                authorization.authorize(&server.resource, &[], &attributes, policy.decision())?;
             }
             call.reply(&result)
                 .map(CallReply::new)

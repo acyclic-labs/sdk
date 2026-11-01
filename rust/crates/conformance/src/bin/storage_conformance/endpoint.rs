@@ -60,11 +60,20 @@ impl acyclic_harness::hosting::Platform for User {
         &'a self,
         _: &'a acyclic_auth::contract::Principal,
         _: &'a AgentCommand,
+        retain: bool,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        std::result::Result<acyclic_auth::authority::PolicyDecision, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_harness::hosting::CommandPolicy, acyclic_stream::StreamError>,
     > {
-        Box::pin(async { Ok(acyclic_auth::authority::PolicyDecision::Allow) })
+        Box::pin(async move {
+            if retain {
+                Err(acyclic_stream::StreamError::Unsupported)
+            } else {
+                Ok(acyclic_harness::hosting::CommandPolicy::once(
+                    acyclic_auth::authority::PolicyDecision::Allow,
+                ))
+            }
+        })
     }
 }
 

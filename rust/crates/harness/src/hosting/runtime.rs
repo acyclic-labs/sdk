@@ -5,6 +5,27 @@ use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use std::sync::Arc;
 use tokio::sync::watch;
 
+struct RuntimeCustody(watch::Receiver<()>);
+
+impl acyclic_stream::session::CredentialCustody for RuntimeCustody {
+    fn check(&self) -> std::result::Result<(), acyclic_stream::StreamError> {
+        self.0
+            .has_changed()
+            .map(|_| ())
+            .map_err(|_| acyclic_stream::StreamError::Unavailable)
+    }
+
+    fn terminated(
+        &self,
+    ) -> acyclic_stream::BoxProviderFuture<'static, acyclic_stream::StreamError> {
+        let mut lifetime = self.0.clone();
+        Box::pin(async move {
+            let _ = lifetime.changed().await;
+            acyclic_stream::StreamError::Unavailable
+        })
+    }
+}
+
 /// One running native application. Dropping it aborts its deliveries and closes
 /// its Session lifetime. Delivery or runtime failure closes the same lifetime.
 pub struct Runtime {
@@ -47,6 +68,14 @@ impl Runtime {
     #[must_use]
     pub fn lifetime(&self) -> watch::Receiver<()> {
         self.lifetime.clone()
+    }
+
+    /// Retain this runtime's original lifetime without retaining its producer.
+    /// An immutable native command policy can use it as its custody boundary;
+    /// dynamic policies still require their own original invalidation event.
+    /// No task, sender, timer or alternate runtime is created.
+    pub fn custody(&self) -> Arc<dyn acyclic_stream::session::CredentialCustody> {
+        Arc::new(RuntimeCustody(self.lifetime()))
     }
 
     /// The retained delivery or runtime failure that closed, or is closing,
