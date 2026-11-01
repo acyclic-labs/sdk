@@ -392,6 +392,7 @@ impl TaskContext {
             &self.scope,
         )
         .await
+        .map(|(publication, retained)| (publication.map(|p| p.file), retained))
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
@@ -402,7 +403,7 @@ impl TaskContext {
         query: Option<crate::conversation::ContentPublicationQuery<'_>>,
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
-    ) -> Result<(Option<FileRef>, u64)> {
+    ) -> Result<(Option<crate::conversation::PublishedContent>, u64)> {
         let writer = super::content_write::content_writer(binding, io)?;
         let (file, hold) = writer
             .observe_staged_once(
@@ -425,7 +426,8 @@ impl TaskContext {
         if let Some(hold) = hold {
             hold.into_retained()?;
         }
-        if let Some(file) = &file {
+        if let Some(publication) = &file {
+            let file = &publication.file;
             crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
             super::content_write::publication_destination(
                 self.content_binding(Some(file.volume())),

@@ -498,6 +498,51 @@ impl<'a> ContentPublicationQuery<'a> {
     }
 }
 
+/// Action authorized at the original publication cut.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    crate::HeapLayout,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationAction {
+    /// The original path was absent.
+    Create,
+    /// The original path already existed.
+    Write,
+}
+
+/// Successful publication and facts retained in its original operation receipt.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedContent {
+    /// Exact immutable file identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+    pub file: FileRef,
+    /// Action checked by the original writer; absent for immutable object storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<PublicationAction>,
+    /// Exact text substitutions performed by the original shared edit planner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacements: Option<u64>,
+}
+
+impl PublishedContent {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.file.logical_owned_bytes()
+    }
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
@@ -565,7 +610,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _media_type: &'a str,
         _display_name: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<BoundedContentFuture<'a, (PublishedContent, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess {
             ceiling: _ceiling,
             io,
@@ -586,7 +631,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _media_type: &'a str,
         _display_name: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<BoundedContentFuture<'a, (PublishedContent, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess {
             ceiling: _ceiling,
             io,
@@ -608,7 +653,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _query: Option<ContentPublicationQuery<'a>>,
         _maximum_bytes: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+    ) -> Result<BoundedContentFuture<'a, (Option<PublishedContent>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess {
             ceiling: _ceiling,
             io,
@@ -626,9 +671,10 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _source: &'a FileRef,
         _bytes: &'a [u8],
+        _replacements: Option<u64>,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<BoundedContentFuture<'a, (PublishedContent, Option<ContentHold<'a>>)>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,

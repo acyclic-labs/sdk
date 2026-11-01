@@ -86,7 +86,8 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
             }
             let cc = profile == NativeToolProfile::Anthropic;
             let path = if cc {"claude.txt"} else {"gemini.txt"};
-            call(&task,&tools[1],json!({"file_path":path,"content":"before before\n"})).await?;
+            let (_,created) = call(&task,&tools[1],json!({"file_path":path,"content":"before before\n"})).await?;
+            assert_eq!(created.value["action"],"create");
             let read_args = if cc {
                 json!({"file_path":path,"offset":1,"limit":1})
             } else {json!({"file_path":path,"start_line":1,"end_line":1})};
@@ -95,6 +96,8 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
                 json!({"file_path":path,"old_string":"before","new_string":"after","replace_all":true})
             } else {json!({"file_path":path,"instruction":"Replace both occurrences","old_string":"before","new_string":"after","allow_multiple":true})};
             let (edited,result) = call(&task,&tools[2],edit_args).await?;
+            assert_eq!(result.value["action"],"write");
+            assert_eq!(result.value["replacements"],2);
             assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["text"],"after after\n");
             let ambiguous = if cc {
                 json!({"file_path":path,"old_string":"after","new_string":"wrong"})
@@ -115,7 +118,8 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
                 assert_eq!(error.to_string(), format!("No changes to apply. The old_string and new_string are identical in file: {path}"));
                 assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["file"],before);
             }
-            call(&task,&tools[1],json!({"file_path":path,"content":"later\n"})).await?;
+            let (_,overwritten) = call(&task,&tools[1],json!({"file_path":path,"content":"later\n"})).await?;
+            assert_eq!(overwritten.value["action"],"write");
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()),edited.operation_id,&edited.call_id)?;
             assert_eq!(tools[2].executor.reconcile(edited,Some(context)).await?,Some(result));
             assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["text"],"later\n");

@@ -113,7 +113,7 @@ impl FileTool {
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
-        let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
+        let encoded = super::value(&file.0, u64::MAX, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn search(
@@ -152,7 +152,7 @@ impl FileTool {
         bounds: (u64, u32),
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(FileResult, u64)> {
         let (maximum_work, maximum_hunks) = bounds;
         let invalid = |reason| rejection(work, reason);
 
@@ -180,6 +180,7 @@ impl FileTool {
                 invocation.operation_id,
                 &input.0.file,
                 edited.as_bytes(),
+                None,
                 io,
             )
             .await
@@ -226,7 +227,7 @@ impl FileTool {
         invocation: &ToolInvocation,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(FileResult, u64)> {
         let invalid = |reason| rejection(work, reason);
 
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
@@ -251,24 +252,21 @@ impl FileTool {
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
         let _notebook_hold;
         let _notebook_facts;
-        let (edited, notebook_hold, notebook_facts) = if let Some(operation) = &input.0.notebook {
-            let (edited, hold, facts) = super::notebook::edit(source, operation, work)?;
-            (edited, hold, Some(facts))
-        } else {
-            (
-                super::edit::replace(
+        let (edited, replacements, notebook_hold, notebook_facts) =
+            if let Some(operation) = &input.0.notebook {
+                let (edited, hold, facts) = super::notebook::edit(source, operation, work)?;
+                (edited, None, hold, Some(facts))
+            } else {
+                let plan = super::edit::replace(
                     source,
                     &input.0.old_text,
                     &input.0.new_text,
                     input.0.replace_all,
                     maximum,
                     &mut allocation,
-                )?
-                .text,
-                None,
-                None,
-            )
-        };
+                )?;
+                (plan.text, Some(plan.replacements), None, None)
+            };
         _notebook_hold = notebook_hold;
         _notebook_facts = notebook_facts;
         if edited.len() as u64 > maximum {
@@ -279,6 +277,7 @@ impl FileTool {
                 invocation.operation_id,
                 &selected.file,
                 edited.as_bytes(),
+                replacements,
                 io,
             )
             .await
@@ -442,7 +441,7 @@ impl ToolExecutor for FileTool {
                 .await?;
             match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                    let encoded = super::value(&file, u64::MAX, Some(work))?;
                     Ok((
                         Some(ToolResult { value: encoded.0 }),
                         encoded.1.ok_or(Error::NativeBoundary {
@@ -517,7 +516,7 @@ impl ToolExecutor for FileTool {
                 return receipt
                     .0
                     .map(|file| {
-                        let encoded = super::value(&FileResult { file }, u64::MAX, None)?;
+                        let encoded = super::value(&file, u64::MAX, None)?;
                         Ok(ToolResult { value: encoded.0 })
                     })
                     .transpose();

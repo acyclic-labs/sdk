@@ -188,17 +188,8 @@ pub struct PatchFileInput {
     pub diff: String,
 }
 
-/// Canonical successful write/edit result, independent of model projection.
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(
-    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
-)]
-#[serde(deny_unknown_fields)]
-pub struct FileResult {
-    /// Exact retained publication result with workspace and content identity.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    pub file: FileRef,
-}
+/// Canonical successful write/edit result, including its original receipt facts.
+pub use crate::conversation::PublishedContent as FileResult;
 
 /// Canonical read result retains its verified source independently of the
 /// compact model projection.

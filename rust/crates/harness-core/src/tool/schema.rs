@@ -318,7 +318,11 @@ mod tests {
             arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
         };
         let published = ToolResult {
-            value: json!(FileResult { file: file.clone() }),
+            value: json!(FileResult {
+                file: file.clone(),
+                action: None,
+                replacements: None
+            }),
         };
         let read = ToolResult {
             value: json!({"file":{"content":file},"text":"exact"}),
@@ -381,7 +385,11 @@ mod tests {
     #[test]
     fn real_nested_file_schemas_compile_and_keep_refs_at_the_complete_root() -> Result<()> {
         let file = crate::tool::tests::file(b"exact")?;
-        let result = FileResult { file: file.clone() };
+        let result = FileResult {
+            file: file.clone(),
+            action: None,
+            replacements: None,
+        };
         let canonical = json!(result);
         let input = compile_json_schema(&input::<ReadFileInput>()?, "read", &mut None)?;
         let output = compile_json_schema(&output::<FileResult>()?, "result", &mut None)?;

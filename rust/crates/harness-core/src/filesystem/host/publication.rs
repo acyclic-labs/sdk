@@ -1,13 +1,8 @@
 use super::*;
 use std::marker::PhantomData;
 
-/// The action decided against the original authenticated publication cut.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[serde(rename_all = "snake_case")]
-pub(in crate::filesystem) enum PublicationAction {
-    Create,
-    Write,
-}
+pub(in crate::filesystem) use crate::conversation::PublicationAction;
+use crate::conversation::PublishedContent;
 
 impl PublicationAction {
     pub(in crate::filesystem) const fn policy(self) -> acyclic_fs::access::Action {
@@ -25,6 +20,7 @@ pub(in crate::filesystem) struct UploadReceipt {
     pub file: FileRef,
     pub expected_generation: Option<GenerationRef>,
     pub action: PublicationAction,
+    pub replacements: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +29,7 @@ struct UploadReceiptRef<'a> {
     pub file: &'a FileRef,
     pub expected_generation: Option<&'a GenerationRef>,
     pub action: PublicationAction,
+    pub replacements: Option<u64>,
 }
 
 impl UploadReceipt {
@@ -53,6 +50,7 @@ impl UploadReceipt {
 struct ReplayAction<'a> {
     version: u8,
     action: PublicationAction,
+    replacements: Option<u64>,
     #[serde(borrow, rename = "file")]
     _file: &'a serde_json::value::RawValue,
     #[serde(borrow, rename = "expected_generation")]
@@ -64,11 +62,11 @@ struct ReplayAction<'a> {
 pub(in crate::filesystem) fn upload_replay_action(
     bytes: &[u8],
     io: Option<&PreparationIo>,
-) -> Result<PublicationAction> {
+) -> Result<(PublicationAction, Option<u64>)> {
     let (record, _hold) = match io {
         Some(io) => {
             let (record, hold) = io.decode_seed(
-                PhantomData::<ReplayAction<'_>>,
+                crate::executor::json::JsonObject(PhantomData::<ReplayAction<'_>>),
                 bytes,
                 crate::executor::json::JsonValueSchema::None,
                 crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES,
@@ -78,7 +76,7 @@ pub(in crate::filesystem) fn upload_replay_action(
         }
         None => (
             crate::executor::json::json_from_slice_bounded(
-                PhantomData::<ReplayAction<'_>>,
+                crate::executor::json::JsonObject(PhantomData::<ReplayAction<'_>>),
                 bytes,
                 crate::executor::json::JsonBounds {
                     maximum_bytes: bytes.len() as u64,
@@ -99,7 +97,7 @@ pub(in crate::filesystem) fn upload_replay_action(
             "unsupported upload receipt version",
         ));
     }
-    Ok(record.action)
+    Ok((record.action, record.replacements))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -126,7 +124,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         request: PublicationLookup<'_>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<(FileRef, Option<acyclic_stream::OwnedBytes>)>> {
+    ) -> Result<Option<(PublishedContent, Option<acyclic_stream::OwnedBytes>)>> {
         let owned;
         let io = if let Some(io) = io {
             io
@@ -183,7 +181,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let hold = io.guard_bytes(&receipt)?;
         let receipt = (receipt, hold);
         let recorded = io.decode(
-            PhantomData::<UploadReceipt>,
+            crate::executor::json::JsonObject(PhantomData::<UploadReceipt>),
             &receipt.0,
             crate::wire::ErrorCode::Storage,
         )?;
@@ -342,6 +340,7 @@ pub(in crate::filesystem) fn encode_upload_receipt(
     file: &FileRef,
     expected_generation: Option<&GenerationRef>,
     action: PublicationAction,
+    replacements: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let receipt = UploadReceiptRef {
@@ -349,6 +348,7 @@ pub(in crate::filesystem) fn encode_upload_receipt(
         file,
         expected_generation,
         action,
+        replacements,
     };
     match io {
         Some(io) => io.encode(&receipt, io.remaining()?.bytes_encoded, true),
@@ -395,7 +395,7 @@ pub(in crate::filesystem) fn decode_content_metadata<'a>(
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
     let (record, mut hold) = io.decode(
-        PhantomData::<UploadReceipt>,
+        crate::executor::json::JsonObject(PhantomData::<UploadReceipt>),
         bytes,
         crate::wire::ErrorCode::Storage,
     )?;
@@ -413,7 +413,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mut recorded: (UploadReceipt, DecodeReservation<'a>),
         request: &PublicationLookup<'_>,
         io: &'a PreparationIo,
-    ) -> Result<(FileRef, Option<acyclic_stream::OwnedBytes>)> {
+    ) -> Result<(PublishedContent, Option<acyclic_stream::OwnedBytes>)> {
         let version = bounded_io::hex_key(&original.id().to_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         recorded
@@ -442,6 +442,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             None
         };
-        Ok((self.seal_publication(recorded.0.file, Some(io))?, payload))
+        Ok((
+            PublishedContent {
+                file: self.seal_publication(recorded.0.file, Some(io))?,
+                action: Some(recorded.0.action),
+                replacements: recorded.0.replacements,
+            },
+            payload,
+        ))
     }
 }

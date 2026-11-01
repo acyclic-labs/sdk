@@ -157,7 +157,7 @@ pub(crate) static READ: ToolSpec = ToolSpec {
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-6",
+    revision: "portable-7",
     description: "Write UTF-8 content to a workspace path, creating or replacing the file",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
@@ -170,7 +170,7 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-9",
+    revision: "portable-10",
     description: "Replace one exact UTF-8 match, all non-overlapping matches when replace_all is true, or edit a notebook cell. Reuse a read's opaque version to reject edits against a changed source",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,

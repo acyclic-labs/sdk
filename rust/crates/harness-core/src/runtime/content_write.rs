@@ -41,7 +41,7 @@ impl<'a> SummaryDestination<'a> {
 pub(super) enum ContentPublication<'a> {
     PathBound,
     OperationBound,
-    Replacement(&'a FileRef),
+    Replacement(&'a FileRef, Option<u64>),
 }
 
 impl TaskContext {
@@ -118,6 +118,7 @@ impl TaskContext {
             io,
         )
         .await
+        .map(|(publication, retained)| (publication.file, retained))
     }
 
     /// Reads the original receipt for a derived private file. A changed path
@@ -140,6 +141,7 @@ impl TaskContext {
             &self.scope,
         )
         .await
+        .map(|(publication, retained)| (publication.map(|p| p.file), retained))
     }
 
     /// Stages exact bytes through the authenticated writer.
@@ -172,7 +174,7 @@ impl TaskContext {
             None,
         )
         .await
-        .map(|(file, _)| file)
+        .map(|(publication, _)| publication.file)
     }
 
     /// Publishes one immutable file per operation under caller IO limits.
@@ -200,6 +202,7 @@ impl TaskContext {
                 io,
             )
             .await
+            .map(|(publication, retained)| (publication.file, retained))
         }
     }
 
@@ -239,7 +242,7 @@ impl TaskContext {
         publication: ContentPublication<'_>,
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(crate::conversation::PublishedContent, u64)> {
         if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
             return Err(content_error(
                 io,
@@ -251,7 +254,7 @@ impl TaskContext {
             content_error(io, ErrorCode::Unsupported, "content publisher is not bound")
         })?;
         let source = match publication {
-            ContentPublication::Replacement(source) => Some(source),
+            ContentPublication::Replacement(source, _) => Some(source),
             _ => None,
         };
         let (writer, volume, relative) =
@@ -265,7 +268,7 @@ impl TaskContext {
         }
         writer.supports_stage(io)?;
         let output = match publication {
-            ContentPublication::Replacement(source) => {
+            ContentPublication::Replacement(source, replacements) => {
                 self.authorize_file_read(source, scope, scope.grants(), None, io)?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
@@ -279,7 +282,14 @@ impl TaskContext {
                     .verify(source, source.descriptor().byte_length(), io)?
                     .await?;
                 writer
-                    .stage_at(operation_id, source, bytes, Some(scope.grants()), io)?
+                    .stage_at(
+                        operation_id,
+                        source,
+                        bytes,
+                        replacements,
+                        Some(scope.grants()),
+                        io,
+                    )?
                     .await?
             }
             ContentPublication::OperationBound => {
@@ -420,12 +430,15 @@ struct PublishedFile<'a> {
 
 async fn finish_publication<'io>(
     content: &ContentBindings,
-    output: (FileRef, Option<crate::conversation::ContentHold<'io>>),
+    output: (
+        crate::conversation::PublishedContent,
+        Option<crate::conversation::ContentHold<'io>>,
+    ),
     expected: PublishedFile<'_>,
     scope: &RuntimeScope,
     io: Option<&'io ContentIo>,
-) -> Result<(FileRef, u64)> {
-    let file = &output.0;
+) -> Result<(crate::conversation::PublishedContent, u64)> {
+    let file = &output.0.file;
     crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
     if file.volume() != expected.volume
         || file.path() != expected.path

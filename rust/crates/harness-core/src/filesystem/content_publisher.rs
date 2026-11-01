@@ -151,7 +151,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         media: &'a str,
         display: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
@@ -160,6 +168,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
             let file = self
                 .publish(
                     operation,
+                    None,
                     None,
                     path,
                     bytes,
@@ -180,14 +189,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         operation: OperationId,
         source: &'a FileRef,
         bytes: &'a [u8],
+        replacements: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         BoundedContentFuture::new(io, || async move {
             let file = self
                 .publish(
                     operation,
                     Some(source),
+                    replacements,
                     source.path(),
                     bytes,
                     source.descriptor().media_type(),
@@ -208,7 +227,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         query: Option<ContentPublicationQuery<'a>>,
         maximum: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                Option<crate::conversation::PublishedContent>,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         BoundedContentFuture::new(io, || async move {
@@ -233,7 +260,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         media: &'a str,
         display: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         BoundedContentFuture::new(io, || async move {
@@ -243,7 +278,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                 .transpose()?;
             let file = self
                 .host
-                .put_content(
+                .put_content_impl(
                     &self.volume,
                     &self.grant,
                     path,
@@ -253,8 +288,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     self.maximum_bytes,
                     &retry,
                     None,
-                    crate::conversation::ContentAccess { ceiling, io },
-                )
+                    None,
+                    None,
+                    ceiling,
+                    io,
+                )?
                 .await?;
             drop(retry);
             drop(retry_hold);
@@ -276,7 +314,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<crate::conversation::PublishedContent>> {
         if let Some(query) = query {
             let (volume, _) = query.destination();
             if volume != &self.volume {
@@ -327,12 +365,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         operation: OperationId,
         source: Option<&FileRef>,
+        replacements: Option<u64>,
         path: &str,
         bytes: &[u8],
         media: &str,
         display: &str,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<FileRef> {
+    ) -> Result<crate::conversation::PublishedContent> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         if let Some(source) = source {
@@ -380,6 +419,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &retry,
                 None,
                 generation,
+                replacements,
                 ceiling,
                 io,
             )?
@@ -516,7 +556,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         path: &str,
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<crate::conversation::PublishedContent>> {
         self.observe_write_receipt(upload_key(operation, path, None)?, path, maximum, ceiling)
             .await
     }
@@ -527,7 +567,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         source: &FileRef,
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<crate::conversation::PublishedContent>> {
         self.observe_publication(
             operation,
             Some(ContentPublicationQuery::Replacement {
@@ -547,7 +587,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         path: &str,
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
-    ) -> Result<Option<FileRef>> {
+    ) -> Result<Option<crate::conversation::PublishedContent>> {
         self.grant
             .require(&self.volume, VolumeOperation::Write, None)?;
         let observed = self

@@ -164,8 +164,9 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .publisher
         .stage_at(
             replacement_operation,
-            &committed,
+            &committed.file,
             b"replacement",
+            Some(2),
             None,
             Some(&committed_io),
         )?
@@ -173,7 +174,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&replacement, 1024, None, Some(&committed_io))?
+            .read(&replacement.file, 1024, None, Some(&committed_io))?
             .await?
             .as_ref(),
         b"replacement"
@@ -183,8 +184,9 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .publisher
             .stage_at(
                 replacement_operation,
-                &committed,
+                &committed.file,
                 b"replacement",
+                Some(2),
                 None,
                 Some(&committed_io),
             )?
@@ -192,9 +194,24 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .0,
         replacement
     );
+    assert_eq!(
+        replacement.action,
+        Some(crate::conversation::PublicationAction::Write)
+    );
+    assert_eq!(replacement.replacements, Some(2));
+    let before_changed_count = committed_io.receipt().backend_write_operations;
+    assert!(matches!(storage.publisher.stage_at(
+        replacement_operation, &committed.file, b"replacement", Some(3), None,
+        Some(&committed_io),
+    )?.await, Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
+    assert_eq!(
+        committed_io.receipt().backend_write_operations,
+        before_changed_count
+    );
     // A digest-only projection of this actual reference must fail before IO.
-    let mut digest_only = committed.clone();
-    let generation = crate::filesystem::bounded_io::generation_version(committed.version(), None)?;
+    let mut digest_only = committed.file.clone();
+    let generation =
+        crate::filesystem::bounded_io::generation_version(committed.file.version(), None)?;
     digest_only.pin_version(hex::encode(generation.digest().as_bytes()), &mut None)?;
     let writes = committed_io.receipt().backend_write_operations;
     assert!(matches!(
@@ -204,6 +221,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 OperationId::new(),
                 &digest_only,
                 b"never",
+                None,
                 None,
                 Some(&committed_io),
             )?
@@ -300,7 +318,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
     assert_eq!(
         storage
             .content_verifier
-            .read(&committed, 1024, None, Some(&read_io))?
+            .read(&committed.file, 1024, None, Some(&read_io))?
             .await?
             .as_ref(),
         b"original"
@@ -468,7 +486,7 @@ async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Resu
     let before_read = work.live_allocation_bytes();
     let bytes = storage
         .content_verifier
-        .read(&file, 1024, None, Some(&io))?
+        .read(&file.file, 1024, None, Some(&io))?
         .await?;
     assert_eq!(bytes.as_ref(), b"original");
     assert!(bytes.matches_meter(&work.runtime_meter()));

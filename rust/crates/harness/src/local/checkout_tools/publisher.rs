@@ -45,7 +45,7 @@ enum Publication<'a> {
         media: &'a str,
         display: &'a str,
     },
-    Replace(&'a FileRef),
+    Replace(&'a FileRef, Option<u64>),
 }
 
 impl CheckoutPublisher {
@@ -100,10 +100,10 @@ impl CheckoutPublisher {
         bytes: &[u8],
         publication: Publication<'_>,
         ceiling: Option<&crate::Capabilities>,
-    ) -> Result<FileRef> {
+    ) -> Result<crate::conversation::PublishedContent> {
         let (volume, path) = match &publication {
             Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
-            Publication::Replace(source) => (Some(source.volume()), source.path()),
+            Publication::Replace(source, _) => (Some(source.volume()), source.path()),
         };
         serialized(&self.tools.state, async |mut state| {
             let physical = self.selected_workspace(&state)?;
@@ -137,7 +137,7 @@ impl CheckoutPublisher {
             let original = match &publication {
                 Publication::Once { .. } => writer.observe_staged_once(operation, Some(ContentPublicationQuery::Operation { volume: &mount.view.volume, path: &relative }), self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
-                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
+                Publication::Replace(source, _) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };
             if original.is_none() {
                 if let Some(native) = native {
@@ -146,24 +146,24 @@ impl CheckoutPublisher {
                     if let Some(mounted) = &physical.mounted {
                         mounted.sync().await.map_err(storage)?;
                     } else if capture::needs_baseline(watcher, &physical)
-                        || matches!(&publication, Publication::Replace(_)) {
+                        || matches!(&publication, Publication::Replace(..)) {
                         self.tools.capture((&physical, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
                     }
                 }
             }
-            let file = match publication {
+            let mut file = match publication {
                 Publication::Once { media, display, .. } => {
                     writer.stage_once(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
                 }
                 Publication::Path { media, display, .. } => {
                     writer.stage(operation, &relative, bytes, media, display, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0
                 }
-                Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
+                Publication::Replace(source, replacements) => writer.stage_at(operation, source, bytes, replacements, ceiling, None)?.await?.0,
             };
             if let Some(native) = native {
                 native.advance_to_head().await?;
             } else if mount.view.source.is_none() {
-                return self.settle(&physical, view, watcher, operation, file).await;
+                file.file = self.settle(&physical, view, watcher, operation, file.file).await?;
             }
             Ok(file)
         })
@@ -337,7 +337,15 @@ impl ContentPublisher for CheckoutPublisher {
         media: &'a str,
         display: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.supports_stage(io)?;
@@ -366,7 +374,15 @@ impl ContentPublisher for CheckoutPublisher {
         media: &'a str,
         display: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.supports_stage(io)?;
@@ -392,14 +408,28 @@ impl ContentPublisher for CheckoutPublisher {
         operation: OperationId,
         source: &'a FileRef,
         bytes: &'a [u8],
+        replacements: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                crate::conversation::PublishedContent,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             Ok((
-                self.publish(operation, bytes, Publication::Replace(source), ceiling)
-                    .await?,
+                self.publish(
+                    operation,
+                    bytes,
+                    Publication::Replace(source, replacements),
+                    ceiling,
+                )
+                .await?,
                 None,
             ))
         })
@@ -410,7 +440,15 @@ impl ContentPublisher for CheckoutPublisher {
         query: Option<ContentPublicationQuery<'a>>,
         maximum: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+    ) -> Result<
+        BoundedContentFuture<
+            'a,
+            (
+                Option<crate::conversation::PublishedContent>,
+                Option<ContentHold<'a>>,
+            ),
+        >,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.supports_stage(io)?;
@@ -483,7 +521,7 @@ impl ContentPublisher for CheckoutPublisher {
                     if let Some(mut file) = file {
                         mount.check(
                             acyclic_fs::access::Action::Write,
-                            file.path(),
+                            file.file.path(),
                             self.tools.clock.now_unix_millis() / 1000,
                         )?;
                         if let Some(source) = &mount.view.source {
@@ -494,8 +532,8 @@ impl ContentPublisher for CheckoutPublisher {
                         } else {
                             // A recovered publication names the same
                             // generation the original write returned.
-                            file = self
-                                .settle(&physical, view, watcher, operation, file)
+                            file.file = self
+                                .settle(&physical, view, watcher, operation, file.file)
                                 .await?;
                         }
                         return Ok((Some(file), None));

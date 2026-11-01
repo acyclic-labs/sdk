@@ -68,7 +68,7 @@ record!(
     self.file.logical_owned_bytes()?,
     self.diff.capacity()
 );
-record!(FileResult, self, self.file.logical_owned_bytes()?);
+
 record!(FileReadSource, self, self.logical_owned_bytes()?);
 record!(
     crate::conversation::FilePathSelection,

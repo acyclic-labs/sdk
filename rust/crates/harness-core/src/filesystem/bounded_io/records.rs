@@ -204,3 +204,12 @@ impl PreparationRecord for crate::resources::GenerationRef {
         self.logical_owned_bytes().map(Some)
     }
 }
+
+impl UploadRecord for crate::conversation::PublishedContent {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        self.file.logical_owned_bytes()
+    }
+    fn diagnostic_label_bytes() -> u64 {
+        crate::tool::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES
+    }
+}

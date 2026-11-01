@@ -106,7 +106,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             .await?
             .map(|(file, body)| {
                 assert_eq!(body.expect("authorized payload").as_ref(), bytes);
-                file
+                file.file
             }),
         Some(expected)
     );

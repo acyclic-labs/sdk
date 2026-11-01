@@ -70,7 +70,7 @@ impl ContentPublisher for OrdinaryPublisher {
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
             (
-                FileRef,
+                acyclic_harness::conversation::PublishedContent,
                 Option<acyclic_harness::conversation::ContentHold<'a>>,
             ),
         >,

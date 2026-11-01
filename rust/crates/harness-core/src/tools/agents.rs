@@ -202,7 +202,8 @@ impl AgentTool {
                         ContentAccess::default(),
                     )?
                     .await?
-                    .0;
+                    .0
+                    .file;
                 TurnEffect::Spawn {
                     intent,
                     brief: Box::new(brief),
@@ -230,7 +231,8 @@ impl AgentTool {
                         ContentAccess::default(),
                     )?
                     .await?
-                    .0;
+                    .0
+                    .file;
                 TurnEffect::Send {
                     to,
                     id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,

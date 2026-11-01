@@ -56,7 +56,10 @@ impl ContentPublisher for ObjectContentStore {
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
+            (
+                crate::conversation::PublishedContent,
+                Option<crate::conversation::ContentHold<'a>>,
+            ),
         >,
     > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -107,7 +110,14 @@ impl ContentPublisher for ObjectContentStore {
                 .retain(&self.root()?, vec![intent])
                 .await
                 .map_err(storage)?;
-            Ok((reference, None))
+            Ok((
+                crate::conversation::PublishedContent {
+                    file: reference,
+                    action: None,
+                    replacements: None,
+                },
+                None,
+            ))
         })
     }
 }

@@ -169,9 +169,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
+        replacements: Option<u64>,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a bounded_io::PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::PublishedContent>>
     where
         A: 'static,
         O: 'static,
@@ -310,7 +311,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         + 1024);
                 let original_receipt =
                     read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
-                let original_action = upload_replay_action(&original_receipt, io)?;
+                let (original_action, _) = upload_replay_action(&original_receipt, io)?;
                 if opened.id() != root.id() || needs_binding {
                     let (_, fence) = self
                         .authorize_content_write(
@@ -342,8 +343,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                 )?
                 .await?;
-                let receipt_bytes =
-                    encode_upload_receipt(&provisional, expected_generation, original_action, io)?;
+                let receipt_bytes = encode_upload_receipt(
+                    &provisional,
+                    expected_generation,
+                    original_action,
+                    replacements,
+                    io,
+                )?;
                 if original_receipt.as_ref() != receipt_bytes.as_ref() {
                     return Err(stock_boundary(
                         io,
@@ -389,7 +395,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 grant.recheck(io)?;
-                return self.seal_publication(reference, io);
+                return Ok(crate::conversation::PublishedContent {
+                    file: self.seal_publication(reference, io)?,
+                    action: Some(original_action),
+                    replacements,
+                });
             }
             let (authorized_selection, policy_fence) = self
                 .authorize_content_write(&opened, grant, provisional.path(), None, ceiling, io)?
@@ -452,8 +462,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 policy_fence
             };
-            let receipt_bytes =
-                encode_upload_receipt(&provisional, expected_generation, original_action, io)?;
+            let receipt_bytes = encode_upload_receipt(
+                &provisional,
+                expected_generation,
+                original_action,
+                replacements,
+                io,
+            )?;
             let mut mutations = crate::model::vec_with_capacity(6, io)?;
             if let Some((parent, _)) = absolute.rsplit_once('/')
                 && !parent.is_empty()
@@ -524,7 +539,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
-            self.seal_publication(reference, io)
+            Ok(crate::conversation::PublishedContent {
+                file: self.seal_publication(reference, io)?,
+                action: Some(original_action),
+                replacements,
+            })
         })
     }
     #[inline(never)]

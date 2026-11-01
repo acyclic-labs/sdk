@@ -36,10 +36,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             None,
             expected_generation,
+            None,
             ceiling,
             io,
         )?
         .await
+        .map(|publication| publication.file)
     }
 
     /// Recovers the original upload generation and authenticated metadata.
@@ -71,7 +73,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         grant.recheck(io)?;
-        Ok(observed.map(|(file, _)| file))
+        Ok(observed.map(|(publication, _)| publication.file))
     }
 
     /// Stages journal payloads under the assigned internal subtree.
@@ -105,9 +107,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(class),
             None,
             None,
+            None,
             io,
         )?
         .await
+        .map(|publication| publication.file)
     }
 
     /// Stages a complete canonical attachment list for a manifest-backed event.

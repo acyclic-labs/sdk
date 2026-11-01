@@ -608,6 +608,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             } else {
                                 PublicationAction::Create
                             },
+                            None,
                             Some(io),
                         )?;
                         io.sdk(

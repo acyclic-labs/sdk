@@ -29,7 +29,8 @@ impl Hooks {
                 crate::conversation::ContentAccess::default(),
             )?
             .await?
-            .0)
+            .0
+            .file)
     }
 
     /// Encodes normalized rules under a positive finite configuration-file bound.

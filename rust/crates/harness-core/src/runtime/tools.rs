@@ -29,7 +29,7 @@ impl TaskContext {
                 io,
             )
             .await?;
-        Ok((file.0, path, file.1))
+        Ok((file.0.file, path, file.1))
     }
 }
 
@@ -470,7 +470,7 @@ impl ToolContext {
         source: Option<&FileRef>,
         path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(Option<FileRef>, u64)> {
+    ) -> Result<(Option<crate::conversation::PublishedContent>, u64)> {
         let binding = self.task().tool_content(source.map(FileRef::volume));
         let writer = super::content_write::content_writer(binding, io)?;
         let path = path.ok_or_else(|| {
@@ -512,6 +512,7 @@ impl ToolContext {
         self.task()
             .observe_bound_file_once(binding, operation_id, None, io, self.effective_scope())
             .await
+            .map(|(publication, retained)| (publication.map(|p| p.file), retained))
     }
 
     /// Publishes once on the private volume under the effective tool scope
@@ -536,6 +537,7 @@ impl ToolContext {
             io,
         )
         .await
+        .map(|(publication, retained)| (publication.file, retained))
     }
 
     /// Publishes a file tool's new file once where the task's commands
@@ -548,7 +550,7 @@ impl ToolContext {
         media_type: &str,
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(crate::conversation::PublishedContent, u64)> {
         let binding = self.task().tool_content(None);
         self.stage_once(
             binding,
@@ -771,7 +773,7 @@ impl ToolContext {
         media_type: &str,
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(crate::conversation::PublishedContent, u64)> {
         self.task()
             .stage_bound_file(
                 binding,
@@ -793,8 +795,9 @@ impl ToolContext {
         operation_id: OperationId,
         source: &FileRef,
         bytes: &[u8],
+        replacements: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<(FileRef, u64)> {
+    ) -> Result<(crate::conversation::PublishedContent, u64)> {
         let task = self.task();
         task.stage_bound_file(
             task.content_binding(Some(source.volume())),
@@ -803,7 +806,7 @@ impl ToolContext {
             bytes,
             source.descriptor().media_type(),
             source.display_name(),
-            super::content_write::ContentPublication::Replacement(source),
+            super::content_write::ContentPublication::Replacement(source, replacements),
             self.effective_scope(),
             io,
         )

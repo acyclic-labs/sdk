@@ -79,7 +79,7 @@ where
             drop(bytes);
             drop(hold);
         }
-        Ok(file)
+        Ok(file.file)
     }
 
     pub(super) fn stage_identity_with_io(

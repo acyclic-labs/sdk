@@ -1207,14 +1207,21 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
         acyclic_harness_core::conversation::BoundedContentFuture<
             'a,
             (
-                FileRef,
+                acyclic_harness_core::conversation::PublishedContent,
                 Option<acyclic_harness_core::conversation::ContentHold<'a>>,
             ),
         >,
     > {
         let file = super::driver::file("brief.md")?;
         acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
-            Ok((file, None))
+            Ok((
+                acyclic_harness_core::conversation::PublishedContent {
+                    file,
+                    action: None,
+                    replacements: None,
+                },
+                None,
+            ))
         })
     }
 }

@@ -70,7 +70,7 @@ where
             else {
                 return Ok(false);
             };
-            if provenance.descriptor().media_type() != "application/json" {
+            if provenance.file.descriptor().media_type() != "application/json" {
                 return Ok(false);
             }
             let allowed = decode_summary(&bytes, operation, file, io)?;

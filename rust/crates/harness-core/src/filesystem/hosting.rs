@@ -1002,10 +1002,13 @@ where
                 .map_err(turn)?
                 .await
                 .map_err(turn)?;
-            if staged.as_ref().is_some_and(|file| file.path() != path()) {
+            if staged
+                .as_ref()
+                .is_some_and(|publication| publication.file.path() != path())
+            {
                 return Err(Error::Conflict("input identity reused with changed source"));
             }
-            return Ok(staged);
+            return Ok(staged.map(|publication| publication.file));
         };
         let path = path();
         let staged = publisher
@@ -1020,7 +1023,7 @@ where
             .map_err(turn)?
             .await
             .map_err(turn)?;
-        Ok(Some(staged.0))
+        Ok(Some(staged.0.file))
     }
 
     /// Verifies original scope identity, audience, lifetime and attenuation

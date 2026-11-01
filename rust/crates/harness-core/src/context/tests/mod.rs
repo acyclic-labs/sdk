@@ -132,7 +132,10 @@ impl ContentPublisher for TestPayloadStore {
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (FileRef, Option<crate::conversation::ContentHold<'a>>),
+            (
+                crate::conversation::PublishedContent,
+                Option<crate::conversation::ContentHold<'a>>,
+            ),
         >,
     > {
         let crate::conversation::ContentAccess {
@@ -154,10 +157,24 @@ impl ContentPublisher for TestPayloadStore {
                 if retained != &reference || body != bytes {
                     return Err(crate::Error::Conflict("payload identity changed".into()));
                 }
-                return Ok((retained.clone(), None));
+                return Ok((
+                    crate::conversation::PublishedContent {
+                        file: retained.clone(),
+                        action: None,
+                        replacements: None,
+                    },
+                    None,
+                ));
             }
             files.insert(path.to_owned(), (reference.clone(), bytes.to_vec()));
-            Ok((reference, None))
+            Ok((
+                crate::conversation::PublishedContent {
+                    file: reference,
+                    action: None,
+                    replacements: None,
+                },
+                None,
+            ))
         })
     }
 }

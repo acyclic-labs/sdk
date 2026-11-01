@@ -287,7 +287,10 @@ async fn creation_retains_its_authorized_cut_before_transaction_start() -> Resul
                 io.as_ref(),
             )
             .await?;
-        assert_eq!(recovered.map(|(file, _)| file), Some(original));
+        assert_eq!(
+            recovered.map(|(publication, _)| publication.file),
+            Some(original)
+        );
         // Create permission cannot recover an operation whose original action
         // was overwrite, even with the exact original request and payload.
         assert!(matches!(
@@ -433,9 +436,11 @@ async fn replace_source(
         None,
         Some(&expected),
         None,
+        None,
         io,
     )?
     .await
+    .map(|publication| publication.file)
 }
 
 #[tokio::test]
@@ -721,7 +726,7 @@ impl InternalPublicationCase<'_> {
             )
             .await?
             .ok_or_else(|| Error::Storage("original publication is absent".into()))?;
-        assert_eq!(recovered.0, original);
+        assert_eq!(recovered.0.file, original);
         assert_eq!(
             recovered
                 .1

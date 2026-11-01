@@ -18,7 +18,7 @@ impl FileTool {
             Self::Edit => return crate::tools::catalog::EDIT.bind_with_projection(mode),
             Self::Patch { .. } => (
                 "acyclic.patch_file",
-                "portable-patch-4",
+                "portable-patch-5",
                 "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
                 schema::input::<PatchFileInput>()?,
                 schema::output::<FileResult>()?,
