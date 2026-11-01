@@ -81,5 +81,5 @@ Harness features and the whole UI are files in volumes plus live queries. Add a 
 
 ## Agent surface
 
-- The model-visible command tool is named `shell` on every OS.
+- Each model family sees its own lab's native tool names and schemas (Claude Code, Codex, Gemini CLI/Antigravity) over one shared execution core per capability.
 - Secrets never enter guest code, streams or volumes.

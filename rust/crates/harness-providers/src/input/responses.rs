@@ -1,13 +1,14 @@
 use super::{check, id, name};
 use crate::protocol::{content, sequence::ResponseItem, shape};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     if let Some(tools) = body["tools"].as_array() {
         for tool in tools {
             check(
-                tool["type"] == "function" && name(&tool["name"], 64, false, b"_-"),
+                matches!(tool["type"].as_str(), Some("function" | "custom"))
+                    && name(&tool["name"], 64, false, b"_-"),
                 "OAR-TOOL-01",
                 errors,
             );
@@ -20,7 +21,7 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         check(false, "OAR-SEQ-01", errors);
         return;
     };
-    let mut pending = BTreeSet::new();
+    let mut pending = BTreeMap::new();
     let mut previous = ResponseItem::Other;
     for item in items {
         let kind = item["type"].as_str().unwrap_or("message");
@@ -55,17 +56,26 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     }
                 }
             }
-            "function_call" => {
+            "function_call" | "custom_tool_call" => {
+                let custom = kind == "custom_tool_call";
                 check(id(&item["call_id"], 64), "OAR-TOOL-03", errors);
-                check(shape::RESPONSE_CALL.accepts(item), "OAR-TOOL-02", errors);
+                check(
+                    (if custom {
+                        &shape::RESPONSE_CUSTOM_CALL
+                    } else {
+                        &shape::RESPONSE_CALL
+                    })
+                    .accepts(item),
+                    "OAR-TOOL-02",
+                    errors,
+                );
                 if let Some(id) = item["call_id"].as_str() {
-                    check(pending.insert(id), "OAR-TOOL-04", errors);
+                    check(pending.insert(id, custom).is_none(), "OAR-TOOL-04", errors);
                 }
             }
-            "function_call_output" => {
-                let matched = item["call_id"]
-                    .as_str()
-                    .is_some_and(|id| pending.remove(id));
+            "function_call_output" | "custom_tool_call_output" => {
+                let matched = item["call_id"].as_str().and_then(|id| pending.remove(id))
+                    == Some(kind == "custom_tool_call_output");
                 check(matched, "OAR-TOOL-04", errors);
                 if let Some(rule) = content::RESPONSE_TOOL_OUTPUT.violation(&item["output"], false)
                 {

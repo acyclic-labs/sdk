@@ -397,6 +397,8 @@ impl Backend for Local {
         spec.models.insert(
             manifest.model.clone(),
             ModelSpec {
+                tool_profile: None,
+                thinking_levels: false,
                 max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 2048,
