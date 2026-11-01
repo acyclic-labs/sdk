@@ -14,14 +14,14 @@ struct Counters {
     closed: AtomicU64,
 }
 
-fn increment(counter: &AtomicU64) {
+pub(crate) fn increment(counter: &AtomicU64) {
     // Saturation is explicit unknown evidence, never a wrapped zero.
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         value.checked_add(1)
     });
 }
 
-fn count(counter: &AtomicU64) -> Option<u64> {
+pub(crate) fn count(counter: &AtomicU64) -> Option<u64> {
     let value = counter.load(Ordering::Relaxed);
     (value != u64::MAX).then_some(value)
 }
@@ -85,7 +85,7 @@ impl Export {
             sample.capture_retirement = None;
             sample.binding = None;
         }
-        self.delivery.publish(admission, sample);
+        let _ = self.delivery.publish(admission, sample);
     }
 }
 
@@ -257,19 +257,16 @@ impl<T> Delivery<T> {
         })
     }
 
-    pub(crate) fn publish(&self, admission: Admission, value: T) -> bool {
-        if self
-            .sender
-            .send(DeliveryRecord {
-                value,
-                _admission: admission,
-            })
-            .is_err()
-        {
-            increment(&self.counters.closed);
-            false
-        } else {
-            true
+    pub(crate) fn publish(&self, admission: Admission, value: T) -> Result<(), DeliveryRecord<T>> {
+        match self.sender.send(DeliveryRecord {
+            value,
+            _admission: admission,
+        }) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                increment(&self.counters.closed);
+                Err(error.0)
+            }
         }
     }
 }

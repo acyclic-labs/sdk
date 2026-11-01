@@ -39,12 +39,12 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
             let pointer = storage.as_ptr();
             let (output, mut receiver) = TextOutput::channel(vec![storage])?;
             output.record(|buffer| write!(buffer, "original record\n")).unwrap();
-            let record = receiver.recv().await.unwrap();
+            let mut record = receiver.recv().await.unwrap();
             assert_eq!(record.bytes().as_ptr(), pointer);
             assert_eq!(output.stats().retained, 1);
             assert!(matches!(output.record(|_| panic!("full admission must not format")), Err(OutputRefusal::Full)));
             let mut delivery = Box::pin(async {
-                writer.write_all(record.bytes()).await
+                record.write_to(&mut writer).await
             });
             poll_fn(|cx| { assert!(delivery.as_mut().poll(cx).is_pending()); Poll::Ready(()) }).await;
             // This channel event is independent of the original full pipe;
@@ -74,14 +74,31 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
                     drop(delivery);
                     drop(record);
                     assert_eq!(output.stats().retained, 0);
+                    let terminal = output.terminal_stats();
+                    assert_eq!(terminal.published, Some(1));
+                    assert_eq!(terminal.writer_accepted, Some(0));
+                    assert_eq!(terminal.incomplete, Some(1));
+                    assert_eq!(terminal.pending, 0);
                     continue;
                 }
                 _ => unreachable!(),
             }
             drop(delivery);
             assert_eq!(output.stats().retained, 1, "dequeue/write completion cannot release the retained record");
+            assert_eq!(output.terminal_stats().pending, 1);
+            assert_eq!(output.terminal_stats().writer_accepted, Some(0));
+            if terminal == "cancel" {
+                let error = record.write_to(&mut writer).await.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "a partial attempt cannot be resubmitted");
+            }
             drop(record);
             assert_eq!(output.stats().retained, 0);
+            let disposed = output.terminal_stats();
+            assert_eq!(disposed.published, Some(1));
+            assert_eq!(disposed.pending, 0);
+            assert_eq!(disposed.writer_accepted, Some(u64::from(terminal == "drain")));
+            assert_eq!(disposed.incomplete, Some(u64::from(terminal == "cancel")));
+            assert_eq!(disposed.discarded, Some(0));
             writer.shutdown().await?;
             drop(original);
             let mut received = Vec::new();
@@ -100,11 +117,44 @@ fn text_output_retains_storage_through_native_backpressure_and_terminal_loss() -
         assert!(matches!(overflow, Err(OutputRefusal::Full)));
         assert_eq!(output.stats().retained, 0);
         assert_eq!(output.stats().full, Some(1));
+        assert_eq!(output.terminal_stats().published, Some(0), "format refusal is not accepted delivery");
         let failure = std::pin::pin!(output.failed());
         assert!(matches!(output.record(|buffer| { buffer.write_str("partial")?; Err(fmt::Error) }), Err(OutputRefusal::Failed(OutputFailure::Formatting))));
         assert!(matches!(failure.await, OutputFailure::Formatting));
         assert!(matches!(receiver.fail(io::ErrorKind::BrokenPipe.into()), OutputFailure::Formatting));
         drop(receiver);
+
+        // The operation itself publishes Formatting in its completing poll.
+        // Selecting that original result first must not erase the first cause.
+        let (output, receiver) = TextOutput::channel(vec![vec![0; 32].into_boxed_slice()])?;
+        let original = async {
+            assert!(matches!(output.record(|_| Err(fmt::Error)), Err(OutputRefusal::Failed(OutputFailure::Formatting))));
+            19
+        };
+        let (result, cause) = receiver.observe(original, &mut tokio::io::sink()).await;
+        assert_eq!(result, 19);
+        assert!(matches!(cause, Some(OutputFailure::Formatting)));
+        assert_eq!(output.terminal_stats().published, Some(0));
+
+        // One original record remains queued and another is held by the caller.
+        // Neither consumer loss nor record drop can manufacture write completion.
+        let (output, mut receiver) = TextOutput::channel(vec![vec![0; 32].into_boxed_slice(), vec![0; 32].into_boxed_slice()])?;
+        output.record(|buffer| buffer.write_str("held")).unwrap();
+        output.record(|buffer| buffer.write_str("queued")).unwrap();
+        let record = receiver.recv().await.unwrap();
+        receiver.close();
+        assert_eq!(output.terminal_stats().pending, 2);
+        drop(receiver);
+        assert_eq!(output.terminal_stats().pending, 1);
+        assert_eq!(output.terminal_stats().discarded, Some(1));
+        assert_eq!(output.terminal_stats().writer_accepted, Some(0));
+        drop(record);
+        let terminal = output.terminal_stats();
+        assert_eq!(terminal.published, Some(2));
+        assert_eq!(terminal.pending, 0);
+        assert_eq!(terminal.discarded, Some(1));
+        assert_eq!(terminal.incomplete, Some(1));
+        assert_eq!(terminal.writer_accepted, Some(0));
 
         let (output, receiver) = TextOutput::channel(vec![vec![0; 32].into_boxed_slice()])?;
         let closed = output.failed();

@@ -52,7 +52,7 @@ pub use export::{Export, ExportReceiver, ExportRecord, ExportStats};
 #[cfg(not(target_arch = "wasm32"))]
 mod output;
 #[cfg(not(target_arch = "wasm32"))]
-pub use output::{OutputFailure, OutputRefusal, TextOutput, TextReceiver, TextRecord};
+pub use output::{OutputFailure, OutputRefusal, TextOutput, TextReceiver, TextRecord, TextStats};
 
 mod slo;
 pub use slo::{LatencySlo, Slo, SloError, Verdict};

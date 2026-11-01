@@ -1,14 +1,18 @@
 //! Nonblocking diagnostic formatting into storage supplied by the caller.
 use crate::{
     ExportStats,
-    export::{Delivery, DeliveryRecord, Refusal},
+    export::{Delivery, DeliveryRecord, Refusal, count, increment},
 };
 use std::{
     fmt,
     future::Future,
     io,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tracing::{
     Event, Subscriber,
@@ -21,6 +25,8 @@ use tracing_subscriber::{Layer, layer::Context};
 pub enum OutputFailure {
     /// The original consumer closed, without a physical output failure receipt.
     ConsumerClosed,
+    /// The failure producer disappeared without a physical write receipt.
+    SourceLost,
     /// A formatter refused after admission; no partial record was published.
     Formatting,
     /// The original asynchronous writer failed. No successful receipt is inferred.
@@ -31,6 +37,7 @@ impl fmt::Display for OutputFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ConsumerClosed => f.write_str("diagnostic output consumer closed"),
+            Self::SourceLost => f.write_str("diagnostic output failure producer lost"),
             Self::Formatting => f.write_str("diagnostic formatting failed"),
             Self::Write(error) => error.fmt(f),
         }
@@ -67,7 +74,43 @@ impl fmt::Display for OutputRefusal {
 }
 impl std::error::Error for OutputRefusal {}
 
-type Buffers = Arc<Mutex<Vec<Box<[u8]>>>>;
+#[derive(Default)]
+struct Terminals {
+    published: AtomicU64,
+    pending: AtomicUsize,
+    writer_accepted: AtomicU64,
+    discarded: AtomicU64,
+    incomplete: AtomicU64,
+}
+
+struct Storage {
+    buffers: Mutex<Vec<Box<[u8]>>>,
+    terminals: Terminals,
+}
+
+/// Record dispositions, never a count of bytes consumed or durable effects.
+///
+/// At quiescence, before saturation, `published = pending + writer_accepted +
+/// discarded + incomplete`. Admission followed by format refusal or failed
+/// channel publication is excluded. Individual atomics are not a transactional
+/// snapshot; concurrent publication/retirement can temporarily cross observations.
+/// Every cumulative counter saturates to `None`, never a wrapped count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextStats {
+    /// Successfully published records, excluding admission/format refusals.
+    pub published: Option<u64>,
+    /// Published records not yet retired, including records held after writing.
+    pub pending: usize,
+    /// The original AsyncWrite accepted each entire record. For an unbuffered
+    /// native sink this is kernel acceptance, never downstream consumption.
+    /// A buffered writer's success cannot certify its own physical flush.
+    pub writer_accepted: Option<u64>,
+    /// Published records dropped while still queued, before consumer access.
+    pub discarded: Option<u64>,
+    /// A dequeued record retired without a successful original write receipt.
+    /// Its accepted prefix is unknown; no byte count is inferred.
+    pub incomplete: Option<u64>,
+}
 
 /// Caller-owned text storage and the same credited delivery used by [`crate::Export`].
 ///
@@ -83,7 +126,7 @@ type Buffers = Arc<Mutex<Vec<Box<[u8]>>>>;
 #[derive(Clone)]
 pub struct TextOutput {
     delivery: Delivery<Buffer>,
-    buffers: Buffers,
+    buffers: Arc<Storage>,
     failure: watch::Sender<Option<OutputFailure>>,
 }
 
@@ -109,7 +152,10 @@ impl TextOutput {
         let (failure, _) = watch::channel(None);
         let output = Self {
             delivery,
-            buffers: Arc::new(Mutex::new(buffers)),
+            buffers: Arc::new(Storage {
+                buffers: Mutex::new(buffers),
+                terminals: Terminals::default(),
+            }),
             failure,
         };
         let receiver = TextReceiver {
@@ -123,6 +169,18 @@ impl TextOutput {
     /// Buffer byte capacity is fixed by the original caller-supplied storage.
     pub fn stats(&self) -> ExportStats {
         self.delivery.stats()
+    }
+
+    /// Fixed event-fed terminal accounting on the same original record lifetime.
+    pub fn terminal_stats(&self) -> TextStats {
+        let counters = &self.buffers.terminals;
+        TextStats {
+            published: count(&counters.published),
+            pending: counters.pending.load(Ordering::Relaxed),
+            writer_accepted: count(&counters.writer_accepted),
+            discarded: count(&counters.discarded),
+            incomplete: count(&counters.incomplete),
+        }
     }
 
     /// Formats directly into one admitted buffer. Exhausted credit invokes no
@@ -147,6 +205,7 @@ impl TextOutput {
         // formatter nor user destruction runs while its mutex is held.
         let bytes = self
             .buffers
+            .buffers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
@@ -155,6 +214,7 @@ impl TextOutput {
             bytes: Some(bytes),
             length: 0,
             overflow: false,
+            disposition: Disposition::Unpublished,
             pool: self.buffers.clone(),
         };
         let formatted = format(&mut buffer);
@@ -171,10 +231,24 @@ impl TextOutput {
                     .expect("retained format failure"),
             ));
         }
-        if self.delivery.publish(admission, buffer) {
-            Ok(())
-        } else {
-            Err(OutputRefusal::Closed)
+        buffer.disposition = Disposition::Queued;
+        self.buffers
+            .terminals
+            .pending
+            .fetch_add(1, Ordering::Relaxed);
+        match self.delivery.publish(admission, buffer) {
+            Ok(()) => {
+                increment(&self.buffers.terminals.published);
+                Ok(())
+            }
+            Err(mut record) => {
+                record.value.disposition = Disposition::Unpublished;
+                self.buffers
+                    .terminals
+                    .pending
+                    .fetch_sub(1, Ordering::Relaxed);
+                Err(OutputRefusal::Closed)
+            }
         }
     }
 
@@ -217,11 +291,21 @@ impl Visit for Fields<'_> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+    Unpublished,
+    Queued,
+    Held,
+    Writing,
+    WriterAccepted,
+}
+
 struct Buffer {
     bytes: Option<Box<[u8]>>,
     length: usize,
     overflow: bool,
-    pool: Buffers,
+    disposition: Disposition,
+    pool: Arc<Storage>,
 }
 impl fmt::Write for Buffer {
     fn write_str(&mut self, text: &str) -> fmt::Result {
@@ -241,9 +325,20 @@ impl fmt::Write for Buffer {
 }
 impl Drop for Buffer {
     fn drop(&mut self) {
+        let counters = &self.pool.terminals;
+        match self.disposition {
+            Disposition::Unpublished => {}
+            Disposition::Queued => increment(&counters.discarded),
+            Disposition::Held | Disposition::Writing => increment(&counters.incomplete),
+            Disposition::WriterAccepted => increment(&counters.writer_accepted),
+        }
+        if self.disposition != Disposition::Unpublished {
+            counters.pending.fetch_sub(1, Ordering::Relaxed);
+        }
         // The stack retains its original capacity: each live record owns one
         // removed entry, and return occurs before its shared permit retires.
         self.pool
+            .buffers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(self.bytes.take().expect("original diagnostic storage"));
@@ -257,6 +352,24 @@ impl TextRecord {
     pub fn bytes(&self) -> &[u8] {
         &self.0.value.bytes.as_ref().expect("live record")[..self.0.value.length]
     }
+
+    /// Makes one write attempt through the original writer, retaining storage
+    /// and credit even after success until this record drops. Dropping this
+    /// future or returning an error leaves an incomplete record with an unknown
+    /// accepted prefix. It cannot be retried under a fresh write identity.
+    /// External writes using `bytes` cannot produce a completed disposition.
+    pub async fn write_to<W: AsyncWrite + Unpin>(&mut self, writer: &mut W) -> io::Result<()> {
+        if self.0.value.disposition != Disposition::Held {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "diagnostic record already submitted; retain the original write outcome",
+            ));
+        }
+        self.0.value.disposition = Disposition::Writing;
+        writer.write_all(self.bytes()).await?;
+        self.0.value.disposition = Disposition::WriterAccepted;
+        Ok(())
+    }
 }
 
 /// Delivery for the host's existing loop, with no worker or shutdown service.
@@ -268,9 +381,66 @@ pub struct TextReceiver {
     failure: watch::Sender<Option<OutputFailure>>,
 }
 impl TextReceiver {
+    /// Drives delivery beside the SAME original operation/report/shutdown future.
+    /// No task is spawned. Formatting or sink loss closes text admission while
+    /// the original future remains runnable through its existing terminal policy.
+    /// At that terminal, queued text is discarded and any pending write is
+    /// incomplete, never certified delivered. The original result is preserved.
+    ///
+    /// The supplied AsyncWrite must retain no borrowed bytes after its pending
+    /// future is dropped. Synchronous inherited sinks require their original
+    /// owned-write completion instead; this method cannot establish that custody.
+    pub async fn observe<F, W>(
+        mut self,
+        original: F,
+        writer: &mut W,
+    ) -> (F::Output, Option<OutputFailure>)
+    where
+        F: Future,
+        W: AsyncWrite + Unpin,
+    {
+        enum First<R> {
+            Original(R),
+            Delivery,
+            Failure(OutputFailure),
+        }
+        let failure = failed(self.failure.subscribe());
+        tokio::pin!(original);
+        let first = {
+            let delivery = async {
+                while let Some(mut record) = self.recv().await {
+                    if let Err(error) = record.write_to(writer).await {
+                        self.fail(error);
+                        break;
+                    }
+                }
+            };
+            tokio::pin!(delivery);
+            tokio::select! {
+                result = &mut original => First::Original(result),
+                () = &mut delivery => First::Delivery,
+                error = failure => First::Failure(error),
+            }
+        };
+        // An error can be published inside the original future's completing
+        // poll. Observe it independently of the select winner, before our own
+        // normal close publishes ConsumerClosed. No recheck loop is needed.
+        let retained = self.failure.borrow().clone();
+        self.close();
+        drop(self);
+        match first {
+            First::Original(result) => (result, retained),
+            First::Delivery => (original.await, retained),
+            First::Failure(error) => (original.await, retained.or(Some(error))),
+        }
+    }
+
     /// Waits on original record publication or producer closure.
     pub async fn recv(&mut self) -> Option<TextRecord> {
-        self.receiver.recv().await.map(TextRecord)
+        self.receiver.recv().await.map(|mut record| {
+            record.value.disposition = Disposition::Held;
+            TextRecord(record)
+        })
     }
 
     /// Rejects new records. Existing records can be drained or dropped by the
@@ -318,7 +488,7 @@ async fn failed(mut receiver: watch::Receiver<Option<OutputFailure>>) -> OutputF
             return error;
         }
         if receiver.changed().await.is_err() {
-            return OutputFailure::Write(Arc::new(io::ErrorKind::BrokenPipe.into()));
+            return OutputFailure::SourceLost;
         }
     }
 }
