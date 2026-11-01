@@ -182,7 +182,7 @@ mod tests {
             for separator in ["", "\n", "\n\n"] {
                 let expected = fragments.join(separator);
                 let mut owned = Some(fragments.clone());
-                let original = owned.as_ref().unwrap().first().map(String::as_ptr);
+                let original = owned.as_ref().unwrap().first().map(|text| text.as_ptr());
                 let mut joined = None;
                 let cost = acyclic_test_support::measure(|| {
                     joined = Some(crate::projection::text::join(
