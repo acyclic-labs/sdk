@@ -290,6 +290,47 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
 }
 
 #[tokio::test]
+async fn producerless_promises_fail_after_tool_retirement_and_live_producers_complete() -> Result<()>
+{
+    for (code, calls, stalled) in [
+        ("await new Promise(() => {})", 0, true),
+        (
+            "tools['example.echo']({value:1}); await new Promise(() => {})",
+            1,
+            true,
+        ),
+        (
+            "await new Promise(resolve => Promise.resolve().then(() => resolve(42)))",
+            0,
+            false,
+        ),
+        (
+            "await new Promise(resolve => tools['example.echo']({value:42}).then(value => resolve(value.value)))",
+            1,
+            false,
+        ),
+    ] {
+        let (executor, model, echo) = executor(code, allowed()?, true)?;
+        let journal = Journal::default();
+        executor.execute(input(), &journal).await?;
+        let value = result(&model);
+        if stalled {
+            assert_eq!(
+                value["error"],
+                "JavaScript promise cannot settle: no pending jobs or tool calls"
+            );
+        } else {
+            assert_eq!(value["value"], 42);
+            assert!(value.get("error").is_none());
+        }
+        assert_eq!(echo.0.load(Ordering::SeqCst), calls);
+        assert_eq!(value["calls"].as_array().unwrap().len(), calls);
+        assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), calls);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
     let code = r#"
         for (let value = 0; value < 3; value++) tools['example.echo']({value});

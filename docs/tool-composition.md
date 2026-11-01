@@ -73,6 +73,10 @@ product counts. Cancellation follows the parent's event and interrupts executing
 bytecode, including infinite loops. Outstanding tool calls settle through their
 ordinary cancellation contracts before the composition retires.
 CPU polls share the native blocking pool; waiting on a tool releases the thread.
+If a program still awaits a promise after all JavaScript jobs and bound tool calls
+retire, it returns an error with its settled call log. With no other host event
+sources, that promise has no remaining producer; no timeout or periodic check is
+needed to detect it.
 
 ## Portable file operations
 

@@ -143,6 +143,32 @@ pub(super) async fn run(
                 .unwrap_or_else(|| "JavaScript exception or interrupt".into())
         }))
     });
+    let execution = async {
+        futures::pin_mut!(execution);
+        loop {
+            // The runtime owns every possible producer: JavaScript jobs and
+            // bound-tool futures. Its idle event retires both before reporting
+            // that a pending program has nobody left to resolve its promise.
+            let idle = runtime.idle();
+            futures::pin_mut!(idle);
+            if let futures::future::Either::Left((result, _)) =
+                futures::future::select(execution.as_mut(), idle).await
+            {
+                return result;
+            }
+            // The idle driver may have resolved the program, or this poll may
+            // start encoding/draining calls. Check for newly created producers
+            // only after giving that continuation its turn.
+            if let std::task::Poll::Ready(result) = futures::poll!(execution.as_mut()) {
+                return result;
+            }
+            if !runtime.is_job_pending().await {
+                return Err(
+                    "JavaScript promise cannot settle: no pending jobs or tool calls".into(),
+                );
+            }
+        }
+    };
     let cancelled = cancellation.cancelled();
     futures::pin_mut!(execution, cancelled);
     match futures::future::select(cancelled, execution).await {
@@ -153,6 +179,28 @@ pub(super) async fn run(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn producerless_promise_returns_without_waiting_for_an_external_wake() {
+        use futures::FutureExt;
+
+        let (send, _receive) = tokio::sync::mpsc::channel(1);
+        let result = super::run(
+            "await new Promise(() => {})".into(),
+            acyclic_stream::OwnedBytes::from_static(b"[]"),
+            send,
+            tokio_util::sync::CancellationToken::new(),
+            4096,
+            super::super::allocator::EngineAllocator::new(None),
+            super::INTERRUPT_BUDGET,
+        )
+        .now_or_never()
+        .expect("no producer remains to wake this program");
+        assert_eq!(
+            result.unwrap_err(),
+            "JavaScript promise cannot settle: no pending jobs or tool calls"
+        );
+    }
+
     #[tokio::test]
     async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
         let tool = crate::tools::catalog()
