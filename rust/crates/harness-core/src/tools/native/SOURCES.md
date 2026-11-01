@@ -45,3 +45,7 @@ The Gemini grep_search description and total_max_matches description likewise
 adapt the upstream 100-match default: omission means unlimited matches. A
 supplied total limit remains refused until the original capture can select
 complete matches before truncation.
+
+The Gemini read_file description replaces upstream fixed truncation thresholds
+with the shared reader's caller-admitted read and render credit. It introduces
+no default line, per-line character or whole-file byte ceiling.
