@@ -1,55 +1,30 @@
 use super::*;
 use serde_json::json;
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    #[test]
-    fn unused_visible_parts_return_the_complete_retained_balance(
-        fragments in proptest::collection::vec(".{0,32}", 0..32),
-        calls in proptest::bool::ANY, signed in proptest::bool::ANY,
-    ) {
-        let mut state=State::new(65_536);
-        if calls {state.call(0).unwrap();}
-        for text in fragments {state.visible_text(&text).unwrap();}
-        if signed {
-            let index=(state.calls.len()+state.thinking.len()) as u64;
-            state.raw_part(index,&json!({"text":"signed","thoughtSignature":"opaque"}),None,true).unwrap();
-        }
-        let before=state.budget.used();
-        state.discard_unsigned_final_text().unwrap();
-        proptest::prop_assert_eq!(state.budget.used(),if calls||signed {before} else {(0,0)});
-    }
-}
-
 #[test]
 fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() -> Result<()> {
     let mut state = State::new(4096);
     for _ in 0..512 {
-        state.visible_text("x")?;
+        state.gemini_text(state.texts.len() as u64, "x", None)?;
     }
-    assert_eq!(state.thinking.len(), 1);
-    state.raw_part(
-        1,
-        &json!({"text":"y","thoughtSignature":"opaque"}),
-        None,
-        true,
-    )?;
+    assert_eq!(state.texts.len(), 1);
+    let signed = r#"{"text":"y","thoughtSignature":"opaque"}"#;
+    state.gemini_text(state.texts.len() as u64, "y", Some(signed))?;
     for _ in 0..512 {
-        state.visible_text("z")?;
+        state.gemini_text(state.texts.len() as u64, "z", None)?;
     }
-    assert_eq!(state.thinking.len(), 3);
+    assert_eq!(state.texts.len(), 3);
     state.terminal = true;
     let dispatch = ModelDispatch {
         operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
         step: 0,
         request_digest: [0; 32],
     };
-    let events = finish(state, Adapter::Gemini, dispatch)?;
-    let parts: Vec<_> = events
+    let parts: Vec<_> = finish(state, Adapter::Gemini, dispatch)?
         .into_iter()
         .filter_map(|event| match event {
-            ModelEvent::ReasoningBlock { block } => {
-                Some(serde_json::from_slice::<Value>(&block.continuity).unwrap())
+            ModelEvent::TextPart { text, native } => {
+                Some((text, native.map(|native| native.continuity)))
             }
             _ => None,
         })
@@ -57,9 +32,9 @@ fn unsigned_gemini_fragments_coalesce_without_crossing_signature_boundaries() ->
     assert_eq!(
         parts,
         vec![
-            json!({"text":"x".repeat(512)}),
-            json!({"text":"y","thoughtSignature":"opaque"}),
-            json!({"text":"z".repeat(512)})
+            ("x".repeat(512), None),
+            ("y".into(), Some(signed.as_bytes().to_vec())),
+            ("z".repeat(512), None),
         ]
     );
     Ok(())
@@ -138,9 +113,8 @@ fn cumulative_fragments_and_json_payloads_are_admitted_before_growth() -> Result
     let before = (call.arguments.len(), call.arguments.capacity());
     assert!(budget.append(&mut call.arguments, Some(&fragment)).is_err());
     assert_eq!((call.arguments.len(), call.arguments.capacity()), before);
-    let signature = json!({"blocks":["x".repeat(256)]});
-    assert!(budget.value(&mut call.metadata, &signature).is_err());
-    assert!(call.metadata.is_null());
+    assert!(budget.string(&mut call.native, &"x".repeat(256)).is_err());
+    assert!(call.native.is_empty());
     Ok(())
 }
 
@@ -160,8 +134,17 @@ mod accounting {
                 (std::mem::size_of::<(u64, Call)>()
                     + c.id.capacity()
                     + c.name.capacity()
-                    + c.arguments.capacity()) as u64
-                    + owned(&c.metadata).unwrap()
+                    + c.arguments.capacity()
+                    + c.native.capacity()) as u64
+            })
+            .sum();
+        let texts: u64 = state
+            .texts
+            .values()
+            .map(|t| {
+                visits += 1;
+                (std::mem::size_of::<(u64, Text)>() + t.text.capacity() + t.native.capacity())
+                    as u64
             })
             .sum();
         let metadata: u64 = state
@@ -183,6 +166,7 @@ mod accounting {
         (
             std::mem::size_of::<State>() as u64
                 + calls
+                + texts
                 + metadata
                 + thinking
                 + state.origin.as_ref().map_or(0, |origin| {

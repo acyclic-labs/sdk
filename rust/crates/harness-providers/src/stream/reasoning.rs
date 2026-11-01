@@ -10,7 +10,6 @@ pub(super) struct Thinking {
     text: String,
     signature: String,
     kind: ReasoningKind,
-    visible: bool,
 }
 impl Default for Thinking {
     fn default() -> Self {
@@ -19,7 +18,6 @@ impl Default for Thinking {
             text: String::new(),
             signature: String::new(),
             kind: ReasoningKind::Readable,
-            visible: false,
         }
     }
 }
@@ -30,54 +28,6 @@ impl Thinking {
 }
 
 impl<'work> State<'work> {
-    // A call-free completion with no signed answer needs only the ordinary
-    // answer text. Keep earlier tool-step fragments to align later signatures.
-    pub(super) fn discard_unsigned_final_text(&mut self) -> Result<()> {
-        if !self.calls.is_empty()
-            || self
-                .thinking
-                .values()
-                .any(|part| part.visible && part.kind == ReasoningKind::Signature)
-        {
-            return Ok(());
-        }
-        let mut error = None;
-        self.thinking.retain(|_, part| {
-            if !part.visible || error.is_some() {
-                return true;
-            }
-            match self.budget.replace(
-                budget::Size {
-                    bytes: size_of::<(u64, Thinking)>() + part.bytes(),
-                    items: 1,
-                },
-                budget::Size::default(),
-            ) {
-                Ok(()) => false,
-                Err(cause) => {
-                    error = Some(cause);
-                    true
-                }
-            }
-        });
-        error.map_or(Ok(()), Err)
-    }
-
-    pub(super) fn visible_text(&mut self, text: &str) -> Result<()> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let position = (self.calls.len() + self.thinking.len()) as u64;
-        let previous = self.thinking.last_key_value().filter(|(index, block)| {
-            **index + 1 == position && block.visible && block.native.is_empty()
-        });
-        let index = previous.map_or(position, |(index, _)| *index);
-        let (target, budget) = self.thinking(index)?;
-        target.visible = true;
-        target.kind = ReasoningKind::Opaque;
-        budget.append_str(&mut target.text, text)
-    }
-
     fn thinking(&mut self, index: u64) -> Result<(&mut Thinking, &mut budget::Budget<'work>)> {
         let target = match self.thinking.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -92,16 +42,10 @@ impl<'work> State<'work> {
     #[cfg(test)]
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn retain_thinking(&mut self, index: u64, value: &Value) -> Result<()> {
-        self.raw_part(index, value, None, false)
+        self.raw_part(index, value, None)
     }
 
-    pub(super) fn raw_part(
-        &mut self,
-        index: u64,
-        value: &Value,
-        raw: Option<&str>,
-        visible: bool,
-    ) -> Result<()> {
+    pub(super) fn raw_part(&mut self, index: u64, value: &Value, raw: Option<&str>) -> Result<()> {
         let (target, budget) = self.thinking(index)?;
         match raw {
             Some(raw) => budget.string(&mut target.native, raw)?,
@@ -114,16 +58,10 @@ impl<'work> State<'work> {
             _ if present(value.get("thoughtSignature")).is_some() => ReasoningKind::Signature,
             _ => ReasoningKind::Readable,
         };
-        target.visible = visible;
         budget.string(
             &mut target.signature,
             value["signature"].as_str().unwrap_or_default(),
         )?;
-        if target.visible {
-            // This text already streams as Content. Native continuity alone
-            // owns its exact part and signature; foreign targets use the answer.
-            return budget.string(&mut target.text, "");
-        }
         let mut first = true;
         let summaries = value["summary"]
             .as_array()
@@ -205,10 +143,6 @@ pub(super) fn block(
         struct Chat<'a> {
             reasoning_content: &'a str,
         }
-        #[derive(serde::Serialize)]
-        struct Gemini<'a> {
-            text: &'a str,
-        }
         if adapter == Adapter::Anthropic {
             budget.encoded(
                 &mut value.native,
@@ -218,8 +152,6 @@ pub(super) fn block(
                     signature: &value.signature,
                 },
             )?;
-        } else if adapter == Adapter::Gemini && value.visible {
-            budget.encoded(&mut value.native, &Gemini { text: &value.text })?;
         } else {
             budget.encoded(
                 &mut value.native,
@@ -229,21 +161,9 @@ pub(super) fn block(
             )?;
         }
     }
-    let origin = if let Some(origin) = origin {
-        budget.add(origin.provider.len() + origin.model.len(), 0)?;
-        origin.clone()
-    } else {
-        budget.add(family(adapter).len(), 0)?;
-        ReasoningOrigin {
-            provider: family(adapter).into(),
-            model: String::new(),
-            credential_scope: None,
-        }
-    };
-    let text = (!value.visible && !value.text.is_empty()).then_some(value.text);
-    let outcome = if value.visible {
-        ReasoningOutcome::SuppressedDisplay
-    } else if text.is_some() {
+    let origin = native_origin(adapter, origin, budget)?;
+    let text = (!value.text.is_empty()).then_some(value.text);
+    let outcome = if text.is_some() {
         ReasoningOutcome::PreservedReadable
     } else {
         ReasoningOutcome::PreservedOpaque
@@ -254,6 +174,25 @@ pub(super) fn block(
         origin,
         continuity: value.native.into_bytes(),
         outcome,
+    })
+}
+
+/// The origin every native part of this response carries.
+pub(super) fn native_origin(
+    adapter: Adapter,
+    origin: Option<&ReasoningOrigin>,
+    budget: &mut budget::Budget<'_>,
+) -> Result<ReasoningOrigin> {
+    Ok(if let Some(origin) = origin {
+        budget.add(origin.provider.len() + origin.model.len(), 0)?;
+        origin.clone()
+    } else {
+        budget.add(family(adapter).len(), 0)?;
+        ReasoningOrigin {
+            provider: family(adapter).into(),
+            model: String::new(),
+            credential_scope: None,
+        }
     })
 }
 

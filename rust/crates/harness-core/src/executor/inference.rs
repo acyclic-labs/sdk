@@ -71,7 +71,7 @@ impl StockExecutor {
         execution.io = io;
         execution.single_request = true;
         let events = execution.model_step(journal, input, 0, &[]).await?;
-        let (_, text, metadata) =
+        let super::turn::CollectedStep { text, metadata, .. } =
             execution.collect_step_events(input, 0, events, &mut Vec::new())?;
         #[cfg(feature = "filesystem")]
         let custody = io

@@ -74,31 +74,29 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             // Value decoding cannot retain duplicate executable fields. Admit
             // the original tokens for unsigned calls and native replay alike.
             crate::protocol::gemini::native_part(raw)?;
-            let native = part["thought"] == true || part["thoughtSignature"].is_string();
             text(&mut events, &part["text"], part["thought"] == true);
-            let position = (state.calls.len() + state.thinking.len()) as u64;
-            if native {
-                state.raw_part(
-                    position,
-                    part,
-                    Some(raw.get()),
-                    part["thought"] != true && part["text"].is_string(),
-                )?;
-            } else if let Some(text) = part["text"].as_str() {
-                state.visible_text(text)?;
-            }
-            if let Some(function) = present(part.get("functionCall")) {
-                let index = (state.calls.len() + state.thinking.len()) as u64;
-                let (call, budget) = state.call(index)?;
+            let position = (state.calls.len() + state.thinking.len() + state.texts.len()) as u64;
+            // A signature authenticates its exact part: keep the original
+            // bytes on that part, whatever kind it is.
+            let signed = part["thoughtSignature"].is_string().then(|| raw.get());
+            if part["thought"] == true {
+                state.raw_part(position, part, Some(raw.get()))?;
+            } else if let Some(function) = present(part.get("functionCall")) {
+                let (call, budget) = state.call(position)?;
                 if let Some(id) = function.get("id") {
                     budget.string(&mut call.id, string(id)?)?;
                 }
                 budget.string(&mut call.name, string(&function["name"])?)?;
+                if let Some(signed) = signed {
+                    budget.string(&mut call.native, signed)?;
+                }
                 match function.get("args") {
                     None => budget.string(&mut call.arguments, "{}")?,
                     Some(args) if args.is_object() => budget.encoded(&mut call.arguments, args)?,
                     Some(_) => return Err(invalid("tool arguments must be a JSON object")),
                 }
+            } else {
+                state.gemini_text(position, part["text"].as_str().unwrap_or_default(), signed)?;
             }
         }
     }
@@ -119,8 +117,34 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         } else {
             reason
         })?;
-        state.discard_unsigned_final_text()?;
         state.terminal = true;
     }
     Ok(events)
+}
+
+impl State<'_> {
+    /// A signed text part stays its own part; unsigned text joins the
+    /// unsigned text part right before it.
+    pub(super) fn gemini_text(
+        &mut self,
+        position: u64,
+        text: &str,
+        signed: Option<&str>,
+    ) -> Result<()> {
+        let index = match self.texts.last_key_value() {
+            Some((last, part))
+                if signed.is_none() && *last + 1 == position && part.native.is_empty() =>
+            {
+                *last
+            }
+            _ if signed.is_none() && text.is_empty() => return Ok(()),
+            _ => position,
+        };
+        let (part, budget) = self.text_part(index)?;
+        budget.append_str(&mut part.text, text)?;
+        if let Some(signed) = signed {
+            budget.string(&mut part.native, signed)?;
+        }
+        Ok(())
+    }
 }

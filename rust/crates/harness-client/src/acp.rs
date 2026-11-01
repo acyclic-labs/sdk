@@ -158,7 +158,7 @@ impl AttachedSession {
             let mut parts = Vec::with_capacity(request.prompt.len());
             for block in request.prompt {
                 parts.push(match block {
-                    ContentBlock::Text { text } => ModelContentPart::Text { text },
+                    ContentBlock::Text { text } => ModelContentPart::text(text),
                     ContentBlock::ResourceLink { uri, .. } => {
                         let file = resolve(uri).await.map_err(InputError::Context)?;
                         let policy = FileProjectionPolicy::for_attachment(&file);

@@ -483,6 +483,11 @@ pub struct TurnOutput {
     pub metadata: Value,
     /// Number of completed model steps.
     pub steps: u32,
+    /// The final step's assistant parts, in order, when one carries native
+    /// bytes: the next turn replays them exactly for the same origin. They are
+    /// staged with the output itself, so keeping them costs no extra write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ModelContentPart>,
 }
 
 /// Execution progress with its settled value or pending approval operation.

@@ -1007,7 +1007,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                             .parts()
                             .iter()
                             .filter_map(|part| match part {
-                                ModelContentPart::Text { text } => Some(text.as_str()),
+                                ModelContentPart::Text { text, .. } => Some(text.as_str()),
                                 _ => None,
                             }),
                     )
@@ -1215,7 +1215,7 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                             .and_then(|(_, tail)| tail.split_once("</cwd>"))
                             .map(|(cwd, _)| cwd.to_owned()),
                         content => content.parts().iter().find_map(|part| match part {
-                            crate::model::ModelContentPart::Text { text } => text
+                            crate::model::ModelContentPart::Text { text, .. } => text
                                 .split_once("<cwd>")
                                 .and_then(|(_, tail)| tail.split_once("</cwd>"))
                                 .map(|(cwd, _)| cwd.to_owned()),

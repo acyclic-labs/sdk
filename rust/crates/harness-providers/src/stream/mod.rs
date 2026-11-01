@@ -33,14 +33,23 @@ pub(crate) struct Call {
     item_id: String,
     name: String,
     arguments: String,
-    metadata: Value,
+    /// The exact original call part, when the provider signs it.
+    native: String,
     freeform: bool,
     // Responses completion seals input across its delta, item and terminal views.
     input_complete: bool,
 }
 
+/// One visible text part and, when the provider signs it, its exact bytes.
+#[derive(Default)]
+pub(crate) struct Text {
+    text: String,
+    native: String,
+}
+
 pub(crate) struct State<'work> {
     calls: BTreeMap<u64, Call>,
+    texts: BTreeMap<u64, Text>,
     metadata: serde_json::Map<String, Value>,
     pub(crate) terminal: bool,
     completed_message: Option<(u64, String)>,
@@ -124,6 +133,7 @@ pub(crate) fn finish(
     let mut calls = Vec::with_capacity(
         state.calls.len()
             + state.thinking.len()
+            + state.texts.len()
             + 1
             + usize::from(state.completed_message.is_some()),
     );
@@ -151,18 +161,40 @@ pub(crate) fn finish(
     }
     drop(seen);
     let mut thinking = std::mem::take(&mut state.thinking).into_iter().peekable();
+    let mut texts = std::mem::take(&mut state.texts).into_iter().peekable();
     let mut batch = std::mem::take(&mut state.calls).into_iter().peekable();
     let mut ordinal = 0u64;
-    while thinking.peek().is_some() || batch.peek().is_some() {
-        if thinking
-            .peek()
-            .is_some_and(|(index, _)| batch.peek().is_none_or(|(call, _)| index <= call))
-        {
+    // Parts keep their response order; at one index, reasoning precedes
+    // text, and text precedes calls.
+    while let Some((_, next)) = [
+        thinking.peek().map(|(index, _)| (*index, 0)),
+        texts.peek().map(|(index, _)| (*index, 1)),
+        batch.peek().map(|(index, _)| (*index, 2)),
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+    {
+        if next == 0 {
             let (_index, value) = thinking
                 .next()
                 .ok_or_else(|| invalid("missing reasoning item"))?;
             let block = reasoning::block(adapter, value, state.origin.as_ref(), &mut state.budget)?;
             calls.push(ModelEvent::ReasoningBlock { block });
+            continue;
+        }
+        if next == 1 {
+            let (_, part) = texts.next().ok_or_else(|| invalid("missing text item"))?;
+            let native = native(
+                adapter,
+                part.native,
+                state.origin.as_ref(),
+                &mut state.budget,
+            )?;
+            calls.push(ModelEvent::TextPart {
+                text: part.text,
+                native,
+            });
             continue;
         }
         let (_, call) = batch.next().ok_or_else(|| invalid("missing call item"))?;
@@ -182,21 +214,17 @@ pub(crate) fn finish(
         // The recording rule owns numbers and marker keys, so a call emitted
         // here is never rejected later when the executor records it.
         validate_portable_json(&arguments)?;
-        validate_portable_json(&call.metadata)?;
         // Admit the canonical ID and binding graph before allocating either.
         // The original provider ID is moved into the binding without copying.
-        let native = !call.metadata.is_null();
         state.budget.add(
             ModelDispatch::TOOL_CALL_ID_BYTES
-                + (3 + usize::from(native) + usize::from(call.freeform))
-                    * std::mem::size_of::<(String, Value)>()
+                + (3 + usize::from(call.freeform)) * std::mem::size_of::<(String, Value)>()
                 + "provider_call".len()
                 + "provider".len()
                 + "id".len()
                 + family(adapter).len()
-                + if native { "native".len() } else { 0 }
                 + if call.freeform { "freeform".len() } else { 0 },
-            3 + usize::from(native) + usize::from(call.freeform),
+            3 + usize::from(call.freeform),
         )?;
         let mut binding = serde_json::Map::new();
         binding.insert("provider".into(), Value::String(family(adapter).into()));
@@ -213,16 +241,19 @@ pub(crate) fn finish(
         if call.freeform {
             metadata.insert("freeform".into(), Value::Bool(true));
         }
-        if native {
-            metadata.insert("native".into(), call.metadata);
-        }
         calls.push(ModelEvent::ToolCall(
             acyclic_harness_core::model::ToolCall::new(
                 dispatch.tool_call_id(ordinal),
                 call.name,
                 arguments,
             )
-            .with_metadata(Value::Object(metadata)),
+            .with_metadata(Value::Object(metadata))
+            .with_native(native(
+                adapter,
+                call.native,
+                state.origin.as_ref(),
+                &mut state.budget,
+            )?),
         ));
         ordinal += 1;
     }
@@ -233,6 +264,23 @@ pub(crate) fn finish(
         metadata: Value::Object(state.metadata),
     });
     Ok(calls)
+}
+
+/// A part's exact native bytes with the response's origin; none when the
+/// provider kept none.
+fn native(
+    adapter: Adapter,
+    bytes: String,
+    origin: Option<&acyclic_harness_core::model::ReasoningOrigin>,
+    budget: &mut budget::Budget<'_>,
+) -> Result<Option<acyclic_harness_core::model::NativePart>> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(acyclic_harness_core::model::NativePart {
+        origin: reasoning::native_origin(adapter, origin, budget)?,
+        continuity: bytes.into_bytes(),
+    }))
 }
 
 impl<'work> State<'work> {
@@ -277,6 +325,7 @@ impl<'work> State<'work> {
     pub(crate) fn new(maximum: usize) -> Self {
         Self {
             calls: BTreeMap::new(),
+            texts: BTreeMap::new(),
             metadata: serde_json::Map::new(),
             terminal: false,
             completed_message: None,
@@ -306,6 +355,28 @@ impl<'work> State<'work> {
             }
         };
         Ok((call, &mut self.budget))
+    }
+
+    fn text_part(&mut self, index: u64) -> Result<(&mut Text, &mut budget::Budget<'work>)> {
+        let part = match self.texts.entry(index) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                self.budget.add(std::mem::size_of::<(u64, Text)>(), 1)?;
+                entry.insert(Text::default())
+            }
+        };
+        Ok((part, &mut self.budget))
+    }
+
+    /// Appends streamed visible text to the part at `index`.
+    fn visible(&mut self, index: u64, delta: &Value) -> Result<()> {
+        match delta.as_str().filter(|delta| !delta.is_empty()) {
+            Some(delta) => {
+                let (part, budget) = self.text_part(index)?;
+                budget.append_str(&mut part.text, delta)
+            }
+            None => Ok(()),
+        }
     }
 
     fn usage(&mut self, usage: &Value) -> Result<()> {

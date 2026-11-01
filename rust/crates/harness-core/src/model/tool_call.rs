@@ -22,6 +22,10 @@ pub struct ToolCall {
     #[serde(deserialize_with = "crate::deserialize_json_value")]
     #[heap_layout(as = serde_json::Value)]
     pub metadata: Value,
+    /// The provider's exact original call part, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
+    pub native: Option<super::NativePart>,
 }
 
 impl ToolCall {
@@ -32,7 +36,15 @@ impl ToolCall {
             name,
             arguments,
             metadata: Value::Null,
+            native: None,
         }
+    }
+
+    /// Attaches the provider's exact original call part.
+    #[must_use]
+    pub fn with_native(mut self, native: Option<super::NativePart>) -> Self {
+        self.native = native;
+        self
     }
 
     /// Attaches continuation data without changing the tool's arguments.
@@ -52,6 +64,7 @@ impl ToolCall {
                 json_value_logical_owned_bytes(&self.metadata)?,
             )?,
         )
+        .and_then(|bytes| add(bytes, native_bytes(self.native.as_ref())?))
     }
 
     #[cfg(feature = "filesystem")]
@@ -65,5 +78,11 @@ impl ToolCall {
                 json_value_retained_owned_bytes(&self.metadata)?,
             )?,
         )
+        .and_then(|bytes| add(bytes, native_bytes(self.native.as_ref())?))
     }
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn native_bytes(native: Option<&super::NativePart>) -> crate::Result<u64> {
+    native.map_or(Ok(0), super::NativePart::payload_bytes)
 }

@@ -19,7 +19,7 @@ proptest! {
                 input.messages.push(ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Parts(vec![
-                        ModelContentPart::Text { text: format!("call {index}") },
+                        ModelContentPart::text(format!("call {index}")),
                         ModelContentPart::ToolCall(ToolCall::new(format!("{turn}-{index}"), "echo".into(), json!({}))),
                     ]),
                 });
@@ -45,8 +45,8 @@ proptest! {
                 let batch = &messages[start];
                 prop_assert_eq!(&batch["role"], "assistant");
                 prop_assert_eq!(batch["tool_calls"].as_array().unwrap().len(), calls);
-                let expected: String = (0..calls).map(|index| format!("call {index}"))
-                    .collect::<Vec<_>>().join("\n");
+                // Chat has one content string per batch: its text parts, verbatim.
+                let expected: String = (0..calls).map(|index| format!("call {index}")).collect();
                 prop_assert_eq!(batch["content"].as_str().unwrap(), expected);
                 for index in 0..calls {
                     let id = format!("{turn}-{index}");

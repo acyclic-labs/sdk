@@ -850,6 +850,17 @@ fn message_id(turn: OperationId, role: ModelRole) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+/// Stable message identity of a settled reply's later kept part; the first
+/// part keeps the reply's own identity.
+fn reply_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.reply-part.v1");
+    hasher.update(&turn.into_bytes());
+    hasher.update(&(part as u64).to_le_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
 /// Stable message identity of the roster announcement leading `turn`'s input.
 fn roster_id(turn: OperationId) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.roster.v1");
@@ -1231,7 +1242,7 @@ impl<'a> TurnContext<'a> {
             if let Some(announced) = &announced {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
-            let text = staged_text(reader, &output).await?;
+            let reply = staged_reply(reader, &output).await?;
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
                     .await?;
@@ -1249,11 +1260,16 @@ impl<'a> TurnContext<'a> {
                 });
                 message_ids.push(message_id(settled, ModelRole::User));
             }
-            messages.push(ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Text(text),
-            });
-            message_ids.push(message_id(settled, ModelRole::Assistant));
+            for (part, content) in reply.into_iter().enumerate() {
+                messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content,
+                });
+                message_ids.push(match part {
+                    0 => message_id(settled, ModelRole::Assistant),
+                    part => reply_part_id(settled, part),
+                });
+            }
         }
         if let Some(roster) = roster {
             announce(&mut messages, &mut message_ids, turn, roster);
@@ -1300,6 +1316,26 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
     serde_json::from_slice::<TurnOutput>(&bytes)
         .map(|output| output.text)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
+}
+
+/// A settled turn's reply as the next turn sees it: its kept assistant parts,
+/// native bytes included, or its text when it kept none. Each part is its own
+/// assistant message, the shape the turn admitted it in, so the next turn
+/// checks the same limits.
+async fn staged_reply(
+    reader: &dyn ContentResidencyVerifier,
+    output: &FileRef,
+) -> Result<Vec<ModelContent>> {
+    let bytes = reader
+        .read(output, output.descriptor().byte_length(), None, None)?
+        .await?;
+    let output = serde_json::from_slice::<TurnOutput>(&bytes)
+        .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+    Ok(if output.parts.is_empty() {
+        vec![ModelContent::Text(output.text)]
+    } else {
+        output.parts.into_iter().map(ModelContent::Part).collect()
+    })
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>

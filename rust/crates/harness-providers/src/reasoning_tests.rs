@@ -50,9 +50,7 @@ fn check_chat_native(text: &str) {
                 ModelContentPart::Reasoning {
                     block: block.clone(),
                 },
-                ModelContentPart::Text {
-                    text: "answer".into(),
-                },
+                ModelContentPart::text("answer".into()),
             ];
             if split {
                 request

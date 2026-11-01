@@ -327,7 +327,7 @@ mod properties {
         fn unicode_text_round_trips_through_every_adapter(text in ".{0,96}", width in 1usize..64) {
             let value = json!(text);
             let streams = [
-                (Adapter::Anthropic, format!("data: {{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":{value}}}}}\n\ndata: {{\"type\":\"message_stop\"}}\n\n")),
+                (Adapter::Anthropic, format!("data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{value}}}}}\n\ndata: {{\"type\":\"message_stop\"}}\n\n")),
                 (Adapter::Responses, format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":{value}}}\n\ndata: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\"}}}}\n\n")),
                 (Adapter::Chat, format!("data: {{\"choices\":[{{\"delta\":{{\"content\":{value}}}}}]}}\n\ndata: [DONE]\n\n")),
                 (Adapter::Gemini, format!("data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"text\":{value}}}]}},\"finishReason\":\"STOP\"}}]}}\n\n")),

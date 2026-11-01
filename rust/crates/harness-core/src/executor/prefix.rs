@@ -39,11 +39,18 @@ impl StockExecution<'_> {
         let mut results = Vec::new();
         let mut hook_context = Vec::new();
         for event in retained.events {
-            let (invocation, metadata) = match event {
+            let (invocation, metadata, native) = match event {
                 ModelEvent::ReasoningBlock { block } => {
                     self.append_assistant_part(
                         request.messages(),
                         ModelContentPart::Reasoning { block },
+                    )?;
+                    continue;
+                }
+                ModelEvent::TextPart { text, native } => {
+                    self.append_assistant_part(
+                        request.messages(),
+                        ModelContentPart::Text { text, native },
                     )?;
                     continue;
                 }
@@ -57,6 +64,7 @@ impl StockExecution<'_> {
                         self.native_work(),
                     )?,
                     call.metadata,
+                    call.native,
                 ),
                 _ => continue,
             };
@@ -173,7 +181,8 @@ impl StockExecution<'_> {
                             stock_string_copy(&invocation.name, self.io)?,
                             invocation.arguments,
                         )
-                        .with_metadata(metadata),
+                        .with_metadata(metadata)
+                        .with_native(native),
                     )),
                 },
                 self.io,

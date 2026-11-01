@@ -80,10 +80,8 @@ pub(super) fn push_with_successor<'a>(
             }
             if let Some(more) = new.content.take() {
                 match &mut old.content {
-                    Some(text) => {
-                        text.push('\n');
-                        text.push_str(&more);
-                    }
+                    // Adjacent assistant text parts are one visible run.
+                    Some(text) => text.push_str(&more),
                     None => old.content = Some(more),
                 }
             }

@@ -116,9 +116,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             vec![ContentBlock::Text {
                 text: "hello".into(),
             }],
-            ModelContent::Parts(vec![ModelContentPart::Text {
-                text: "hello".into(),
-            }]),
+            ModelContent::Parts(vec![ModelContentPart::text("hello".into())]),
         ),
         (
             "editor-file",
@@ -135,16 +133,12 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 },
             ],
             ModelContent::Parts(vec![
-                ModelContentPart::Text {
-                    text: "before".into(),
-                },
+                ModelContentPart::text("before".into()),
                 ModelContentPart::File {
                     file: file.clone(),
                     policy: FileProjectionPolicy::for_attachment(&file),
                 },
-                ModelContentPart::Text {
-                    text: "after".into(),
-                },
+                ModelContentPart::text("after".into()),
             ]),
         ),
     ] {
@@ -201,9 +195,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 &AgentCommand::Prompt {
                     agent: root.clone(),
                     id,
-                    body: ModelContent::Parts(vec![ModelContentPart::Text {
-                        text: "changed".into()
-                    }]),
+                    body: ModelContent::Parts(vec![ModelContentPart::text("changed".into())]),
                 }
             )
             .await?
@@ -367,16 +359,12 @@ impl Executor for EditorTurn {
         Box::pin(async move {
             if let Some(file) = &self.expected {
                 let expected = ModelContent::Parts(vec![
-                    ModelContentPart::Text {
-                        text: "before".into(),
-                    },
+                    ModelContentPart::text("before".into()),
                     ModelContentPart::File {
                         file: file.clone(),
                         policy: FileProjectionPolicy::for_attachment(file),
                     },
-                    ModelContentPart::Text {
-                        text: "after".into(),
-                    },
+                    ModelContentPart::text("after".into()),
                 ]);
                 assert!(
                     input
@@ -395,6 +383,7 @@ impl Executor for EditorTurn {
                 attachments: Vec::new(),
                 metadata: serde_json::Value::Null,
                 steps: 0,
+                parts: Vec::new(),
             })
         })
     }

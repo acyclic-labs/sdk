@@ -61,6 +61,18 @@ impl ModelEventAdmission {
                 .map(|_| ())
             })?;
         }
+        if let ModelEvent::TextPart { text, native } = event {
+            if text.len() as u64 > limits.file_bytes {
+                return Err(stock_boundary(
+                    io,
+                    Invalid,
+                    "assistant output exceeds file limit",
+                ));
+            }
+            if let Some(native) = native {
+                with_history_io(io, |work| native.validate_limits(limits, work))?;
+            }
+        }
         if self.next_text_bytes(event)? > limits.file_bytes {
             return Err(stock_boundary(
                 io,
@@ -72,6 +84,9 @@ impl ModelEventAdmission {
             return Ok(None);
         };
         crate::tool::validate_model_call_recorded(call, limits, io)?;
+        if let Some(native) = &call.native {
+            with_history_io(io, |work| native.validate_limits(limits, work))?;
+        }
         let call_id = &call.call_id;
         if self.calls.len() >= limits.tool_calls_per_step {
             return Err(stock_boundary(
@@ -177,6 +192,7 @@ impl ModelEventAdmission {
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Content { .. }
             | ModelEvent::MessageCompleted { .. }
+            | ModelEvent::TextPart { .. }
             | ModelEvent::Reasoning { .. }
             | ModelEvent::ReasoningBlock { .. } => {}
         }

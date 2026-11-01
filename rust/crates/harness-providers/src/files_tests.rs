@@ -255,9 +255,7 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 &provider,
                 vec![
                     notice.clone(),
-                    ModelContentPart::Text {
-                        text: "synthetic user message".into(),
-                    }
+                    ModelContentPart::text("synthetic user message".into())
                 ]
             )
             .is_err()
@@ -402,9 +400,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
         let prepared = with_parts(
             &provider,
             vec![
-                ModelContentPart::Text {
-                    text: "first".into(),
-                },
+                ModelContentPart::text("first".into()),
                 ModelContentPart::File {
                     file: file.clone(),
                     policy: FileProjectionPolicy::BoundedFull,
@@ -413,9 +409,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                     file: file.clone(),
                     policy: FileProjectionPolicy::Reference,
                 },
-                ModelContentPart::Text {
-                    text: "last".into(),
-                },
+                ModelContentPart::text("last".into()),
             ],
         )?;
         let count = provider.count_tokens(&prepared).await?;

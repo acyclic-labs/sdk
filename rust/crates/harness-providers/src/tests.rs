@@ -48,6 +48,8 @@ mod native_retry_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 pub(crate) mod native_tests;
+#[path = "native_turns_tests.rs"]
+mod native_turns_tests;
 #[path = "input/portable_projection_tests.rs"]
 mod portable_projection_tests;
 #[path = "tool_name_tests.rs"]
@@ -92,9 +94,15 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             });
             assert_eq!(allocated.count_total, 1);
             let events: Vec<_> = boxed.unwrap().try_collect().await?;
+            // Completed parts are checked by the dispatch test below.
             let visible: Vec<_> = events
                 .iter()
-                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .filter(|event| {
+                    !matches!(
+                        event,
+                        ModelEvent::ReasoningBlock { .. } | ModelEvent::TextPart { .. }
+                    )
+                })
                 .collect();
             assert_eq!(visible.len(), 4, "{adapter:?}");
             assert_eq!(
@@ -512,10 +520,28 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
         assert_eq!(
             events
                 .iter()
-                .filter(|event| !matches!(event, ModelEvent::ReasoningBlock { .. }))
+                .filter(|event| !matches!(
+                    event,
+                    ModelEvent::ReasoningBlock { .. } | ModelEvent::TextPart { .. }
+                ))
                 .count(),
             4
         );
+        let parts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::TextPart { text, native } => Some((text.as_str(), native.is_some())),
+                _ => None,
+            })
+            .collect();
+        // Responses keeps a part per completed message item; this fixture
+        // streams only the text deltas.
+        let expected = if adapter == Adapter::Responses {
+            vec![]
+        } else {
+            vec![("hé", false)]
+        };
+        assert_eq!(parts, expected);
         if adapter != Adapter::Responses {
             let blocks: Vec<_> = events
                 .iter()
@@ -524,23 +550,8 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                     _ => None,
                 })
                 .collect();
-            let thinking = if adapter == Adapter::Gemini {
-                assert_eq!(blocks.len(), 2);
-                assert_eq!(blocks[0].text, None);
-                assert_eq!(
-                    blocks[0].kind,
-                    acyclic_harness_core::model::ReasoningKind::Opaque
-                );
-                assert_eq!(
-                    blocks[0].outcome,
-                    acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay
-                );
-                assert_eq!(json(&blocks[0].continuity)?, json!({"text":"hé"}));
-                blocks[1]
-            } else {
-                assert_eq!(blocks.len(), 1);
-                blocks[0]
-            };
+            assert_eq!(blocks.len(), 1);
+            let thinking = blocks[0];
             assert_eq!(thinking.text.as_deref(), Some("think"));
             for block in blocks {
                 assert_eq!(

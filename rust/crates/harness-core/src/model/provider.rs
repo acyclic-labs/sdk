@@ -17,6 +17,16 @@ pub enum ModelEvent {
         /// Exact message text, including an empty message.
         text: String,
     },
+    /// One completed visible text part in transcript order, after the
+    /// Content deltas that streamed it: interim text in a tool step included.
+    TextPart {
+        /// The part's exact text.
+        text: String,
+        /// The provider's exact original part, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(optional))]
+        native: Option<NativePart>,
+    },
     /// Provider-exposed reasoning fragment.
     Reasoning {
         /// Incremental reasoning.
@@ -141,6 +151,10 @@ impl ModelEvent {
         let payload = match self {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::MessageCompleted { text } => text.capacity() as u64,
+            Self::TextPart { text, native } => add(
+                text.capacity() as u64,
+                super::tool_call::native_bytes(native.as_ref())?,
+            )?,
             Self::ReasoningBlock { block } => block.payload_bytes()?,
             Self::ToolCall(call) => call.retained_payload_bytes()?,
             Self::Completed { metadata } => {

@@ -373,8 +373,10 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
                 _ => None,
             })
             .collect();
-        assert!(
-            !reasoning.is_empty(),
+        // Gemini signs the call part itself; the others retain a reasoning block.
+        assert_eq!(
+            reasoning.is_empty(),
+            adapter == Adapter::Gemini,
             "signed native reasoning is a canonical event"
         );
         let call = events
@@ -386,12 +388,15 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
             name,
             arguments,
             metadata,
+            native,
+            ..
         }) = call
         else {
             unreachable!()
         };
         if adapter == Adapter::Gemini {
             assert_eq!(call_id, dispatch.tool_call_id(0));
+            assert!(native.is_some(), "the signed call keeps its exact part");
         }
         let mut next = initial.request().clone();
         next.tools.push(acyclic_harness_core::tool::ToolDefinition {
@@ -412,7 +417,8 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
                         name.clone(),
                         arguments,
                     )
-                    .with_metadata(metadata),
+                    .with_metadata(metadata)
+                    .with_native(native),
                 )),
             },
             ModelMessage {
@@ -446,13 +452,11 @@ async fn signed_thinking_survives_a_serialized_tool_call_and_followup_on_reasoni
         let sent = script.sent.lock().map_err(|_| invalid("fixture lock"))?;
         let body = json(&sent[1].body)?;
         if adapter == Adapter::Gemini {
+            // The signed part replays exactly as received, without an id
+            // the provider never sent.
             assert_eq!(
-                body["contents"][1]["parts"][0]["thoughtSignature"],
-                "signed"
-            );
-            assert_eq!(
-                body["contents"][1]["parts"][0]["functionCall"]["id"],
-                "harness_call_0"
+                body["contents"][1]["parts"][0],
+                json!({"functionCall":{"name":"echo","args":{"value":1}},"thoughtSignature":"signed"})
             );
         } else if adapter == Adapter::Responses {
             for request in sent.iter() {

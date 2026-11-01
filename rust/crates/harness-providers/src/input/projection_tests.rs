@@ -1,7 +1,7 @@
 use crate::{Adapter, input::validate_input};
 use acyclic_harness_core::model::{
-    ModelContent, ModelContentPart, ModelMessage, ModelRole, ReasoningBlock, ReasoningKind,
-    ReasoningOutcome, ToolCall, ToolResultContent,
+    ModelContent, ModelContentPart, ModelMessage, ModelRole, NativePart, ReasoningBlock,
+    ReasoningKind, ReasoningOutcome, ToolCall, ToolResultContent,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -43,45 +43,48 @@ fn transcript(units: &[(u8, u8, String)]) -> Vec<ModelMessage> {
                 ReasoningKind::Encrypted,
                 json!({"type":"reasoning","id":format!("rs_{index}"),"encrypted_content":"encrypted-fixture","summary":[{"type":"summary_text","text":text}]}),
             ),
-            "gemini" => (
-                ReasoningKind::Signature,
-                if *kind == 3 {
-                    json!({"thoughtSignature":"signed-fixture","functionCall":{"id":format!("native_{index}"),"name":"echo","args":{"text":text}}})
-                } else {
-                    json!({"thoughtSignature":"signed-fixture","text":text})
-                },
-            ),
-            _ => (ReasoningKind::Readable, json!({"text":text})),
+            _ => (ReasoningKind::Readable, json!({"reasoning_content":text})),
         };
-        let mut parts = vec![ModelContentPart::Reasoning {
-            block: ReasoningBlock {
-                kind: reasoning_kind,
-                text: (family != "gemini" && !text.is_empty()).then(|| text.clone()),
-                origin,
+        // Gemini signs the part itself: its bytes ride on that text or call.
+        let native = |payload: serde_json::Value| {
+            (family == "gemini").then(|| NativePart {
+                origin: origin.clone(),
                 continuity: serde_json::to_vec(&payload).unwrap(),
-                outcome: if family == "gemini" && *kind != 3 {
-                    ReasoningOutcome::SuppressedDisplay
-                } else {
-                    ReasoningOutcome::PreservedOpaque
+            })
+        };
+        let mut parts = Vec::new();
+        if family != "gemini" {
+            parts.push(ModelContentPart::Reasoning {
+                block: ReasoningBlock {
+                    kind: reasoning_kind,
+                    text: (!text.is_empty()).then(|| text.clone()),
+                    origin: origin.clone(),
+                    continuity: serde_json::to_vec(&payload).unwrap(),
+                    outcome: ReasoningOutcome::PreservedOpaque,
                 },
-            },
-        }];
+            });
+        }
         let batch = 1 + usize::from(*source / 4) % 4;
         if *kind == 3 {
             for ordinal in 0..batch {
                 let call_id = format!("call:{index}:{ordinal}");
-                let native = if ordinal == 0 {
+                let id = if ordinal == 0 {
                     format!("native_{index}")
                 } else {
                     format!("native_{index}_{ordinal}")
                 };
+                let signed = (ordinal == 0).then(|| json!({"thoughtSignature":"signed-fixture","functionCall":{"id":id,"name":"echo","args":{"text":text}}}));
                 parts.push(ModelContentPart::ToolCall(
                     ToolCall::new(call_id, "echo".into(), json!({"text":text}))
-                        .with_metadata(json!({"provider_call":{"provider":family,"id":native}})),
+                        .with_metadata(json!({"provider_call":{"provider":family,"id":id}}))
+                        .with_native(signed.and_then(native)),
                 ));
             }
         } else {
-            parts.push(ModelContentPart::Text { text: text.clone() });
+            parts.push(ModelContentPart::Text {
+                text: text.clone(),
+                native: native(json!({"thoughtSignature":"signed-fixture","text":text})),
+            });
         }
         messages.push(ModelMessage {
             role: ModelRole::Assistant,

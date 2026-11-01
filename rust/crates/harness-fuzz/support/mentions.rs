@@ -55,7 +55,7 @@ fn reference(input: &CommandResolution) -> std::result::Result<ModelContent, &'s
     Ok(if unique.is_empty() {
         ModelContent::Text(text.clone())
     } else {
-        let mut parts = vec![ModelContentPart::Text { text: text.clone() }];
+        let mut parts = vec![ModelContentPart::text(text.clone())];
         parts.extend(unique.into_iter().map(|file| ModelContentPart::File {
             file: file.clone(),
             policy: FileProjectionPolicy::BoundedFull,

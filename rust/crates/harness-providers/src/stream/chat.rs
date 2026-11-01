@@ -50,6 +50,8 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>>
         state.terminal = true;
     }
     let mut events = Vec::new();
+    // One choice is one message: its text precedes its calls.
+    state.visible(0, &delta["content"])?;
     text(&mut events, &delta["content"], false);
     let reasoning =
         present(delta.get("reasoning_content")).or_else(|| present(delta.get("reasoning")));

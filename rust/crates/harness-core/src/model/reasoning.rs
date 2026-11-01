@@ -32,6 +32,44 @@ pub struct ReasoningOrigin {
     pub credential_scope: Option<[u8; 32]>,
 }
 
+/// One assistant part's exact native bytes and their origin. Every assistant
+/// part (text, tool call, reasoning) carries at most one: the same origin
+/// replays it verbatim, any other origin drops it and uses the canonical part.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct NativePart {
+    /// Provider family, model and credential ownership of the bytes.
+    pub origin: ReasoningOrigin,
+    /// Exact native part bytes; projection never edits them.
+    pub continuity: Vec<u8>,
+}
+
+impl NativePart {
+    pub(crate) fn validate_limits(
+        &self,
+        limits: crate::conversation::Limits,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> crate::Result<()> {
+        super::preparation::history_step(work, self.continuity.len() as u64)?;
+        crate::executor::json::json_byte_length(self, limits.render_bytes, work).map(|_| ())
+    }
+
+    pub(crate) fn payload_bytes(&self) -> crate::Result<u64> {
+        [
+            self.origin.provider.capacity(),
+            self.origin.model.capacity(),
+            self.continuity.capacity(),
+        ]
+        .into_iter()
+        .try_fold(0u64, |bytes, capacity| {
+            bytes
+                .checked_add(capacity as u64)
+                .ok_or_else(super::inventory::overflow)
+        })
+    }
+}
+
 /// Reasoning shapes normalized by the adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
@@ -62,8 +100,6 @@ pub enum ReasoningOutcome {
     PreservedOpaque,
     /// Neither readable nor native content was available.
     MissingContent,
-    /// Display was intentionally suppressed while continuity was retained.
-    SuppressedDisplay,
     /// The target cannot accept this native shape.
     UnsupportedShape,
 }

@@ -327,9 +327,7 @@ async fn prefix_depth_three_reopens_and_authenticates_history() -> Result<()> {
     )?;
     let mut root = request()?;
     root.messages[0].content = ModelContent::Parts(vec![
-        ModelContentPart::Text {
-            text: "é\0🦀\r\n".into(),
-        },
+        ModelContentPart::text("é\0🦀\r\n".into()),
         ModelContentPart::File {
             file: attachment.clone(),
             policy: FileProjectionPolicy::Reference,

@@ -72,7 +72,10 @@ impl ModelContentPart {
                 },
             ),
             Self::Configuration { .. } => Ok(0),
-            Self::Text { text } => Ok(text.capacity() as u64),
+            Self::Text { text, native } => add(
+                text.capacity() as u64,
+                super::tool_call::native_bytes(native.as_ref())?,
+            ),
             Self::File { file, policy } => {
                 add(file.logical_owned_bytes()?, policy.payload_bytes()?)
             }

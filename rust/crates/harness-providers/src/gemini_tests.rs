@@ -1,7 +1,5 @@
 use super::*;
-use acyclic_harness_core::model::{
-    ModelContentPart, ReasoningBlock, ReasoningKind, ReasoningOutcome, ToolCall, ToolResultContent,
-};
+use acyclic_harness_core::model::{ModelContentPart, NativePart, ToolCall, ToolResultContent};
 
 #[tokio::test]
 async fn absent_arguments_are_empty_but_invalid_supplied_arguments_are_rejected() -> Result<()> {
@@ -122,21 +120,15 @@ fn parallel_batches_and_signatures_survive_prepared_request_replay() -> Result<(
         });
     for step in 0..2 {
         for index in 0..2 {
-            let mut parts = Vec::new();
-            if index == 0 {
-                parts.push(ModelContentPart::Reasoning { block: ReasoningBlock {
-                    kind: ReasoningKind::Signature,
-                    text: None,
-                    origin: provider.reasoning_origin(provider.key.as_deref(), None),
-                    continuity: serde_json::to_vec(&json!({"functionCall":{"id":format!("{step}-{index}"),"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
-                    outcome: ReasoningOutcome::PreservedOpaque,
-                }});
-            }
-            parts.push(ModelContentPart::ToolCall(ToolCall::new(
-                format!("{step}-{index}"),
-                "echo".into(),
-                json!({}),
-            )));
+            // The first call of each batch carries its signed part.
+            let native = (index == 0).then(|| NativePart {
+                origin: provider.reasoning_origin(provider.key.as_deref(), None),
+                continuity: serde_json::to_vec(&json!({"functionCall":{"id":format!("{step}-{index}"),"name":"echo","args":{}},"thoughtSignature":format!("signature-{step}")})).expect("native Gemini part"),
+            });
+            let parts = vec![ModelContentPart::ToolCall(
+                ToolCall::new(format!("{step}-{index}"), "echo".into(), json!({}))
+                    .with_native(native),
+            )];
             request.messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Parts(parts),

@@ -28,7 +28,7 @@ pub(super) async fn sampling_messages(
         for (block_index, block) in message.content.into_vec().into_iter().enumerate() {
             let part = match block {
                 rmcp::model::SamplingMessageContentBlock::Text(text) => {
-                    ModelContentPart::Text { text: text.text }
+                    ModelContentPart::text(text.text)
                 }
                 block => {
                     sampling_media(
