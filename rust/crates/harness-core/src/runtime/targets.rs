@@ -26,6 +26,22 @@ pub trait TargetResolver: acyclic_stream::ProviderPlatform {
     /// [`Error::Target`] when it is unknown or offline.
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>>;
 
+    /// Opens the exact persisted target for observation of an accepted call.
+    /// A dynamic resolver may read its original result while the device is
+    /// offline. This does not admit another dispatch or resolve a home alias.
+    ///
+    /// # Errors
+    /// When the original target cannot be retained for recovery.
+    fn recover(&self, name: &str) -> Result<Arc<Target>> {
+        let target = self.resolve(Some(name))?;
+        if target.record.name != name {
+            return Err(Error::Invalid(
+                "recovery requires the exact target name".into(),
+            ));
+        }
+        Ok(target)
+    }
+
     /// Resolves a content path through the home target's original read policy.
     /// The returned volume remains borrowed from the retained target binding.
     fn read_path<'a>(

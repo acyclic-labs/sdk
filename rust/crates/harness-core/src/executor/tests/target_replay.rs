@@ -528,6 +528,14 @@ impl TargetResolver for Devices {
             .cloned()
             .ok_or_else(|| Error::Invalid("selected device is absent".into()))
     }
+
+    fn recover(&self, name: &str) -> Result<Arc<Target>> {
+        self.devices
+            .iter()
+            .find(|device| device.record.name == name)
+            .cloned()
+            .ok_or_else(|| Error::Invalid("original device is absent".into()))
+    }
 }
 
 // Exercise the durable stock claim and real workspace router, with a lost
@@ -535,7 +543,8 @@ impl TargetResolver for Devices {
 #[tokio::test]
 async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<()> {
     for (name, alias) in [("shell", None), ("shell", Some("user:ana")), ("fs", None)] {
-        for absent in [false, true] {
+        for state in ["online", "offline", "absent"] {
+            let absent = state == "absent";
             let scope = RuntimeScope::new(
                 Capabilities::new([crate::contract::capability::tool_call(name)]),
                 Limits::default(),
@@ -661,7 +670,14 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
 
             let mut changed = vec![new.clone()];
             if !absent {
-                changed.push(old.clone());
+                let mut record = old.record.clone();
+                if state == "offline" {
+                    record.state = crate::agent::TargetState::Offline;
+                }
+                changed.push(Arc::new(Target {
+                    record,
+                    executor: original.clone(),
+                }));
             }
             let second = executor
                 .clone()

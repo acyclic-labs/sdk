@@ -486,7 +486,7 @@ impl StockExecution<'_> {
                 };
             };
             let target = targets
-                .resolve(Some(name))
+                .recover(name)
                 .map_err(|_| Error::Indeterminate(invocation.operation_id))?;
             if target.record.name != name || name.starts_with(crate::agent::USER_PREFIX) {
                 return Err(Error::Indeterminate(invocation.operation_id));

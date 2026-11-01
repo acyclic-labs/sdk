@@ -14,7 +14,7 @@ pub(super) struct Output {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     remaining: u64,
-    truncated: bool,
+    omitted: u64,
     destination: Option<(VolumeRef, String)>,
 }
 
@@ -25,7 +25,7 @@ impl Output {
             stdout: Vec::new(),
             stderr: Vec::new(),
             remaining: context.effective_scope().limits().render_bytes,
-            truncated: false,
+            omitted: 0,
             destination: None,
         }
     }
@@ -74,7 +74,7 @@ impl Output {
         }
         let take = self.remaining.min(data.len() as u64) as usize;
         self.remaining -= take as u64;
-        self.truncated |= take != data.len();
+        self.omitted = self.omitted.saturating_add((data.len() - take) as u64);
         let output = if stderr {
             &mut self.stderr
         } else {
@@ -91,7 +91,8 @@ impl Output {
             .ok_or_else(|| Error::Invalid("device terminal result is not an object".into()))?;
         fields.insert("stdout".into(), preview(self.stdout).into());
         fields.insert("stderr".into(), preview(self.stderr).into());
-        fields.insert("truncated".into(), self.truncated.into());
+        fields.insert("omitted_bytes".into(), self.omitted.into());
+        fields.insert("truncated".into(), (self.omitted > 0).into());
         if let Some((volume, path)) = &self.destination {
             fields.insert("output_directory".into(), path.clone().into());
             fields.insert(
@@ -162,12 +163,41 @@ mod tests {
         assert_eq!(result.value["stdout"], "out");
         assert_eq!(result.value["stderr"], "e");
         assert_eq!(result.value["truncated"], true);
+        assert_eq!(result.value["omitted_bytes"], 2);
         assert_eq!(result.value["output_directory"], directory(operation));
         assert_eq!(
             result.value["output_volume"],
             serde_json::to_value(storage.volume())
                 .map_err(|error| Error::Invalid(error.to_string()))?
         );
+        // Use the real shared model projection: the original collector's
+        // omission and immutable log location survive even without further
+        // shortening, and a tighter presentation adds only its own omissions.
+        for (maximum, preview) in [(2048, "out".to_owned()), (1024, "o".repeat(4096))] {
+            let mut candidate = result.clone();
+            candidate.value["stdout"] = preview.clone().into();
+            let bounded = crate::tools::shell::bounded_result(candidate, maximum)?;
+            let removed = preview.len() - bounded.value["stdout"].as_str().expect("stdout").len()
+                + 1
+                - bounded.value["stderr"].as_str().expect("stderr").len();
+            assert_eq!(bounded.value["omitted_bytes"], (2 + removed) as u64);
+            assert_eq!(bounded.value["truncated"], true);
+            let invocation = crate::tool::ToolInvocation {
+                operation_id: operation,
+                call_id: "original-call".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({"command":"echo"}),
+            };
+            use crate::tool::ToolProjection as _;
+            let (projected, _) =
+                crate::tools::shell::ShellProjection.project(&invocation, &bounded, None)?;
+            let encoded = serde_json::to_string(&projected)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(encoded.len() as u64 <= maximum);
+            assert!(encoded.contains("bytes omitted"));
+            assert!(encoded.contains(&directory(operation)));
+            assert!(encoded.contains(storage.volume().id()));
+        }
 
         let edited = storage
             .stage(

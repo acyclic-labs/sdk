@@ -81,9 +81,19 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
         .and_then(serde_json::Value::as_u64)
         .filter(|omitted| *omitted > 0)
     {
-        let _ = write!(text, "\n[{omitted} bytes omitted; showing the tail");
+        let _ = write!(text, "\n[{omitted} bytes omitted from this preview");
         if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
             let _ = write!(text, "; complete output: {spill}");
+        } else if let (Some(volume), Some(directory)) = (
+            fields.get("output_volume"),
+            fields
+                .get("output_directory")
+                .and_then(serde_json::Value::as_str),
+        ) {
+            let _ = write!(
+                text,
+                "; complete output: volume {volume}, directory {directory}"
+            );
         }
         text.push(']');
     }

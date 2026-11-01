@@ -241,6 +241,30 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
         if record.name == self.home.record.name {
             return Ok(Arc::clone(&self.home));
         }
+        self.selected(record, &roster, false)
+    }
+
+    fn recover(&self, name: &str) -> Result<Arc<Target>> {
+        let roster = self.roster();
+        let record = roster
+            .targets()
+            .iter()
+            .find(|record| record.name == name)
+            .ok_or_else(|| Error::Invalid("original recovery target is absent".into()))?;
+        if record.name == self.home.record.name {
+            return Ok(Arc::clone(&self.home));
+        }
+        self.selected(record, &roster, true)
+    }
+}
+
+impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
+    fn selected(
+        &self,
+        record: &crate::agent::TargetRecord,
+        roster: &Roster,
+        recovery: bool,
+    ) -> Result<Arc<Target>> {
         let connection = self
             .devices
             .borrow()
@@ -248,30 +272,35 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
             .get(&record.name)
             .cloned()
             .ok_or_else(|| Error::Invalid("listed device has no original connection".into()))?;
-        let socket = connection
-            .socket
-            .clone()
-            .ok_or_else(|| Error::Invalid("online device has no original socket".into()))?;
-        let terminal = self
-            .sockets
-            .web_socket_terminal(
-                &self.paths.actor(&record.name)?,
-                &acyclic_actors::guest::WebSocketId(socket),
-            )
-            .map_err(|_| {
-                Error::Target(TargetRefusal {
-                    target: record.name.clone(),
-                    refused: Refused::Offline,
-                    online: roster
-                        .targets()
-                        .iter()
-                        .filter(|target| {
-                            target.state == TargetState::Online && target.name != record.name
-                        })
-                        .map(|target| target.name.clone())
-                        .collect(),
-                })
-            })?;
+        let terminal = if recovery {
+            None
+        } else {
+            let socket = connection
+                .socket
+                .clone()
+                .ok_or_else(|| Error::Invalid("online device has no original socket".into()))?;
+            let terminal = self
+                .sockets
+                .web_socket_terminal(
+                    &self.paths.actor(&record.name)?,
+                    &acyclic_actors::guest::WebSocketId(socket),
+                )
+                .map_err(|_| {
+                    Error::Target(TargetRefusal {
+                        target: record.name.clone(),
+                        refused: Refused::Offline,
+                        online: roster
+                            .targets()
+                            .iter()
+                            .filter(|target| {
+                                target.state == TargetState::Online && target.name != record.name
+                            })
+                            .map(|target| target.name.clone())
+                            .collect(),
+                    })
+                })?;
+            Some(terminal)
+        };
         Ok(Arc::new(Target {
             record: record.clone(),
             executor: Arc::new(DeviceExecutor {
@@ -299,7 +328,7 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     name: String,
     sockets: Arc<dyn acyclic_actors::guest::SocketHost>,
     connection: TargetStatus,
-    terminal: Arc<dyn acyclic_actors::guest::SocketTerminal>,
+    terminal: Option<Arc<dyn acyclic_actors::guest::SocketTerminal>>,
     wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
     devices: watch::Receiver<Devices>,
@@ -338,7 +367,18 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         if !reconcile {
             request.when_absent = WhenAbsent::Wait;
         }
-        let mut socket_end = (!reconcile).then(|| Arc::clone(&self.terminal).completion());
+        let mut socket_end = if reconcile {
+            None
+        } else {
+            Some(
+                Arc::clone(
+                    self.terminal
+                        .as_ref()
+                        .ok_or(Error::Indeterminate(invocation.operation_id))?,
+                )
+                .completion(),
+            )
+        };
         let mut closed_at = None;
         let opening = self.provider.follow(request);
         tokio::pin!(opening);
@@ -410,18 +450,23 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                     continue;
                 }
                 if reconcile {
-                    let pin = if self.connection.socket.as_deref() == Some(socket.as_str())
-                        && self.connection.generation == generation
-                    {
-                        Some(Arc::clone(&self.terminal))
-                    } else {
-                        self.sockets
-                            .web_socket_terminal(
-                                &self.paths.actor(&self.name)?,
-                                &acyclic_actors::guest::WebSocketId(socket),
-                            )
-                            .ok()
-                    };
+                    let actor = self.paths.actor(&self.name)?;
+                    let pin = self
+                        .terminal
+                        .as_ref()
+                        .filter(|_| {
+                            self.connection.socket.as_deref() == Some(socket.as_str())
+                                && self.connection.generation == generation
+                        })
+                        .cloned()
+                        .or_else(|| {
+                            self.sockets
+                                .web_socket_terminal(
+                                    &actor,
+                                    &acyclic_actors::guest::WebSocketId(socket),
+                                )
+                                .ok()
+                        });
                     match pin {
                         Some(pin) => socket_end = Some(pin.completion()),
                         None => {
@@ -523,6 +568,9 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         let Some(context) = context else {
             return Ok(None);
         };
+        if self.terminal.is_none() {
+            return Err(self.refusal(Refused::Offline));
+        }
         let current = self.devices.borrow();
         let connection = current
             .active

@@ -665,6 +665,15 @@ async fn committed_handover(refused_close: bool) -> Result {
                 }
             }
         }
+        // Lose the roster producer as well as the original device. Recovery
+        // opens the exact saved target without a live connection; fresh calls
+        // still refuse it. Never reuse the executor retained while online.
+        drop(following);
+        assert!(directory.resolve(Some("desktop")).is_err());
+        assert!(directory.recover("user:ana").is_err());
+        assert!(directory.recover("absent").is_err());
+        let recovery_target = directory.recover("desktop")?;
+        assert_eq!(recovery_target.record.state, TargetState::Offline);
         for (operation, expected_exit) in [(op, Some(7)), (active_op, None)] {
             let invocation = acyclic_harness_core::tool::ToolInvocation {
                 operation_id: operation,
@@ -679,12 +688,34 @@ async fn committed_handover(refused_close: bool) -> Result {
             )?;
             // The original socket completion settles observation. Publishing
             // its accepted output files may still yield to their own producer.
-            let recovered = remote.executor.reconcile(invocation, Some(context)).await;
+            assert!(
+                recovery_target
+                    .executor
+                    .dispatch(&invocation, Some(&context))
+                    .is_err()
+            );
+            let recovered = recovery_target
+                .executor
+                .reconcile(invocation.clone(), Some(context))
+                .await;
             if let Some(exit) = expected_exit {
                 let result = recovered
                     .map_err(|error| format!("committed Exit recovery for {operation}: {error}"))?
                     .ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);
+                assert_eq!(result.value["omitted_bytes"], 2);
+                let bounded = acyclic_harness_core::tools::shell::bounded_result(result, 2048)?;
+                assert_eq!(bounded.value["truncated"], true);
+                assert_eq!(bounded.value["omitted_bytes"], 2);
+                let shell_tool = registry
+                    .get("shell", None, None)?
+                    .ok_or("shell is missing")?;
+                let (projected, _) = shell_tool.projection.project(&invocation, &bounded, None)?;
+                let projected = serde_json::to_string(&projected)?;
+                assert!(projected.len() <= 2048);
+                assert!(projected.contains("2 bytes omitted"));
+                assert!(projected.contains(&format!("tools/{operation}/device")));
+                assert!(projected.contains(storage.volume().id()));
             } else {
                 assert!(
                     matches!(recovered, Err(acyclic_harness_core::Error::Indeterminate(id)) if id == operation)
