@@ -5,6 +5,7 @@ use acyclic_auth::{
     authority::{PolicyDecision, Scope, Target as AuthorityTarget},
     contract::*,
     credential::CredentialProvider,
+    operation::ProtectedBytes,
     secrets::{self, Client, Error, Response, Transport, TransportFuture},
     verify::{VerifiedCapability, verify},
 };
@@ -226,9 +227,9 @@ impl Transport for Provider {
         &'a self,
         path: &'static str,
         _bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a> {
-        Box::pin(async move { self.call(path, body) })
+        Box::pin(async move { self.call(path, body.as_ref()) })
     }
 }
 fn client(
@@ -512,7 +513,7 @@ impl Transport for Fault {
         &'a self,
         _path: &'static str,
         _bearer: &'a str,
-        _body: &'a [u8],
+        _body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
             Ok(Response {
@@ -697,6 +698,45 @@ mod http {
     #[tokio::test]
     async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
     -> TestResult {
+        // The shared native body must retain the encoded allocation through
+        // transport clones and slices. Its control cost is independent of the
+        // payload; an ordinary full copy is the allocation negative control.
+        let mut controls = None;
+        for length in [1024, 1024 * 1024] {
+            let encoded = Zeroizing::new(vec![7; length]);
+            let pointer = encoded.as_ptr();
+            let mut owned = None;
+            let cost = acyclic_test_support::measure(|| {
+                owned = Some(ProtectedBytes::new(encoded).into_bytes());
+            });
+            let original = owned.ok_or("native body missing")?;
+            assert_eq!(original.as_ptr(), pointer);
+            let retained = original.slice(1..);
+            drop(original);
+            let request = reqwest::Body::from(retained);
+            assert_eq!(
+                request
+                    .as_bytes()
+                    .ok_or("native body is not owned")?
+                    .as_ptr(),
+                pointer.wrapping_add(1),
+            );
+            assert_eq!(request.as_bytes().map(<[u8]>::len), Some(length - 1));
+            let current = (cost.count_total, cost.bytes_total);
+            if let Some(controls) = controls {
+                assert_eq!(current, controls, "body transfer copied payload bytes");
+            }
+            controls = Some(current);
+            let copied = acyclic_test_support::measure(|| {
+                std::hint::black_box(request.as_bytes().unwrap().to_vec());
+            });
+            assert!(copied.bytes_total >= (length - 1) as u64);
+            assert!(cost.bytes_total < copied.bytes_total);
+            eprintln!(
+                "native body payload={length} transfer_allocations={} transfer_bytes={} copy_allocations={} copy_bytes={}",
+                cost.count_total, cost.bytes_total, copied.count_total, copied.bytes_total,
+            );
+        }
         let logs = Arc::new(Mutex::new(Vec::new()));
         let capture = logs.clone();
         let subscriber = tracing_subscriber::fmt()

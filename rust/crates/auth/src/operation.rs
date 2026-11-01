@@ -7,6 +7,9 @@
 use futures::{Future, FutureExt, future::Shared};
 use std::{sync::Arc, time::Duration};
 
+mod bytes;
+pub use bytes::ProtectedBytes;
+
 #[cfg(not(target_arch = "wasm32"))]
 /// Drop-owned native stop registration.
 pub type StopFuture = futures::future::BoxFuture<'static, Stopped>;

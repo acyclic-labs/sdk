@@ -134,6 +134,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "ed25519-dalek 3.0.0",
  "futures",
  "js-sys",

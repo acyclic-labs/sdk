@@ -5,6 +5,7 @@
 //! action and the canonical `secrets:/<scope>[/<name>]` resource.
 use crate::contract::*;
 use crate::credential::CredentialProvider;
+use crate::operation::ProtectedBytes;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
@@ -337,12 +338,13 @@ pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, Erro
 /// credentials only as a sensitive header, reject redirects and suppress body
 /// diagnostics. No retries, interpretation or authority logic lives here.
 pub trait Transport {
-    /// Send exactly one POST. Borrowed inputs remain owned until completion.
+    /// Send exactly one POST, taking the original protected body allocation.
+    /// The borrowed credential remains owned until completion.
     fn post<'a>(
         &'a self,
         path: &'static str,
         bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a>;
 }
 
@@ -379,7 +381,10 @@ impl<T: Transport> Client<T> {
                 .await
                 .map_err(|_| Error::Credential)?;
             bearer.check().await.map_err(|_| Error::Credential)?;
-            let response = self.transport.post(path, &bearer, &body).await?;
+            let response = self
+                .transport
+                .post(path, &bearer, ProtectedBytes::new(body))
+                .await?;
             match response.status {
                 200..=299 => {
                     bearer.check().await.map_err(|_| Error::Credential)?;
@@ -533,7 +538,7 @@ impl Transport for HttpTransport {
         &'a self,
         path: &'static str,
         bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
             let mut authorization =
@@ -549,7 +554,7 @@ impl Transport for HttpTransport {
                 )
                 .header(reqwest::header::AUTHORIZATION, authorization)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body.to_vec())
+                .body(body.into_bytes())
                 .send()
                 .await
                 .map_err(|_| Error::Transport)?;
