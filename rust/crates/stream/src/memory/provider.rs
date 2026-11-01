@@ -160,6 +160,7 @@ impl MemoryStream {
                     request.projection,
                     request.durable_through,
                     durable,
+                    _work,
                 )
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -195,6 +196,7 @@ fn head_at(
     projection: crate::HeadProjection,
     through: Option<u64>,
     durable: bool,
+    _work: CaptureWork<'_>,
 ) -> Result<Option<crate::PathHead>, StreamError> {
     state
         .paths
@@ -203,15 +205,37 @@ fn head_at(
             Ok(crate::PathHead {
                 retained_through: through.filter(|through| *through <= stream.tail),
                 tail: stream.tail,
-                last: (projection == crate::HeadProjection::History)
-                    .then(|| last_record(stream))
-                    .flatten(),
+                last: if projection == crate::HeadProjection::History {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = _work {
+                        native_last_record(stream, work)?
+                    } else {
+                        last_record(stream)
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    last_record(stream)
+                } else {
+                    None
+                },
                 durable: if durable && projection != crate::HeadProjection::Tail {
                     stream.tail
                 } else {
                     0
                 },
                 origin: if projection == crate::HeadProjection::History {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = _work {
+                        state.paths.origin_with(
+                            path,
+                            || work.record(work.meter.examine(1, 0)),
+                            |source, relative| {
+                                work.record(source.with_native_suffix(relative, &work.meter))?
+                            },
+                        )?
+                    } else {
+                        state.paths.origin(path)?
+                    }
+                    #[cfg(target_arch = "wasm32")]
                     state.paths.origin(path)?
                 } else {
                     None
@@ -272,18 +296,60 @@ fn projected_tail(
 }
 
 fn last_record(stream: &PathState) -> Option<Record> {
-    let Some(from) = stream.tail.checked_sub(1) else {
-        return None;
-    };
-    if let Some(window) = stream.prefix_window(from, stream.tail) {
-        return window.records.records.get(window.start).cloned();
-    }
-    let mut history = PinnedHistory::new(stream, stream.tail);
-    let window = history.page(from, 1, |_| Ok::<_, std::convert::Infallible>(()));
-    match window {
-        Ok(window) => window.and_then(|window| window.records.records.get(window.start).cloned()),
+    match last_record_with(
+        stream,
+        |_| Ok::<_, std::convert::Infallible>(()),
+        |record| Ok(record.clone()),
+    ) {
+        Ok(record) => record,
         Err(error) => match error {},
     }
+}
+
+fn last_record_with<E>(
+    stream: &PathState,
+    examine: impl FnMut(u64) -> Result<(), E>,
+    retain: impl FnOnce(&Record) -> Result<Record, E>,
+) -> Result<Option<Record>, E> {
+    let Some(from) = stream.tail.checked_sub(1) else {
+        return Ok(None);
+    };
+    if let Some(window) = stream.prefix_window(from, stream.tail) {
+        return window
+            .records
+            .records
+            .get(window.start)
+            .map(retain)
+            .transpose();
+    }
+    let mut history = PinnedHistory::new(stream, stream.tail);
+    let window = history.page(from, 1, examine)?;
+    window
+        .and_then(|window| window.records.records.get(window.start).map(retain))
+        .transpose()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>, StreamError> {
+    work.record(last_record_with(
+        stream,
+        |items| work.meter.examine(items, 0),
+        |record| {
+            let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
+                Arc::clone(&work.meter),
+                NativeOperationKind::Read,
+                record.payload_bytes(),
+            )?;
+            let copied = std::mem::size_of::<Record>() as u64;
+            work.meter.admit_examination(1, copied)?;
+            let output = record.clone();
+            let read = bytes.record(record.payload_bytes());
+            let examined = work.meter.record_examination(1, copied);
+            read?;
+            examined?;
+            Ok(output)
+        },
+    ))
 }
 
 fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
@@ -785,7 +851,10 @@ impl MemoryStream {
 impl MemoryStream {
     pub(crate) fn validate_native_heads(request: &crate::HeadsRequest) -> Result<(), StreamError> {
         request.validate()?;
-        if request.projection != crate::HeadProjection::Tail
+        if !matches!(
+            request.projection,
+            crate::HeadProjection::Tail | crate::HeadProjection::History
+        ) || request.durable_through.is_some()
             || !request.retained.is_empty()
             || request.children.is_some()
         {

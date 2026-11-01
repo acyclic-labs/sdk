@@ -343,13 +343,17 @@ Unsupported guarantees return `Unsupported` before work. The portable-success
 negative control verifies that this refusal cannot fall back to a successful
 ordinary write, including zero native allocations and no publication.
 
-Memory and Local expose `native_heads` for named `HeadProjection::Tail`
-observations. The existing coherent capture returns accepted offsets, missing
+Memory and Local expose `native_heads` for named `HeadProjection::Tail` and
+`History` observations. The existing coherent capture returns accepted offsets, missing
 paths and their applied revision together. Its original native meter admits the
 concrete future and any named-result spill before allocation; the result retains
 that spill's credit until storage retires. Waiting for `at_least` precedes Local's
-publication fence, so the append satisfying that cut remains runnable. History,
-durability and child projections currently refuse `Unsupported` on this native
+publication fence, so the append satisfying that cut remains runnable. History
+also retains the original last record and fork provenance at that same cut.
+Record bytes and lookup work use the original meter; descendant provenance text
+is admitted before allocation and keeps its guards through all shared clones.
+Native History reports durable zero and joins no flush. Explicit durability
+confirmation, Watermarks and child projections refuse `Unsupported` on this native
 method. They remain available through ordinary Heads and cannot be substituted
 for original native work.
 

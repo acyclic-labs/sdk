@@ -59,8 +59,10 @@ pub trait NativeStreamProvider: StreamProvider {
     }
     /// Coherent named heads and absence on the original ledger.
     ///
-    /// Memory and Local currently support `HeadProjection::Tail` without
-    /// retained-record or child selections. Other projections refuse with
+    /// Memory and Local support named `Tail` and `History` without durability
+    /// confirmation, retained-record or child selections. History shares original
+    /// record owners and funds reconstructed provenance on this same ledger.
+    /// Its durable offset is zero, making no persistence claim. Other selections refuse with
     /// `Unsupported`; a native consumer must never fall back to ordinary work.
     /// The returned snapshot binds every selected offset and missing path.
     fn native_heads(

@@ -179,7 +179,7 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
 
         // An unimplemented native projection cannot leak into ordinary work.
         let mut history = request(&["native/heads"])?;
-        history.projection = HeadProjection::History;
+        history.projection = HeadProjection::Watermarks;
         let meter = Arc::new(Meter::default());
         assert!(matches!(
             provider.native_heads(history, meter.original()).await?,
@@ -187,6 +187,138 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
         ));
         assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.examined.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_history_keeps_original_records_provenance_and_funding_at_one_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    for local in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider: Arc<dyn crate::NativeStreamProvider> = if local {
+            Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+        } else {
+            Arc::new(MemoryStream::default())
+        };
+        provider.append(keyed_append("history/source", 0)?).await?;
+        provider
+            .append(keyed_append("history/source/state", 0)?)
+            .await?;
+        provider
+            .fork(ForkRequest {
+                source: StreamPath::new("history/source")?,
+                destination: StreamPath::new("history/child")?,
+                at_tail: Some(0),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        for path in [
+            "history/source",
+            "history/child",
+            "history/child/state",
+            "history/missing",
+        ] {
+            let mut selected = request(&[path])?;
+            selected.projection = HeadProjection::History;
+            let mut expected = provider.heads(selected.clone()).await?;
+            // Native observation makes no persistence claim or durability join.
+            for head in expected.heads.iter_mut().flatten() {
+                head.durable = 0;
+            }
+            let meter = Arc::new(Meter::default());
+            let future = provider.native_heads(selected.clone(), meter.original());
+            let mut observed = None;
+            let physical = acyclic_test_support::measure(|| {
+                observed = future.now_or_never();
+            });
+            let output = observed.ok_or("history capture unexpectedly parked")???;
+            output.value().validate_for(&selected)?;
+            assert_eq!(output.value(), &expected);
+            // The frame was admitted before measurement. Only reconstructed
+            // descendant provenance needs two new physical allocations.
+            let extra = u64::from(path == "history/child/state") * 2;
+            assert_eq!(physical.count_total, extra);
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), extra + 1);
+            assert_eq!(
+                meter.read.load(Ordering::SeqCst),
+                expected.heads[0]
+                    .as_ref()
+                    .and_then(|head| head.last.as_ref())
+                    .map_or(0, |record| record.payload_bytes() as u64)
+            );
+            assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+            assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);
+            let retained_path = output.value().heads[0]
+                .as_ref()
+                .and_then(|head| head.origin.as_ref())
+                .map(|origin| origin.source.clone());
+            drop(output);
+            assert_eq!(meter.held.load(Ordering::SeqCst) != 0, extra != 0);
+            drop(retained_path);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            meter.assert_refunded();
+        }
+
+        let mut selected = request(&["history/child/state"])?;
+        selected.projection = HeadProjection::History;
+        // Refuse original record delivery before cloning it, without substituting
+        // an ordinary head/read. The provider and original publication survive.
+        let denied = Arc::new(Meter {
+            read_limit: 0,
+            ..Meter::default()
+        });
+        assert!(
+            provider
+                .native_heads(selected.clone(), denied.original())
+                .await
+                .is_err()
+        );
+        assert_eq!(denied.read.load(Ordering::SeqCst), 0);
+        assert_eq!(denied.held.load(Ordering::SeqCst), 0);
+        denied.assert_refunded();
+
+        // Admit the frame, then deny the provenance payload allocation. No
+        // reconstructed path escapes, and all original work is refunded.
+        let denied = Arc::new(Meter::default());
+        let future = provider.native_heads(selected.clone(), denied.original());
+        denied.deny_allocation.store(true, Ordering::SeqCst);
+        let error = future.await.err().ok_or("unfunded provenance escaped")?;
+        assert_original_denial(&error, "allocation");
+        assert_eq!(denied.allocations.load(Ordering::SeqCst), 1);
+        assert_eq!(denied.held.load(Ordering::SeqCst), 0);
+        denied.assert_refunded();
+        let healthy = Arc::new(Meter::default());
+        let output = provider
+            .native_heads(selected.clone(), healthy.original())
+            .await??;
+        let head = output.value().heads[0]
+            .as_ref()
+            .ok_or("lost inherited state")?;
+        assert_eq!(
+            head.last.as_ref().ok_or("lost record")?.origin.as_str(),
+            "history/source/state"
+        );
+        assert_eq!(
+            head.origin
+                .as_ref()
+                .ok_or("lost provenance")?
+                .source
+                .as_str(),
+            "history/source/state"
+        );
+        drop(output);
+        healthy.assert_refunded();
+        selected.durable_through = Some(1);
+        let unsupported = Arc::new(Meter::default());
+        assert!(matches!(
+            provider
+                .native_heads(selected, unsupported.original())
+                .await?,
+            Err(StreamError::Unsupported)
+        ));
+        assert_eq!(unsupported.allocations.load(Ordering::SeqCst), 0);
     }
     Ok(())
 }
