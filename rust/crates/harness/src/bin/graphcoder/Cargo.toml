@@ -15,6 +15,10 @@ path = "lib.rs"
 name = "graphcoder"
 path = "../graphcoder.rs"
 
+[[example]]
+name = "embedded"
+path = "examples/embedded.rs"
+
 [dependencies]
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }

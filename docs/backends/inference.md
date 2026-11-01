@@ -4,6 +4,24 @@ request projection, transport, retry/deadline handling and stream decoders.
 `acyclic-inference` separately exposes remote immutable Contexts and recoverable
 Runs; it is not the streaming model provider used by a harness turn.
 
+Native embeddings enable `acyclic-harness-providers/local` and call
+`Registry::graphcoder(workspace, selection)` to use the same model resolver,
+tool preset and approval defaults as GraphCoder. The returned
+`LocalHarnessConfig` keeps the original workspace, settings and approval
+configuration methods. An explicit selection wins over native settings, which
+win over the catalog's `default_model`.
+
+The [embedded example](../../rust/crates/harness/src/bin/graphcoder/examples/embedded.rs)
+uses that constructor and the original conversation's send, reply and event
+stream. It takes a workspace, catalog, state directory, operation identity and
+prompt. Use a new operation for a new prompt; reuse the operation and unchanged
+prompt to recover its original answer. It uses the catalog default without ambient
+settings and refuses interactive approval requests. Its model and tools execute through the harness:
+
+```sh
+cargo run --locked -p graphcoder --example embedded -- WORKSPACE CATALOG STATE OPERATION PROMPT
+```
+
 `acyclic-conformance::inference` exercises streaming, immediate response release
 on cancellation, exact usage, paired tools/results, typed rate-limit/context/auth
 refusals and deterministic replay. The assertions accept any `ModelProvider` and
