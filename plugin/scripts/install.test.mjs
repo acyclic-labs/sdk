@@ -72,29 +72,6 @@ scenario("installed command is the verified executable itself", async () => {
   }
 });
 
-scenario("every install runs the installed executable once, and a failed run does not fail it", async () => {
-  const value = fixture();
-  try {
-    const { root, bin, installed } = value;
-    const log = join(root, "warm-up.log");
-    const warmUps = () => readFileSync(log, "utf8").trim().split("\n");
-    const first = await value.install(undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
-    assert.equal(first.code, 0, first.stderr);
-    assert.deepEqual(warmUps(), [`${installed} status 0`]);
-    const again = await value.install(undefined, undefined, { ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log });
-    assert.equal(again.code, 0, again.stderr);
-    assert.deepEqual(warmUps(), [`${installed} status 0`, `${installed} status 0`]);
-    const missing = join(root, "missing-executable");
-    const failed = await value.install(undefined, undefined, {
-      ACYCLIC_INSTALL_TEST_WARM_UP_LOG: log,
-      ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE: missing,
-    });
-    assert.equal(failed.code, 0, failed.stderr);
-    assert.equal(warmUps().at(-1), `${missing} error ENOENT`);
-    assert.equal(digest(installed), digest(join(bin, target, executableName)));
-  } finally { await value.close(); }
-});
-
 scenario("installer is idempotent and rejects modified installed bytes", async () => {
   const value = fixture();
   try {

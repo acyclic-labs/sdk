@@ -4,7 +4,7 @@
 // JavaScript only locates and verifies the executable before starting it.
 // The shared native installer owns locking, durable publication and recovery.
 const { spawnSync } = require("node:child_process");
-const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { existsSync, readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { hostTarget, verifyTarget } = require("./verify.js");
 
@@ -16,18 +16,6 @@ function installCertification(version, helper) {
   const result = spawnSync(helper, args, { stdio: ["ignore", "ignore", "pipe"], encoding: "utf8", windowsHide: true });
   if (result.error || result.status !== 0) {
     throw new Error(`step=verify installed release certification: ${result.error?.message || result.stderr}; recovery argv: ${JSON.stringify([helper, ...args])}`);
-  }
-}
-
-function warmUp(installed) {
-  const test = process.env.NODE_ENV === "test";
-  const executable = (test && process.env.ACYCLIC_INSTALL_TEST_WARM_UP_EXECUTABLE) || installed;
-  const result = spawnSync(executable, ["--version"], {
-    stdio: "ignore", timeout: 30_000, windowsHide: true,
-  });
-  if (test && process.env.ACYCLIC_INSTALL_TEST_WARM_UP_LOG) {
-    const outcome = result.error ? `error ${result.error.code}` : `status ${result.status}`;
-    writeFileSync(process.env.ACYCLIC_INSTALL_TEST_WARM_UP_LOG, `${executable} ${outcome}\n`, { flag: "a" });
   }
 }
 
@@ -45,7 +33,6 @@ function ensureInstalled() {
   }
   const installed = join(__dirname, process.platform === "win32" ? "acyclic.exe" : "acyclic");
   installCertification(version, installed);
-  warmUp(installed);
   return installed;
 }
 
