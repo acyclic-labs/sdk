@@ -704,7 +704,26 @@ mod http {
         // including reqwest body collection. The complete in-memory native body
         // must finish on its first poll; an unexpected wait fails immediately.
         // Sharing backing requires a copy that leaves the other owner intact.
+        let mut collection_control = None;
         for length in [1024, 1024 * 1024] {
+            let response =
+                reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
+            let mut collected = None;
+            let collection = acyclic_test_support::measure(|| {
+                collected = response.bytes().now_or_never();
+            });
+            assert_eq!(
+                collected
+                    .ok_or("complete native collection did not finish")??
+                    .len(),
+                length
+            );
+            let native_cost = (collection.count_total, collection.bytes_total);
+            if let Some(previous) = collection_control {
+                assert_eq!(native_cost, previous, "collection control copied payload");
+            }
+            collection_control = Some(native_cost);
+
             let original = Bytes::from(vec![7; length]);
             let pointer = original.as_ptr();
             let response = reqwest::Response::from(axum::http::Response::new(original));
@@ -717,11 +736,15 @@ mod http {
             assert_eq!(protected.status, 200);
             assert_eq!(protected.body.as_ptr(), pointer);
             assert_eq!(protected.body.len(), length);
-            assert_eq!((transfer.count_total, transfer.bytes_total), (0, 0));
+            assert_eq!(
+                (transfer.count_total, transfer.bytes_total),
+                native_cost,
+                "protected native response adds work beyond reqwest collection"
+            );
             drop(protected);
 
             // The former response handoff, on the same native response type,
-            // must fail the zero-allocation oracle even with unique backing.
+            // must fail the no-extra-allocation oracle with unique backing.
             let response =
                 reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
             let mut copied = None;
@@ -737,7 +760,7 @@ mod http {
                     .len(),
                 length
             );
-            assert!(legacy.bytes_total >= length as u64);
+            assert!(legacy.bytes_total >= collection.bytes_total + length as u64);
 
             let original = Bytes::from(vec![7; length]);
             let shared = original.clone();
@@ -750,7 +773,7 @@ mod http {
             let protected = protected.ok_or("shared native response did not finish")??;
             assert_ne!(protected.body.as_ptr(), original.as_ptr());
             assert_eq!(protected.body.as_slice(), original.as_ref());
-            assert!(copy.bytes_total >= length as u64);
+            assert!(copy.bytes_total >= collection.bytes_total + length as u64);
             drop(protected);
             assert!(original.iter().all(|byte| *byte == 7));
         }
