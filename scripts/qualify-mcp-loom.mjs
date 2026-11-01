@@ -168,6 +168,7 @@ export function qualifyOwnershipLoom(run = runCommand) {
 }
 
 // Retained workspace suites, including every negative control.
+/** @type {Record<string, Array<[string, number]>>} */
 export const harnessModelSuites = {
   "acyclic-harness": [
     ["local::workspace::bootstrap::loom_tests::", 1],

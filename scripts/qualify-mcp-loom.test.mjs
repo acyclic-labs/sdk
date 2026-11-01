@@ -45,7 +45,9 @@ test("gate runs every harness model suite and rejects an absent suite or a stale
         return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: target } }) };
       }
       executed++;
-      const passed = suites.find(([prefix]) => prefix === args[0])[1];
+      const suite = suites.find(([prefix]) => prefix === args[0]);
+      assert.ok(suite, "execution must name an original suite");
+      const passed = suite[1];
       return { status: 0, stdout: summary(missing === args[0] ? 0 : passed, 0, 10) };
     };
     qualifyOrReject(missing, () => {
@@ -61,13 +63,16 @@ test("checkout qualification requires all nine tests including nested fencing", 
   assert.deepEqual(harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === "local::checkout_tools::tests::"),
     ["local::checkout_tools::tests::", 9]);
   for (const checkoutCount of [8, 9, 10]) {
-    const run = command => command === "cargo"
-      ? { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) }
-      : undefined;
-    const execute = (command, args) => command === "cargo" ? run(command) : {
-      status: 0,
-      stdout: summary(args[0] === "local::checkout_tools::tests::" ? checkoutCount
-        : harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === args[0])[1], 0, 100),
+    const execute = (command, args) => {
+      if (command === "cargo") return {
+        status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }),
+      };
+      const suite = harnessModelSuites["acyclic-harness"].find(([prefix]) => prefix === args[0]);
+      assert.ok(suite, "execution must name an original suite");
+      return {
+        status: 0,
+        stdout: summary(args[0] === "local::checkout_tools::tests::" ? checkoutCount : suite[1], 0, 100),
+      };
     };
     if (checkoutCount === 9) qualifyHarnessModelsLoom(undefined, execute);
     else assert.throws(() => qualifyHarnessModelsLoom(undefined, execute), /requires a nonzero/);
@@ -129,6 +134,7 @@ test("ownership qualification requires every dedicated real-lock model and compi
     else assert.throws(() => qualifyOwnershipLoom(run), /requires a nonzero/);
   }
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.ok(gate, "the original qualification must retain its gate branch");
   const requireProofs = text => {
     assert.match(text, /^    node scripts\/check-hermetic-clippy\.mjs$/m);
     assertGateStep(["--ownership"]);
