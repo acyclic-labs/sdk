@@ -593,7 +593,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 16_384))?;
-    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
+    let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 65_536))?;
     let workspace = super::super::super::bounded_io::content_workspace(
         &source.host.provider,
         &source.volume,
@@ -703,6 +703,70 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
     assert_eq!(
         runtime.block_on(read(&write_only, Some(&version)))?.0,
         expected
+    );
+    // Read-only project tools spill through the original private writer, even
+    // though the project binding itself also exposes a writer.
+    let spill_task = Bindings {
+        scope: RuntimeScope::new(
+            Capabilities::new([
+                source.read_capability.clone(),
+                private.read_capability.clone(),
+                private.write_capability.clone(),
+            ]),
+            Limits {
+                file_bytes: 65_536,
+                render_bytes: 4096,
+                ..limits
+            },
+        )?,
+        content: Some(source.content_bindings()),
+        artifacts: Some(private.content_bindings()),
+        ..Bindings::local()
+    }
+    .build()?
+    .agent_context(&Capabilities::default(), private.content_bindings())?;
+    let complete = json!({"kind":"json","value":{"text":"complete".repeat(5000)}});
+    let (spilled, _hold) = runtime.block_on(crate::tool::output::spill(
+        &complete,
+        &spill_task,
+        OperationId::new(),
+        4096,
+        None,
+    ))?;
+    let spill_file: crate::conversation::FileRef = serde_json::from_str(
+        spilled["value"]["output_spill"]["version"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spill_file.volume(), &private.volume);
+    assert!(serde_json::to_vec(&spilled).unwrap().len() <= 4096);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &runtime.block_on(spill_task.read_file(&spill_file, None))?
+        )
+        .unwrap(),
+        complete
+    );
+    let denied = spill_task.scoped(
+        Capabilities::new([
+            source.read_capability.clone(),
+            private.read_capability.clone(),
+        ]),
+        spill_task.scope().limits(),
+    )?;
+    assert_eq!(
+        runtime
+            .block_on(crate::tool::output::spill(
+                &complete,
+                &denied,
+                OperationId::new(),
+                4096,
+                None,
+            ))
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
     );
 
     // A complete descriptor and an authored token share the same bounded

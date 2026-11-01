@@ -17,15 +17,12 @@ impl TaskContext {
             )
         })?;
         let file = self
-            .stage_bound_file(
-                self.tool_content(None),
+            .stage_private_file_once(
+                self.private_summaries(io)?,
                 operation,
                 &path,
                 bytes,
-                "application/json",
-                "tool-output.json",
-                super::content_write::ContentPublication::OperationBound,
-                self.scope(),
+                ("application/json", "tool-output.json"),
                 io,
             )
             .await?;
