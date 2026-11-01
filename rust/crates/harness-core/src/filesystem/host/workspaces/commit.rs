@@ -9,6 +9,7 @@ pub(in crate::filesystem::host) struct PreparedPublication<'a, A: 'static, O: 's
     transaction: acyclic_fs::Transaction<A, O>,
     io: &'a PreparationIo,
     publication: FilePublication<'a>,
+    root_cut: Option<acyclic_fs::PolicyCut>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
@@ -44,17 +45,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let operation = bounded_io::operation_key(&key, Some(io))?;
-            let publication = self.publish_selected_operation(
+            self.prepare_selected_operation(
                 workspace,
                 mutations,
                 operation,
                 io,
                 FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
-            );
-            match root_cut {
-                Some(cut) => cut.scope(publication).await,
-                None => publication.await,
-            }
+                root_cut,
+            )
+            .await?
+            .commit(None)
+            .await
         })
     }
 
@@ -99,7 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &PreparationIo,
         publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
-        self.prepare_selected_operation(workspace, mutations, operation, io, publication)
+        self.prepare_selected_operation(workspace, mutations, operation, io, publication, None)
             .await?
             .commit(None)
             .await
@@ -115,48 +116,57 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<PreparedPublication<'a, A, O>> {
         let workspace = self.open(reference, Some(io)).await?;
         let operation = bounded_io::operation_key(key, Some(io))?;
-        self.prepare_selected_operation(&workspace, mutations, operation, io, publication)
+        self.prepare_selected_operation(&workspace, mutations, operation, io, publication, None)
             .await
     }
 
-    async fn prepare_selected_operation<'a>(
+    pub(in crate::filesystem::host) async fn prepare_selected_operation<'a>(
         &self,
         workspace: &Workspace<A, O>,
         mutations: &[WorkspaceMutation],
         operation: FilesystemKey,
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
+        root_cut: Option<acyclic_fs::PolicyCut>,
     ) -> Result<PreparedPublication<'a, A, O>> {
-        let mut transaction = if let FilePublication::Replace(expected) = publication {
-            let pinned = match expected {
-                Some(reference) => self.generation(workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+        let prepare = async {
+            let mut transaction = if let FilePublication::Replace(expected) = publication {
+                let pinned = match expected {
+                    Some(reference) => self.generation(workspace, reference, Some(io)).await?,
+                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                };
+                io.sdk(
+                    workspace
+                        .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                        .await,
+                )?
+            } else {
+                io.sdk(
+                    workspace
+                        .begin_transaction(operation, io, io.cancellation())
+                        .await,
+                )?
             };
-            io.sdk(
-                workspace
-                    .begin_transaction_at(&pinned, operation, io, io.cancellation())
-                    .await,
-            )?
-        } else {
-            io.sdk(
-                workspace
-                    .begin_transaction(operation, io, io.cancellation())
-                    .await,
-            )?
+            if let Some(fence) = publication.fence() {
+                io.sdk(
+                    transaction
+                        .observe_policy_fence(fence, io, io.cancellation())
+                        .await,
+                )?;
+            }
+            #[cfg(test)]
+            if let Some(pause) = &self.publication_pause {
+                pause().await;
+            }
+            Self::publish_mutations(&mut transaction, mutations, io).await?;
+            let mut prepared = PreparedPublication::new(transaction, io, publication);
+            prepared.root_cut = root_cut;
+            Ok(prepared)
         };
-        if let Some(fence) = publication.fence() {
-            io.sdk(
-                transaction
-                    .observe_policy_fence(fence, io, io.cancellation())
-                    .await,
-            )?;
+        match root_cut {
+            Some(cut) => cut.scope(prepare).await,
+            None => prepare.await,
         }
-        #[cfg(test)]
-        if let Some(pause) = &self.publication_pause {
-            pause().await;
-        }
-        Self::publish_mutations(&mut transaction, mutations, io).await?;
-        Ok(PreparedPublication::new(transaction, io, publication))
     }
     async fn publish_mutations(
         transaction: &mut acyclic_fs::Transaction<A, O>,
@@ -210,6 +220,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> PreparedPublication<'a, A,
             transaction,
             io,
             publication,
+            root_cut: None,
         }
     }
 
@@ -225,6 +236,7 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> PreparedPublication<'a, A,
             mut transaction,
             io,
             publication,
+            root_cut,
         } = self;
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
             let commit = 'commit: {
@@ -300,8 +312,11 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> PreparedPublication<'a, A,
                 )?;
             };
             Ok(commit)
-        })?
-        .await?;
+        })?;
+        let commit = match root_cut {
+            Some(cut) => cut.scope(commit).await,
+            None => commit.await,
+        }?;
         match commit {
             TransactionCommit::Committed(generation)
             | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),

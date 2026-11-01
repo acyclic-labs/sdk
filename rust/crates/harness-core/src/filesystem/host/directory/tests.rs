@@ -241,10 +241,64 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
             .id(),
         before_policy_change
     );
+    // Preparation may finish before the execution owner submits its candidate.
+    // Keep the original root cut after that polling scope has been restored.
+    let io = PreparationIo::for_unmeasured(&cancellation)?;
+    for (index, (retain_cut, change_root)) in [(true, true), (false, true), (true, false)]
+        .into_iter()
+        .enumerate()
+    {
+        let (_, fence) = host
+            .authorize_content_write(&child, &writer, "rows/02", false, None, Some(&io))?
+            .await?;
+        let (_, root_fence) = host
+            .authorize_content_write(&root, &writer, "rows/02", false, None, Some(&io))?
+            .await?;
+        let cut = io.sdk(root.capture_policy_cut(&io, io.cancellation()).await)?;
+        let mutations = [WorkspaceMutation::PutFile {
+            path: "/rows/02".into(),
+            bytes: acyclic_stream::OwnedBytes::from_static(b"branch row"),
+        }];
+        let key = IdempotencyKey::new(format!("retained-root-cut-{index}"))?;
+        let operation = bounded_io::operation_key(&key, Some(&io))?;
+        let prepared = crate::conversation::BoundedContentFuture::new(Some(&io), || {
+            host.prepare_selected_operation(
+                &child,
+                &mutations,
+                operation,
+                &io,
+                super::super::workspaces::FilePublication::Authorized(
+                    fence,
+                    &writer,
+                    Some(root_fence),
+                ),
+                retain_cut.then_some(cut),
+            )
+        })?
+        .await?;
+        if change_root {
+            let mut policy: acyclic_fs::access::Policy =
+                serde_json::from_slice(access::INITIAL_POLICY)?;
+            policy.version = 3 + index as u64;
+            write_policy(&root, &policy).await?;
+        }
+        let result = prepared.commit(None).await;
+        if retain_cut && change_root {
+            assert!(matches!(result, Err(Error::Conflict(_))));
+            assert_eq!(
+                io.sdk(child.head(&io, io.cancellation()).await)?.id(),
+                before_policy_change,
+            );
+        } else {
+            // Omitting the cut is the negative control: the unchanged data
+            // fence alone accepts. A fresh retained cut also makes progress.
+            result?;
+        }
+    }
     for (workspace, hidden) in [(&child, "rows/00"), (&root, "rows/01")] {
         let mut policy: acyclic_fs::access::Policy =
             serde_json::from_slice(access::INITIAL_POLICY)?;
-        policy.version = 2;
+        policy.version = 5;
         let mut deny = policy.layers[0][0].clone();
         deny.id = "inherited-list-denial".into();
         deny.effect = acyclic_fs::access::Effect::Deny;
