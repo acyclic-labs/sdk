@@ -1,6 +1,101 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use futures::{FutureExt as _, future::Either};
+use futures::{FutureExt as _, StreamExt as _, future::Either};
+
+/// Exercise the original OAuth decoder with the native body producer held at
+/// its terminal boundary. No filesystem publication or endpoint is involved.
+#[tokio::test]
+async fn refresh_body_retires_its_buffer_before_the_credential_operation() -> Result<()> {
+    let tokens = auth(&format!("fixture-{}", "α\\\"\n".repeat(128)))["tokens"].clone();
+    let encoded = serde_json::to_vec(&tokens).expect("original token document");
+    for chunk_bytes in [1, 7, encoded.len()] {
+        for terminal in 0..4 {
+            refresh_body_control(&encoded, &tokens, chunk_bytes, terminal).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_body_control(
+    encoded: &[u8],
+    expected: &Value,
+    chunk_bytes: usize,
+    terminal: u8,
+) -> Result<()> {
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(100_000, 8_000_000),
+        &CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| acyclic_harness_core::Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let mut parent = work.claim(0, 0, WorkCounters::UNCHARGED)?;
+    let mut io = CredentialIo::new(Some(&mut parent))?;
+    let operation_bytes = work.live_allocation_bytes();
+    let chunks = encoded
+        .chunks(chunk_bytes)
+        .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+        .collect::<Vec<_>>();
+    let (release, released) = futures::channel::oneshot::channel();
+    let source = futures::stream::iter(chunks)
+        .chain(futures::stream::once(async move {
+            match released.await {
+                Ok(false) => Ok(Bytes::new()),
+                Ok(true) => Err(acyclic_harness_core::Error::NativeBoundary {
+                    code: acyclic_harness_core::wire::ErrorCode::Storage,
+                    reason: "original refresh body error",
+                }),
+                Err(_) => Err(crate::transport_failure(
+                    true,
+                    acyclic_harness_core::ModelTransportFailure::Interrupted,
+                    "original refresh body producer lost",
+                )),
+            }
+        }))
+        .boxed();
+    let body = HttpResponse::with_native_body(200, source, &work)?.body;
+    let mut pending = Box::pin(refresh_document(body, &mut io));
+    assert!(pending.as_mut().now_or_never().is_none());
+    assert!(work.live_allocation_bytes() > operation_bytes);
+    assert_eq!(work.receipt().source_bytes_read, encoded.len() as u64);
+    match terminal {
+        0 => {
+            release
+                .send(false)
+                .expect("original body terminal retained");
+            assert_eq!(&pending.await?, expected);
+        }
+        1 => {
+            release.send(true).expect("original body terminal retained");
+            assert!(matches!(
+                pending.await,
+                Err(acyclic_harness_core::Error::NativeBoundary { reason, .. })
+                    if reason == "original refresh body error"
+            ));
+        }
+        2 => {
+            drop(pending);
+            assert!(release.is_canceled(), "body cancellation lost its producer");
+        }
+        _ => {
+            drop(release);
+            assert!(matches!(
+                pending.await,
+                Err(acyclic_harness_core::Error::ModelUnavailable { failure, .. })
+                    if failure == acyclic_harness_core::ModelTransportFailure::Interrupted
+            ));
+        }
+    }
+    if terminal != 0 {
+        // The former private collector put each full growth claim into io,
+        // retaining those claims after its buffer and source had retired.
+        assert_eq!(work.live_allocation_bytes(), operation_bytes);
+    }
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    drop(parent);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
 
 /// Uses the actual private-file publisher and original refresh owner. The event
 /// is produced inside publication, so cancellation follows physical admission.
