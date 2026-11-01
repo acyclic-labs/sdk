@@ -114,6 +114,9 @@ impl SocketBackend for LocalSockets {
     fn store(&self) -> &Store<MemoryStream> {
         &self.store
     }
+    fn account(&self) -> &[u8] {
+        b"account"
+    }
     fn clock(&self) -> &dyn Clock {
         &SystemClock
     }

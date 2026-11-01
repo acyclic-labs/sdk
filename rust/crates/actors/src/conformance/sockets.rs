@@ -40,6 +40,8 @@ pub trait SocketBackend: ProviderPlatform {
     type Provider: StreamProvider + ?Sized;
     /// The store whose root the host watches.
     fn store(&self) -> &Store<Self::Provider>;
+    /// Account authenticated by `connect`; the suite creates its actors here.
+    fn account(&self) -> &[u8];
     /// The host clock.
     fn clock(&self) -> &dyn Clock;
     /// Open one socket as a peer, through the host's own transport.
@@ -231,7 +233,7 @@ struct Case<'a, T: SocketBackend + ?Sized> {
 impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
     /// A fresh actor whose creation commit also creates its journal.
     async fn create(target: &'a T, case: &'static str) -> Result<Self, Failure> {
-        let actor = ActorReference::new(b"conformance", b"sockets", case.as_bytes())
+        let actor = ActorReference::new(target.account(), b"sockets", case.as_bytes())
             .map_err(|_| Error::Invalid("conformance actor id"))?;
         let inbox = StreamPath::new(format!("conformance/sockets/{case}/inbox"))?;
         let outbox = StreamPath::new(format!("conformance/sockets/{case}/journal"))?;
