@@ -314,7 +314,6 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.missing".to_vec(),
-        128,
     )?;
     assert!(matches!(
         checkout
