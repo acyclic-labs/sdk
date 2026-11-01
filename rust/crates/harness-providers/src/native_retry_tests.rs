@@ -163,6 +163,7 @@ proptest! {
             if cancelled {
                 assert!(matches!(result, Err(Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ..
                 })));
             } else {
                 assert_eq!(result.is_ok(), failures == 0 || (!reject_timer && failures <= usize::from(attempts)));
