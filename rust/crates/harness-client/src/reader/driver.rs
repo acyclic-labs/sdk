@@ -525,6 +525,254 @@ mod tests {
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
+    fn listing_views_keep_original_projection_witness_and_cut() {
+        use super::super::{ListingProjection, Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("views").unwrap();
+            let alpha = StreamPath::new("alpha").unwrap();
+            let beta = StreamPath::new("beta").unwrap();
+            let witnesses = [
+                StreamPath::new("witness/a").unwrap(),
+                StreamPath::new("witness/b").unwrap(),
+            ];
+            for (path, value) in [
+                ("views/one/alpha", b"alpha".as_slice()),
+                ("views/one/beta", b"beta"),
+                ("witness/a", b"a"),
+                ("witness/b", b"b"),
+            ] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![value.into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(path.as_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            for witness in &witnesses {
+                reader.observed_head(witness, provider.head(witness.clone()).await.unwrap(), None);
+            }
+            let projections = [
+                ListingProjection {
+                    tail: Some(alpha.clone()),
+                    witness: Some(witnesses[0].clone()),
+                },
+                ListingProjection {
+                    tail: Some(beta.clone()),
+                    witness: Some(witnesses[0].clone()),
+                },
+                ListingProjection {
+                    tail: Some(alpha.clone()),
+                    witness: Some(witnesses[1].clone()),
+                },
+            ];
+            let want = |projection: &ListingProjection| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index: 0,
+                        tail: projection.tail.clone(),
+                        witness: projection.witness.clone(),
+                    },
+                    Priority::Visible,
+                )
+            };
+            reader.begin_frame(0);
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(0);
+            assert_eq!(
+                ops.len(),
+                2,
+                "one original fetch per tail projection must serve every admitted witness"
+            );
+            for flight in reader.inflight.values() {
+                assert!(
+                    reader
+                        .demand
+                        .get(&flight.key)
+                        .unwrap()
+                        .paging
+                        .witnesses
+                        .is_empty()
+                );
+                assert!(!flight.paging.witnesses.is_empty());
+            }
+            for op in ops.into_iter().rev() {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 0);
+            }
+            for (path, bytes) in [
+                ("views/one/alpha", b"alpha".as_slice()),
+                ("views/one/beta", b"beta"),
+            ] {
+                assert_eq!(
+                    reader
+                        .cache()
+                        .record(&StreamPath::new(path).unwrap(), 0)
+                        .unwrap()
+                        .as_ref(),
+                    bytes
+                );
+            }
+            assert_eq!(
+                reader.cache().listings(&parent).count(),
+                1,
+                "projection requests duplicated the directory page"
+            );
+            for projection in &projections {
+                assert_eq!(
+                    reader
+                        .cache()
+                        .listing(&parent, 0)
+                        .unwrap()
+                        .projections
+                        .get(projection),
+                    Some(&Some(1))
+                );
+            }
+            reader.begin_frame(1);
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(1).is_empty(),
+                "completed views did not retain their original observations"
+            );
+            let before = reader.cache().listing(&parent, 0).unwrap().version;
+            // The page stays byte-identical while the original hierarchy cut
+            // moves elsewhere. An old observation cannot acquire that cut.
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("elsewhere/new").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"new hierarchy cut".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            provider
+                .append(AppendRequest {
+                    path: witnesses[1].clone(),
+                    records: vec![b"changed".as_slice().into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::new(b"witness moves".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let observed = reader.cache.observation(&witnesses[1]);
+            reader.observed_head(
+                &witnesses[1],
+                provider.head(witnesses[1].clone()).await.unwrap(),
+                observed,
+            );
+            assert_eq!(reader.cache.tail(&witnesses[1]), Some(2));
+            reader.plan(projections.iter().map(want));
+            let [op]: [Op; 1] = reader.poll(1).try_into().unwrap();
+            assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == &alpha));
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, 1);
+            assert_ne!(reader.cache().listing(&parent, 0).unwrap().version, before);
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(1);
+            assert_eq!(
+                ops.len(),
+                2,
+                "old projections were rebound to a different hierarchy cut"
+            );
+            for op in ops {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 1);
+            }
+            reader.plan(projections.iter().map(want));
+            assert!(reader.poll(1).is_empty());
+            assert_eq!(reader.next_deadline(), None);
+            let bytes = reader.snapshot().unwrap();
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(1);
+            assert_eq!(
+                ops.len(),
+                2,
+                "persistence fabricated fresh projection observations"
+            );
+            // Returning request custody on transient failure preserves the
+            // original observations without a second plan or copied map.
+            for op in &ops {
+                reader.complete(op.id(), Outcome::Failed(Failure::Unavailable), 1);
+            }
+            let retry_at = reader.next_deadline().unwrap();
+            assert!(reader.poll(retry_at - 1).is_empty());
+            let ops = reader.poll(retry_at);
+            assert_eq!(
+                ops.len(),
+                1,
+                "recovery admits the original one-request probe"
+            );
+            let op = ops.into_iter().next().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            let ops = reader.poll(retry_at);
+            assert_eq!(ops.len(), 1);
+            let op = ops.into_iter().next().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(retry_at).is_empty(),
+                "retry lost the original witnesses"
+            );
+
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(retry_at);
+            assert_eq!(ops.len(), 2);
+            // A newer plan replaces the pending view while the old flight
+            // still owns its observations. Timeout cannot restore withdrawn
+            // witnesses or resurrect the removed projection.
+            reader.plan([want(&projections[2])]);
+            let deadline = reader.next_deadline().unwrap();
+            reader.begin_frame(deadline);
+            assert_eq!(reader.take_cancelled().len(), 2);
+            let retry_at = reader.next_deadline().unwrap();
+            let mut retried = reader.poll(retry_at);
+            let op = retried.pop().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            let listing = reader.cache().listing(&parent, 0).unwrap();
+            assert_eq!(listing.projections.get(&projections[0]), None);
+            assert_eq!(listing.projections.get(&projections[1]), None);
+            assert_eq!(listing.projections.get(&projections[2]), Some(&Some(2)));
+            assert!(reader.poll(retry_at).is_empty());
+            reader.plan(projections.iter().map(want));
+            for op in reader.poll(retry_at) {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, retry_at);
+            }
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(retry_at).is_empty(),
+                "timeout lost the original witnesses"
+            );
+
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(retry_at);
+            // Original indexed parent invalidation covers every projection,
+            // including a valid original reply arriving after cancellation.
+            let late_id = ops[0].id();
+            let late = execute(&provider, ops[0].clone()).await;
+            reader.denied(&parent);
+            assert_eq!(reader.take_cancelled().len(), 2);
+            reader.complete(late_id, late, retry_at);
+            assert!(reader.cache().listing(&parent, 0).is_none());
+            assert!(reader.poll(retry_at).is_empty());
+        });
+    }
+
+    #[test]
     fn every_busy_follow_progresses_across_delivery_frames() {
         use super::super::ReaderPolicy;
         futures::executor::block_on(async {

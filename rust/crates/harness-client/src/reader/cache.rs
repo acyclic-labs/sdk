@@ -38,6 +38,54 @@ pub enum Key {
     Listing(StreamPath, u32),
 }
 
+/// The original projection and freshness witness of a children request.
+/// Equal witness positions on different streams are distinct observations.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ListingProjection {
+    /// Relative child stream projected by the original request.
+    pub tail: Option<StreamPath>,
+    /// Stream whose movement invalidates this projection.
+    pub witness: Option<StreamPath>,
+}
+
+/// Projection observations resident with one children page. Its maintained
+/// charge avoids rescanning other views when one original reply arrives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListingProjections {
+    at: BTreeMap<ListingProjection, Option<u64>>,
+    charge: usize,
+}
+
+impl ListingProjections {
+    pub(super) fn get(&self, projection: &ListingProjection) -> Option<&Option<u64>> {
+        self.at.get(projection)
+    }
+
+    pub(super) fn observe(&mut self, projection: ListingProjection, witnessed: Option<u64>) {
+        use std::collections::btree_map::Entry;
+        match self.at.entry(projection) {
+            Entry::Occupied(mut entry) => {
+                entry.insert(witnessed);
+            }
+            Entry::Vacant(entry) => {
+                let projection = entry.key();
+                self.charge += ENTRY_OVERHEAD
+                    + size_of::<ListingProjection>()
+                    + size_of::<Option<u64>>()
+                    + projection
+                        .tail
+                        .as_ref()
+                        .map_or(0, |path| path.as_str().len())
+                    + projection
+                        .witness
+                        .as_ref()
+                        .map_or(0, |path| path.as_str().len());
+                entry.insert(witnessed);
+            }
+        }
+    }
+}
+
 /// A cached `children_page` result. `after` is the exclusive start used to
 /// fetch it; `next` is the exclusive start of the following page.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +98,11 @@ pub struct Listing {
     pub next: Option<StreamPath>,
     /// Fetched in this process, as opposed to restored from persistence.
     pub fresh: bool,
-    /// The parent's witness tail when this page was requested.
-    pub witnessed: Option<u64>,
+    /// Original projections admitted for this exact page and their witness
+    /// positions. These observations are discarded when the page moves.
+    pub projections: ListingProjections,
+    /// Exact hierarchy cut of the original page; restored pages have none.
+    pub version: Option<CommitId>,
 }
 
 enum Value {
@@ -866,8 +917,68 @@ impl RecordCache {
         self.insert(key, Value::Record(value), charge, protect)
     }
 
+    /// Move the original page out before refreshing one of its projections.
+    /// Its observation map is transferred, never cloned per reply.
+    fn take_listing(&mut self, parent: &StreamPath, index: u32) -> Option<Listing> {
+        let key = Key::Listing(parent.clone(), index);
+        let entry = if let Some(entry) = self.entries.remove(&key) {
+            index_listing(&mut self.children, &key, &entry.value, false, false);
+            self.lru.remove(&entry.used);
+            self.bytes -= entry.charge;
+            entry
+        } else {
+            let entry = self.passed.remove(&key)?;
+            index_listing(&mut self.children, &key, &entry.value, true, false);
+            self.passed_lru.remove(&entry.used);
+            self.passed_bytes -= entry.charge;
+            entry
+        };
+        match entry.value {
+            Value::Listing(listing) => Some(listing),
+            Value::Record(_) => None,
+        }
+    }
+
+    /// Admit one original projection without copying observations for other
+    /// views. Only a byte-identical page at the same hierarchy cut can share
+    /// their observations. All metadata remains charged to this one entry.
+    pub(super) fn observe_listing(
+        &mut self,
+        parent: &StreamPath,
+        index: u32,
+        mut listing: Listing,
+        observations: impl IntoIterator<Item = (ListingProjection, Option<u64>)>,
+        protect: Option<u64>,
+    ) {
+        listing.projections = self
+            .take_listing(parent, index)
+            .filter(|old| {
+                old.fresh
+                    && old.version == listing.version
+                    && old.after == listing.after
+                    && old.children == listing.children
+                    && old.next == listing.next
+            })
+            .map_or_else(ListingProjections::default, |old| old.projections);
+        for (projection, witnessed) in observations {
+            listing.projections.observe(projection, witnessed);
+        }
+        self.store_listing(parent, index, listing, protect);
+    }
+
     /// Insert or replace one listing page.
     pub fn insert_listing(
+        &mut self,
+        parent: &StreamPath,
+        index: u32,
+        listing: Listing,
+        protect: Option<u64>,
+    ) -> bool {
+        self.remove(&Key::Listing(parent.clone(), index));
+        self.store_listing(parent, index, listing, protect)
+    }
+
+    fn store_listing(
         &mut self,
         parent: &StreamPath,
         index: u32,
@@ -886,8 +997,10 @@ impl RecordCache {
                 .map_or(0, |after| after.as_str().len())
             + listing.next.as_ref().map_or(0, |next| next.as_str().len())
             + path_len(&key)
-            + ENTRY_OVERHEAD;
-        self.remove(&key);
+            + ENTRY_OVERHEAD
+            + size_of::<ListingProjections>()
+            + size_of::<Option<CommitId>>()
+            + listing.projections.charge;
         let cached = self.insert(key.clone(), Value::Listing(listing), charge, protect);
         let retained = self
             .entries
@@ -1252,7 +1365,8 @@ impl RecordCache {
                             children,
                             next,
                             fresh: false,
-                            witnessed: None,
+                            projections: ListingProjections::default(),
+                            version: None,
                         },
                         None,
                     );
@@ -1511,7 +1625,8 @@ mod tests {
                 children: vec![StreamPath::new("record/child").unwrap()],
                 next: None,
                 fresh: true,
-                witnessed: None,
+                projections: ListingProjections::default(),
+                version: None,
             },
             None,
         ));
@@ -2002,7 +2117,8 @@ mod tests {
             children: vec![child.clone()],
             next: None,
             fresh: true,
-            witnessed: None,
+            projections: ListingProjections::default(),
+            version: None,
         };
         assert!(target.insert_listing(&stream, 0, page(&child), None));
         assert!(target.insert_listing(&stream, 0, page(&next_child), None));

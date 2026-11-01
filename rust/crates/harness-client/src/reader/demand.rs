@@ -54,6 +54,16 @@ impl Demands {
         self.entries.contains_key(key)
     }
 
+    /// A retry keeps the original observations unless a newer plan admitted
+    /// its own. A withdrawn demand cannot be revived by the failed flight.
+    pub(super) fn restore_paging(&mut self, key: &OpKey, paging: Paging) {
+        if let Some(entry) = self.entries.get_mut(key)
+            && entry.demand.paging.witnesses.is_empty()
+        {
+            entry.demand.paging = paging;
+        }
+    }
+
     pub(super) fn begin_plan(&mut self) {
         self.mark = !self.mark;
     }
@@ -67,6 +77,7 @@ impl Demands {
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
+                entry.demand.paging.witnesses.extend(paging.witnesses);
                 entry.demand.priority.min(priority)
             } else {
                 entry.demand.paging = paging;
@@ -134,9 +145,7 @@ impl Demands {
 
     pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {
         if let Some(first) = index.checked_add(1) {
-            self.remove_range(
-                OpKey::Children(path.clone(), first)..=OpKey::Children(path.clone(), u32::MAX),
-            );
+            self.remove_range(OpKey::children(path, first, None)..OpKey::children_end(path));
         }
     }
 
@@ -156,7 +165,7 @@ impl Demands {
         }
     }
 
-    fn remove_range(&mut self, range: std::ops::RangeInclusive<OpKey>) {
+    fn remove_range(&mut self, range: impl std::ops::RangeBounds<OpKey>) {
         for (key, entry) in self.entries.extract_if(range, |_, _| true) {
             #[cfg(test)]
             {
@@ -191,13 +200,17 @@ impl Demands {
         std::mem::take(&mut self.invalidation_visits)
     }
 
-    pub(super) fn rotate(&mut self, key: &OpKey, ticket: u64) {
-        if let Some(entry) = self.entries.get_mut(key) {
-            let order = &mut self.order[class(entry.demand.priority)];
-            order.remove(&(entry.demand.ticket, key.clone()));
-            order.insert((ticket, key.clone()));
-            entry.demand.ticket = ticket;
-        }
+    /// Transfer the admitted observations at the original age rotation.
+    pub(super) fn dispatch(&mut self, key: &OpKey, ticket: u64) -> Paging {
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("dispatch retains its selected demand");
+        let order = &mut self.order[class(entry.demand.priority)];
+        order.remove(&(entry.demand.ticket, key.clone()));
+        order.insert((ticket, key.clone()));
+        entry.demand.ticket = ticket;
+        std::mem::take(&mut entry.demand.paging)
     }
 }
 
