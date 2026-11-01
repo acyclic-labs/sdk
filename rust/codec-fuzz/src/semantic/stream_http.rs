@@ -185,6 +185,7 @@ pub(super) fn seeds(streams: &[(String, Vec<u8>)]) -> Result<Seeds, Box<dyn std:
         hierarchy_version: record.commit_id,
         children: vec![Child {
             path: StreamPath::new("codec")?,
+            tail: Some(tail),
             tail_record: Some(record),
             origin: None,
         }],
