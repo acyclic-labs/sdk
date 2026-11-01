@@ -134,13 +134,11 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
         eprintln!(
             "registered{files}={held:?} native{files}={native_work:?} forgotten{files}={walked:?} late{files}={late_work:?}"
         );
-        // Native work also owns the provider's original item charges. Compare
+        // Native work owns physical medium reads; ordinary work counts Objects GETs.
+        // Their original item charges also differ. Compare
         // like ledgers across populations; both routes must read the same proof bytes.
         assert_eq!(held.object_bytes_read, native_work.object_bytes_read);
-        assert_eq!(
-            held.backend_read_operations,
-            native_work.backend_read_operations
-        );
+
         assert_eq!(walked, late_work);
         assert!(walked.object_bytes_read > held.object_bytes_read);
         if let Some((few, few_native, few_walked)) = previous {
