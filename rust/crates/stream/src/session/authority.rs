@@ -104,7 +104,7 @@ pub(super) struct Slots {
             u64,
             usize,
             Credential,
-            tokio::sync::watch::Sender<Credential>,
+            std::sync::OnceLock<tokio::sync::watch::Sender<Credential>>,
         ),
     >,
     next_revision: u64,
@@ -211,14 +211,20 @@ impl Authority {
         match slots.entries.entry(slot) {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let current = entry.get_mut();
-                current.3.send_replace(credential.clone());
+                if let Some(changes) = current.3.get() {
+                    changes.send_replace(credential.clone());
+                }
                 current.0 = revision;
                 current.1 = bytes.len();
                 current.2 = credential;
             }
             std::collections::btree_map::Entry::Vacant(entry) => {
-                let changes = tokio::sync::watch::channel(credential.clone()).0;
-                entry.insert((revision, bytes.len(), credential, changes));
+                entry.insert((
+                    revision,
+                    bytes.len(),
+                    credential,
+                    std::sync::OnceLock::new(),
+                ));
             }
         }
         slots.credential_bytes = credential_bytes;
@@ -482,10 +488,17 @@ impl Authority {
             .get(&slot)
             .ok_or(Rejection::Forbidden)?
             .3
+            .get_or_init(|| tokio::sync::watch::channel(credential.clone()).0)
             .subscribe();
+        let filter_digest = binding.filter_digest;
         Ok((
             binding,
-            CallAuthorization(authorization, changes, Arc::clone(capability)),
+            CallAuthorization(
+                authorization,
+                changes,
+                Arc::clone(capability),
+                filter_digest,
+            ),
         ))
     }
     /// Admits one children page: `streams/list` on the parent, as

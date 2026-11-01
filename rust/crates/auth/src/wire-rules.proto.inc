@@ -18,6 +18,12 @@
 // Check ALL ancestor key ids/epochs and parent_revocation_ids, not just the leaf.
 // A revoked block or online key invalidates every descendant. Online issuance
 // MUST include all parent block ids and the complete parent certificate ancestry.
+// CertifiedKey.trust_requirements carries complete version-1 public dependencies
+// across accounts and environments. Recheck every required environment signer,
+// account issuer, key id/epoch, block and validity interval on every use, including
+// cached admission. Effective validity intersects all requirement intervals.
+// These signed facts do not retain a live operation or credential-slot owner;
+// an active selected source must separately retain and fence those original owners.
 // Issuer-certified Principal claims cannot appear in attenuation blocks.
 // LineageAppend changes acting identity (last id, else certified root id) only.
 // It cannot add roles/groups/attributes. Subject references bind at the declaring

@@ -168,7 +168,7 @@ async fn call_contributions_pin_admission_and_end_on_original_producer_loss() {
             change(block);
         })
     }
-    for case in [
+    for (case, registered) in [
         "slot",
         "session",
         "replacement",
@@ -177,7 +177,10 @@ async fn call_contributions_pin_admission_and_end_on_original_producer_loss() {
         "trust",
         "clock",
         "expiry",
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|case| [false, true].map(|registered| (case, registered)))
+    {
         let state = State::new();
         let auth = Arc::new(authority(state.clone()));
         let mut slots = Slots::default();
@@ -188,12 +191,17 @@ async fn call_contributions_pin_admission_and_end_on_original_producer_loss() {
             .unwrap();
         let expires = call.2.effective().expires_at_unix_seconds();
         let contribution = call.contribution().unwrap();
+        auth.register(&mut slots, 0, &credential(|_| {}), 1)
+            .unwrap();
+        contribution.check().unwrap();
         drop(binding);
         drop(call);
         contribution.check().unwrap();
         let ended = contribution.terminated();
         futures::pin_mut!(ended);
-        assert!(futures::poll!(ended.as_mut()).is_pending());
+        if registered {
+            assert!(futures::poll!(ended.as_mut()).is_pending());
+        }
         match case {
             "slot" => auth.register(&mut slots, 0, &[], 1).unwrap(),
             "session" => drop(slots),
@@ -252,9 +260,32 @@ async fn call_contributions_pin_admission_and_end_on_original_producer_loss() {
         assert_eq!(
             futures::poll!(ended.as_mut()),
             std::task::Poll::Ready(expected),
-            "{case}"
+            "{case}, registered={registered}"
         );
     }
+    let auth = Arc::new(authority(State::new()));
+    let mut slots = Slots::default();
+    auth.register(&mut slots, 0, &credential(|_| {}), 1)
+        .unwrap();
+    let (_, call) = auth
+        .bind_call(&slots, 0, "actors:/selected".into(), 1)
+        .unwrap();
+    auth.register(
+        &mut slots,
+        0,
+        &credential(|block| {
+            block.certificates.as_mut().unwrap().keys[0]
+                .key
+                .principal
+                .id = "replacement".into();
+        }),
+        1,
+    )
+    .unwrap();
+    assert!(
+        matches!(call.contribution(), Err(StreamError::AccessDenied)),
+        "selection must retain admission before a replacement, never capture the replacement as its origin"
+    );
 }
 fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
     signed::root(|block| {

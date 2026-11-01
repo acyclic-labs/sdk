@@ -9,6 +9,7 @@ pub struct CallAuthorization(
     pub(super) ResourceAuthorization,
     pub(super) tokio::sync::watch::Receiver<super::authority::Credential>,
     pub(super) Arc<acyclic_auth::verify::VerifiedCapability>,
+    pub(super) [u8; 32],
 );
 
 impl CallAuthorization {
@@ -23,14 +24,9 @@ impl CallAuthorization {
             evidence: capability
                 .trust_evidence()
                 .map_err(|_| StreamError::AccessDenied)?,
-            principal: capability.effective().principal().clone(),
             expires: capability.effective().expires_at_unix_seconds(),
             changed: self.1.clone(),
-            filter_digest: crate::FollowFilter::authorized(
-                wire::SessionFilter::default(),
-                &capability,
-            )?
-            .digest(),
+            filter_digest: self.3,
             capability,
         }));
         contribution.check()?;
@@ -61,7 +57,6 @@ struct Contribution {
     capability: Arc<acyclic_auth::verify::VerifiedCapability>,
     authorization: ResourceAuthorization,
     evidence: acyclic_auth::verify::TrustEvidence,
-    principal: acyclic_auth::contract::Principal,
     expires: u64,
     changed: tokio::sync::watch::Receiver<super::authority::Credential>,
     filter_digest: [u8; 32],
@@ -75,7 +70,7 @@ pub struct CallContribution(Arc<Contribution>);
 impl CallContribution {
     /// Original authenticated acting identity, including its complete lineage.
     pub fn principal(&self) -> &acyclic_auth::contract::Principal {
-        &self.0.principal
+        self.0.capability.effective().principal()
     }
     /// Complete canonical public trust evidence for a signed contribution.
     pub fn evidence(&self) -> &acyclic_auth::verify::TrustEvidence {
@@ -89,6 +84,10 @@ impl CallContribution {
             .changed
             .has_changed()
             .map_err(|_| StreamError::Unavailable)?;
+        authorization
+            .change_source()
+            .check_open()
+            .map_err(|_| StreamError::Unavailable)?;
         let capability = self
             .0
             .changed
@@ -96,7 +95,7 @@ impl CallContribution {
             .as_ref()
             .map(Arc::clone)
             .map_err(|_| StreamError::AccessDenied)?;
-        if capability.effective().principal() != &self.0.principal
+        if capability.effective().principal() != self.principal()
             || !capability
                 .effective()
                 .grants()
@@ -127,6 +126,8 @@ impl CallContribution {
         let contribution = self.clone();
         let mut changed = self.0.changed.clone();
         Box::pin(async move {
+            let expiry = contribution.0.authorization.expiry(contribution.0.expires);
+            futures::pin_mut!(expiry);
             loop {
                 let authorization = &contribution.0.authorization;
                 let trust = contribution
@@ -142,9 +143,10 @@ impl CallContribution {
                         .await
                         .map_err(|_| acyclic_auth::trust::SourceClosed)
                 };
-                let publication = future::select(trust, Box::pin(owner));
-                let expiry = authorization.expiry(contribution.0.expires);
-                match future::select(Box::pin(publication), expiry).await {
+                futures::pin_mut!(owner);
+                let publication = future::select(trust, owner);
+                futures::pin_mut!(publication);
+                match future::select(publication, expiry.as_mut()).await {
                     future::Either::Left((publication, _)) => {
                         let result = match publication {
                             future::Either::Left((result, _))
