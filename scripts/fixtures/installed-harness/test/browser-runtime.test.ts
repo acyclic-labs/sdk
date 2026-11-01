@@ -6,13 +6,16 @@ import {
   decodeReadResponse, initializeBrowserRuntime, type BrowserAgentOptions,
 } from "@acyclic-labs/harness/browser";
 import { ReadResponseSchema, RecordBatchSchema } from "./fixtures/stream/stream/v1/stream_pb.js";
+import { fixtureAuthority, initializeFixtureAuthority } from "./fixtures/authority/fixture-authority.mjs";
 
 // Package-resolution/consumer qualification. Real Chromium tests separately
 // qualify platform IndexedDB and reopen.
 test("installed browser entry hosts an agent turn", async () => {
   await initializeBrowserRuntime();
+  await initializeFixtureAuthority();
   const id = crypto.randomUUID();
-  const owner = new BrowserAgentAuthority({ kind: "task", id }, "installed-browser", new Uint8Array(32).fill(23), []);
+  const authority = fixtureAuthority(id);
+  const owner = new BrowserAgentAuthority(authority.capability);
   const registry = new BrowserAgentRegistry();
   let agents: BrowserAgents | undefined;
   try {
@@ -38,7 +41,8 @@ test("installed browser entry hosts an agent turn", async () => {
       limits: { file_bytes: 65536n, path_bytes: 1024n, attachments: 4n, render_bytes: 65536n,
         model_steps: 4n, model_events_per_step: 16n, tool_calls_per_step: 4n, context_messages: 16n },
       principal: "installed-user",
-      approval_policy: { approvers: [{ kind: "rules", principal: "installed-user", rules: [], fallback: "allow" }] },
+      preset: { tools: [], web_tools: false, max_children: null,
+        approval_policy: { approvers: [{ kind: "rules", principal: "installed-user", rules: [], fallback: "allow" }] } },
     };
     let deliveryFailed!: (error: Error) => void;
     const failed = new Promise<never>((_, reject) => { deliveryFailed = reject; });
@@ -88,7 +92,9 @@ test("installed browser entry hosts an agent turn", async () => {
     expect((await agents.list(null, null, null, 8)).agents).toEqual([]);
   } finally {
     agents?.free();
+    authority.close();
     registry.free();
     owner.free();
+    authority.free();
   }
 });
