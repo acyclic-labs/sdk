@@ -600,10 +600,11 @@ where
                 items: self.bound.project_heads(self.within_tree(agent)?).await?,
             }),
             AgentCommand::History { agent, page } => {
+                use crate::executor::json::json_byte_length;
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
                 use futures::TryStreamExt as _;
                 let agent = self.within_tree(agent)?;
-                let cursor = match page.cursor() {
+                let mut cursor = match page.cursor() {
                     Some(cursor) => {
                         let bytes = STANDARD
                             .decode(cursor)
@@ -630,7 +631,7 @@ where
                 };
                 let count = u64::from(page.items()).min(cursor.before);
                 let start = cursor.before - count;
-                let mut candidates = Vec::new();
+                let mut items = Vec::new();
                 if count != 0 {
                     let mut records = agents
                         .provider()
@@ -645,42 +646,58 @@ where
                         .map_err(Error::Stream)?;
                     while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
                         let item = crate::agent::HistoryCheckpoint::summary(&record.value)?;
-                        let sequence = start + candidates.len() as u64;
+                        let sequence = start + items.len() as u64;
                         if record.sequence != sequence || item.conversation != sequence + 1 {
                             return Err(Error::Record("history page differs from indexed cut"));
                         }
-                        candidates.push(item);
+                        items.push(item);
                     }
-                    if candidates.len() as u64 != count {
+                    if items.len() as u64 != count {
                         return Err(Error::Record("history page ended before its retained cut"));
                     }
                 }
-                let mut items = Vec::new();
+                items.reverse();
+                let envelopes = [None, Some(String::new())].map(|next| {
+                    json_byte_length(
+                        &AgentReply::History {
+                            items: Vec::new(),
+                            next,
+                        },
+                        u64::MAX,
+                        &mut None,
+                    )
+                    .map_err(|_| Error::Record("history page encoding failed"))
+                });
+                let [end_envelope, next_envelope] = envelopes;
+                let (end_envelope, next_envelope) = (end_envelope?, next_envelope?);
                 let mut bytes = 0;
                 let mut before = cursor.before;
-                for item in candidates.into_iter().rev() {
-                    let size = serde_json::to_vec(&item)
+                let mut accepted = 0;
+                for item in &items {
+                    let size = json_byte_length(item, u64::MAX, &mut None)
                         .map_err(|_| Error::Record("history item encoding failed"))?
-                        .len()
-                        + usize::from(!items.is_empty());
-                    let next = history_cursor(&cursor, item.conversation - 1)?;
-                    let envelope = serde_json::to_vec(&AgentReply::History {
-                        items: Vec::new(),
-                        next,
-                    })
-                    .map_err(|_| Error::Record("history page encoding failed"))?
-                    .len();
-                    if bytes + size + envelope > page.bytes() as usize {
-                        if items.is_empty() {
+                        + u64::from(accepted != 0);
+                    cursor.before = item.conversation - 1;
+                    let envelope = if cursor.before == 0 {
+                        end_envelope
+                    } else {
+                        let length = json_byte_length(&cursor, u64::MAX, &mut None)
+                            .map_err(|_| Error::Record("history cursor encoding failed"))?;
+                        next_envelope + length.div_ceil(3) * 4
+                    };
+                    if bytes + size + envelope > u64::from(page.bytes()) {
+                        if accepted == 0 {
                             return Err(Error::Stream(StreamError::Capacity));
                         }
                         break;
                     }
                     bytes += size;
-                    before = item.conversation - 1;
-                    items.push(item);
+                    before = cursor.before;
+                    accepted += 1;
                 }
-                let next = history_cursor(&cursor, before)?;
+                items.truncate(accepted);
+                cursor.before = before;
+                let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }
             AgentCommand::Children { agent, page } => {
@@ -951,7 +968,7 @@ fn children_cursor(version: &CommitId, after: &StreamPath) -> String {
     cursor
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryCursor {
     version: u32,
@@ -960,16 +977,13 @@ struct HistoryCursor {
     tail: u64,
 }
 
-fn history_cursor(cursor: &HistoryCursor, before: u64) -> Result<Option<String>, Error> {
+fn history_cursor(cursor: &HistoryCursor) -> Result<Option<String>, Error> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    (before != 0)
+    (cursor.before != 0)
         .then(|| {
-            serde_json::to_vec(&HistoryCursor {
-                before,
-                ..cursor.clone()
-            })
-            .map(|bytes| STANDARD.encode(bytes))
-            .map_err(|_| Error::Record("history cursor encoding failed"))
+            serde_json::to_vec(cursor)
+                .map(|bytes| STANDARD.encode(bytes))
+                .map_err(|_| Error::Record("history cursor encoding failed"))
         })
         .transpose()
 }

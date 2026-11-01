@@ -1890,6 +1890,45 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     assert_eq!(items[0].conversation, 2);
     assert_eq!(items[0].context_tail, saved.context.tail);
     assert_eq!(items[0].volume_count, saved.volumes.len() as u64);
+    let exact_credit = serde_json::to_vec(&crate::client::AgentReply::History {
+        items: items.clone(),
+        next: next.clone(),
+    })
+    .map_err(agent)?
+    .len() as u32;
+    let exact_page = connection
+        .execute(&crate::client::AgentCommand::History {
+            agent: root.clone(),
+            page: crate::client::AgentPageRequest::new(1, exact_credit, None).map_err(agent)?,
+        })
+        .await?;
+    assert_eq!(
+        serde_json::to_vec(&exact_page).map_err(agent)?.len(),
+        exact_credit as usize,
+        "the newest row and its exact continuation must fit their byte credit"
+    );
+    let crate::client::AgentReply::History {
+        items: exact_items,
+        next: exact_next,
+    } = exact_page
+    else {
+        return Err(Error::Invalid(
+            "history query returned another reply".into(),
+        ));
+    };
+    assert_eq!(exact_items, items);
+    assert_eq!(exact_next, next);
+    assert!(
+        connection
+            .execute(&crate::client::AgentCommand::History {
+                agent: root.clone(),
+                page: crate::client::AgentPageRequest::new(1, exact_credit - 1, None)
+                    .map_err(agent)?,
+            })
+            .await
+            .is_err(),
+        "one missing credit byte must refuse rather than exceed the page"
+    );
     let mut invalid = saved.clone();
     invalid.volumes.push(snapshot.clone());
     assert!(
