@@ -734,7 +734,7 @@ async fn fixture(
 async fn watched_directory_snapshot_preserves_authorized_names_and_its_selected_generation()
 -> Result<()> {
     let mask = [false, true, false, true, true, false, false, true];
-    let (host, volume, grant) = fixture(mask).await?;
+    let (host, volume, grant, _writer, _issuer) = fixture(mask, VolumeClass::AgentPrivate).await?;
     let snapshot = host
         .snapshot_private_directory(
             &volume,

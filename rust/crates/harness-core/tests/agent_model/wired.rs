@@ -345,7 +345,11 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         fn now_unix_ms(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
-        fn sleep_until(&self, _: u64) -> BoxProviderFuture<'static, ()> {
+        fn sleep_until(
+            &self,
+            _: u64,
+        ) -> BoxProviderFuture<'static, std::result::Result<(), acyclic_actors::local::ClockError>>
+        {
             panic!("finite actor drain must not start a timer")
         }
     }
