@@ -13,6 +13,7 @@ pub struct ResourceAuthorization {
     pub(super) resource: Arc<ResourcePattern>,
     capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
     pub(super) action: &'static str,
+    custody: Option<Arc<dyn CredentialCustody>>,
 }
 impl ResourceAuthorization {
     pub(super) fn new(
@@ -28,7 +29,17 @@ impl ResourceAuthorization {
             }),
             capability: Arc::new(std::sync::Mutex::new(capability)),
             action: "fs/list",
+            custody: None,
         }
+    }
+    pub(super) fn with_custody(mut self, custody: Option<Arc<dyn CredentialCustody>>) -> Self {
+        self.custody = custody;
+        self
+    }
+    pub(super) fn custody_terminal(
+        &self,
+    ) -> Option<crate::BoxProviderFuture<'static, StreamError>> {
+        self.custody.as_ref().map(|custody| custody.terminated())
     }
     /// The channel's current credential; `renew` replaces it in place.
     pub(super) fn current(&self) -> Result<Arc<VerifiedCapability>, StreamError> {
@@ -78,6 +89,9 @@ impl ResourceAuthorization {
         attributes: &RecordAttributes,
         policy: PolicyDecision,
     ) -> Result<super::authority::TrustSnapshot, StreamError> {
+        if let Some(custody) = &self.custody {
+            custody.check()?;
+        }
         if !acyclic_auth::valid_resource(resource)
             || !acyclic_auth::authority::resource_matches(&self.resource, resource)
         {
@@ -367,5 +381,7 @@ pub(super) fn terminal(
     terminal: crate::BoxProviderFuture<'static, StreamError>,
     identity: wire::SessionChannel,
 ) -> Source {
-    Box::pin(stream::once(async move { (identity, Err(terminal.await)) }))
+    Box::pin(stream::once(async move {
+        (identity, Ok(Event::Terminated(terminal.await)))
+    }))
 }

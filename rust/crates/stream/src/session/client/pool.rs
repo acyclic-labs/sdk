@@ -635,6 +635,7 @@ impl Pool {
                 wire_codec::session::follow_data_sequence(follow, route.received, data)?
             }
             (Kind::ActorCall(_), Some(Item::ActorCall(_)))
+            | (Kind::ActorEnrollment(_), Some(Item::ActorCall(_)))
             | (Kind::ChildrenPage(_), Some(Item::ChildrenPage(_)))
             | (Kind::Heads(_), Some(Item::Heads(_))) => wire_codec::session::actor_call_sequence(
                 route.received,

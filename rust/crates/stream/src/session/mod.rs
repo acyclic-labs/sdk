@@ -27,9 +27,11 @@ pub use sources::model::{
 };
 
 mod calls;
+mod custody;
 mod pages;
 mod resources;
 pub use calls::{CallAuthorization, CallContribution, CallProvider};
+pub use custody::{CallReply, CredentialCustody, CredentialEnrollment};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
@@ -117,6 +119,9 @@ enum Event {
     /// Confirmed anchor and the applied revision the open was served at.
     Opened(Option<crate::CommitId>, Option<wire::Revision>),
     Record(crate::Record),
+    Enroll(CredentialEnrollment),
+    /// Original lifetime producer ended; discard pending data without credit.
+    Terminated(StreamError),
     Progress(wire::SessionWatermark),
     /// One fragment of a finite one-shot reply, carried in `item`.
     CallChunk {

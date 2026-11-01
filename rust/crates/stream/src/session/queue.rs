@@ -18,6 +18,48 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Ok(());
         };
         let (frame, key) = match record {
+            Ok(Event::Terminated(error)) => {
+                self.remove(identity.channel_id)?;
+                self.controls
+                    .retain(|frame| frame.channel_id != identity.channel_id);
+                self.controls.push_back(frame(
+                    identity.channel_id,
+                    identity.generation,
+                    Body::Closed(wire::SessionClosed {
+                        code: error.code().into(),
+                        message: String::new(),
+                    }),
+                ));
+                return Ok(());
+            }
+            Ok(Event::Enroll(enrollment)) => {
+                let slot = channel
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.enrollment)
+                    .ok_or(StreamError::InvalidResponse)?;
+                let custody = enrollment.custody.clone();
+                // Register the original lifetime before the final admission check.
+                let terminal = resources::terminal(custody.terminated(), identity);
+                if let Err(error) = self.authority.enroll(
+                    &mut self.slots,
+                    slot,
+                    identity,
+                    enrollment,
+                    self.channels.len(),
+                ) {
+                    return self.record(identity, Err(error));
+                }
+                let channel = self
+                    .channels
+                    .get_mut(&identity.channel_id)
+                    .ok_or(StreamError::Unavailable)?;
+                channel.revalidate = Some(Arc::new(move || custody.check()));
+                self.terminals.insert(identity, terminal, None);
+                self.deadline = self.authority.deadline(&mut self.slots);
+                self.refresh_source(identity.channel_id);
+                return Ok(());
+            }
             Ok(Event::Opened(preceding, applied)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,

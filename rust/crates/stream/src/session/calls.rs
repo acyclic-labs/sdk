@@ -10,9 +10,15 @@ pub struct CallAuthorization(
     pub(super) tokio::sync::watch::Receiver<super::authority::Credential>,
     pub(super) Arc<acyclic_auth::verify::VerifiedCapability>,
     pub(super) [u8; 32],
+    pub(super) bool,
 );
 
 impl CallAuthorization {
+    /// Whether this original call must contribute live credential custody.
+    /// An owner without an enrollment implementation must refuse before effects.
+    pub fn enrolling(&self) -> bool {
+        self.4
+    }
     /// Retain this admitted caller and its original live replacement/loss owner.
     /// The host must still apply its current command policy before issuance and
     /// dispatch. This contributes dependencies; it grants no new resource.
@@ -123,9 +129,10 @@ impl CallContribution {
     /// the producers. Dropping any producer returns a typed unavailable error.
     /// No task, readiness probe or independent trust source is started.
     pub fn terminated(&self) -> crate::BoxProviderFuture<'static, StreamError> {
+        let inherited = self.0.authorization.custody_terminal();
         let contribution = self.clone();
         let mut changed = self.0.changed.clone();
-        Box::pin(async move {
+        let original: crate::BoxProviderFuture<'static, StreamError> = Box::pin(async move {
             let expiry = contribution.0.authorization.expiry(contribution.0.expires);
             futures::pin_mut!(expiry);
             loop {
@@ -164,7 +171,15 @@ impl CallContribution {
                     }
                 }
             }
-        })
+        });
+        match inherited {
+            None => original,
+            Some(inherited) => Box::pin(async move {
+                match future::select(original, inherited).await {
+                    future::Either::Left((error, _)) | future::Either::Right((error, _)) => error,
+                }
+            }),
+        }
     }
 }
 
@@ -181,7 +196,7 @@ pub trait CallProvider: crate::ProviderPlatform + 'static {
         &self,
         invocation: Bytes,
         authorization: CallAuthorization,
-    ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>>;
+    ) -> crate::BoxProviderFuture<'static, Result<CallReply, StreamError>>;
 }
 
 pub(super) fn source(
@@ -190,11 +205,17 @@ pub(super) fn source(
     authorization: CallAuthorization,
     identity: wire::SessionChannel,
 ) -> Source {
-    reply(
-        identity,
-        Item::ActorCall,
-        Box::pin(async move { provider.call(invocation, authorization).await }),
-    )
+    let enrolling = authorization.enrolling();
+    reply_with_enrollment(identity, Item::ActorCall, enrolling, async move {
+        let caller = enrolling
+            .then(|| authorization.contribution())
+            .transpose()?;
+        let mut reply = provider.call(invocation, authorization).await?;
+        if let Some(caller) = caller {
+            reply.enrollment = reply.enrollment.map(|enrollment| enrollment.bind(caller));
+        }
+        Ok(reply)
+    })
 }
 
 /// One finite one-shot reply (an Actors call or a children page) on a channel.
@@ -203,6 +224,19 @@ pub(super) fn reply(
     item: fn(Bytes) -> Item,
     reply: crate::BoxProviderFuture<'static, Result<Bytes, StreamError>>,
 ) -> Source {
+    reply_with_enrollment(identity, item, false, async move {
+        reply.await.map(CallReply::new)
+    })
+}
+
+fn reply_with_enrollment(
+    identity: wire::SessionChannel,
+    item: fn(Bytes) -> Item,
+    enrolling: bool,
+    reply: impl std::future::Future<Output = Result<CallReply, StreamError>>
+    + crate::ProviderTask
+    + 'static,
+) -> Source {
     // Opening acknowledges admission, not completion. Dispatch itself starts
     // only when the shared scheduler admits the next source poll under credit.
     let opened = stream::once(future::ready(Ok(Event::Opened(None, None))));
@@ -210,26 +244,38 @@ pub(super) fn reply(
     // allocates no payload copies and the common session queue enforces credit.
     let result = stream::once(async move {
         let reply = reply.await?;
-        if reply.is_empty() || reply.len() > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES {
+        if reply.bytes.is_empty()
+            || reply.bytes.len() > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+        {
             return Err(StreamError::LimitExceeded);
+        }
+        if enrolling != reply.enrollment.is_some() {
+            return Err(StreamError::Unsupported);
         }
         Ok::<_, StreamError>(reply)
     })
     .map_ok(move |reply| {
+        let enrollment = reply.enrollment;
+        let reply = reply.bytes;
         let total = reply.len();
         stream::iter(
-            (0..reply.len())
-                .step_by(crate::MAX_RECORD_BYTES)
-                .enumerate()
-                .map(move |(index, start)| {
-                    let end = (start + crate::MAX_RECORD_BYTES).min(reply.len());
-                    Ok(Event::CallChunk {
-                        index: index as u64,
-                        total: total as u64,
-                        bytes: reply.slice(start..end),
-                        item,
-                    })
-                }),
+            enrollment
+                .into_iter()
+                .map(|enrollment| Ok(Event::Enroll(enrollment)))
+                .chain(
+                    (0..reply.len())
+                        .step_by(crate::MAX_RECORD_BYTES)
+                        .enumerate()
+                        .map(move |(index, start)| {
+                            let end = (start + crate::MAX_RECORD_BYTES).min(reply.len());
+                            Ok(Event::CallChunk {
+                                index: index as u64,
+                                total: total as u64,
+                                bytes: reply.slice(start..end),
+                                item,
+                            })
+                        }),
+                ),
         )
     })
     .try_flatten();

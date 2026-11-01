@@ -2,6 +2,37 @@
 use super::*;
 
 impl Client {
+    /// Invoke once and enroll its original result in an empty slot on this
+    /// physical session. No credential bytes are exported or retained for
+    /// reconnect. Session loss requires a fresh original admission.
+    pub async fn actor_call_enrolling(
+        &self,
+        invocation: &Bytes,
+        credential: u32,
+        enrollment_slot: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<Bytes, StreamError> {
+        if invocation.is_empty()
+            || invocation.len() > crate::MAX_COMMAND_BYTES
+            || maximum_reply_bytes == 0
+            || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+            || enrollment_slot == credential
+            || usize::try_from(enrollment_slot).map_err(|_| StreamError::Capacity)?
+                >= Limits::default().channels
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        self.reply(
+            Kind::ActorEnrollment(wire::SessionActorEnrollment {
+                invocation: invocation.clone(),
+                credential_slot: enrollment_slot,
+            }),
+            credential,
+            maximum_reply_bytes,
+        )
+        .await
+    }
+
     /// Invokes one canonical encoded Actors request on the shared session.
     ///
     /// The caller retains the invocation and its intent throughout this borrow.

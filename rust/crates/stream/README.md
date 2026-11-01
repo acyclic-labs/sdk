@@ -17,6 +17,23 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+`session::Client::actor_call_enrolling` uses the same pool and call dispatch,
+with an explicit empty destination credential slot. The original call reserves
+that slot; cancellation releases an unfinished reservation. Its `CallReply`
+contributes sealed evidence and `CredentialCustody`, which the session joins to
+the original caller's replacement and loss owner. Admission checks the complete
+acting principal before installing the slot and exposing any reply bytes.
+Closing the call after installation does not close the credential. Every follow
+and call using that slot retains its original custody, including raw Streams
+follows. Terminal owner loss discards queued data and closes without data credit.
+An enrolled slot cannot be replaced by ordinary credential registration; clear
+it explicitly first. Credential bytes are neither exported to the client nor
+cached for reconnection. A new physical session requires fresh enrollment.
+Hosts that do not implement enrollment refuse it before effects; an ordinary
+call result cannot silently satisfy an enrollment request. The issuer remains
+responsible for the exact recipient, resource, actions and selected scope's
+complete signed trust dependencies and current policy.
+
 An unexpected provider-follow EOF closes the original session channel with
 `Unavailable`. The server opens that provider follow once; a caller may create
 a new subscription explicitly. A completed caller-bounded range ends cleanly.

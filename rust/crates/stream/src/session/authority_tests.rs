@@ -310,6 +310,49 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
         change(block);
     })
 }
+
+#[test]
+fn credential_replacement_retires_the_previous_expiry_without_retaining_history() {
+    let state = State::new();
+    let auth = authority(state.clone());
+    let mut slots = Slots::default();
+    for extension in 1..=32 {
+        let expiry = signed::NOW + extension;
+        let bytes = token("allowed", |block| {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::ExpiresAtUnixSeconds(expiry),
+            })
+        });
+        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        assert_eq!(
+            auth.deadline(&mut slots),
+            Some(expiry),
+            "a replaced expiry must neither wake nor fence the new credential"
+        );
+        assert_eq!(
+            slots.expiries.len(),
+            1,
+            "cost control: no retained replacement history"
+        );
+    }
+    let earlier = signed::NOW + 1;
+    let bytes = token("allowed", |block| {
+        block.caveats.push(Caveat {
+            kind: CaveatKind::ExpiresAtUnixSeconds(earlier),
+        })
+    });
+    auth.register(&mut slots, 1, &bytes, 2).unwrap();
+    assert_eq!(auth.deadline(&mut slots), Some(earlier));
+    auth.register(&mut slots, 1, &[], 2).unwrap();
+    assert_eq!(auth.deadline(&mut slots), Some(signed::NOW + 32));
+    assert_eq!(slots.expiries.len(), 1);
+    state.publish(signed::Snapshot::default(), signed::NOW + 32);
+    assert_eq!(auth.deadline(&mut slots), None);
+    assert!(
+        bind(&auth, &slots, "allowed").is_err(),
+        "expired authority cannot be revived by retiring its alarm entry"
+    );
+}
 fn bind(
     authority: &Authority,
     slots: &Slots,

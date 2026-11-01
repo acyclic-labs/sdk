@@ -82,12 +82,69 @@ impl From<VerifyError> for Rejection {
         }
     }
 }
+impl From<StreamError> for Rejection {
+    fn from(error: StreamError) -> Self {
+        match error {
+            StreamError::Unavailable => Self::Unavailable,
+            _ => Self::Forbidden,
+        }
+    }
+}
 pub(super) type Credential = Result<Arc<VerifiedCapability>, Rejection>;
 
 impl Slots {
+    fn remove_expiry(&mut self, slot: u32) {
+        if let Some(entry) = self.entries.get(&slot)
+            && let Ok(capability) = &entry.credential
+        {
+            self.expiries
+                .remove(&(capability.effective().expires_at_unix_seconds(), slot));
+        }
+    }
+
+    pub(super) fn custody(&self, slot: u32) -> Option<Arc<dyn CredentialCustody>> {
+        self.entries
+            .get(&slot)
+            .and_then(|entry| entry.custody.clone())
+    }
+
+    pub(super) fn can_reserve(&self, slot: u32, maximum: usize) -> Result<(), StreamError> {
+        if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
+            return Err(StreamError::Capacity);
+        }
+        if self.entries.contains_key(&slot) {
+            return Err(StreamError::Conflict);
+        }
+        Ok(())
+    }
+
+    pub(super) fn reserve(&mut self, slot: u32, owner: wire::SessionChannel) {
+        self.entries.insert(
+            slot,
+            Slot {
+                revision: 0,
+                bytes: 0,
+                credential: Err(Rejection::Unavailable),
+                changes: Default::default(),
+                custody: None,
+                reservation: Some(owner),
+            },
+        );
+    }
+
+    pub(super) fn release(&mut self, slot: u32, owner: wire::SessionChannel) {
+        if self
+            .entries
+            .get(&slot)
+            .is_some_and(|entry| entry.reservation == Some(owner))
+        {
+            self.entries.remove(&slot);
+        }
+    }
+
     /// The credential bytes held once `slot` holds `length` of them.
     fn credential_bytes(&self, slot: u32, length: usize) -> Result<usize, StreamError> {
-        let previous = self.entries.get(&slot).map_or(0, |entry| entry.1);
+        let previous = self.entries.get(&slot).map_or(0, |entry| entry.bytes);
         self.credential_bytes
             .checked_sub(previous)
             .and_then(|current| current.checked_add(length))
@@ -98,18 +155,19 @@ impl Slots {
 
 #[derive(Default)]
 pub(super) struct Slots {
-    entries: BTreeMap<
-        u32,
-        (
-            u64,
-            usize,
-            Credential,
-            std::sync::OnceLock<tokio::sync::watch::Sender<Credential>>,
-        ),
-    >,
+    entries: BTreeMap<u32, Slot>,
     next_revision: u64,
     credential_bytes: usize,
-    expiries: std::collections::BinaryHeap<std::cmp::Reverse<(u64, u64, u32)>>,
+    expiries: BTreeSet<(u64, u32)>,
+}
+
+struct Slot {
+    revision: u64,
+    bytes: usize,
+    credential: Credential,
+    changes: std::sync::OnceLock<tokio::sync::watch::Sender<Credential>>,
+    custody: Option<Arc<dyn CredentialCustody>>,
+    reservation: Option<wire::SessionChannel>,
 }
 
 pub(super) struct Binding {
@@ -120,10 +178,15 @@ pub(super) struct Binding {
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
     resource_authorization: Option<ResourceAuthorization>,
+    pub(super) enrollment: Option<u32>,
+    custody: Option<Arc<dyn CredentialCustody>>,
     additional: Vec<(&'static str, String)>,
 }
 
 impl Binding {
+    pub(super) fn custody(&self) -> Option<Arc<dyn CredentialCustody>> {
+        self.custody.clone()
+    }
     /// Finite one-shot replies (Actors calls and children pages) carry no
     /// record filter and get no credit-free lookahead.
     pub(super) fn is_reply(&self) -> bool {
@@ -144,6 +207,66 @@ pub(super) fn stream_resource(path: Option<&StreamPath>) -> String {
     )
 }
 impl Authority {
+    pub(super) fn enroll(
+        &self,
+        slots: &mut Slots,
+        slot: u32,
+        owner: wire::SessionChannel,
+        enrollment: CredentialEnrollment,
+        channels: usize,
+    ) -> Result<(), StreamError> {
+        if !slots
+            .entries
+            .get(&slot)
+            .is_some_and(|entry| entry.reservation == Some(owner))
+        {
+            return Err(StreamError::Conflict);
+        }
+        let snapshot = self.snapshot().map_err(|reason| match reason {
+            Rejection::Unavailable => StreamError::Unavailable,
+            _ => StreamError::AccessDenied,
+        })?;
+        let capability = enrollment.capability;
+        if !capability.is_sealed() {
+            return Err(StreamError::AccessDenied);
+        }
+        let caller = enrollment
+            .caller
+            .as_ref()
+            .ok_or(StreamError::InvalidResponse)?;
+        if capability.effective().principal() != caller.principal() {
+            return Err(StreamError::AccessDenied);
+        }
+        self.check_at(&capability, Target::Context, false, channels, &snapshot)
+            .map_err(|reason| match reason {
+                Rejection::Unavailable => StreamError::Unavailable,
+                _ => StreamError::AccessDenied,
+            })?;
+        let length = capability.encoded_len();
+        let bytes = slots.credential_bytes(slot, length)?;
+        let revision = slots
+            .next_revision
+            .checked_add(1)
+            .ok_or(StreamError::Capacity)?;
+        enrollment.custody.check()?;
+        let expires = capability.effective().expires_at_unix_seconds();
+        slots.entries.insert(
+            slot,
+            Slot {
+                revision,
+                bytes: length,
+                credential: Ok(Arc::new(capability)),
+                changes: Default::default(),
+                custody: Some(enrollment.custody),
+                reservation: None,
+            },
+        );
+        slots.next_revision = revision;
+        slots.credential_bytes = bytes;
+        slots.expiries.insert((expires, slot));
+        Ok(())
+    }
+
     /// Binds a canonical authenticated audience and presenting account.
     /// Credentials are this SDK's signed capability envelope, verified
     /// against `state`'s current trust at its protected time.
@@ -185,8 +308,17 @@ impl Authority {
         if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
             return Err(StreamError::Capacity);
         }
+        if !bytes.is_empty()
+            && slots
+                .entries
+                .get(&slot)
+                .is_some_and(|entry| entry.custody.is_some() || entry.reservation.is_some())
+        {
+            return Err(StreamError::Conflict);
+        }
         let credential_bytes = slots.credential_bytes(slot, bytes.len())?;
         if bytes.is_empty() {
+            slots.remove_expiry(slot);
             slots.entries.remove(&slot);
             slots.credential_bytes = credential_bytes;
             return Ok(());
@@ -200,50 +332,35 @@ impl Authority {
             .next_revision
             .checked_add(1)
             .ok_or(StreamError::Capacity)?;
+        slots.remove_expiry(slot);
         slots.next_revision = revision;
         if let Ok(capability) = &credential {
-            slots.expiries.push(std::cmp::Reverse((
-                capability.effective().expires_at_unix_seconds(),
-                revision,
-                slot,
-            )));
+            slots
+                .expiries
+                .insert((capability.effective().expires_at_unix_seconds(), slot));
         }
         match slots.entries.entry(slot) {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
                 let current = entry.get_mut();
-                if let Some(changes) = current.3.get() {
+                if let Some(changes) = current.changes.get() {
                     changes.send_replace(credential.clone());
                 }
-                current.0 = revision;
-                current.1 = bytes.len();
-                current.2 = credential;
+                current.revision = revision;
+                current.bytes = bytes.len();
+                current.credential = credential;
             }
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert((
+                entry.insert(Slot {
                     revision,
-                    bytes.len(),
+                    bytes: bytes.len(),
                     credential,
-                    std::sync::OnceLock::new(),
-                ));
+                    changes: Default::default(),
+                    custody: None,
+                    reservation: None,
+                });
             }
         }
         slots.credential_bytes = credential_bytes;
-        let expiry_capacity = maximum.saturating_mul(2);
-        if slots.expiries.len() > expiry_capacity {
-            slots.expiries = slots
-                .entries
-                .iter()
-                .filter_map(|(slot, (revision, _, credential, _))| {
-                    credential.as_ref().ok().map(|capability| {
-                        std::cmp::Reverse((
-                            capability.effective().expires_at_unix_seconds(),
-                            *revision,
-                            *slot,
-                        ))
-                    })
-                })
-                .collect();
-        }
         Ok(())
     }
     fn authorize(
@@ -252,11 +369,14 @@ impl Authority {
         binding: &Binding,
         channels: usize,
     ) -> Result<(), Rejection> {
+        if let Some(custody) = &binding.custody {
+            custody.check().map_err(Rejection::from)?;
+        }
         let capability = slots
             .entries
             .get(&binding.slot)
             .ok_or(Rejection::Forbidden)?
-            .2
+            .credential
             .as_ref()
             .map_err(|error| *error)?;
         let action = binding
@@ -307,6 +427,17 @@ impl Authority {
         channels: usize,
     ) -> Result<(), Rejection> {
         let snapshot = self.snapshot()?;
+        self.check_at(capability, target, scoped, channels, &snapshot)
+    }
+
+    fn check_at(
+        &self,
+        capability: &VerifiedCapability,
+        target: Target<'_>,
+        scoped: bool,
+        channels: usize,
+        snapshot: &TrustSnapshot,
+    ) -> Result<(), Rejection> {
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
             .map_err(|_| Rejection::Forbidden)?;
         let usage = acyclic_auth::contract::Limits {
@@ -369,7 +500,7 @@ impl Authority {
             .entries
             .get(&binding.slot)
             .ok_or(Rejection::Forbidden)?
-            .2
+            .credential
             .as_ref()
             .map_err(|error| *error)?;
         crate::FollowFilter::authorized(binding.requested.clone(), capability)
@@ -384,12 +515,18 @@ impl Authority {
         channels: usize,
     ) -> Result<(Binding, crate::FollowFilter), Rejection> {
         let mut binding = Binding {
-            credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
+            credential_revision: slots
+                .entries
+                .get(&slot)
+                .ok_or(Rejection::Forbidden)?
+                .revision,
             slot,
             resource: Some(stream_resource(Some(path))),
             requested,
             filter_digest: [0; 32],
             resource_authorization: None,
+            enrollment: None,
+            custody: slots.custody(slot),
             additional: Vec::new(),
         };
         let filter = self.filter(slots, &binding, channels)?;
@@ -407,10 +544,15 @@ impl Authority {
         if !resource.starts_with("fs:/") || !acyclic_auth::valid_resource(&resource) {
             return Err(Rejection::Forbidden);
         }
-        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let Slot {
+            revision,
+            credential,
+            ..
+        } = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let authorization =
-            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability))
+                .with_custody(slots.custody(slot));
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
@@ -418,6 +560,8 @@ impl Authority {
             requested,
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            enrollment: None,
+            custody: slots.custody(slot),
             additional: Vec::new(),
         };
         let filter = self.filter(slots, &binding, channels)?;
@@ -435,7 +579,7 @@ impl Authority {
             .entries
             .get(&binding.slot)
             .ok_or(Rejection::Forbidden)?
-            .0;
+            .revision;
         if revision == binding.credential_revision {
             return self.authorize(slots, binding, channels);
         }
@@ -450,7 +594,7 @@ impl Authority {
                 .entries
                 .get(&binding.slot)
                 .ok_or(Rejection::Forbidden)?
-                .2
+                .credential
                 .as_ref()
                 .map_err(|error| *error)?;
             authorization.renew(Arc::clone(capability))?;
@@ -468,10 +612,15 @@ impl Authority {
         if !acyclic_auth::valid_resource(&resource) || !resource.starts_with("actors:/") {
             return Err(Rejection::Forbidden);
         }
-        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let Slot {
+            revision,
+            credential,
+            ..
+        } = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let mut authorization =
-            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability))
+                .with_custody(slots.custody(slot));
         authorization.action = "actors/invoke";
         let mut binding = Binding {
             credential_revision: *revision,
@@ -480,6 +629,8 @@ impl Authority {
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            enrollment: None,
+            custody: slots.custody(slot),
             additional: Vec::new(),
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
@@ -487,7 +638,7 @@ impl Authority {
             .entries
             .get(&slot)
             .ok_or(Rejection::Forbidden)?
-            .3
+            .changes
             .get_or_init(|| tokio::sync::watch::channel(credential.clone()).0)
             .subscribe();
         let filter_digest = binding.filter_digest;
@@ -498,6 +649,7 @@ impl Authority {
                 changes,
                 Arc::clone(capability),
                 filter_digest,
+                false,
             ),
         ))
     }
@@ -512,11 +664,16 @@ impl Authority {
         parent: Option<&StreamPath>,
         channels: usize,
     ) -> Result<(Binding, super::pages::Visibility), Rejection> {
-        let (revision, _, credential, _) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+        let Slot {
+            revision,
+            credential,
+            ..
+        } = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
         let capability = credential.as_ref().map_err(|error| *error)?;
         let resource = stream_resource(parent);
         let mut authorization =
-            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
+            ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability))
+                .with_custody(slots.custody(slot));
         authorization.action = "streams/list";
         let mut binding = Binding {
             credential_revision: *revision,
@@ -525,6 +682,8 @@ impl Authority {
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            enrollment: None,
+            custody: slots.custody(slot),
             additional: Vec::new(),
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
@@ -557,8 +716,11 @@ impl Authority {
             let authorization = visibility.authorization.clone();
             (binding, authorization, Some(visibility))
         } else {
-            let (revision, _, credential, _) =
-                slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+            let Slot {
+                revision,
+                credential,
+                ..
+            } = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
             let capability = credential.as_ref().map_err(|error| *error)?;
             let primary = request
                 .paths
@@ -569,7 +731,8 @@ impl Authority {
                 Arc::clone(self),
                 resource.clone(),
                 Arc::clone(capability),
-            );
+            )
+            .with_custody(slots.custody(slot));
             authorization.action = "streams/read";
             let binding = Binding {
                 credential_revision: *revision,
@@ -578,6 +741,8 @@ impl Authority {
                 requested: wire::SessionFilter::default(),
                 filter_digest: [0; 32],
                 resource_authorization: Some(authorization.clone()),
+                enrollment: None,
+                custody: slots.custody(slot),
                 additional: Vec::new(),
             };
             (binding, authorization, None)
@@ -597,16 +762,11 @@ impl Authority {
     pub(super) fn deadline(&self, slots: &mut Slots) -> Option<u64> {
         let now = self.snapshot().ok()?.now_unix_seconds;
         loop {
-            let &std::cmp::Reverse((expiry, revision, slot)) = slots.expiries.peek()?;
-            if expiry > now
-                && slots
-                    .entries
-                    .get(&slot)
-                    .is_some_and(|entry| entry.0 == revision)
-            {
+            let &(expiry, _) = slots.expiries.first()?;
+            if expiry > now {
                 return Some(expiry);
             }
-            slots.expiries.pop();
+            slots.expiries.pop_first();
         }
     }
     /// Registers the next trust change, before the caller checks authority.

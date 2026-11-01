@@ -48,7 +48,7 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
     ProviderPlatform, RevisionCut, StreamError, StreamPath,
-    session::{CallAuthorization, CallProvider},
+    session::{CallAuthorization, CallProvider, CallReply},
 };
 use bytes::Bytes;
 use std::sync::Arc;
@@ -1030,10 +1030,13 @@ where
         &self,
         invocation: Bytes,
         authorization: CallAuthorization,
-    ) -> BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+    ) -> BoxProviderFuture<'static, Result<CallReply, StreamError>> {
         let admitted = self.admit(&invocation);
         let server = self.this.upgrade();
         Box::pin(async move {
+            if authorization.enrolling() {
+                return Err(StreamError::Unsupported);
+            }
             let call = admitted?;
             let server = server.ok_or(StreamError::Unavailable)?;
             let principal = authorization.principal()?;
@@ -1072,6 +1075,7 @@ where
                         Err(error) => {
                             return call
                                 .reply(&Err(error))
+                                .map(CallReply::new)
                                 .map_err(|_| StreamError::LimitExceeded);
                         }
                     }
@@ -1100,7 +1104,9 @@ where
                 let policy = server.platform.policy(&principal, call.command()).await?;
                 authorization.authorize(&server.resource, &[], &attributes, policy)?;
             }
-            call.reply(&result).map_err(|_| StreamError::LimitExceeded)
+            call.reply(&result)
+                .map(CallReply::new)
+                .map_err(|_| StreamError::LimitExceeded)
         })
     }
 }
