@@ -468,7 +468,7 @@ pub(super) fn append(
     retain(scope, &narrowed, &mut None)
 }
 
-fn usage() -> Limits {
+pub(super) fn usage() -> Limits {
     Limits {
         rps: None,
         burst: None,

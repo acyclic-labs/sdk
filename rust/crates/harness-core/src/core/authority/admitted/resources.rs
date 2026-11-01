@@ -126,7 +126,7 @@ impl AdmittedAuthority {
                         now_unix_seconds: self.caller.verifier.public.now(),
                         keys: &[],
                         attributes: &Default::default(),
-                        usage: &Default::default(),
+                        usage: &workload::usage(),
                         cpu_millis: 0,
                         memory_bytes: 0,
                     },
