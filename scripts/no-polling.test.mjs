@@ -44,6 +44,12 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'fn wait() { changed.wait_timeout_ms(state, 25); }',
   'fn wait() { std::thread::park_timeout_ms(25); }',
   'fn wait() { unsafe { libc::pthread_cond_timedwait(condition, mutex, deadline); } }',
+  'fn wait() { unsafe { libc::epoll_wait(queue, events, count, 25); } }',
+  'use libc::epoll_pwait2 as probe; fn wait() { unsafe { probe(queue, events, count, deadline, mask); } }',
+  'fn wait() { let probe = libc::ppoll; unsafe { probe(descriptors, count, deadline, mask); } }',
+  'fn wait() { unsafe { libc::pselect(count, reads, writes, errors, deadline, mask); } }',
+  'fn wait() { unsafe { libc::kevent(queue, changes, change_count, events, count, deadline); } }',
+  'fn wait() { unsafe { libc::kevent64(queue, changes, change_count, events, count, flags, deadline); } }',
   'const FLUSH_INTERVAL: u64 = 10;',
  ]) assert.ok(newPollingSites(rust, '', source).length, source);
  for (const source of [
@@ -278,6 +284,16 @@ test('legitimate deadline and transport sites require exact typed dispositions',
   'drop the original sender before receive and require Disconnected'));
  assert.deepEqual(newPollingSites(rust, '', source, accepted), []);
  assert.ok(newPollingSites(rust, '', source.replace('caller_deadline', 'readiness_deadline'), accepted).length);
+ // An untimed OS queue wait still needs its exact producer and failure terminal.
+ const event = 'fn receive() { unsafe { libc::epoll_wait(queue, events, count, -1); } }';
+ const eventSites = pollingSites(rust, event);
+ assert.ok(eventSites.length);
+ const native = eventSites.map(site => disposition(site, 'event-wait',
+  'registered original descriptor completion', 'original queue failure or descriptor cancellation',
+  'invalidate the original queue and require its native error'));
+ assert.deepEqual(newPollingSites(rust, '', event, native), []);
+ assert.ok(newPollingSites(rust, '', event.replace('-1', '25'), native).length);
+ assert.deepEqual(pollingSites(rust, 'fn drive(future: Pin<&mut F>, cx: &mut Context) { Future::poll(future, cx); }'), []);
 });
 
 test('event and finite-work loops have no file or helper exemption', () => {
