@@ -296,7 +296,9 @@ impl ToolProvider for Identities {
 
 pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
     let options = Options::parse(arguments).map_err(io::Error::other)?;
-    let server = Server::new(options).map_err(io::Error::other)?;
+    let server = Arc::new(tokio::sync::Mutex::new(
+        Server::new(options).map_err(io::Error::other)?,
+    ));
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         serve_on(server, runtime, std::io::stdin(), std::io::stdout())
@@ -307,13 +309,13 @@ pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
 
 /// Serves `server` over `input` and `output`, then ends its operation.
 fn serve_on(
-    server: Server,
+    server: Arc<tokio::sync::Mutex<Server>>,
     runtime: tokio::runtime::Handle,
     input: impl io::Read + Send + 'static,
     output: impl io::Write + Send + 'static,
 ) -> io::Result<()> {
     let mut identities = Identities {
-        server: Arc::new(tokio::sync::Mutex::new(server)),
+        server,
         runtime,
         active: None,
         calls: 0,
@@ -788,30 +790,6 @@ mod tests {
         }
     }
 
-    async fn wait_for_rotated_credentials(path: &Path) {
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                if fs::read(path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .and_then(|value| {
-                        value
-                            .pointer("/session/refresh_token")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .as_deref()
-                    == Some("rotated")
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("credentials saved while stdout remains pending");
-    }
-
     #[tokio::test]
     async fn interrupted_pending_response_keeps_approval_for_retry() {
         let _clock = crate::tests::poll_clock::Clock::start();
@@ -890,6 +868,7 @@ mod tests {
 
     /// Client end of a served identity transport: requests in, replies out.
     struct Client {
+        server: Arc<tokio::sync::Mutex<Server>>,
         requests: Option<std::sync::mpsc::Sender<Vec<u8>>>,
         replies: tokio::sync::mpsc::UnboundedReceiver<Value>,
         served: tokio::task::JoinHandle<io::Result<()>>,
@@ -1025,8 +1004,11 @@ mod tests {
             replies: sent,
         };
         let runtime = tokio::runtime::Handle::current();
+        let server = Arc::new(tokio::sync::Mutex::new(server));
+        let observed = Arc::clone(&server);
         let served = tokio::task::spawn_blocking(move || serve_on(server, runtime, input, writer));
         let client = Client {
+            server: observed,
             requests: Some(requests),
             replies,
             served,
@@ -1222,7 +1204,17 @@ mod tests {
                 client.close();
             }
             released.notify_one();
-            wait_for_rotated_credentials(&path).await;
+            // The consumed HTTP exchange proves the original operation holds
+            // this mutex; releasing it follows its credential commit.
+            let completed = client.server.lock().await;
+            let credentials: Value =
+                serde_json::from_slice(&fs::read(&path).expect("saved credentials"))
+                    .expect("credential document");
+            assert_eq!(
+                credentials.pointer("/session/refresh_token"),
+                Some(&json!("rotated"))
+            );
+            drop(completed);
             assert!(!client.served.is_finished());
             client.close();
             output.pause(false);
