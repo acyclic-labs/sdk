@@ -149,6 +149,30 @@ impl ToolExecutor for WorkspaceExecutor {
         }
     }
 
+    fn dispatch(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<crate::tool::Dispatch>> {
+        let Some(context) = context else {
+            return Ok(None);
+        };
+        if super::bounds::operands(
+            self.name,
+            &invocation.arguments,
+            super::bounds::limits(context),
+        )
+        .is_err()
+        {
+            // Ordinary execution returns this same rejection to the model.
+            // Nothing may be handed to a remote target before that verdict.
+            return Ok(None);
+        }
+        target(context, invocation, None)?
+            .executor()
+            .dispatch(invocation, Some(context))
+    }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,
@@ -163,11 +187,11 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
-            let target = target(&context, &invocation, None)?;
             let limits = super::bounds::limits(&context);
             if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
                 return Ok(super::rejected_input(error));
             }
+            let target = target(&context, &invocation, None)?;
             let result = target.executor().execute(invocation, Some(context)).await?;
             super::bounds::result(self.name, echo(self.name, &target, result)?.0, limits.0)
         })
@@ -192,14 +216,17 @@ impl ToolExecutor for WorkspaceExecutor {
                 return Err(Error::Indeterminate(invocation.operation_id));
             }
             self.authorize(None, Some(&context), &invocation, None)?;
+            let limits = super::bounds::limits(&context);
+            if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
+                return Ok(Some(super::rejected_input(error)));
+            }
             let target = target(&context, &invocation, None)?;
-            let maximum = super::bounds::limits(&context).0;
             target
                 .executor()
                 .reconcile(invocation, Some(context))
                 .await?
                 .map(|result| {
-                    super::bounds::result(self.name, echo(self.name, &target, result)?.0, maximum)
+                    super::bounds::result(self.name, echo(self.name, &target, result)?.0, limits.0)
                 })
                 .transpose()
         })

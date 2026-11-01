@@ -1019,6 +1019,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     invocation: invocation_ref,
+                    publication: None,
                 },
                 None,
             )?

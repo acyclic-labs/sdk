@@ -1129,11 +1129,11 @@ where
                 Some(kept) => kept,
                 None => match self.executors.roster(agent) {
                     Some(roster) => {
-                        let (bytes, digest) = roster.canonical().map_err(agent_error)?;
-                        if context.contains_roster(&bytes)? {
+                        let (bytes, digest) = roster.canonical();
+                        if context.contains_roster(bytes)? {
                             None
                         } else {
-                            Some((files.stage_roster(digest, &bytes).await?, digest))
+                            Some((files.stage_roster(digest, bytes).await?, digest))
                         }
                     }
                     None => None,

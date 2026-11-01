@@ -431,6 +431,19 @@ struct Entry {
 
 type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result<(), Arc<Error>>>>;
 
+impl crate::guest::SocketTerminal for CloseCompletion {
+    fn completion(
+        self: Arc<Self>,
+    ) -> BoxProviderFuture<'static, Result<(), Arc<crate::guest::SocketTerminalError>>> {
+        Box::pin(async move {
+            self.as_ref()
+                .clone()
+                .await
+                .map_err(|error| error as Arc<crate::guest::SocketTerminalError>)
+        })
+    }
+}
+
 impl Entry {
     fn close_completion(&mut self) -> CloseCompletion {
         if let Some(completion) = &self.completion {
@@ -1506,6 +1519,16 @@ impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> SocketHost for Sockets<P> {
+    fn web_socket_terminal(
+        &self,
+        actor: &ActorReference,
+        socket: &WebSocketId,
+    ) -> Result<Arc<dyn crate::guest::SocketTerminal>, GuestError> {
+        self.shared.with_entry(actor, socket, |entry| {
+            Ok(Arc::new(entry.close_completion()) as Arc<dyn crate::guest::SocketTerminal>)
+        })
+    }
+
     fn accept_web_socket(
         &self,
         actor: &ActorReference,

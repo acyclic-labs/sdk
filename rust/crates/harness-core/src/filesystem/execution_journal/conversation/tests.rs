@@ -138,13 +138,13 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
     let epoch_record = OwnedBytes::from_static(b"original epoch checkpoint");
     let source_record = OwnedBytes::from_static(b"original publication cursor");
     let contributions = [
-        Contribution {
+        Contribution::Conditioned {
             condition: CommitCondition::Absent {
                 path: epoch.clone(),
             },
             record: &epoch_record,
         },
-        Contribution {
+        Contribution::Conditioned {
             condition: CommitCondition::Absent {
                 path: source.clone(),
             },
@@ -164,12 +164,16 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
 
     let changed_record = OwnedBytes::from_static(b"substituted epoch checkpoint");
     let substituted = [
-        Contribution {
-            condition: contributions[0].condition.clone(),
+        Contribution::Conditioned {
+            condition: CommitCondition::Absent {
+                path: epoch.clone(),
+            },
             record: &changed_record,
         },
-        Contribution {
-            condition: contributions[1].condition.clone(),
+        Contribution::Conditioned {
+            condition: CommitCondition::Absent {
+                path: source.clone(),
+            },
             record: &source_record,
         },
     ];
@@ -180,15 +184,17 @@ async fn envelope_contributions_share_original_cut_and_reject_retry_substitution
             .is_err()
     );
     let changed_fence = [
-        Contribution {
+        Contribution::Conditioned {
             condition: CommitCondition::Tail {
                 path: epoch.clone(),
                 expected: 0,
             },
             record: &epoch_record,
         },
-        Contribution {
-            condition: contributions[1].condition.clone(),
+        Contribution::Conditioned {
+            condition: CommitCondition::Absent {
+                path: source.clone(),
+            },
             record: &source_record,
         },
     ];

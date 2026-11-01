@@ -372,6 +372,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 step: 0,
                 call_id: invocation.call_id.clone(),
                 invocation: start,
+                publication: None,
             },
             None,
         )?
@@ -516,8 +517,8 @@ struct Devices {
 }
 
 impl TargetResolver for Devices {
-    fn roster(&self) -> &Arc<crate::agent::Roster> {
-        &self.roster
+    fn roster(&self) -> Arc<crate::agent::Roster> {
+        Arc::clone(&self.roster)
     }
 
     fn resolve(&self, name: Option<&str>) -> Result<Arc<Target>> {
@@ -528,6 +529,14 @@ impl TargetResolver for Devices {
             .cloned()
             .ok_or_else(|| Error::Invalid("selected device is absent".into()))
     }
+
+    fn recover(&self, name: &str) -> Result<Arc<Target>> {
+        self.devices
+            .iter()
+            .find(|device| device.record.name == name)
+            .cloned()
+            .ok_or_else(|| Error::Invalid("original device is absent".into()))
+    }
 }
 
 // Exercise the durable stock claim and real workspace router, with a lost
@@ -535,7 +544,8 @@ impl TargetResolver for Devices {
 #[tokio::test]
 async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<()> {
     for (name, alias) in [("shell", None), ("shell", Some("user:ana")), ("fs", None)] {
-        for absent in [false, true] {
+        for state in ["online", "offline", "absent"] {
+            let absent = state == "absent";
             let scope = RuntimeScope::new(
                 Capabilities::new([crate::contract::capability::tool_call(name)]),
                 Limits::default(),
@@ -566,10 +576,13 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                 task.harness = crate::runtime::Bindings {
                     scope: scope.clone(),
                     targets: Some(Arc::new(Devices {
-                        roster: Arc::new(crate::agent::Roster {
-                            home: devices[0].record.name.clone(),
-                            targets: devices.iter().map(|device| device.record.clone()).collect(),
-                        }),
+                        roster: Arc::new(
+                            crate::agent::Roster::new(
+                                &devices[0].record.name,
+                                devices.iter().map(|device| device.record.clone()).collect(),
+                            )
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        ),
                         devices,
                     })),
                     ..crate::runtime::Bindings::local()
@@ -658,7 +671,14 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
 
             let mut changed = vec![new.clone()];
             if !absent {
-                changed.push(old.clone());
+                let mut record = old.record.clone();
+                if state == "offline" {
+                    record.state = crate::agent::TargetState::Offline;
+                }
+                changed.push(Arc::new(Target {
+                    record,
+                    executor: original.clone(),
+                }));
             }
             let second = executor
                 .clone()

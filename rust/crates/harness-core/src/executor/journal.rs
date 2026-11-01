@@ -200,6 +200,23 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Appends the original remote dispatch in the tool claim's commit.
+    fn dispatch_if_tail<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _expected_tail: u64,
+        _claim_id: &'a str,
+        _event: &'a mut ExecutionEvent,
+        _dispatch: &'a crate::tool::Dispatch,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal cannot dispatch with a claim",
+        ))
+    }
+
     /// Stages immutable private bytes before any referring observation is appended.
     fn stage<'a>(
         &'a self,

@@ -229,9 +229,9 @@ impl TurnHost for Announcing {
                 .lock()
                 .expect("lock")
                 .announcement(agent.roster)
-                .map_err(|error| CoreError::Invalid(error.to_string()))?;
+                .map(|(_, digest)| digest);
             open.roster = match announced {
-                Some((_, digest)) => Some((file("targets.json")?, digest)),
+                Some(digest) => Some((file("targets.json")?, digest)),
                 None => None,
             };
             Ok(open)
@@ -248,6 +248,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
         os: os.into(),
         shell: "bash".into(),
         path_style: PathStyle::Posix,
+        device_kind: DeviceKind::Desktop,
         state: TargetState::Online,
     };
     let roster = |os| Roster::home(device(os)).expect("valid roster");
@@ -288,7 +289,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             .collect::<std::result::Result<_, _>>()?;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].targets.is_some(), announced, "turn {sequence}");
-        let digest = roster(os).canonical().map(|(_, digest)| digest).ok();
+        let digest = Some(roster(os).canonical().1);
         assert_eq!(settled.state.roster, digest);
         state = settled.state;
     }

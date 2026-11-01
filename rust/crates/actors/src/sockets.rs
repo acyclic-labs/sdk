@@ -278,6 +278,14 @@ fn close_code(code: u32) -> Result<u16, GuestError> {
 }
 
 impl SocketFrame {
+    /// Size of a text message's canonical channel frame, without copying or
+    /// encoding its payload. Includes the protobuf tag and length prefix.
+    /// Returns `None` if the complete length cannot be represented.
+    #[must_use]
+    pub fn text_frame_len(text_bytes: usize) -> Option<usize> {
+        text_bytes.checked_add(1 + prost::encoding::encoded_len_varint(text_bytes as u64))
+    }
+
     /// Canonical channel encoding.
     pub fn encode(&self) -> Bytes {
         let kind = match self {

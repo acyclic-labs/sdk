@@ -210,6 +210,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
             step: 7,
             call_id: "call".into(),
             invocation: payload.clone(),
+            publication: None,
         };
         journal.append(operation, "tool", &started, None)?.await?;
         *journal.verified.lock().await = SummaryCache::default();
