@@ -40,7 +40,13 @@ alias or old-data migration is installed.
 
 ## Native JavaScript composition
 
-The stable native catalog includes `run_js { code }`, backed by embedded QuickJS.
+The stable native catalog includes `code { code }`, backed by embedded QuickJS
+on every provider protocol. Native tool declarations remain fixed when dynamic
+capabilities change. A `tools.changed` context notice after the active input
+contains the turn's current granted tools and their original schemas. The notice
+retains its position as later steps append calls/results, preserving that prefix.
+New turns use the latest bound registry; each program binds a fresh table from
+that same snapshot. The turn's admitted tools remain pinned for receipt replay.
 Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
@@ -57,11 +63,15 @@ resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
 
-The final expression becomes `value`; an uncaught exception becomes `error`.
-Both outcomes include `calls` (tool name, `ok`, input/output JSON byte counts)
-and `omitted_calls`. Results occupy at most a 64 KiB output page, further bounded
-by the admitted render budget. Oversized final values become
-`{ truncated: true, bytes }`; overflowed log entries increment `omitted_calls`.
+The model receives only the final expression, or `{ error }` for an uncaught
+exception. `Promise.all` submits independent calls in one program; bounded host
+credit feeds them to ordinary settlement. Each settled call publishes a
+`code.call` JSON log under the turn's existing `tools/.results/` directory before
+its promise resolves. Follow that directory to stream tool name, success/failure
+and input/output JSON byte counts, associated with the parent call and ordinal.
+Logs stay in files without accumulating in the result or being omitted by a
+count limit. Results use the caller's admitted render budget; oversized final
+values become `{ truncated: true, bytes }`.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
 
@@ -74,7 +84,7 @@ bytecode, including infinite loops. Outstanding tool calls settle through their
 ordinary cancellation contracts before the composition retires.
 CPU polls share the native blocking pool; waiting on a tool releases the thread.
 If a program still awaits a promise after all JavaScript jobs and bound tool calls
-retire, it returns an error with its settled call log. With no other host event
+retire, it returns an error; settled call logs remain in files. With no other host event
 sources, that promise has no remaining producer; no timeout or periodic check is
 needed to detect it.
 

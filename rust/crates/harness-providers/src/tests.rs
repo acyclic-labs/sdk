@@ -383,6 +383,71 @@ pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest,
     Ok((prepared, dispatch))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol() -> Result<()> {
+    let code = acyclic_harness_core::tools::catalog()
+        .find(|tool| tool.name == "code")
+        .unwrap()
+        .definition()?;
+    for adapter in [
+        Adapter::Chat,
+        Adapter::Responses,
+        Adapter::Anthropic,
+        Adapter::Gemini,
+    ] {
+        let (provider, _) = provider(adapter, 200);
+        let (prepared, _) = request(&provider)?;
+        let mut request = prepared.request().clone();
+        request.tools = vec![code.clone()];
+        let original = projection::body(&provider, &request)?;
+        request.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text(json!({"kind":"tools.changed", "tools":[{"name":"late", "input_schema":{"type":"object"}}]}).to_string()),
+        });
+        let changed = projection::body(&provider, &request)?;
+        assert_eq!(original["tools"], changed["tools"]);
+        let (name, schema) = match adapter {
+            Adapter::Chat => (
+                &changed["tools"][0]["function"]["name"],
+                &changed["tools"][0]["function"]["parameters"],
+            ),
+            Adapter::Responses => (
+                &changed["tools"][0]["name"],
+                &changed["tools"][0]["parameters"],
+            ),
+            Adapter::Anthropic => {
+                assert_eq!(original["system"], changed["system"]);
+                (
+                    &changed["tools"][0]["name"],
+                    &changed["tools"][0]["input_schema"],
+                )
+            }
+            Adapter::Gemini => {
+                assert_eq!(original["systemInstruction"], changed["systemInstruction"]);
+                (
+                    &changed["tools"][0]["functionDeclarations"][0]["name"],
+                    &changed["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"],
+                )
+            }
+        };
+        assert_eq!(name, "code");
+        assert_eq!(schema["properties"]["code"]["type"], "string");
+        // The dynamic capability is context, never another native declaration.
+        assert!(
+            !serde_json::to_string(&changed["tools"])
+                .unwrap()
+                .contains("late")
+        );
+        assert!(
+            serde_json::to_string(&changed)
+                .unwrap()
+                .contains("tools.changed")
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Result<()> {
     for (adapter, _) in fixtures() {

@@ -11,7 +11,7 @@ pub struct ContextInsertion {
 }
 
 impl ContextInsertion {
-    pub(super) fn insert(
+    pub(crate) fn insert(
         self,
         context: &mut Context,
         prefix_messages: usize,

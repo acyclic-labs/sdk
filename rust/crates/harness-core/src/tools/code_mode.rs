@@ -29,14 +29,15 @@ impl crate::tool::ToolProjection for CodeMode {
 }
 
 pub(crate) fn output(value: &serde_json::Value) -> Result<&serde_json::Value> {
-    if value.get("version") != Some(&serde_json::json!(1)) {
+    if value.get("version") != Some(&serde_json::json!(2)) {
         return Err(crate::Error::Invalid(
             "unsupported JavaScript receipt version".into(),
         ));
     }
-    value
+    let output = value
         .get("output")
-        .ok_or_else(|| crate::Error::Invalid("JavaScript receipt has no output".into()))
+        .ok_or_else(|| crate::Error::Invalid("JavaScript receipt has no output".into()))?;
+    Ok(output.get("value").unwrap_or(output))
 }
 
 impl ToolExecutor for CodeMode {
@@ -51,7 +52,7 @@ impl ToolExecutor for CodeMode {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async {
             Err(crate::Error::Unsupported(
-                "run_js requires the stock tool caller".into(),
+                "code requires the stock tool caller".into(),
             ))
         })
     }

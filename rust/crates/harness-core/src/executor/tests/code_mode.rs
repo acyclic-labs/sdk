@@ -16,7 +16,7 @@ impl ToolPolicy for InnerApproval {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
     {
-        let decision = if invocation.name == "run_js" {
+        let decision = if invocation.name == "code" {
             ToolPolicyDecision::Allow
         } else {
             ToolPolicyDecision::RequireApproval {
@@ -45,7 +45,7 @@ fn executor(
         crate::tool::json_projection_schema(object),
     )?;
     let js = crate::tools::catalog()
-        .find(|spec| spec.name == "run_js")
+        .find(|spec| spec.name == "code")
         .unwrap()
         .bind()?;
     tools.register((js, None), &mut None, None)?;
@@ -53,14 +53,14 @@ fn executor(
         ScriptedModelProvider::new([
             tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
                 "program".into(),
-                "run_js".into(),
+                "code".into(),
                 json!({"code":code}),
             ))]),
             done_turn(),
         ])
         .with_token_counter(fixture_token_count),
     );
-    let mut grants = vec!["tool:call:run_js", capability::INTERACTION_ROUTE];
+    let mut grants = vec!["tool:call:code", capability::INTERACTION_ROUTE];
     if grant_echo {
         grants.push("tool:call:example.echo");
     }
@@ -108,6 +108,110 @@ fn result(model: &ScriptedModelProvider) -> Value {
         .unwrap()
 }
 
+fn logs(journal: &Journal) -> Value {
+    let mut entries = journal
+        .1
+        .lock()
+        .unwrap()
+        .values()
+        .filter_map(|(_, bytes)| {
+            let value: Value = serde_json::from_slice(bytes).ok()?;
+            (value["kind"] == "code.call").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|entry| entry["ordinal"].as_u64().unwrap());
+    Value::Array(entries)
+}
+
+#[tokio::test]
+async fn dynamic_tools_update_notices_and_program_bindings_without_changing_declarations()
+-> Result<()> {
+    let (first, first_model, _) = executor("typeof tools.late", allowed()?, false)?;
+    first.execute(input(), &Journal::default()).await?;
+    assert_eq!(result(&first_model), "undefined");
+    let (mut second, second_model, echo) = executor(
+        "(await Promise.all([tools.late({value:42}), tools['example.echo']({value:43})])).reduce((sum, item) => sum + item.value, 0)",
+        allowed()?,
+        true,
+    )?;
+    let mut tool = second
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    tool.definition.name = "late".into();
+    second.tools.register((tool, None), &mut None, None)?;
+    second = second.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:late",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let journal = Journal::default();
+    second.execute(input(), &journal).await?;
+    assert_eq!(result(&second_model), 85);
+    assert_eq!(echo.0.load(Ordering::SeqCst), 2);
+    let before = first_model.requests();
+    let after = second_model.requests();
+    assert_eq!(before[0].tools, after[0].tools);
+    assert_eq!(
+        after[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code"]
+    );
+    let notice = |request: &ModelRequest| {
+        request
+            .messages
+            .iter()
+            .find_map(|message| {
+                let ModelContent::Text(text) = &message.content else {
+                    return None;
+                };
+                let value: Value = serde_json::from_str(text).ok()?;
+                (value["kind"] == "tools.changed").then_some(value)
+            })
+            .unwrap()
+    };
+    assert_eq!(notice(&before[0])["tools"].as_array().unwrap().len(), 1);
+    let changed = notice(&after[0]);
+    assert_eq!(changed["tools"].as_array().unwrap().len(), 3);
+    assert_eq!(changed["tools"][2]["name"], "late");
+    assert_eq!(
+        changed["tools"][2]["input_schema"],
+        json!({"type":"object"})
+    );
+    assert_eq!(
+        after[0].messages,
+        after[1].messages[..after[0].messages.len()]
+    );
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
+    assert_eq!(logs(&journal)[0]["input_bytes"], 12);
+    assert_eq!(logs(&journal)[0]["output_bytes"], 12);
+    // Removing the capability updates the same notice and the next VM table.
+    let (mut revoked, revoked_model, _) =
+        executor("typeof tools['example.echo']", allowed()?, true)?;
+    revoked.tools.remove_from_model("example.echo")?;
+    revoked.execute(input(), &Journal::default()).await?;
+    assert_eq!(result(&revoked_model), "undefined");
+    assert_eq!(
+        notice(&revoked_model.requests()[0])["tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_log() -> Result<()> {
     for approved in [false, true] {
@@ -133,10 +237,10 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         drop(approvals);
         executor.execute(input.clone(), &journal).await?;
         let value = result(&model);
-        assert_eq!(value["calls"][0]["tool"], "example.echo");
-        assert_eq!(value["calls"][0]["ok"], approved);
+        assert_eq!(logs(&journal)[0]["tool"], "example.echo");
+        assert_eq!(logs(&journal)[0]["ok"], approved);
         if approved {
-            assert_eq!(value["value"]["value"], 42);
+            assert_eq!(value["value"], 42);
         } else {
             assert!(
                 value["error"]
@@ -179,6 +283,66 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
         let records = journal.0.lock().unwrap();
         assert_eq!(records.iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), usize::from(approved));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()> {
+    struct Observe(Arc<Journal>);
+    impl ToolExecutor for Observe {
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            Box::pin(async {
+                let observed = logs(&self.0);
+                assert_eq!(observed.as_array().unwrap().len(), 1);
+                assert_eq!(observed[0]["tool"], "example.echo");
+                assert_eq!(observed[0]["ok"], true);
+                assert_eq!(observed[0]["call_id"], "program");
+                assert!(observed[0].get("value").is_none());
+                assert!(!self.0.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "program")));
+                Ok(ToolResult { value: json!({}) })
+            })
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let (mut executor, model, _) = executor(
+        "await tools['example.echo']({value:42}); await tools.observe({}); 7",
+        allowed()?,
+        true,
+    )?;
+    let journal = Arc::new(Journal::default());
+    let mut tool = executor
+        .tools
+        .get("example.echo", None, None)?
+        .unwrap()
+        .clone();
+    tool.definition.name = "observe".into();
+    tool.executor = Arc::new(Observe(journal.clone()));
+    executor.tools.register((tool, None), &mut None, None)?;
+    executor = executor.with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new([
+                "tool:call:code",
+                "tool:call:example.echo",
+                "tool:call:observe",
+                capability::INTERACTION_ROUTE,
+            ]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    executor.execute(input(), journal.as_ref()).await?;
+    assert_eq!(result(&model), 7);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
     Ok(())
 }
 
@@ -231,7 +395,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
         input.operation_id,
         0,
         "program".into(),
-        "run_js".into(),
+        "code".into(),
         json!({"code":code}),
         None,
     )?;
@@ -240,7 +404,7 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
         role: ModelRole::Assistant,
         content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
             "program".into(),
-            "run_js".into(),
+            "code".into(),
             json!({"code":code}),
         ))),
     }];
@@ -308,11 +472,11 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
         executor.execute(input(), &journal).await?;
         let value = result(&model);
         assert_eq!(echo.0.load(Ordering::SeqCst), 1);
-        assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-        assert_eq!(value["calls"][0]["ok"], true);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
+        assert_eq!(logs(&journal)[0]["ok"], true);
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
         if code.starts_with('(') {
-            assert_eq!(value["value"], 1);
+            assert_eq!(value, 1);
         } else {
             assert_eq!(value["error"], "failed");
         }
@@ -351,11 +515,11 @@ async fn producerless_promises_fail_after_tool_retirement_and_live_producers_com
                 "JavaScript promise cannot settle: no pending jobs or tool calls"
             );
         } else {
-            assert_eq!(value["value"], 42);
+            assert_eq!(value, 42);
             assert!(value.get("error").is_none());
         }
         assert_eq!(echo.0.load(Ordering::SeqCst), calls);
-        assert_eq!(value["calls"].as_array().unwrap().len(), calls);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), calls);
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), calls);
     }
     Ok(())
@@ -379,11 +543,11 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"], 42);
+    assert_eq!(value, 42);
     assert_eq!(echo.0.load(Ordering::SeqCst), 3);
-    assert_eq!(value["calls"].as_array().unwrap().len(), 3);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 3);
     assert!(
-        value["calls"]
+        logs(&journal)
             .as_array()
             .unwrap()
             .iter()
@@ -395,37 +559,40 @@ async fn mutating_builtins_cannot_abandon_queued_calls() -> Result<()> {
 
 #[tokio::test]
 async fn sandbox_exposes_only_granted_tools_and_their_original_schema() -> Result<()> {
-    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.run_js, schema: tools.run_js.input_schema.required})"#;
+    let code = r#"let refused = false; try { Function('return process.env')(); } catch (e) { refused = e instanceof ReferenceError; } ({refused, sum: [1,2,3].reduce((a,b) => a+b), host: [typeof fetch, typeof require, typeof process, typeof std, typeof os, typeof readFile, typeof Deno, typeof Bun, typeof WebSocket, typeof Date], hidden: typeof tools['example.echo'], bound: typeof tools.code, schema: tools.code.input_schema.required})"#;
     let (executor, model, echo) = executor(code, allowed()?, false)?;
-    executor.execute(input(), &Journal::default()).await?;
+    let journal = Journal::default();
+    executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"]["host"], json!(vec!["undefined"; 10]));
-    assert_eq!(value["value"]["hidden"], "undefined");
-    assert_eq!(value["value"]["bound"], "function");
-    assert_eq!(value["value"]["schema"], json!(["code"]));
+    assert_eq!(value["host"], json!(vec!["undefined"; 10]));
+    assert_eq!(value["hidden"], "undefined");
+    assert_eq!(value["bound"], "function");
+    assert_eq!(value["schema"], json!(["code"]));
     assert_eq!(echo.0.load(Ordering::SeqCst), 0);
-    assert_eq!(value["value"]["refused"], true);
+    assert_eq!(value["refused"], true);
     // Negative control: ordinary JavaScript still runs in this same sandbox.
-    assert_eq!(value["value"]["sum"], 6);
+    assert_eq!(value["sum"], 6);
     Ok(())
 }
 
 #[tokio::test]
-async fn intermediate_data_stays_in_js_and_both_final_values_and_logs_are_paged() -> Result<()> {
+async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budget() -> Result<()> {
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
     ] {
-        let (executor, model, _) = executor(code, allowed()?, true)?;
-        executor.execute(input(), &Journal::default()).await?;
+        let (mut executor, model, _) = executor(code, allowed()?, true)?;
+        executor.limits.render_bytes = 65_536;
+        let journal = Journal::default();
+        executor.execute(input(), &journal).await?;
         let value = result(&model);
-        assert!(serde_json::to_vec(&value).unwrap().len() <= super::super::code_mode::OUTPUT_BYTES);
+        assert!(serde_json::to_vec(&value).unwrap().len() <= 65_536);
         if code.starts_with("let") {
-            assert_eq!(value["value"], 4_000_000);
-            assert!(value["omitted_calls"].as_u64().unwrap() > 0);
+            assert_eq!(value, 4_000_000);
+            assert_eq!(logs(&journal).as_array().unwrap().len(), 400);
         } else if code.starts_with("'x'") {
-            assert_eq!(value["value"]["truncated"], true);
+            assert_eq!(value["truncated"], true);
         } else {
             assert!(value["error"].as_str().unwrap().len() <= 2048);
         }
@@ -434,8 +601,8 @@ async fn intermediate_data_stays_in_js_and_both_final_values_and_logs_are_paged(
 }
 
 #[tokio::test]
-async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -> Result<()> {
-    let length = super::super::code_mode::OUTPUT_BYTES + 1;
+async fn large_call_names_stream_without_losing_results_or_receipts() -> Result<()> {
+    let length = 65_536 + 1;
     let name = "x".repeat(length);
     let code = format!(
         "await tools['x'.repeat({length})]({{value:41}}); (await tools['example.echo']({{value:42}})).value"
@@ -451,7 +618,7 @@ async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -
     executor = executor.with_tool_authority(
         RuntimeScope::new(
             Capabilities::new([
-                "tool:call:run_js".to_owned(),
+                "tool:call:code".to_owned(),
                 "tool:call:example.echo".to_owned(),
                 format!("tool:call:{name}"),
                 capability::INTERACTION_ROUTE.to_owned(),
@@ -463,14 +630,15 @@ async fn oversized_call_names_are_omitted_without_losing_results_or_receipts() -
     let journal = Journal::default();
     executor.execute(input(), &journal).await?;
     let value = result(&model);
-    assert_eq!(value["value"], 42);
-    assert_eq!(value["omitted_calls"], 1);
+    assert_eq!(value, 42);
+    assert!(value.get("omitted_calls").is_none());
     assert_eq!(echo.0.load(Ordering::SeqCst), 2);
-    assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-    // Negative control: the later fitting entry is retained after the omission.
-    assert_eq!(value["calls"][0]["tool"], "example.echo");
-    assert_eq!(value["calls"][0]["ok"], true);
-    assert!(serde_json::to_vec(&value).unwrap().len() <= super::super::code_mode::OUTPUT_BYTES);
+    assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
+    // Both entries are published, independent of the final result size.
+    assert_eq!(logs(&journal)[0]["tool"], name);
+    assert_eq!(logs(&journal)[1]["tool"], "example.echo");
+    assert_eq!(logs(&journal)[1]["ok"], true);
+    assert!(serde_json::to_vec(&value).unwrap().len() <= 65_536);
     assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 2);
     Ok(())
 }
@@ -486,15 +654,16 @@ async fn escaped_diagnostics_fit_the_remaining_page_and_retain_the_call_log() ->
         let code = format!("await tools['example.echo']({{value:42}}); throw {expression}");
         let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
         executor.limits.render_bytes = 4096;
-        executor.execute(input(), &Journal::default()).await?;
+        let journal = Journal::default();
+        executor.execute(input(), &journal).await?;
         let value = result(&model);
         let error = value["error"].as_str().unwrap();
         assert!(!error.is_empty());
         assert!(expected.starts_with(error));
         assert!(serde_json::to_vec(&value).unwrap().len() <= 4096);
         assert_eq!(echo.0.load(Ordering::SeqCst), 1);
-        assert_eq!(value["calls"].as_array().unwrap().len(), 1);
-        assert_eq!(value["calls"][0]["ok"], true);
+        assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
+        assert_eq!(logs(&journal)[0]["ok"], true);
         // Negative control: a fitting error is preserved exactly.
         if expression.starts_with("'short") {
             assert_eq!(error, expected);

@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
         let tool = crate::tools::catalog()
-            .find(|tool| tool.name == "run_js")
+            .find(|tool| tool.name == "code")
             .unwrap()
             .bind()
             .unwrap();
@@ -215,7 +215,7 @@ mod tests {
         let (send, mut receive) = tokio::sync::mpsc::channel(1);
         let (result, ()) = tokio::join!(
             acyclic_native_runtime::blocking_future(super::run(
-                "await tools.run_js({code:'1'})".into(),
+                "await tools.code({code:'1'})".into(),
                 definitions,
                 send,
                 tokio_util::sync::CancellationToken::new(),

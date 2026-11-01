@@ -174,8 +174,11 @@ impl StockExecution<'_> {
             .context_pipeline()
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
+        let tools = self.request_tools(&context.messages)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.code_tools_notice(&mut context, &tools)?;
         let message_count = context.messages.len();
-        let request = self.request_from_messages(std::mem::take(&mut context.messages))?;
+        let request = self.request_from_parts(std::mem::take(&mut context.messages), tools)?;
         let mut request = if let Some((prefix, verifier)) = self.inherited_prefix() {
             crate::model::PreparedModelRequest::inherit_request(
                 request,
@@ -251,15 +254,27 @@ impl StockExecution<'_> {
         &self,
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
-        let tools_required = self.request_tools_required(&messages)?;
+        let tools = self.request_tools(&messages)?;
+        self.request_from_parts(messages, tools)
+    }
+
+    fn request_tools(&self, messages: &[ModelMessage]) -> Result<Vec<crate::tool::ToolDefinition>> {
+        if self.request_tools_required(messages)? {
+            stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn request_from_parts(
+        &self,
+        messages: Vec<ModelMessage>,
+        tools: Vec<crate::tool::ToolDefinition>,
+    ) -> Result<ModelRequest> {
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
-            tools: if tools_required {
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
-            } else {
-                Vec::new()
-            },
+            tools: model_tool_declarations(tools),
             max_output_tokens: self.output_budget()?,
         })
     }
@@ -295,11 +310,11 @@ impl StockExecution<'_> {
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
-        let tools = if self.request_tools_required(&request.messages)? {
+        let tools = model_tool_declarations(if self.request_tools_required(&request.messages)? {
             stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
         } else {
             Vec::new()
-        };
+        });
         if request.model != self.stock.model
             || request.tools != tools
             || request.max_output_tokens != self.output_budget()?
@@ -312,6 +327,17 @@ impl StockExecution<'_> {
         }
         Ok(())
     }
+}
+
+// The native catalog is fixed. Dynamic capabilities live in appended notices
+// and the interpreter's table, never the provider's cached declaration prefix.
+fn model_tool_declarations(
+    mut tools: Vec<crate::tool::ToolDefinition>,
+) -> Vec<crate::tool::ToolDefinition> {
+    if !cfg!(target_arch = "wasm32") && tools.iter().any(|tool| tool.name == "code") {
+        tools.retain(|tool| crate::tools::catalog().any(|spec| spec.name == tool.name));
+    }
+    tools
 }
 
 fn completed_model_events(
