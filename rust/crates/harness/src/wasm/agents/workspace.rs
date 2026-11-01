@@ -172,7 +172,7 @@ mod deadline {
             F: Future + ProviderTask,
             F::Output: ProviderTask,
         {
-            let check = || {
+            let check = || -> Result<(), DeadlineStop> {
                 self.context.remaining().map_err(|error| match error {
                     BudgetError::Stopped(acyclic_auth::operation::Stopped::Deadline) => {
                         DeadlineStop::Expired
