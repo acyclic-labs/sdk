@@ -6,6 +6,15 @@ use std::fmt;
 /// to the same derive, borrowing its original keys and values without buffering.
 pub(crate) struct JsonObject<S>(pub S);
 
+/// Field adapter over the same seed, with the field's original value layout.
+pub(crate) fn deserialize_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    JsonObject(std::marker::PhantomData::<T>).deserialize(deserializer)
+}
+
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for JsonObject<S> {
     type Value = S::Value;
 
