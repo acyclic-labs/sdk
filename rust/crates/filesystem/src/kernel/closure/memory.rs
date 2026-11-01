@@ -455,25 +455,6 @@ impl<'a, T> ProofVec<'a, T> {
         Ok(())
     }
 
-    fn insert(&mut self, index: usize, value: T) -> Result<(), crate::FsError> {
-        self.ensure_capacity()?;
-        let moved = self
-            .values
-            .len()
-            .checked_sub(index)
-            .ok_or(WorkError::Overflow)?
-            .checked_add(1)
-            .ok_or(WorkError::Overflow)?;
-        let copied = WorkCounters {
-            bytes_copied: proof_capacity_bytes::<T>(moved)?,
-            ..WorkCounters::UNCHARGED
-        };
-        self.meter.admit(copied)?;
-        self.values.insert(index, value);
-        self.meter.record_completed(copied)?;
-        Ok(())
-    }
-
     pub(super) fn into_parts(mut self) -> Result<(Vec<T>, ProofGuard), crate::FsError> {
         let guard = match self.guard.take() {
             Some(guard) => guard,
@@ -494,52 +475,215 @@ impl<T> Drop for ProofVec<'_, T> {
     }
 }
 
-pub(super) fn map_get<'v, K: Ord, V>(entries: &'v ProofVec<'_, (K, V)>, key: &K) -> Option<&'v V> {
-    entries
-        .values
-        .binary_search_by(|entry| entry.0.cmp(key))
-        .ok()
-        .and_then(|index| entries.values.get(index).map(|entry| &entry.1))
+pub(super) trait ProofKey<const N: usize>: Copy {
+    fn proof_key(self) -> [u8; N];
 }
 
-pub(super) fn map_insert<K: Ord, V>(
-    entries: &mut ProofVec<'_, (K, V)>,
+impl ProofKey<16> for FileId {
+    fn proof_key(self) -> [u8; 16] {
+        self.into_bytes()
+    }
+}
+
+impl ProofKey<{ ObjectId::ENCODED_LEN }> for ObjectId {
+    fn proof_key(self) -> [u8; ObjectId::ENCODED_LEN] {
+        self.index_key()
+    }
+}
+
+/// Identity lookup and discovery order have different owners. The index stores
+/// only stable ordinals; moving the funded output buffer never changes them.
+pub(super) struct ProofMap<'a, K, V, const N: usize = 16> {
+    entries: ProofVec<'a, (K, V)>,
+    index: crate::kernel::allocation::fixed_index::FixedIndex<usize, N>,
+}
+
+impl<'a, K, V, const N: usize> ProofMap<'a, K, V, N> {
+    pub(super) fn new(meter: &ProofMeter<'a>) -> Self {
+        Self {
+            entries: ProofVec::new(meter),
+            index: Default::default(),
+        }
+    }
+}
+
+impl<'a, K, V, const N: usize> std::ops::Deref for ProofMap<'a, K, V, N> {
+    type Target = ProofVec<'a, (K, V)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl<K: ProofKey<N>, V, const N: usize> ProofMap<'_, K, V, N> {
+    pub(super) fn position(&self, key: K) -> Result<Option<usize>, crate::FsError> {
+        self.entries.meter.with_accounting(|accounting| {
+            self.index
+                .get(key.proof_key(), accounting)
+                .map(|position| position.copied())
+        })
+    }
+}
+
+pub(super) fn map_get<'v, K: ProofKey<N>, V, const N: usize>(
+    entries: &'v ProofMap<'_, K, V, N>,
+    key: &K,
+) -> Result<Option<&'v V>, crate::FsError> {
+    Ok(entries
+        .position(*key)?
+        .map(|position| &entries.values[position].1))
+}
+
+pub(super) fn map_insert<K: ProofKey<N>, V, const N: usize>(
+    entries: &mut ProofMap<'_, K, V, N>,
     key: K,
     value: V,
 ) -> Result<Option<V>, crate::FsError> {
-    match entries.values.binary_search_by(|entry| entry.0.cmp(&key)) {
-        Ok(index) => {
-            let copied = WorkCounters {
-                bytes_copied: usize_to_u64(size_of::<V>()),
-                ..WorkCounters::UNCHARGED
+    if let Some(position) = entries.position(key)? {
+        let copied = WorkCounters {
+            bytes_copied: usize_to_u64(size_of::<V>()),
+            ..WorkCounters::UNCHARGED
+        };
+        entries.entries.meter.admit(copied)?;
+        let previous = std::mem::replace(&mut entries.entries.values[position].1, value);
+        entries.entries.meter.record_completed(copied)?;
+        return Ok(Some(previous));
+    }
+
+    // Reserve outside with_accounting: a value may own a ProofGuard whose
+    // destructor needs that same accounting mutex. Refusal must drop it outside.
+    entries.entries.ensure_capacity()?;
+    let position = entries.entries.values.len();
+    let mut candidate = Some((key, value));
+    let mut appended = false;
+    let result = entries.entries.meter.with_accounting(|accounting| {
+        entries
+            .index
+            .get_or_try_insert_with(key.proof_key(), accounting, |accounting| {
+                let copied = WorkCounters {
+                    bytes_copied: usize_to_u64(size_of::<(K, V)>()),
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                // All fallible node/buffer admission precedes this append. The
+                // factory publishes its ordinal only after completed work is recorded.
+                let value = candidate.take().ok_or(crate::ObjectStoreError::Corrupt)?;
+                entries.entries.values.push(value);
+                appended = true;
+                accounting.record_completed(copied)?;
+                Ok(position)
+            })
+            .map(|_| ())
+    });
+    if result.is_err() && appended {
+        drop(entries.entries.values.pop());
+    }
+    result?;
+    Ok(None)
+}
+
+const ORDERED_OBJECT_KEY_BYTES: usize = ObjectId::ENCODED_LEN + 1;
+
+/// Only membership is retained while walking. Required canonical output is
+/// materialized once, without shifting any previously authenticated identity.
+pub(super) struct ProofSet<'a> {
+    index: crate::kernel::allocation::fixed_index::FixedIndex<ObjectId, ORDERED_OBJECT_KEY_BYTES>,
+    count: usize,
+    meter: ProofMeter<'a>,
+}
+
+impl<'a> ProofSet<'a> {
+    pub(super) fn new(meter: &ProofMeter<'a>) -> Self {
+        Self {
+            index: Default::default(),
+            count: 0,
+            meter: meter.clone(),
+        }
+    }
+
+    fn key(object: ObjectId) -> [u8; ORDERED_OBJECT_KEY_BYTES] {
+        // ObjectId::Ord is kind, digest, then Option<complete storage>. The
+        // wire tag's seal bit precedes the digest, so it is not an ordered key.
+        let encoded = object.index_key();
+        let mut key = [0; ORDERED_OBJECT_KEY_BYTES];
+        key[..33].copy_from_slice(&encoded[..33]);
+        key[0] &= 127;
+        key[33] = u8::from(object.storage.is_some());
+        key[34..].copy_from_slice(&encoded[33..]);
+        key
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.count
+    }
+
+    pub(super) fn contains(&self, object: ObjectId) -> Result<bool, crate::FsError> {
+        self.meter.with_accounting(|accounting| {
+            self.index
+                .get(Self::key(object), accounting)
+                .map(|value| value.is_some())
+        })
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        object: ObjectId,
+        maximum: Option<u64>,
+    ) -> Result<bool, crate::FsError> {
+        let mut next_count = None;
+        self.meter.with_accounting(|accounting| {
+            self.index
+                .get_or_try_insert_with(Self::key(object), accounting, |accounting| {
+                    let count = self.count.checked_add(1).ok_or(WorkError::Overflow)?;
+                    let observed = usize_to_u64(count);
+                    if let Some(maximum) = maximum {
+                        if observed > maximum {
+                            return Err(ClosureError::TooManyObjects { observed, maximum }.into());
+                        }
+                    }
+                    let copied = WorkCounters {
+                        bytes_copied: usize_to_u64(size_of::<ObjectId>()),
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(copied)?;
+                    accounting.record_completed(copied)?;
+                    next_count = Some(count);
+                    Ok(object)
+                })
+                .map(|_| ())
+        })?;
+        if let Some(count) = next_count {
+            self.count = count;
+        }
+        Ok(next_count.is_some())
+    }
+
+    pub(super) fn into_parts(self) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
+        let mut objects = ProofVec::new(&self.meter);
+        let mut after = None;
+        loop {
+            let next = self.meter.with_accounting(|accounting| {
+                let entry = match after {
+                    None => self.index.first(accounting)?,
+                    Some(key) => self.index.seek_after(key, accounting)?,
+                };
+                Ok(entry.map(|(key, object)| (*key, *object)))
+            })?;
+            let Some((key, object)) = next else {
+                break;
             };
-            entries.meter.admit(copied)?;
-            let entry = entries
-                .values
-                .get_mut(index)
-                .ok_or(crate::ObjectStoreError::Corrupt)?;
-            let previous = std::mem::replace(&mut entry.1, value);
-            entries.meter.record_completed(copied)?;
-            Ok(Some(previous))
+            objects.push(object)?;
+            after = Some(key);
         }
-        Err(index) => {
-            entries.insert(index, (key, value))?;
-            Ok(None)
-        }
+        objects.into_parts()
     }
 }
 
-pub(super) fn set_insert<K: Ord>(
-    entries: &mut ProofVec<'_, K>,
-    key: K,
+pub(super) fn set_insert(
+    entries: &mut ProofSet<'_>,
+    key: ObjectId,
 ) -> Result<bool, crate::FsError> {
-    match entries.values.binary_search(&key) {
-        Ok(_) => Ok(false),
-        Err(index) => {
-            entries.insert(index, key)?;
-            Ok(true)
-        }
-    }
+    entries.insert(key, None)
 }
 
 #[cfg(test)]
