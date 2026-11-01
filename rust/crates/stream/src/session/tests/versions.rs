@@ -40,22 +40,24 @@ async fn admission_golden_frame_opens_without_another_request() -> TestResult {
         receiver.boxed(),
     )?;
     assert!(matches!(
-        output
+        &output
             .next()
             .await
             .transpose()?
             .ok_or("missing welcome")?
+            .wire()
             .body,
         Some(Body::Welcome(_))
     ));
     let mut opened = false;
     let mut applied = false;
     for _ in 0..2 {
-        match output
+        match &output
             .next()
             .await
             .transpose()?
             .ok_or("admission ended")?
+            .wire()
             .body
         {
             Some(Body::Opened(_)) => opened = true,
@@ -88,7 +90,10 @@ async fn admission_refuses_versions_before_credentials_and_interests() -> TestRe
             Limits::default(),
             stream::iter([Ok(input)]).boxed(),
         )?;
-        assert_eq!(output.next().await, Some(Err(StreamError::Unsupported)));
+        assert!(matches!(
+            output.next().await,
+            Some(Err(StreamError::Unsupported))
+        ));
         assert!(output.next().await.is_none());
     }
     Ok(())
