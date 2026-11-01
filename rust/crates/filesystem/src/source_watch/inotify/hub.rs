@@ -531,6 +531,9 @@ impl Hub {
             let ready = unsafe { libc::poll(&raw mut descriptor, 1, -1) };
             if ready < 0 {
                 let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
                 self.fail_all(&error);
                 return;
             }
