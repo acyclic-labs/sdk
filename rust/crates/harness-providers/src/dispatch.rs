@@ -40,35 +40,20 @@ pub(crate) fn generate_encoded<'a>(
         let input_bytes = body.len();
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
-        loop {
-            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
-            let (failure, retry_after) = match attempt.response(response, provider.config.max_event_bytes, None).await {
-                Err((error, retry_after)) => (Some(error), retry_after),
-                Ok(response) => {
-                    let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                    let events = crate::stream::events_named(provider.config.adapter, response.body,
-                        provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
-                    futures::pin_mut!(events);
-                    let mut failure = None;
-                    while let Some(event) = events.next().await {
-                        match event {
-                            Ok(event) => {
-                                if let ModelEvent::Completed { metadata } = &event {
-                                    provider.observe(request, input_bytes, metadata)?;
-                                }
-                                yield event;
-                            }
-                            Err(error) => { failure = Some(crate::diagnostic::rejection(error)); break; }
-                        }
-                    }
-                    (failure, None)
-                }
-            };
-            let Some(error) = failure else { break; };
-            attempt.recover(provider, &mut auth, error, retry_after,
-                #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+        let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None).await;
+        let response = attempt.exchange(provider, &body, dispatch, &mut auth, response,
+            #[cfg(not(target_arch = "wasm32"))] None, None).await?;
+        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+        let events = crate::stream::events_named(provider.config.adapter, response.body,
+            provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
+        futures::pin_mut!(events);
+        while let Some(event) = events.next().await {
+            let event = event.map_err(crate::diagnostic::rejection)?;
+            if let ModelEvent::Completed { metadata } = &event {
+                provider.observe(request, input_bytes, metadata)?;
+            }
+            yield event;
         }
-
     }
 }
 
@@ -256,6 +241,60 @@ impl GenerationAttempt {
         }
     }
 
+    /// Finish the original first send or its permitted pre-acceptance recovery.
+    /// Accepted bodies leave this loop once, before their parser is polled.
+    pub(crate) async fn exchange(
+        &mut self,
+        provider: &ResolvedModel,
+        body: &bytes::Bytes,
+        dispatch: ModelDispatch,
+        auth: &mut (Option<Cow<'_, str>>, Option<String>),
+        mut response: Result<HttpResponse>,
+        #[cfg(not(target_arch = "wasm32"))] mut custody: Option<&mut acyclic_fs::NativeAllocation>,
+        work: acyclic_harness_core::NativeWork<'_>,
+    ) -> Result<HttpResponse> {
+        loop {
+            let (error, retry_after) = match response {
+                Ok(response) if (200..300).contains(&response.status) => {
+                    self.accept();
+                    return Ok(response);
+                }
+                Ok(response) => {
+                    // Preserve refusal before its diagnostic body can fail.
+                    self.refuse(response.status);
+                    let retry_after = response.retry_after;
+                    let error =
+                        crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                    (crate::diagnostic::rejection(error), retry_after)
+                }
+                Err(error) => (error, None),
+            };
+            self.recover(
+                provider,
+                auth,
+                error,
+                retry_after,
+                #[cfg(not(target_arch = "wasm32"))]
+                custody.as_deref_mut(),
+                work,
+            )
+            .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = work {
+                work.remaining()?;
+            }
+            response = send(
+                provider,
+                body.clone(),
+                dispatch,
+                auth.0.as_deref(),
+                auth.1.as_deref(),
+                work,
+            )
+            .await;
+        }
+    }
+
     pub(crate) fn accept(&mut self) {
         self.admission = Admission::Accepted;
     }
@@ -266,29 +305,9 @@ impl GenerationAttempt {
         }
     }
 
-    /// Record the HTTP boundary before a diagnostic body can fail or suspend.
-    /// Successful bodies pass directly to the caller's original parser.
-    pub(crate) async fn response(
-        &mut self,
-        response: Result<HttpResponse>,
-        maximum: usize,
-        work: acyclic_harness_core::NativeWork<'_>,
-    ) -> std::result::Result<HttpResponse, (acyclic_harness_core::Error, Option<std::time::Duration>)>
-    {
-        let response = response.map_err(|error| (error, None))?;
-        if (200..300).contains(&response.status) {
-            self.accept();
-            return Ok(response);
-        }
-        self.refuse(response.status);
-        let retry_after = response.retry_after;
-        let error = crate::http_failure(response, maximum, work).await;
-        Err((crate::diagnostic::rejection(error), retry_after))
-    }
-
     /// Complete recovery before the caller may send another model request.
     /// Refresh and timer failures are final causes, never model retry inputs.
-    pub(crate) async fn recover(
+    async fn recover(
         &mut self,
         provider: &ResolvedModel,
         auth: &mut (Option<Cow<'_, str>>, Option<String>),
