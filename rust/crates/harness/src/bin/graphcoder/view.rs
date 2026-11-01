@@ -376,7 +376,7 @@ impl View {
     /// Controls stay visible when the immutable request panel is closed.
     fn approval_rows(&self) -> Vec<Line<'static>> {
         vec![Line::raw(
-            "y approves · n declines · /feedback reports · Esc cancels",
+            "view opens request · y approves · n declines · /feedback reports · Esc cancels",
         )]
     }
 
@@ -423,7 +423,7 @@ impl View {
         }
         match (&self.phase, self.approval()) {
             (_, Some(id)) => format!(
-                "approval {} requested: submit y to approve, n to decline",
+                "approval {} requested: view opens request · y approves · n declines",
                 id.as_str()
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
@@ -843,18 +843,34 @@ pub async fn run(
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
-                                if view.approval().is_some()
+                                if let Some(Phase::WaitingApproval { id, binding: Some(binding) }) = &view.phase
                                     && !text.trim_start().starts_with('/')
                                 {
+                                    if text.trim().eq_ignore_ascii_case("view") || view.approval_shown.is_none() {
+                                        overlay = None;
+                                        query_open = true;
+                                        query_source = query::Source::Approval {
+                                            request: id.clone(),
+                                            binding: binding.clone(),
+                                            status: view.approval_shown.as_ref().map(|shown| shown.status),
+                                            offset: 0,
+                                        };
+                                        query_panel = None;
+                                        query_refresh = false;
+                                        query_credit = credit;
+                                        query_future.set((credit != 0).then(|| query::load(Arc::clone(&conversation), credit, query_source.clone())));
+                                        overlay_top = 0;
+                                        view.notice = Some("Read the approval request, then submit yes or no. Enter view to reopen it.".into());
+                                        continue;
+                                    }
                                     let Some(shown) = &view.approval_shown else {
-                                        view.notice = Some("The approval request must be displayed before deciding.".into());
                                         continue;
                                     };
                                     match text.trim().to_ascii_lowercase().as_str() {
                                         "y" | "yes" => conversation.decide_with_binding(&shown.id, shown.binding.clone(), true).await?,
                                         "n" | "no" => conversation.decide_with_binding(&shown.id, shown.binding.clone(), false).await?,
                                         _ => {
-                                            view.notice = Some("approval requires yes or no".into());
+                                            view.notice = Some("Enter view to read the request, yes to approve, or no to decline.".into());
                                             input.editor = Editor::new(&text);
                                         }
                                     }
