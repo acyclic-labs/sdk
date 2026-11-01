@@ -161,14 +161,21 @@ async function ready(running) {
   })]);
 }
 
-test("original native startup rejection retains cause before physical close and refuses a foreign generation", { skip: process.platform === "win32" }, async () => {
+test("original native startup rejection retains cause and selected physical close and refuses a foreign generation", { skip: process.platform === "win32" }, async () => {
   for (const owned of [false, true]) for (const mode of ["reject", "reject-foreign", "no-runtime"]) {
     const scope = new Processes();
-    const running = launch(scope, owned, mode);
+    // The owned host's stdin is its cancellation input. Only a direct
+    // producer uses that same inherited stdin as the explicit EOF release.
+    const held = !owned && mode === "reject";
+    const running = launch(scope, owned, held ? "reject-held" : mode);
     let physicallyClosed = false;
     running.child.once("close", () => { physicallyClosed = true; });
     try {
       const refusal = await running.reportReady.then(() => assert.fail("setup rejection cannot announce executable work"), error => error);
+      if (held) {
+        assert.equal(physicallyClosed, false, "the real rejection must settle before its original producer exits");
+        running.input.end();
+      }
       const result = await running.closed;
       assert.equal(physicallyClosed, true);
       assert.equal(result.code, 0, result.stderr);

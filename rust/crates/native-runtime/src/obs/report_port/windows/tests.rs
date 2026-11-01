@@ -1,5 +1,5 @@
 use super::*;
-use crate::obs::{ReportAck, ReportOutcome, ReportRequest, WaitReport};
+use crate::obs::{ReportAck, ReportOutcome, ReportPort, ReportRequest, WaitReport};
 use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},

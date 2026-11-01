@@ -279,7 +279,7 @@ fn inherited_report_port_joins_the_selected_real_process() {
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         crate::coordination_runtime().unwrap().block_on(async {
             let mut port = admission.into_port().unwrap();
-            if matches!(mode.as_str(), "reject" | "reject-foreign") {
+            if matches!(mode.as_str(), "reject" | "reject-foreign" | "reject-held") {
                 let cause = native_read_refusal();
                 let original = (cause.kind(), cause.raw_os_error(), cause.to_string());
                 if mode == "reject-foreign" {
@@ -308,6 +308,15 @@ fn inherited_report_port_joins_the_selected_real_process() {
                     port.request().await.unwrap_err().kind(),
                     io::ErrorKind::AlreadyExists
                 );
+                if mode == "reject-held" {
+                    // The direct launch's original stdin EOF releases this
+                    // real producer only after its rejection was observed.
+                    let mut byte = [0];
+                    assert_eq!(
+                        std::io::Read::read(&mut std::io::stdin(), &mut byte).unwrap(),
+                        0
+                    );
+                }
                 return;
             }
             if mode == "no-ready" {
