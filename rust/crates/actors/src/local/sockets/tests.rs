@@ -156,6 +156,7 @@ conformance::suite!(socket_conformance_passes_on_local_runtime, local_backend);
 
 #[tokio::test]
 async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> TestResult {
+    let decode_work = || crate::sockets::OPEN_DECODE_WORK.with(std::cell::Cell::get);
     let provider = Arc::new(MemoryStream::default());
     let sockets = Sockets::open(
         Store::new(Arc::clone(&provider), root()?),
@@ -185,22 +186,42 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
         actor: ActorReference::new(b"foreign", b"sockets", b"target")?,
         subscription: "inbox".into(),
         app_channel: None,
-        subprotocols: Vec::new(),
-        headers: Vec::new(),
+        subprotocols: vec!["commands".into()],
+        headers: vec![("x-request".into(), "retained".into())],
         resume_after: 0,
         reconnected: false,
     };
     let next = sockets.shared.next.load(Ordering::Relaxed);
     let ledger = sockets.shared.layout.segment(1)?;
+    let encoded = open.encode();
+    let before = decode_work();
+    let prepared = Arc::new(sockets.clone()).prepare(encoded.clone())?;
+    assert_eq!(prepared.resource(), "actors:/sockets");
+    assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
+    // Losing the observer before admission releases the prepared value without
+    // installing a connection, starting a producer or publishing an Open.
+    drop(prepared);
+    assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
+    assert!(sockets.shared.lock().sockets.is_empty());
+    let mut noncanonical = encoded.to_vec();
+    noncanonical.extend_from_slice(&encoded);
+    for bytes in [Bytes::from_static(&[0]), Bytes::from(noncanonical)] {
+        assert!(matches!(
+            Arc::new(sockets.clone()).prepare(bytes),
+            Err(StreamError::InvalidArgument)
+        ));
+    }
     assert!(matches!(
         records(&sockets.shared.store, &ledger).await,
         Err(Error::Stream(StreamError::NotFound))
     ));
-    let refused = match client.actor_socket(open.encode(), 0).await {
+    let before = decode_work();
+    let refused = match client.actor_socket(encoded.clone(), 0).await {
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
     assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next);
     assert!(sockets.shared.lock().sockets.is_empty());
     assert!(sockets.shared.lock().actors.is_empty());
@@ -212,7 +233,9 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
     // The same signed credential admits its own account's namespace. Actor
     // existence is subsequently decided by the original Open publication.
     open.actor = ActorReference::new(b"account", b"sockets", b"target")?;
-    let mut admitted = client.actor_socket(open.encode(), 0).await?;
+    let encoded = open.encode();
+    let before = decode_work();
+    let mut admitted = client.actor_socket(encoded.clone(), 0).await?;
     assert!(matches!(
         admitted
             .next()
@@ -221,13 +244,17 @@ async fn socket_admission_binds_namespace_grants_to_the_certified_account() -> T
         Some(Ok(SocketFrame::Rejected { .. }))
     ));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
+    assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
 
     open.actor = ActorReference::new(b"account", b"ungranted", b"target")?;
-    let refused = match client.actor_socket(open.encode(), 0).await {
+    let encoded = open.encode();
+    let before = decode_work();
+    let refused = match client.actor_socket(encoded.clone(), 0).await {
         Err(error) => Some(error),
         Ok(mut socket) => socket.next().await.err(),
     };
     assert_eq!(refused, Some(StreamError::AccessDenied));
+    assert_eq!(decode_work(), (before.0 + 1, before.1 + encoded.len()));
     assert_eq!(sockets.shared.next.load(Ordering::Relaxed), next + 1);
     Ok(())
 }

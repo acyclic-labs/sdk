@@ -38,7 +38,7 @@ pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
 };
-pub use sockets::{SocketChannel, SocketInbound, SocketProvider};
+pub use sockets::{PreparedSocketOpen, SocketChannel, SocketInbound, SocketProvider};
 mod client;
 mod connection;
 mod local;

@@ -17,6 +17,14 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+Socket providers implement `SocketProvider::prepare`, validating the encoded
+request once and retaining its decoded fields in `PreparedSocketOpen`. The
+session binds authorization to that value's canonical resource, then consumes
+the same value to open the socket. Preparation and installation perform no
+I/O. Dropping preparation before admission installs nothing. The product owner
+still checks the full account and live authorization before installation;
+subsequent publication and transport cleanup keep their original owners.
+
 An unexpected provider-follow EOF closes the original session channel with
 `Unavailable`. The server opens that provider follow once; a caller may create
 a new subscription explicitly. A completed caller-bounded range ends cleanly.

@@ -26,19 +26,28 @@ pub struct SocketChannel {
     pub inbound: Box<dyn SocketInbound>,
 }
 
-/// Product-owned socket routing, without another session or transport loop.
-pub trait SocketProvider: crate::ProviderPlatform + 'static {
-    /// Validate and decode the encoded open request and return its exact
-    /// canonical actor resource. This phase MUST NOT perform I/O.
-    fn resource(&self, open: &[u8]) -> Result<String, StreamError>;
+/// One validated open retained from untrusted ingress through authorization.
+/// Consuming it installs that same request once; dropping an unadmitted value
+/// must release preparation without installing or publishing a socket.
+pub trait PreparedSocketOpen: crate::ProviderPlatform + 'static {
+    /// Exact canonical resource of the retained request.
+    fn resource(&self) -> &str;
 
-    /// Install one socket after credential admission. Any I/O runs inside the
-    /// returned outbound stream or the owner's own tasks, never here.
+    /// Check the supplied authorization and install the retained request. This
+    /// MUST NOT perform I/O or decode the request again. Any I/O runs inside
+    /// the outbound stream or the owner's original tasks.
     fn open(
-        &self,
-        open: Bytes,
+        self: Box<Self>,
         authorization: CallAuthorization,
     ) -> Result<SocketChannel, StreamError>;
+}
+
+/// Product-owned socket routing, without another session or transport loop.
+pub trait SocketProvider: crate::ProviderPlatform + 'static {
+    /// Validate untrusted bytes once and retain their decoded request and
+    /// original owner through credential admission. This MUST NOT perform I/O
+    /// or install a socket before the returned value is authorized.
+    fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError>;
 }
 
 /// The outbound half as a session source: admission first, then one data

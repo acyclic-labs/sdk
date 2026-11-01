@@ -397,7 +397,10 @@ async fn committed_handover(refused_close: bool) -> Result {
         0,
         testing::credential_with_grants(vec![ResourceGrant {
             resource: ResourcePattern {
-                name: sockets.resource(&attachment.open())?,
+                name: Arc::new(sockets.clone())
+                    .prepare(attachment.open())?
+                    .resource()
+                    .to_owned(),
                 prefix: false,
             },
             actions: vec!["actors/invoke".into()],
