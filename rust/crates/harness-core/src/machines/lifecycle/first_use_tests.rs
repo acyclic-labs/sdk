@@ -109,7 +109,7 @@ impl MachineExecutors for BoundExecutors {
 
 #[tokio::test]
 async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -> TestResult {
-    for callers in [1, 100, 1_000] {
+    for (target_count, callers) in [(1, 1), (1, 100), (1, 1_000), (100_000, 1)] {
         for drop_first in [false, true] {
             let (release, ready) = watch::channel(false);
             let provider = Arc::new(HeldInspection {
@@ -120,26 +120,38 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
             });
             let provider_ref =
                 ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+            let unrelated = Arc::new(SimulatedMachines::default());
+            let unrelated_host = MachinesHost::new(unrelated.clone(), provider_ref.clone())?;
+            let mut targets = (1..target_count)
+                .map(|position| ProvisionedTarget {
+                    name: format!("unheld-{position}"),
+                    host: unrelated_host.clone(),
+                    artifact: None,
+                    network_policy_digest: [3; 32],
+                })
+                .collect::<Vec<_>>();
+            // The admitted target is last, so using the first attachment
+            // would allocate from the unrelated provider instead.
+            targets.push(ProvisionedTarget {
+                name: "machine".into(),
+                host: MachinesHost::new(provider.clone(), provider_ref.clone())?,
+                artifact: Some(ArtifactRef::new(provider_ref, [1; 32].into(), None)?),
+                network_policy_digest: [2; 32],
+            });
             let machines = Arc::new(AgentMachines::new(
                 Arc::new(MemoryStream::default()),
-                vec![ProvisionedTarget {
-                    name: "machine".into(),
-                    host: MachinesHost::new(provider.clone(), provider_ref.clone())?,
-                    artifact: Some(ArtifactRef::new(provider_ref, [1; 32].into(), None)?),
-                    network_policy_digest: [2; 32],
-                }],
+                targets,
             )?);
             let executors = Arc::new(BoundExecutors {
                 calls: AtomicUsize::new(0),
                 executor: Arc::new(NeverRun),
             });
-            let target = OnFirstUse {
+            let target = OnFirstUse::new(
                 machines,
-                agent: AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
-                target: "machine".into(),
-                executors: executors.clone(),
-                bound: OnceCell::new(),
-            };
+                AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
+                "machine",
+                executors.clone(),
+            )?;
             let mut first = Box::pin(target.executor());
             assert!(futures::poll!(&mut first).is_pending());
             let mut waiting = (0..callers)
@@ -155,6 +167,7 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 "concurrent first use repeated the original inspection"
             );
             assert_eq!(executors.calls.load(Ordering::Relaxed), 0);
+            assert!(unrelated.list_machines(None, 1).await?.machines.is_empty());
             if drop_first {
                 drop(first);
                 assert!(futures::poll!(&mut waiting[0]).is_pending());
@@ -195,6 +208,49 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 provider.inner.list_machines(None, 2).await?.machines.len(),
                 1
             );
+
+            // A fresh observer binds the same original Machine; an absent
+            // original binding remains indeterminate without allocation.
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "replay".into(),
+                name: "shell".into(),
+                arguments: serde_json::Value::Null,
+            };
+            for (agent, original) in [
+                (target.agent.clone(), true),
+                (
+                    AgentPath::root(&crate::agent::AgentId::from_bytes([2; 16])),
+                    false,
+                ),
+            ] {
+                let recovered = OnFirstUse::new(
+                    Arc::clone(&target.machines),
+                    agent,
+                    "machine",
+                    executors.clone(),
+                )?;
+                let result = recovered.reconcile(invocation.clone(), None).await;
+                if original {
+                    assert!(matches!(result, Err(Error::Unsupported(_))));
+                    assert_eq!(executors.calls.load(Ordering::Relaxed), 2);
+                    assert_eq!(
+                        provider.inspections.load(Ordering::Relaxed),
+                        inspections + 1
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
+                    );
+                    assert_eq!(executors.calls.load(Ordering::Relaxed), 2);
+                    assert_eq!(
+                        provider.inspections.load(Ordering::Relaxed),
+                        inspections + 1
+                    );
+                }
+                assert_eq!(provider.creates.load(Ordering::Relaxed), 1);
+                assert!(unrelated.list_machines(None, 1).await?.machines.is_empty());
+            }
         }
     }
     Ok(())
