@@ -174,7 +174,11 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         })?,
     };
     let file_result = ToolResult {
-        value: value(FileResult { file: file.clone() })?,
+        value: value(FileResult {
+            file: file.clone(),
+            action: Some(acyclic_harness::conversation::PublicationAction::Write),
+            replacements: None,
+        })?,
     };
     let file_invocation = invocation("write", json!({}));
     let definitions = definitions()?;
