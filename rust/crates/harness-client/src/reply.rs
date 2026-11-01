@@ -1191,6 +1191,7 @@ mod tests {
             goal: Some(run),
             targets: None,
             tool_results: None,
+            steering: None,
             notices: None,
         };
         let terminal = ConversationEntry {

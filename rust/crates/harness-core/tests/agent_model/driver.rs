@@ -201,6 +201,8 @@ impl TurnHost for Host {
         &'a self,
         _: &'a AgentState,
         _: OperationId,
+        _: u64,
+        _: u64,
         _: &'a acyclic_harness_core::model::ModelContent,
         _: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
@@ -242,11 +244,13 @@ impl TurnHost for Announcing {
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        inbox: u64,
+        cursor: u64,
         input: &'a acyclic_harness_core::model::ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         Box::pin(async move {
-            let mut open = self.0.open(agent, turn, input, stop).await?;
+            let mut open = self.0.open(agent, turn, inbox, cursor, input, stop).await?;
             let announced = self
                 .1
                 .lock()
@@ -468,6 +472,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             .lock()
             .map_err(|error| error.to_string())?
             .push(TurnEffect::Send {
+                delivery: MessageDelivery::Steer,
                 to: to.clone(),
                 id: intent("sent"),
                 body: body.clone(),

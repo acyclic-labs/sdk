@@ -116,6 +116,7 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     bound_selection: Option<crate::projection::SelectedModelContext>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
     stop: Option<acyclic_actors::guest::CancellationToken>,
+    boundary: Option<Arc<dyn crate::agent::ModelBoundary>>,
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     execution: Option<(OperationId, OperationId)>,

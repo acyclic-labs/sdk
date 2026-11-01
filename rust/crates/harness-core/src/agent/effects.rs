@@ -28,6 +28,8 @@ pub enum TurnEffect {
     },
     /// Send a message to the parent or an open child.
     Send {
+        /// Safe boundary or next-turn delivery, in the same inbox.
+        delivery: super::MessageDelivery,
         /// Recipient.
         to: AgentPath,
         /// Message identity.
@@ -118,16 +120,27 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 volumes: Vec::new(),
                 history: None,
             }),
-            TurnEffect::Send { to, id, body } => Some(Out::Send {
+            TurnEffect::Send {
                 to,
-                record: InboxRecord::Message(Message {
-                    from: Sender::Agent {
-                        path: agent.path.clone(),
-                    },
-                    id,
-                    body,
-                    attachments: None,
-                }),
+                id,
+                body,
+                delivery,
+            } => Some(Out::Send {
+                to,
+                record: {
+                    let message = Message {
+                        from: Sender::Agent {
+                            path: agent.path.clone(),
+                        },
+                        id,
+                        body,
+                        attachments: None,
+                    };
+                    match delivery {
+                        super::MessageDelivery::Steer => InboxRecord::Message(message),
+                        super::MessageDelivery::FollowUp => InboxRecord::FollowUp(message),
+                    }
+                },
             }),
             TurnEffect::Archive { target, id } => Some(Out::Archive { target, id }),
         })

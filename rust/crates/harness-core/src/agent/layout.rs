@@ -149,12 +149,16 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(try_from = "String", into = "String")]
+#[heap_layout(as = String)]
 pub struct AgentPath {
     text: String,
     depth: usize,
 }
+crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
 impl AgentPath {
     /// A top-level agent.

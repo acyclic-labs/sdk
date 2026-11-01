@@ -131,7 +131,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             notice: super::NoticePayload::Quiet(_),
             ..
         } => None,
-        InboxRecord::Message(message) => Some(TurnInput::Message {
+        InboxRecord::Message(message) | InboxRecord::FollowUp(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
             body: message.body,

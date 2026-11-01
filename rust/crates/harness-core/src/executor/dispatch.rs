@@ -74,6 +74,12 @@ impl StockExecution<'_> {
             .await?;
         let request_digest = request.request_digest();
         let purpose_key = model_purpose_key(purpose);
+        if started
+            && purpose == ModelPurpose::Response
+            && let Some(boundary) = journal.model_boundary()
+        {
+            boundary.admitted(input.operation_id, step).await?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
@@ -411,6 +417,11 @@ impl StockExecution<'_> {
             Ok(false) | Err(_) => {
                 return Err(Error::Indeterminate(input.operation_id));
             }
+        }
+        if purpose == ModelPurpose::Response
+            && let Some(boundary) = journal.model_boundary()
+        {
+            boundary.admitted(input.operation_id, step).await?;
         }
         Ok(attempt)
     }

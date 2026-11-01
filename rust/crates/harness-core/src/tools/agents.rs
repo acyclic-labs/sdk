@@ -56,7 +56,7 @@ pub struct SpawnAgentInput {
     pub role: String,
 }
 
-/// Send one message to the parent or an open child.
+/// Queue one message in a parent, open child or explicitly authorized peer inbox.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
@@ -65,6 +65,8 @@ pub struct SendAgentInput {
     pub agent: String,
     /// Message text.
     pub message: String,
+    /// Steer at the next model boundary (default), or reserve a subsequent turn.
+    pub delivery: Option<crate::agent::MessageDelivery>,
 }
 
 /// Archive one open child and, through its cascade, its descendants.
@@ -208,8 +210,22 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(to) = self.recipient(&input.agent, true) else {
-                    return Ok(rejected("send reaches only the parent or an open child"));
+                let peer = || {
+                    AgentPath::try_from(input.agent.clone())
+                        .ok()
+                        .filter(|path| {
+                            context.as_ref().is_some_and(|context| {
+                                crate::agent::peer_send_allowed(
+                                    context.effective_scope().grants(),
+                                    path,
+                                )
+                            })
+                        })
+                };
+                let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
+                    return Ok(rejected(
+                        "send requires a parent, open child or authorized peer inbox",
+                    ));
                 };
                 if input.message.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("message is too large"));
@@ -227,6 +243,7 @@ impl AgentTool {
                     .await?
                     .0;
                 TurnEffect::Send {
+                    delivery: input.delivery.unwrap_or_default(),
                     to,
                     id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
                     body: Box::new(body),
@@ -531,7 +548,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Send a message to your parent or an open child (by name or path); it is queued for the recipient before your next tool call runs",
+                "Queue a message for your parent, an open child (by name or path), or an explicitly authorized peer inbox; steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (

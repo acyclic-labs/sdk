@@ -61,6 +61,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             return Err(Error::Record("only an agent step awaits a child"));
         }
         InboxRecord::Message(_) => "message",
+        InboxRecord::FollowUp(_) => "follow-up",
         InboxRecord::Notice { .. } => "notice",
         InboxRecord::ChildDone(_) => "child-done",
         InboxRecord::Approval(_) => "approval",
@@ -99,7 +100,9 @@ pub async fn inbox_tail<P: crate::store::JournalProvider + ?Sized>(
 
 fn intent_of(record: &InboxRecord) -> String {
     match record {
-        InboxRecord::Message(message) => message.id.as_str().to_owned(),
+        InboxRecord::Message(message) | InboxRecord::FollowUp(message) => {
+            message.id.as_str().to_owned()
+        }
         InboxRecord::Notice { id, .. } => id.as_str().to_owned(),
         InboxRecord::Cancel(control) | InboxRecord::Archive(control) => {
             control.id.as_str().to_owned()

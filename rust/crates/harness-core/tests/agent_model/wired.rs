@@ -1728,11 +1728,16 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &'a self,
             agent: &'a AgentState,
             turn: OperationId,
+            inbox: u64,
+            cursor: u64,
             input: &'a ModelContent,
             cancellation: acyclic_actors::guest::CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
-                let mut open = self.original.open(agent, turn, input, cancellation).await?;
+                let mut open = self
+                    .original
+                    .open(agent, turn, inbox, cursor, input, cancellation)
+                    .await?;
                 open.goal = open.goal.map(|original| {
                     Arc::new(EditedGoal {
                         original,
