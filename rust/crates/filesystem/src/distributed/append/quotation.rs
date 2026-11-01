@@ -9,8 +9,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     ) -> Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError> {
         let actor = self.actor(request.authority_id, work)?;
         let mut journal = actor.lease(work).await?;
-        let mut child = work.operation()?;
-        let result = async {
+        work.check()?;
+        async {
             let projection = self
                 .quotation_projection(
                     request.authority_id,
@@ -20,7 +20,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                         .as_ref()
                         .map(|seal| seal.volume()),
                     &mut journal,
-                    &mut child,
+                    work,
                 )
                 .await?;
             let view = AppendView {
@@ -29,13 +29,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 transaction: None,
             };
             let prepared = self
-                .prepare_append(
-                    request,
-                    &view,
-                    &mut child,
-                    None::<&mut ()>,
-                    Quotation { growth },
-                )
+                .prepare_append(request, &view, work, None::<&mut ()>, Quotation { growth })
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))?;
             let Preparation::Ready(prepared) = prepared else {
@@ -43,9 +37,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             };
             Ok(prepared)
         }
-        .await;
-        work.record(child.spent())?;
-        result
+        .await
     }
 }
 

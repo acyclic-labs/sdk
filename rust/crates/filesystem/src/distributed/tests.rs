@@ -14,6 +14,152 @@ mod policy_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
+#[tokio::test]
+async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal() -> TestResult {
+    use crate::kernel::allocation::retained::RetainedAllocation;
+
+    struct Guard {
+        original: usize,
+        prior_items: u64,
+        prior_live: u64,
+        retained: Option<RetainedAllocation>,
+        entered: bool,
+        refuse: bool,
+        completion: Option<tokio::sync::oneshot::Receiver<()>>,
+    }
+
+    impl AuthorityGuard for Guard {
+        type Error = AuthorityStoreError;
+
+        async fn seal(
+            &mut self,
+            work: &mut AuthorityWork<'_>,
+        ) -> Result<(), AuthorityError<Self::Error>> {
+            assert_eq!(
+                work as *mut AuthorityWork<'_> as usize, self.original,
+                "authority forwarding replaced the original frame"
+            );
+            assert!(work.spent().items_examined >= self.prior_items);
+            assert!(work.allocations.live_bytes() >= self.prior_live);
+            if !self.entered {
+                let delta = WorkCounters {
+                    items_examined: 2,
+                    ..WorkCounters::UNCHARGED
+                };
+                work.admit(delta)?;
+                self.retained = Some(
+                    RetainedAllocation::claim(73, 1, &mut work.accounting())
+                        .map_err(crate::async_storage::authority_error)?,
+                );
+                work.charge(delta)?;
+                self.entered = true;
+            }
+            if self.refuse {
+                return Err(AuthorityError::Owner(AuthorityStoreError::Retired));
+            }
+            if let Some(completion) = self.completion.as_mut() {
+                completion
+                    .await
+                    .map_err(|_| AuthorityError::Owner(AuthorityStoreError::Retired))?;
+                self.completion = None;
+            }
+            Ok(())
+        }
+    }
+
+    async fn exercise<S: AsyncAuthorityStore>(store: S, native: bool, exit: u8) -> TestResult {
+        let cancellation = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut work = match native {
+            #[cfg(not(target_arch = "wasm32"))]
+            true => AuthorityWork::native(&original, &cancellation),
+            _ => AuthorityWork::new(BUDGET, &cancellation),
+        };
+        let delta = WorkCounters {
+            items_examined: 3,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(delta)?;
+        work.charge(delta)?;
+        let seed = RetainedAllocation::claim(17, 1, &mut work.accounting())?;
+        let (producer, completion) = tokio::sync::oneshot::channel();
+        let mut guard = Guard {
+            original: &mut work as *mut AuthorityWork<'_> as usize,
+            prior_items: work.spent().items_examined,
+            prior_live: work.allocations.live_bytes(),
+            retained: None,
+            entered: false,
+            refuse: exit == 1,
+            completion: (exit >= 2).then_some(completion),
+        };
+        let authority = AuthorityId::from_bytes([91; 16]);
+        let mut operation = Box::pin(store.create_first_record(
+            authority,
+            proposed(91),
+            &mut work,
+            Some(&mut guard),
+        ));
+        match exit {
+            0 => assert!(operation.as_mut().await?),
+            1 => assert!(matches!(
+                operation.as_mut().await,
+                Err(AuthorityError::Owner(AuthorityStoreError::Retired))
+            )),
+            2 => {
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                drop(producer);
+                assert!(matches!(
+                    operation.as_mut().await,
+                    Err(AuthorityError::Owner(AuthorityStoreError::Retired))
+                ));
+            }
+            _ => {
+                assert!(futures::poll!(operation.as_mut()).is_pending());
+                cancellation.cancel();
+            }
+        }
+        drop(operation);
+        assert!(guard.entered);
+        assert!(work.spent().items_examined >= guard.prior_items + 2);
+        let before = work.allocations.live_bytes();
+        drop(guard);
+        if !native {
+            assert_eq!(work.allocations.live_bytes(), before - 73);
+        }
+        drop(seed);
+        if exit != 0 {
+            let fresh = CancellationToken::new();
+            let mut explicit = AuthorityWork::new(BUDGET, &fresh);
+            assert!(
+                store
+                    .create_first_record(authority, proposed(92), &mut explicit, None::<&mut ()>)
+                    .await?,
+                "refused or withdrawn preparation published an authority record"
+            );
+        }
+        Ok(())
+    }
+
+    for native in [
+        false,
+        #[cfg(not(target_arch = "wasm32"))]
+        true,
+    ] {
+        for exit in 0..4 {
+            exercise(crate::memory::MemoryAuthorityStore::default(), native, exit).await?;
+            exercise(
+                StreamAuthorityStore::new(Arc::new(MemoryStream::default())),
+                native,
+                exit,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_io_failure_preserves_the_real_cause_with_and_without_original_work()

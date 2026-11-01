@@ -7,12 +7,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         maximum_payload_bytes: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError> {
-        let mut child = work.operation()?;
-        let result = async {
+        work.check()?;
+        async {
             let (snapshot, latest) = self
-                .fork_snapshot_payload::<true>(authority, &mut child)
+                .fork_snapshot_payload::<true>(authority, work)
                 .await
-                .and_then(|value| child.finish(value))?;
+                .and_then(|value| work.finish(value))?;
             let Some((storage, allocation, offset)) = latest else {
                 return Ok(((snapshot.head, None), None));
             };
@@ -21,24 +21,24 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             if maximum_payload_bytes == 0 {
                 return Err(AuthorityStoreError::InvalidReplayLimit);
             }
-            child.check()?;
+            work.check()?;
             // Preserve the replay boundary's retirement and admission checks
             // even though its authenticated record no longer needs another read.
             if RECHECK || !cfg!(all(test, loom)) {
-                self.authority_require_live(authority, &mut child).await?;
+                self.authority_require_live(authority, work).await?;
             }
-            child.check()?;
+            work.check()?;
             if snapshot.head.sequence.get() != record.sequence {
                 return Err(authority_corrupt(
                     "Stream sequence does not match filesystem authority sequence",
-                    &child,
+                    work,
                 ));
             }
             #[cfg(all(test, loom, loom))]
             let replacement = if super::head_payload_loom_tests::resample_payload() {
                 Some(
                     Box::pin(super::head_payload_loom_tests::resampled_payload(
-                        self, authority, &mut child,
+                        self, authority, work,
                     ))
                     .await?,
                 )
@@ -55,13 +55,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     maximum: maximum_payload_bytes,
                 });
             }
-            let payload = child.bytes(payload)?;
+            let payload = work.bytes(payload)?;
             // Retain provider storage and native funding through the copy.
             drop((record, allocation));
-            child.finish(((snapshot.head, Some(payload)), None))
+            work.finish(((snapshot.head, Some(payload)), None))
         }
-        .await;
-        work.record(child.spent())?;
-        result
+        .await
     }
 }

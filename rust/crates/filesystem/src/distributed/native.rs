@@ -41,14 +41,6 @@ impl<'a> AuthorityWork<'a> {
         retain_native_custody(retained, self.request_allocation.as_mut(), self.original)
     }
 
-    pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
-        if !self.is_native() {
-            self.record(child.spent())?;
-            self.check()?;
-        }
-        Ok(())
-    }
-
     pub(super) fn release(&mut self, bytes: u64) -> Result<(), AuthorityStoreError> {
         if self.is_native() {
             return Ok(());
