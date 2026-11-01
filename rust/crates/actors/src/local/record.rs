@@ -5,7 +5,10 @@ use super::{Alarm, Error, State, Subscription};
 use crate::guest::{Checkpoint, CodecIdentity};
 use acyclic_stream::StreamPath;
 use prost::Message as _;
-use prost::encoding::{btree_map, bytes as wire_bytes, string, uint64};
+use prost::encoding::{
+    WireType, btree_map, bytes as wire_bytes, encode_key, encode_varint, encoded_len_varint,
+    key_len, string, uint64,
+};
 use std::collections::BTreeMap;
 
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
@@ -63,35 +66,25 @@ impl State {
     /// This state as its durable record.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
+        // The generated scalar writer has no owned variable fields. Encode
+        // checkpoint and subscriptions below from their original backing.
         let payload = Record {
-            epoch: self.epoch,
-            checkpoint: self.checkpoint.as_ref().map(|checkpoint| CheckpointRecord {
-                codec: checkpoint.codec.name.clone(),
-                version: checkpoint.codec.version.clone(),
-                bytes: checkpoint.bytes.clone(),
-            }),
-            subscriptions: self
-                .subscriptions
-                .iter()
-                .map(|(id, subscription)| {
-                    (
-                        id.clone(),
-                        SubscriptionRecord {
-                            path: subscription.path.as_str().to_owned(),
-                            cursor: subscription.cursor,
-                        },
-                    )
-                })
-                .collect(),
+            epoch: 0,
+            checkpoint: None,
+            subscriptions: BTreeMap::new(),
             alarm_generation: self.alarm.generation,
             alarm_deadline_unix_ms: self.alarm.deadline_unix_ms,
             alarm_delivered_generation: self.alarm.delivered_generation,
             paused: self.paused,
-            // Encode the original map below: copying its keys and tree buys
-            // neither a distinct snapshot nor a different durable record.
             metadata: BTreeMap::new(),
             journal_tail: 0,
         };
+        let checkpoint_len = self.checkpoint.as_ref().map(checkpoint_len);
+        let subscriptions_len = self
+            .subscriptions
+            .iter()
+            .map(|(id, subscription)| framed_len(3, subscription_entry_len(id, subscription)))
+            .sum::<usize>();
         let metadata_len = btree_map::encoded_len(
             string::encoded_len,
             wire_bytes::encoded_len,
@@ -104,9 +97,32 @@ impl State {
             uint64::encoded_len(9, &self.journal_tail)
         };
         let mut record = Vec::with_capacity(
-            STATE_FORMAT_V1.len() + payload.encoded_len() + metadata_len + journal_len,
+            STATE_FORMAT_V1.len()
+                + nonzero_len(1, self.epoch)
+                + checkpoint_len.map_or(0, |len| framed_len(2, len))
+                + subscriptions_len
+                + payload.encoded_len()
+                + metadata_len
+                + journal_len,
         );
         record.extend_from_slice(STATE_FORMAT_V1);
+        encode_nonzero(1, self.epoch, &mut record);
+        if let Some(checkpoint) = &self.checkpoint {
+            encode_frame(2, checkpoint_len.expect("present checkpoint"), &mut record);
+            encode_blob(1, checkpoint.codec.name.as_bytes(), &mut record);
+            encode_blob(2, checkpoint.codec.version.as_bytes(), &mut record);
+            encode_blob(3, &checkpoint.bytes, &mut record);
+        }
+        for (id, subscription) in &self.subscriptions {
+            encode_frame(3, subscription_entry_len(id, subscription), &mut record);
+            encode_blob(1, id.as_bytes(), &mut record);
+            let len = subscription_len(subscription);
+            if len != 0 {
+                encode_frame(2, len, &mut record);
+                encode_blob(1, subscription.path.as_str().as_bytes(), &mut record);
+                encode_nonzero(2, subscription.cursor, &mut record);
+            }
+        }
         payload.encode_raw(&mut record);
         btree_map::encode(
             string::encode,
@@ -175,6 +191,61 @@ impl State {
     }
 }
 
+// Use the original protobuf primitives and default elision. No temporary
+// checkpoint strings, subscription map, ids or paths are constructed.
+fn framed_len(tag: u32, len: usize) -> usize {
+    key_len(tag) + encoded_len_varint(len as u64) + len
+}
+
+fn blob_len(tag: u32, bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        0
+    } else {
+        framed_len(tag, bytes.len())
+    }
+}
+
+fn nonzero_len(tag: u32, value: u64) -> usize {
+    if value == 0 {
+        0
+    } else {
+        uint64::encoded_len(tag, &value)
+    }
+}
+
+fn checkpoint_len(checkpoint: &Checkpoint) -> usize {
+    blob_len(1, checkpoint.codec.name.as_bytes())
+        + blob_len(2, checkpoint.codec.version.as_bytes())
+        + blob_len(3, &checkpoint.bytes)
+}
+
+fn subscription_len(subscription: &Subscription) -> usize {
+    blob_len(1, subscription.path.as_str().as_bytes()) + nonzero_len(2, subscription.cursor)
+}
+
+fn subscription_entry_len(id: &str, subscription: &Subscription) -> usize {
+    let len = subscription_len(subscription);
+    blob_len(1, id.as_bytes()) + if len == 0 { 0 } else { framed_len(2, len) }
+}
+
+fn encode_frame(tag: u32, len: usize, output: &mut Vec<u8>) {
+    encode_key(tag, WireType::LengthDelimited, output);
+    encode_varint(len as u64, output);
+}
+
+fn encode_blob(tag: u32, bytes: &[u8], output: &mut Vec<u8>) {
+    if !bytes.is_empty() {
+        encode_frame(tag, bytes.len(), output);
+        output.extend_from_slice(bytes);
+    }
+}
+
+fn encode_nonzero(tag: u32, value: u64, output: &mut Vec<u8>) {
+    if value != 0 {
+        uint64::encode(tag, &value, output);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,11 +279,27 @@ mod tests {
             },
             paused: true,
         };
-        let record = state.encode();
+        let mut encoded = None;
+        let allocations = acyclic_test_support::measure(|| encoded = Some(state.encode()));
+        let record = encoded.expect("state encoded");
+        assert_eq!(allocations.count_total, 1, "only the output buffer");
+        assert_eq!(allocations.count_current, 1);
+        assert_eq!(allocations.bytes_current, record.capacity() as i64);
         let original = Record::decode(&record[STATE_FORMAT_V1.len()..]).expect("v1 payload");
-        // The borrowed map uses the original v1 encoder, including default
-        // key/value elision and its position before the journal-tail field.
+        // Borrowed fields preserve the original v1 encoding and default
+        // elision, including map entries and the journal-tail position.
         assert_eq!(original.encode_to_vec(), record[STATE_FORMAT_V1.len()..]);
+        // The former owned intermediate still produces the same wire bytes,
+        // but the allocator observes its copied fields and map nodes.
+        let mut owned = None;
+        let copied = acyclic_test_support::measure(|| {
+            owned = Some(original.clone().encode_to_vec());
+        });
+        assert_eq!(
+            owned.expect("owned encoding"),
+            record[STATE_FORMAT_V1.len()..]
+        );
+        assert!(copied.count_total > allocations.count_total);
         assert_eq!(State::decode(&record).expect("decodes"), state);
         // Neither an old writer ignoring new fields nor an unversioned input
         // can silently replace this actor's committed metadata and journal cut.
@@ -240,6 +327,17 @@ mod tests {
         assert!(record.len() < bytes.len() + 200);
         let mut defaults = state;
         defaults.journal_tail = 0;
+        defaults.epoch = 0;
+        defaults.checkpoint = Some(Checkpoint {
+            codec: CodecIdentity {
+                name: String::new(),
+                version: String::new(),
+            },
+            bytes: bytes::Bytes::new(),
+        });
+        defaults
+            .subscriptions
+            .insert(String::new(), Subscription { path, cursor: 0 });
         defaults.metadata.insert(String::new(), bytes::Bytes::new());
         let record = defaults.encode();
         let original = Record::decode(&record[STATE_FORMAT_V1.len()..]).expect("default fields");
@@ -248,5 +346,31 @@ mod tests {
             State::decode(&record).expect("default fields decode"),
             defaults
         );
+        for len in [0, 127, 128, 16_384] {
+            let mut boundary = defaults.clone();
+            let text = "λ".repeat(len);
+            boundary.checkpoint = Some(Checkpoint {
+                codec: CodecIdentity {
+                    name: text.clone(),
+                    version: String::new(),
+                },
+                bytes: bytes::Bytes::from(vec![0x80; len]),
+            });
+            boundary.subscriptions.insert(
+                text,
+                Subscription {
+                    path: StreamPath::new("inputs/text").expect("canonical path"),
+                    cursor: len as u64,
+                },
+            );
+            let record = boundary.encode();
+            let original =
+                Record::decode(&record[STATE_FORMAT_V1.len()..]).expect("nested wire lengths");
+            assert_eq!(original.encode_to_vec(), record[STATE_FORMAT_V1.len()..]);
+            assert_eq!(
+                State::decode(&record).expect("nested fields decode"),
+                boundary
+            );
+        }
     }
 }
