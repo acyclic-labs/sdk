@@ -167,12 +167,6 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
-    /// The role profiles this binding's turns run under, and the pin of
-    /// every root it creates.
-    profiles: Option<(
-        Arc<dyn crate::agent::SpawnProfiles>,
-        crate::agent::AgentProfilePin,
-    )>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -188,7 +182,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             clock: self.clock.clone(),
             handler: self.handler.clone(),
             spawns: self.spawns.clone(),
-            profiles: self.profiles.clone(),
         }
     }
 }
@@ -356,12 +349,7 @@ where
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
-        let profiles = turns
-            .executors
-            .profiles()
-            .map(|profiles| profiles.root().map(|root| (profiles, root)))
-            .transpose()
-            .map_err(turn)?;
+        let profiles = turns.executors.profiles();
         let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
@@ -386,13 +374,18 @@ where
                 .map_err(|_| Error::Record("agent handler manifest"))?
                 .with_spawn_volumes(spawns.clone()),
         );
-        let agents = Arc::new(AgentHost::hosting(
+        let agents = AgentHost::hosting(
             stream,
             within.clone(),
             handler.clone(),
             turns.clock.clone(),
             Some(spawns.clone()),
-        )?);
+        )?;
+        // The host pins roots to the same profiles these turns run under.
+        let agents = Arc::new(match profiles {
+            Some(profiles) => agents.with_profiles(profiles)?,
+            None => agents,
+        });
         Ok(Self {
             issuer,
             admission,
@@ -404,7 +397,6 @@ where
             clock: turns.clock,
             handler,
             spawns,
-            profiles,
         })
     }
 
@@ -415,10 +407,9 @@ where
         mut self,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
-        // The guest composes the same spawns as this binding's own handler.
-        self.agents = Arc::new(AgentHost::hosting(
-            self.agents.provider().clone(),
-            self.within.clone(),
+        // The guest composes the same spawns as this binding's own handler,
+        // and roots keep the role profiles its turns run under.
+        self.agents = Arc::new(self.agents.rehosted(
             handler.clone(),
             self.clock.clone(),
             Some(self.spawns.clone()),
@@ -885,14 +876,7 @@ where
         parent: &AgentPath,
         role: &str,
     ) -> Result<crate::agent::AgentProfilePin, Error> {
-        let refused = Error::SpawnRefused(crate::agent::SpawnRefusal::Role);
-        let Some((profiles, _)) = &self.profiles else {
-            return Err(refused);
-        };
-        let Some(pin) = self.agents.state(parent).await?.profile else {
-            return Err(refused);
-        };
-        profiles.child(&pin, role).map_err(|_| refused)
+        self.agents.child_profile(parent, role).await
     }
 
     /// Stages `text` once on `agent`'s private volume under the agent's
@@ -1172,7 +1156,7 @@ where
         let Spawn { child, request } = self.agents.prepare_root(
             intent,
             ForkAdopted {
-                profile: self.profiles.as_ref().map(|(_, root)| root.clone()),
+                profile: None,
                 agent,
                 parent: None,
                 forked_at: 0,

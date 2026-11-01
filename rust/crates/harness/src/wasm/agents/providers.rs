@@ -361,11 +361,9 @@ impl Providers {
             options
                 .preset
                 .executors((model, provider), tools, (limits, compaction), context);
-        // Roles admit children only where the host places and wakes them.
-        Ok(if options.children {
-            executors.with_profiles(crate::profile::Profiles::builtin())
-        } else {
-            executors
+        Ok(match options.profiles() {
+            Some(profiles) => executors.with_profiles(profiles),
+            None => executors,
         })
     }
 

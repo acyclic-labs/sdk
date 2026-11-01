@@ -8,9 +8,9 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, Error, ForkAdopted, INBOX, InboxRecord,
-    IntentId, Sender, Spawn, SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive,
-    handler::Agents, send, submit,
+    AgentComposer, AgentHandler, AgentLifecycle, AgentPath, AgentProfilePin, Error, ForkAdopted,
+    INBOX, InboxRecord, IntentId, Sender, Spawn, SpawnOutcome, SpawnProfiles, SpawnVolumes,
+    Submitted, TurnDriver, archive, handler::Agents, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -49,6 +49,9 @@ pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     runtime: Runtime<P>,
     within: ActorReference,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
+    /// The role profiles this host's turns run under, and the pin of every
+    /// root it creates; `None` binds no roles.
+    profiles: Option<(Arc<dyn SpawnProfiles>, AgentProfilePin)>,
 }
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
@@ -149,7 +152,70 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             provider,
             within,
             lifecycle: None,
+            profiles: None,
         })
+    }
+
+    /// This host, with the same agents, role profiles and lifecycle, whose
+    /// deliveries run in `handler` (such as a guest boundary wrapping this
+    /// host's own handler) and whose transitions `composer` opens.
+    ///
+    /// # Errors
+    /// As [`Self::hosting`].
+    pub fn rehosted(
+        &self,
+        handler: Arc<dyn Handler>,
+        clock: Arc<dyn Clock>,
+        composer: Option<Arc<dyn Composer>>,
+    ) -> Result<Self, Error> {
+        let mut host = Self::hosting(
+            self.provider.clone(),
+            self.within.clone(),
+            handler,
+            clock,
+            composer,
+        )?;
+        host.lifecycle.clone_from(&self.lifecycle);
+        host.profiles.clone_from(&self.profiles);
+        Ok(host)
+    }
+
+    /// Runs this host's agents under `profiles`, the same profiles its turns
+    /// bind: every root it creates is pinned to their top-level role, and a
+    /// host-requested spawn is admitted by its parent's role. Roots are
+    /// pinned here, at the one creation entrance, so no host can create a
+    /// root its turns cannot run under a role.
+    ///
+    /// # Errors
+    /// The profiles' root role fails to resolve.
+    pub fn with_profiles(mut self, profiles: Arc<dyn SpawnProfiles>) -> Result<Self, Error> {
+        let root = profiles
+            .root()
+            .map_err(|error| Error::Turn(Box::new(error)))?;
+        self.profiles = Some((profiles, root));
+        Ok(self)
+    }
+
+    /// The pin of a `role` child of `parent`, admitted by `parent`'s role.
+    /// A pin never changes once adopted, so this admission holds for the
+    /// step that applies the spawn.
+    ///
+    /// # Errors
+    /// [`Error::SpawnRefused`] when this host binds no roles, `parent` has no
+    /// role, or its role does not admit `role`; or the state read fails.
+    pub async fn child_profile(
+        &self,
+        parent: &AgentPath,
+        role: &str,
+    ) -> Result<AgentProfilePin, Error> {
+        let refused = Error::SpawnRefused(super::SpawnRefusal::Role);
+        let Some((profiles, _)) = &self.profiles else {
+            return Err(refused);
+        };
+        let Some(pin) = self.state(parent).await?.profile else {
+            return Err(refused);
+        };
+        profiles.child(&pin, role).map_err(|_| refused)
     }
 
     /// Admit at most `limits` deliveries at once; configure before running.
@@ -355,8 +421,21 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Prepares, without IO, the one commit creating root agent
     /// `adopted.agent` in this host's account and namespace (see
     /// [`AgentHandler::prepare_root`](super::AgentHandler::prepare_root)).
-    /// [`Self::create`] is exactly this request submitted once.
-    pub fn prepare_root(&self, intent: &IntentId, adopted: ForkAdopted) -> Result<Spawn, Error> {
+    /// [`Self::create`] is exactly this request submitted once. The root's
+    /// role is this host's ([`Self::with_profiles`]): `adopted.profile` must
+    /// be `None`, and the host pins it.
+    ///
+    /// # Errors
+    /// [`Error::Record`] when `adopted` names its own profile.
+    pub fn prepare_root(
+        &self,
+        intent: &IntentId,
+        mut adopted: ForkAdopted,
+    ) -> Result<Spawn, Error> {
+        if adopted.profile.is_some() {
+            return Err(Error::Record("a root's role profile is pinned by its host"));
+        }
+        adopted.profile = self.profiles.as_ref().map(|(_, root)| root.clone());
         self.agents.prepare_root(&self.within, intent, adopted)
     }
 
