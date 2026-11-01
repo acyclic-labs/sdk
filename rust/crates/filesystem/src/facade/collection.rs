@@ -314,7 +314,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let (_gate, sweepable) = collecting.sweepable(batch).await;
             for digest in sweepable {
                 let object = acyclic_objects::Digest::from_bytes(digest.into_bytes());
-                collecting.sweeping(digest);
+                collecting.sweeping();
                 let deleted = provider.delete(object).await.map_err(object_error);
                 // Retire cached copies and the original fill epoch after this
                 // delete attempt, including an uncertain provider result.
