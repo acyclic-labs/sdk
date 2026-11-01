@@ -62,6 +62,16 @@ impl Platform for Owner {
             self.denied.store(true, Ordering::SeqCst);
         }
         Box::pin(async move {
+            Ok(if denied {
+                PolicyDecision::Deny
+            } else {
+                PolicyDecision::Allow
+            })
+        })
+    }
+
+    fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
+        Box::pin(async move {
             if let Some(admitted) = self
                 .admission
                 .lock()
@@ -70,11 +80,7 @@ impl Platform for Owner {
             {
                 admitted.send(()).map_err(|()| StreamError::Unavailable)?;
             }
-            Ok(if denied {
-                PolicyDecision::Deny
-            } else {
-                PolicyDecision::Allow
-            })
+            Ok(())
         })
     }
 
@@ -702,11 +708,15 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         release: resume,
     });
     drop(release);
-    assert!(matches!(
-        call(&client, "agents", &diff).await?,
-        Err(AgentControlFailure::Refused { code, reason })
-            if code == "agent_turn_error" && reason.contains("diff source owner closed")
-    ));
+    let refused = call(&client, "agents", &diff).await?;
+    assert!(
+        matches!(
+            &refused,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == "agent_conflict" && reason.contains("diff source owner closed")
+        ),
+        "a lost diff source must preserve its definitive conflict: {refused:?}"
+    );
     waiting.await?;
     let children = AgentCommand::Children {
         agent: root.clone(),
