@@ -63,7 +63,7 @@ impl MemoryStream {
         }
         let cursor = FiniteRead::new(path, request);
         drop(state);
-        Ok(stream::iter(cursor).boxed())
+        Ok(cursor.boxed())
     }
 
     pub(crate) async fn read_commit_inner(
@@ -276,11 +276,6 @@ fn projected_tail(
     let Some(relative) = relative else {
         return Ok((None, None));
     };
-    // A combined path over the bound cannot exist, so that child has no tail;
-    // one long child never fails the page.
-    if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
-        return Ok((None, None));
-    }
     let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
     let Some(stream) = paths.get(&target) else {
         return Ok((None, None));
@@ -350,7 +345,7 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
 }
 
 fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
-    validate_limit(request.limit)?;
+    let limit = page_limit(request.limit)?;
     if request.after.as_ref().is_some_and(|after| {
         !request.parent.as_ref().map_or_else(
             || !after.as_str().contains('/'),
@@ -381,48 +376,51 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
             children,
             lower,
             request.parent.as_ref(),
-            request.limit as usize + 1,
+            limit as usize + 1,
             &mut paths,
         )?;
     }
-    let has_more = paths.len() > request.limit as usize;
-    paths.truncate(request.limit as usize);
+    let mut has_more = paths.len() > limit as usize;
+    paths.truncate(limit as usize);
+    let mut page_bytes = 64usize;
+    let mut children = Vec::with_capacity(paths.len());
+    for path in paths {
+        let (tail, tail_record) =
+            projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+        let origin = state.paths.origin(&path)?;
+        let child = Child {
+            path,
+            tail,
+            tail_record,
+            origin,
+        };
+        #[cfg(all(loom, feature = "local"))]
+        let size =
+            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
+                child.path.as_str().len()
+            } else {
+                crate::wire_codec::requests::child_len(&child)
+            };
+        #[cfg(not(all(loom, feature = "local")))]
+        let size = crate::wire_codec::requests::child_len(&child);
+        let projected_bytes = page_bytes.saturating_add(size).saturating_add(10);
+        // Reserve the continuation path as well as each complete child.
+        // One child always makes progress; growing pages continue at the
+        // last returned child rather than refusing the original request.
+        if !children.is_empty()
+            && projected_bytes.saturating_add(child.path.as_str().len()) > crate::MAX_COMMAND_BYTES
+        {
+            has_more = true;
+            break;
+        }
+        page_bytes = projected_bytes;
+        children.push(child);
+    }
     let next_after = if has_more {
-        paths.last().cloned()
+        children.last().map(|child| child.path.clone())
     } else {
         None
     };
-    let mut page_bytes =
-        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-    let children = paths
-        .into_iter()
-        .map(|path| {
-            let (tail, tail_record) =
-                projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-            let origin = state.paths.origin(&path)?;
-            let child = Child {
-                path,
-                tail,
-                tail_record,
-                origin,
-            };
-            #[cfg(all(loom, feature = "local"))]
-            let size =
-                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
-                {
-                    child.path.as_str().len()
-                } else {
-                    crate::wire_codec::requests::child_len(&child)
-                };
-            #[cfg(not(all(loom, feature = "local")))]
-            let size = crate::wire_codec::requests::child_len(&child);
-            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-            if page_bytes > crate::MAX_COMMAND_BYTES {
-                return Err(StreamError::LimitExceeded);
-            }
-            Ok(child)
-        })
-        .collect::<Result<Vec<_>, StreamError>>()?;
     let result = ChildrenPage {
         hierarchy_version: state.hierarchy_version,
         children,
@@ -647,7 +645,7 @@ impl crate::NativeStreamProvider for MemoryStream {
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum_record_bytes: usize,
+        capacity: crate::PreparedRecordCapacity,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         Work::start(
@@ -658,9 +656,8 @@ impl crate::NativeStreamProvider for MemoryStream {
                     async move {
                         let provider = self.with_context(Arc::clone(&work));
                         let result = async {
-                            let (plan, recovery) =
-                                provider.prepare(request, maximum_record_bytes).await?;
-                            work.reserve_write(maximum_record_bytes)?;
+                            let (plan, recovery) = provider.prepare(request, capacity).await?;
+                            work.reserve_write(capacity.payload_bytes)?;
                             let slot = work
                                 .record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
                             let ingress = Arc::clone(&slot);
@@ -678,12 +675,7 @@ impl crate::NativeStreamProvider for MemoryStream {
                                 |result| crate::native::outcome(result, StreamError::code),
                             ))?;
                             Ok((
-                                crate::PreparedNativeCommit::new(
-                                    future,
-                                    recovery,
-                                    slot,
-                                    maximum_record_bytes,
-                                ),
+                                crate::PreparedNativeCommit::new(future, recovery, slot, capacity),
                                 None,
                             ))
                         }

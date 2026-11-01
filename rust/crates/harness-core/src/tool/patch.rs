@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 mod document;
 pub use document::{FileChange, parse_document};
 
-/// Consumer-selected finite ceilings, pinned with the editing tool definition.
+/// Consumer-selected byte policy and finite work allowances.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct PatchLimits {
-    /// Separate ceiling for source, diff and resulting UTF-8 bytes.
-    pub maximum_bytes: u64,
+    /// Optional separate ceiling for source, diff and resulting UTF-8 bytes.
+    pub maximum_bytes: Option<u64>,
     /// Maximum bytes examined while comparing context and anchor candidates.
     pub maximum_work: u64,
     /// Maximum number of hunks in one atomic file update.
@@ -20,10 +20,10 @@ pub struct PatchLimits {
 }
 
 impl PatchLimits {
-    /// Rejects absent and unbounded allowances.
+    /// Validates optional bytes and explicit finite work allowances.
     pub fn validate(self) -> Result<()> {
         super::edit::validate_edit_bound(self.maximum_bytes)?;
-        super::edit::validate_edit_bound(self.maximum_work)?;
+        super::edit::validate_edit_bound(Some(self.maximum_work))?;
         if self.maximum_hunks == 0 || self.maximum_hunks == u32::MAX {
             return Err(Error::Invalid(
                 "patch hunk bound must be positive and finite".into(),
@@ -213,11 +213,16 @@ fn locate(
     found.ok_or_else(|| conflict(meter, "patch context is missing"))
 }
 
-fn append(output: &mut String, text: &str, maximum: u64, meter: &mut NativeCustody) -> Result<()> {
+fn append(
+    output: &mut String,
+    text: &str,
+    maximum: Option<u64>,
+    meter: &mut NativeCustody,
+) -> Result<()> {
     let length = output
         .len()
         .checked_add(text.len())
-        .filter(|length| *length as u64 <= maximum)
+        .filter(|length| maximum.is_none_or(|maximum| *length as u64 <= maximum))
         .ok_or_else(|| invalid(meter, "patch output exceeds byte bound"))?;
     reserve_string(meter, output, length)?;
     charge(meter, (text.len()) as u64, 0)?;
@@ -232,8 +237,7 @@ pub(crate) fn apply_update(
     limits: PatchLimits,
     meter: &mut NativeCustody,
 ) -> Result<String> {
-    if limits.maximum_bytes == 0
-        || limits.maximum_bytes == u64::MAX
+    if matches!(limits.maximum_bytes, Some(0 | u64::MAX))
         || limits.maximum_work == 0
         || limits.maximum_work == u64::MAX
         || limits.maximum_hunks == 0
@@ -256,7 +260,7 @@ pub(crate) fn apply_update(
 pub(crate) fn apply_update_admitted(
     source: &str,
     diff: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     meter: &mut NativeCustody,
 ) -> Result<String> {
     apply_update_core(source, diff, maximum_bytes, None, None, meter)
@@ -265,13 +269,13 @@ pub(crate) fn apply_update_admitted(
 fn apply_update_core(
     source: &str,
     diff: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     maximum_work: Option<u64>,
     maximum_hunks: Option<u32>,
     meter: &mut NativeCustody,
 ) -> Result<String> {
     plan_output(meter, |meter| {
-        if source.len() as u64 > maximum_bytes || diff.len() as u64 > maximum_bytes {
+        if maximum_bytes.is_some_and(|maximum| source.len() as u64 > maximum || diff.len() as u64 > maximum) {
             return Err(invalid(meter, "patch input exceeds byte bound"));
         }
         retain(
@@ -344,7 +348,7 @@ mod tests {
     use super::*;
 
     const LIMITS: PatchLimits = PatchLimits {
-        maximum_bytes: 1024,
+        maximum_bytes: Some(1024),
         maximum_work: 8192,
         maximum_hunks: 8,
     };
@@ -370,7 +374,7 @@ mod tests {
                 let output = apply_update_admitted(
                     "one\nthree\n",
                     "@@\n-one\n+two\n three\n",
-                    4096,
+                    Some(4096),
                     &mut custody,
                 )?;
                 assert_eq!(output, "two\nthree\n");
@@ -385,7 +389,7 @@ mod tests {
                     "@@\n-one\n+two\n*** End of File\n+later\n",
                 ] {
                     assert!(
-                        apply_update_admitted("one\nthree\n", invalid, 4096, &mut custody).is_err()
+                        apply_update_admitted("one\nthree\n", invalid, Some(4096), &mut custody).is_err()
                     );
                     // Both a later matching failure and a grammar failure
                     // release scratch without erasing earlier live outputs.
@@ -408,7 +412,10 @@ mod tests {
             apply_update(
                 "a\r\n🦀\r\nb\r\nc",
                 "@@\n a\n-🦀\n+日本語\n@@\n-b\n+B\n",
-                LIMITS,
+                PatchLimits {
+                    maximum_bytes: None,
+                    ..LIMITS
+                },
                 &mut work,
             )?,
             "a\r\n日本語\r\nB\r\nc"
@@ -444,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_ambiguous_out_of_order_and_unbounded_patches_fail() {
+    fn malformed_ambiguous_out_of_order_and_invalid_policy_patches_fail() {
         let mut work = None;
         for (source, diff) in [
             ("a\na\n", "@@\n-a\n+x\n"),
@@ -459,11 +466,11 @@ mod tests {
         }
         for limits in [
             PatchLimits {
-                maximum_bytes: 0,
+                maximum_bytes: Some(0),
                 ..LIMITS
             },
             PatchLimits {
-                maximum_bytes: u64::MAX,
+                maximum_bytes: Some(u64::MAX),
                 ..LIMITS
             },
             PatchLimits {
@@ -491,7 +498,7 @@ mod tests {
                 ..LIMITS
             },
             PatchLimits {
-                maximum_bytes: 8,
+                maximum_bytes: Some(8),
                 ..LIMITS
             },
         ] {
@@ -504,7 +511,7 @@ mod tests {
                 &source,
                 "@@\n-a\n+1234\n",
                 PatchLimits {
-                    maximum_bytes: 32,
+                    maximum_bytes: Some(32),
                     ..LIMITS
                 },
                 &mut work,

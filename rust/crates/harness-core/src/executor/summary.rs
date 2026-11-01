@@ -22,7 +22,7 @@ impl StockExecution<'_> {
                     .map(|writer| (context, writer)),
             })
             .transpose()?;
-        if parent.is_some_and(|parent| step >= parent.max_steps) {
+        if parent.is_some_and(|parent| parent.max_steps.is_some_and(|maximum| step >= maximum)) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -63,7 +63,7 @@ impl StockExecution<'_> {
             operation_id,
             input: instruction,
             selected_context: None,
-            max_steps: parent.map_or(1, |parent| parent.max_steps),
+            max_steps: parent.map_or(Some(1), |parent| parent.max_steps),
         };
         self.validate_summary_capacity(&executor, journal, &input, step)
             .await?;
@@ -288,7 +288,7 @@ pub(super) async fn stage_summary_provenance(
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        Some(io) => io.encode(summary, Some(io.remaining()?.bytes_encoded), true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
     #[cfg(feature = "filesystem")]

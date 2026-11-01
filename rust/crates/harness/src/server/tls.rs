@@ -3,7 +3,7 @@
 //! service, so no session is dispatched for an unverified peer.
 use super::{PeerIdentity, TlsIdentity};
 use crate::{Error, Result};
-use futures::{Stream, StreamExt as _, future, stream};
+use futures::{Stream, StreamExt as _, stream, stream::FuturesUnordered};
 use rustls::{
     DistinguishedName, SignatureScheme,
     client::danger::HandshakeSignatureValid,
@@ -13,13 +13,9 @@ use rustls::{
         danger::{ClientCertVerified, ClientCertVerifier},
     },
 };
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
-
-/// A protective bound on one handshake, so a stalled peer cannot hold its
-/// connection open unverified; a live peer never comes near it.
-const HANDSHAKE: Duration = Duration::from_secs(30);
 
 fn invalid(what: &str) -> impl FnOnce(String) -> Error + '_ {
     move |error| Error::Invalid(format!("TLS {what}: {error}"))
@@ -65,36 +61,30 @@ pub(super) fn config(tls: &TlsIdentity) -> Result<rustls::ServerConfig> {
 
 /// The connections `listener` accepts, each yielded once its handshake
 /// under `config` completes. A failed handshake drops only its connection;
-/// handshakes run concurrently, so a slow peer delays no other.
+/// handshakes run concurrently, so a slow peer delays no other. Dropping
+/// the listener stream closes every incomplete handshake on the same owner.
 pub(super) fn incoming(
     listener: TcpListener,
     config: rustls::ServerConfig,
 ) -> impl Stream<Item = std::io::Result<TlsStream<TcpStream>>> {
     let acceptor = TlsAcceptor::from(Arc::new(config));
-    let (sender, mut handshaken) = tokio::sync::mpsc::unbounded_channel();
-    let accepted = stream::unfold(listener, |listener| async {
-        let accepted = listener.accept().await;
-        Some((accepted, listener))
-    })
-    .filter_map(move |accepted| {
-        future::ready(match accepted {
-            Ok((socket, _)) => {
-                let (acceptor, sender) = (acceptor.clone(), sender.clone());
-                tokio::spawn(async move {
-                    if let Ok(Ok(tls)) =
-                        tokio::time::timeout(HANDSHAKE, acceptor.accept(socket)).await
-                    {
-                        let _ = sender.send(tls);
+    stream::unfold(
+        (listener, acceptor, FuturesUnordered::new()),
+        |(listener, acceptor, mut handshakes)| async move {
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => match accepted {
+                        Ok((socket, _)) => handshakes.push(acceptor.accept(socket)),
+                        Err(error) => return Some((Err(error), (listener, acceptor, handshakes))),
+                    },
+                    completed = handshakes.next(), if !handshakes.is_empty() => {
+                        if let Some(Ok(tls)) = completed {
+                            return Some((Ok(tls), (listener, acceptor, handshakes)));
+                        }
                     }
-                });
-                None
+                }
             }
-            Err(error) => Some(Err(error)),
-        })
-    });
-    stream::select(
-        accepted,
-        stream::poll_fn(move |context| handshaken.poll_recv(context)).map(Ok),
+        },
     )
 }
 

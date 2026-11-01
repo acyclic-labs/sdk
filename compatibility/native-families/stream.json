@@ -60,6 +60,7 @@
     "scripts/generated-bindings.mjs",
     "scripts/native-family.mjs",
     "scripts/package-closure.mjs",
+    "scripts/process-capture.mjs",
     "scripts/stream-napi-types.mjs",
     "tsconfig.base.json",
     "typescript/packages/stream/generated/proto",

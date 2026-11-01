@@ -32,7 +32,7 @@ impl LocalHarness {
     /// Publisher of this harness's prompt inputs on its private journal volume.
     pub(super) fn input_publisher_with_limit(
         &self,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
             self.files.clone(),

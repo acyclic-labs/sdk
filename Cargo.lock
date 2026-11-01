@@ -831,6 +831,7 @@ dependencies = [
  "nix 0.31.3",
  "proptest",
  "ratatui",
+ "ratatui-core",
  "rustix",
  "rustix-openpty",
  "serde",
@@ -1439,10 +1440,6 @@ dependencies = [
  "cipher",
  "cpufeatures 0.2.17",
 ]
-
-[[package]]
-name = "agent-spawn-slot-proofs"
-version = "0.0.0"
 
 [[package]]
 name = "ahash"
@@ -2474,6 +2471,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 

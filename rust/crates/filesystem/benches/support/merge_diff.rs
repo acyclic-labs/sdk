@@ -178,9 +178,12 @@ impl Fixture {
                 ours,
                 theirs,
                 retain_theirs_parent: true,
-                maximum_changes: u32::from(count) * if workload == Workload::Dense { 1 } else { 3 },
-                maximum_conflicts: u32::from(count)
-                    * if workload == Workload::Dense { 1 } else { 3 },
+                maximum_changes: Some(
+                    u32::from(count) * if workload == Workload::Dense { 1 } else { 3 },
+                ),
+                maximum_conflicts: Some(
+                    u32::from(count) * if workload == Workload::Dense { 1 } else { 3 },
+                ),
                 resolutions: BTreeMap::new(),
             },
             store,

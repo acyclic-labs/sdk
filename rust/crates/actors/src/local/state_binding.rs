@@ -28,6 +28,12 @@ impl ActorStateTransaction<'_> {
         let previous = self.state.metadata.insert(key.clone(), value);
         self.undo.push((key, previous));
     }
+    /// Remove metadata in this same transaction; refusal restores the original value.
+    pub fn delete(&mut self, key: &str) {
+        if let Some(previous) = self.state.metadata.remove(key) {
+            self.undo.push((key.to_owned(), Some(previous)));
+        }
+    }
     /// Enumerate this actor's metadata in canonical key order.
     pub fn entries(&self) -> impl ExactSizeIterator<Item = (&str, &Bytes)> {
         self.state.metadata()
@@ -167,6 +173,9 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.transaction(|state| {
             if state.journal_tail() != from {
                 return Err(Error::Conflict);
+            }
+            for key in commit.deletions {
+                state.delete(&key);
             }
             for write in commit.writes {
                 state.put(write.key, write.value);

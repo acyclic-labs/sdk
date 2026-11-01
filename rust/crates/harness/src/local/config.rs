@@ -61,6 +61,7 @@ pub struct LocalHarnessConfig {
     #[cfg(feature = "search-http")]
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
+    pub(super) max_children: Option<u32>,
     pub(super) run_limits: TaskRunLimits,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -192,6 +193,7 @@ impl LocalHarnessConfig {
             #[cfg(feature = "search-http")]
             web_tools: false,
             limits: Limits::default(),
+            max_children: None,
             run_limits: TaskRunLimits::default(),
             compaction: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -356,6 +358,13 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
         self.default_tools.clone_from(&preset.tools);
+        self.max_children = preset.max_children;
+        self.limits.model_steps = self
+            .limits
+            .model_steps
+            .into_iter()
+            .chain(preset.max_steps)
+            .min();
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools;
@@ -367,6 +376,8 @@ impl LocalHarnessConfig {
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
             tools: self.default_tools.clone(),
+            max_steps: self.limits.model_steps,
+            max_children: self.max_children,
             #[cfg(feature = "search-http")]
             web_tools: self.web_tools,
             #[cfg(not(feature = "search-http"))]
@@ -462,7 +473,7 @@ impl LocalHarnessConfig {
         self.run_limits = limits;
         self
     }
-    /// Selects the finite goal policy; `None` disables automatic continuations.
+    /// Selects the goal policy; `None` disables automatic continuations.
     #[must_use]
     pub fn goal_continuations(
         mut self,

@@ -217,7 +217,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         &scope,
         &source,
         VolumeOperation::Read,
-        4 * 1024 * 1024,
         &mut None,
     )?;
     let caller_read = ContentGrant::verify(
@@ -225,7 +224,6 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
         &scope,
         &caller,
         VolumeOperation::Read,
-        4 * 1024 * 1024,
         &mut None,
     )?;
     assert!(matches!(

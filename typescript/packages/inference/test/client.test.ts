@@ -47,7 +47,7 @@ import {
 } from "../src/index.js";
 import { retryableOnce, runTerminalMetadata, validateRuntimeShape } from "../src/contract.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
-import { MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
+import { MAXIMUM_MESSAGE_BYTES } from "../generated/defaults.js";
 import { RUN_TERMINAL_METADATA } from "../generated/terminal-metadata.js";
 
 const bytes = (value: number) => new Uint8Array([value]);
@@ -509,8 +509,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
-  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(12 * 1024 + 1)}` }), fetcher);
-  await expect(oversized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+
 });
 
 test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {
@@ -640,75 +639,23 @@ test("HTTP watch rejects malformed UTF-8 frames as transport errors", async () =
   }).toThrow();
 });
 
-test("HTTP transport derives separate Rust wire and JSON ceilings", async () => {
-  const transportCeiling = MAXIMUM_HTTP_JSON_BYTES;
+test("HTTP transport streams JSON expansion without a default byte ceiling", async () => {
   const request = create(WatchRunRequestSchema, { runId: bytes(4) });
-  const validEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
+  const event = create(RunEventSchema, {
     sequence: 0n,
-    event: { case: "progress", value: { kind: "x".repeat(1024 * 1024) } },
-  }));
-  expect(new TextEncoder().encode(validEvent).byteLength).toBeGreaterThan(1024 * 1024);
-  const valid = new HttpInferenceTransport(
-    "https://example.test",
-    () => ({ authorization: "Bearer test" }),
-    async () => new Response(`${validEvent}\n`),
-  );
-  const events = [];
-  for await (const event of valid.watchRun(request)) events.push(event);
-  expect(events).toHaveLength(1);
-
-  const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
-    sequence: 0n,
-    event: { case: "progress", value: { kind: "x".repeat(transportCeiling) } },
-  }));
-  const oversized = new HttpInferenceTransport(
-    "https://example.test",
-    () => ({ authorization: "Bearer test" }),
-    async () => new Response(`${oversizedEvent}\n`),
-  );
-  await expect(async () => {
-    for await (const _event of oversized.watchRun(request)) { /* exhaust */ }
-  }).toThrow();
-
-  const output = new Uint8Array(Math.floor(6.5 * 1024 * 1024)).fill(7);
-  const bytesEvent = create(RunEventSchema, {
-    sequence: 0n,
-    event: { case: "output", value: output },
+    event: { case: "progress", value: { kind: "\0".repeat(2_800_000) } },
   });
-  const wireBytes = toBinary(RunEventSchema, bytesEvent).byteLength;
-  const json = toJsonString(RunEventSchema, bytesEvent);
-  const jsonBytes = new TextEncoder().encode(json).byteLength;
-  expect(wireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
-  expect(jsonBytes).toBeGreaterThan(MAXIMUM_MESSAGE_BYTES);
-  expect(jsonBytes).toBeLessThan(MAXIMUM_HTTP_JSON_BYTES);
-  const expanded = new HttpInferenceTransport(
+  expect(toBinary(RunEventSchema, event).byteLength).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
+  const json = toJsonString(RunEventSchema, event);
+  const transport = new HttpInferenceTransport(
     "https://example.test",
     () => ({ authorization: "Bearer test" }),
     async () => new Response(`${json}\n`),
   );
-  const expandedEvents = [];
-  for await (const value of expanded.watchRun(request)) expandedEvents.push(value);
-  expect(expandedEvents).toHaveLength(1);
-
-  // Escaped control characters can expand beyond the JSON policy even when
-  // their protobuf wire representation remains below the 8 MiB wire ceiling.
-  const controlEvent = create(RunEventSchema, {
-    sequence: 0n,
-    event: { case: "progress", value: { kind: "\0".repeat(2_800_000) } },
-  });
-  const controlWireBytes = toBinary(RunEventSchema, controlEvent).byteLength;
-  const controlJson = toJsonString(RunEventSchema, controlEvent);
-  const controlJsonBytes = new TextEncoder().encode(controlJson).byteLength;
-  expect(controlWireBytes).toBeLessThan(MAXIMUM_MESSAGE_BYTES);
-  expect(controlJsonBytes).toBeGreaterThan(MAXIMUM_HTTP_JSON_BYTES);
-  const escaped = new HttpInferenceTransport(
-    "https://example.test",
-    () => ({ authorization: "Bearer test" }),
-    async () => new Response(`${controlJson}\n`),
-  );
-  await expect(async () => {
-    for await (const _event of escaped.watchRun(request)) { /* exhaust */ }
-  }).toThrow();
+  expect(transport.maximumMessageBytes).toBeUndefined();
+  const events = [];
+  for await (const received of transport.watchRun(request)) events.push(received);
+  expect(events).toEqual([event]);
 });
 
 test("HTTP transport rejects insecure endpoints and bounded request, unary, and error bodies", async () => {

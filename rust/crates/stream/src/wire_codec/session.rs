@@ -8,10 +8,6 @@ pub use resource::{stream_path, stream_resource, validate_resource};
 mod framing;
 pub use framing::{FrameDecoder, encode_grpc_frame};
 
-/// Finite canonical Actors response plus its enclosing product result. The
-/// same bound applies to every finite one-shot reply, including a children page.
-pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
-
 /// `SessionClosed.code` of a finite channel that delivered its whole range.
 /// It is the only non-error close code; any other code is a [`StreamError`].
 pub const END_CODE: &str = "end";
@@ -42,7 +38,7 @@ pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> 
         .map_err(|_| StreamError::InvalidResponse)?;
     usize::try_from(u64::from_le_bytes(bytes))
         .ok()
-        .filter(|total| *total > 0 && *total <= MAX_ACTOR_CALL_REPLY_BYTES)
+        .filter(|total| *total > 0)
         .ok_or(StreamError::InvalidResponse)
 }
 

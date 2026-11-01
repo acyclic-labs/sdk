@@ -314,7 +314,6 @@ pub fn read_key_from_wire(
                 key: value.key.into(),
                 before: value.before,
             };
-            key.validate()?;
             Ok(key)
         })
         .transpose()
@@ -360,7 +359,7 @@ pub fn children_page_from_wire(
                 Ok(crate::CommitId::from_bytes(array))
             })
             .transpose()?,
-        limit: value.limit,
+        limit: crate::memory::page_limit(value.limit)?,
     })
 }
 

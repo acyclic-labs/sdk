@@ -234,7 +234,7 @@ mod digest_properties {
                 let before = io.receipt();
                 let owned = io.owned_bytes().unwrap();
                 let measured = acyclic_test_support::measure(|| {
-                    crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap();
+                    crate::executor::stock_json_bound(&value, Some(length), Some(&io)).unwrap();
                 });
                 prop_assert_eq!(measured.count_total, 0);
                 prop_assert_eq!(io.owned_bytes().unwrap(), owned);
@@ -244,7 +244,7 @@ mod digest_properties {
                 prop_assert_eq!(after.bytes_copied, before.bytes_copied);
                 prop_assert_eq!(after.allocation_operations, before.allocation_operations);
                 prop_assert_eq!(after.items_examined - before.items_examined, items(&value).0);
-                let failure = crate::executor::stock_json_bound(&value, length - 1, Some(&io)).unwrap_err();
+                let failure = crate::executor::stock_json_bound(&value, Some(length - 1), Some(&io)).unwrap_err();
                 prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Invalid);
                 drop(failure);
                 // The original finite path serializes twice and retains a full
@@ -252,7 +252,7 @@ mod digest_properties {
                 if !native {
                     let mut encoded = None;
                     let legacy = acyclic_test_support::measure(|| {
-                        encoded = Some(io.encode(&value, length, false).unwrap());
+                        encoded = Some(io.encode(&value, Some(length), false).unwrap());
                     });
                     prop_assert!(legacy.count_total > measured.count_total);
                     prop_assert!(legacy.bytes_current >= length as i64);
@@ -260,7 +260,7 @@ mod digest_properties {
                     drop(encoded);
                 }
                 cancellation.cancel();
-                let failure = crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap_err();
+                let failure = crate::executor::stock_json_bound(&value, Some(length), Some(&io)).unwrap_err();
                 prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
                 drop(failure);
                 drop(io);
@@ -274,7 +274,7 @@ mod digest_properties {
                     budget.source_bytes_read = length - 1;
                 }
                 let io = crate::filesystem::PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new()).unwrap();
-                prop_assert!(crate::executor::stock_json_bound(&value, length, Some(&io)).is_err());
+                prop_assert!(crate::executor::stock_json_bound(&value, Some(length), Some(&io)).is_err());
                 prop_assert_eq!(io.owned_bytes().unwrap(), 0);
             }
         }
@@ -290,7 +290,7 @@ mod digest_properties {
             let expected = crate::contract::canonical_json_bytes(&value).unwrap();
             let mut digest = Ok([0; 32]);
             let measured = acyclic_test_support::measure(|| {
-                digest = canonical_json_digest(&value, 65_536, &mut Some(&mut work));
+                digest = canonical_json_digest(&value, Some(65_536), &mut Some(&mut work));
             });
             prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
             prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
@@ -303,7 +303,7 @@ mod digest_properties {
             // encoded copy; it cannot meet the new copy count.
             let legacy_native = acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new()).unwrap();
             let mut legacy = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&legacy_native).unwrap());
-            let encoded = crate::store::history::canonical_bytes_with_work(&value, 65_536, &mut Some(&mut legacy)).unwrap();
+            let encoded = crate::store::history::canonical_bytes_with_work(&value, Some(65_536), &mut Some(&mut legacy)).unwrap();
             prop_assert_eq!(&encoded, &expected);
             prop_assert_eq!(legacy.receipt().bytes_copied, work.receipt().bytes_copied + encoded.len() as u64);
         }
@@ -458,8 +458,8 @@ mod digest_properties {
 }
 
 const BOUNDS: JsonBounds = JsonBounds {
-    maximum_bytes: 65_536,
-    maximum_items: 4_096,
+    maximum_bytes: Some(65_536),
+    maximum_items: Some(4_096),
     maximum_depth: 32,
 };
 
@@ -470,11 +470,11 @@ fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> 
     assert_eq!(copied, value);
     for bounds in [
         JsonBounds {
-            maximum_bytes: 1,
+            maximum_bytes: Some(1),
             ..BOUNDS
         },
         JsonBounds {
-            maximum_items: 1,
+            maximum_items: Some(1),
             ..BOUNDS
         },
         JsonBounds {
@@ -519,7 +519,7 @@ fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
     ));
     let mut digest = Ok([0; 32]);
     let encoding = acyclic_test_support::measure(|| {
-        digest = canonical_json_digest(value, u64::MAX, &mut None);
+        digest = canonical_json_digest(value, None, &mut None);
     });
     assert_eq!(digest?, expected);
     assert_eq!(encoding.count_total, conversion.count_total);
@@ -568,7 +568,7 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
             &acyclic_fs::CancellationToken::default(),
         )?;
         let mut work = crate::store::HistoryWork::new(io);
-        let result = canonical_json_digest(&value, length, &mut Some(&mut work));
+        let result = canonical_json_digest(&value, Some(length), &mut Some(&mut work));
         if allowance == 0 {
             assert!(result.is_err());
         } else {
@@ -659,7 +659,7 @@ fn streamed_identity_matches_canonical_bytes() -> Result<()> {
             let bytes = crate::contract::canonical_json_bytes(&record)?;
             let calls = std::cell::Cell::new(0);
             assert_eq!(
-                canonical_json_digest(&Counted(&calls, &record), u64::MAX, &mut None)?,
+                canonical_json_digest(&Counted(&calls, &record), None, &mut None)?,
                 *blake3::hash(&bytes).as_bytes(),
             );
             assert_eq!(calls.get(), 1);
@@ -670,11 +670,11 @@ fn streamed_identity_matches_canonical_bytes() -> Result<()> {
         let bytes = crate::contract::canonical_json_bytes(&text)?;
         assert_eq!(bytes.len(), encoded_length);
         assert_eq!(
-            canonical_json_digest(&text, u64::MAX, &mut None)?,
+            canonical_json_digest(&text, None, &mut None)?,
             *blake3::hash(&bytes).as_bytes(),
         );
     }
-    assert!(canonical_json_digest(&u128::MAX, u64::MAX, &mut None).is_err());
+    assert!(canonical_json_digest(&u128::MAX, None, &mut None).is_err());
     Ok(())
 }
 
@@ -683,8 +683,8 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
     let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
     let expected = crate::contract::canonical_json_bytes(&value)?;
     let bounds = JsonBounds {
-        maximum_bytes: expected.len() as u64,
-        maximum_items: 7,
+        maximum_bytes: Some(expected.len() as u64),
+        maximum_items: Some(7),
         maximum_depth: 2,
     };
     assert_eq!(
@@ -695,7 +695,7 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         canonical_json_bytes_bounded(
             &value,
             JsonBounds {
-                maximum_bytes: bounds.maximum_bytes - 1,
+                maximum_bytes: bounds.maximum_bytes.map(|maximum| maximum - 1),
                 ..bounds
             },
             None,
@@ -707,7 +707,7 @@ fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         canonical_json_bytes_bounded(
             &value,
             JsonBounds {
-                maximum_items: 6,
+                maximum_items: Some(6),
                 ..bounds
             },
             None,
