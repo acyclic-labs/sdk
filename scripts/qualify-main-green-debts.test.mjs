@@ -137,6 +137,7 @@ test('leader exit retires its real live descendant before output closure', async
       return child;
     },
     terminate(child) {
+      assert.ok(child.pid !== undefined, 'descendant retirement: original child PID missing; rerun node --test scripts/qualify-main-green-debts.test.mjs');
       assert.equal(child.pid, group);
       descendant = Number(readFileSync(identity, 'utf8'));
       assert.ok(Number.isSafeInteger(descendant) && descendant > 0);

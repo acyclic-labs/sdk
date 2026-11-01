@@ -260,6 +260,7 @@ function featureSelection(args) {
   return args.length ? args : undefined;
 }
 
+/** @param {string[]} args */
 function dispatch([name, ...rest], run) {
   if (Object.hasOwn(fixedModels, name) && rest.length === 0) return fixedModels[name](run);
   if (Object.hasOwn(selectableModels, name)) return selectableModels[name](featureSelection(rest), run);

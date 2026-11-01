@@ -230,7 +230,11 @@ test("hook qualification requires every retained checkout and projection model",
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];
   qualifyMcpLoom(["--all-features"], (command, args, options) => {
-    if (command === "cargo") assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
+    if (command === "cargo") {
+      const wrapper = options.env?.RUSTC_WORKSPACE_WRAPPER;
+      assert.ok(typeof wrapper === "string");
+      assert.match(wrapper, /loom-rustc\.(?:sh|cmd)$/);
+    }
     calls.push([command, args]);
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
