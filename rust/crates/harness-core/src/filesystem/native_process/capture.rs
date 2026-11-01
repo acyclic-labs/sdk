@@ -110,7 +110,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
 }
 
 /// Starts the original capture and returns its owned completion future.
-/// The spawn turn transfers the tree into the native capture owner before
+/// A successful spawn transfers the tree into the native capture owner before
 /// returning. Moving this future preserves the original process, callbacks,
 /// output credit, lifetime deadline and cleanup join; it launches no new task.
 /// A caller may race a borrowed completion against foreground presentation,
@@ -153,7 +153,7 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
 
 /// Starts capture with its original native handler and returns owned completion.
 /// The handler retains input production, wake signals, output observation and
-/// retirement in one owner. No callback is wrapped or copied. Interactive input
+/// retirement in one owner. This entry moves that same handler. Interactive input
 /// uses the invocation's original allowance and the handler's native wake;
 /// producer loss must wake that source and return a typed error from `input`.
 /// The caller retains the same authority and background-admission obligations
