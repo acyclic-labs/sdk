@@ -71,6 +71,19 @@ control check has no process result. The ordinary tool renderer owns its single
 failure prefix and preserves unauthorized or unsupported classifications.
 Native host plugins continue to run their host's own loop and sandbox.
 
+The original `StdioMcpTransport::spawn` also accepts an optional host-selected
+grant. A supplied grant enters the same native launch boundary before the MCP
+initialization exchange; refusal never reconnects without it. The existing
+connection and process owner still retain the child through transport cleanup.
+The command retains its host-selected stderr (inherited by default); confined
+callers must select a descriptor admitted by the native boundary, such as null.
+Piped stderr is refused before launch because this transport consumes stdout
+only. A caller-owned stderr descriptor requires its caller-owned live consumer;
+the transport creates no separate stderr reader or task.
+Configuration-based MCP installation explicitly supplies no grant
+until authenticated admission provides one. Server names, configuration and
+tool arguments confer no execution authority.
+
 Network `Off` denies new sockets. `On` admits Internet networking subject to
 inherited restrictions. `TcpPorts` grants outbound TCP destination ports on
 any address, with no listeners, UDP, raw or local IPC sockets. An empty set

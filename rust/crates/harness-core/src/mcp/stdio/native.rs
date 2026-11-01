@@ -70,13 +70,26 @@ impl StdioMcpTransport {
     }
 
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
-    /// Arguments, environment and workspace are supplied through `command`.
+    /// Arguments, environment, workspace and stderr are supplied through `command`.
+    /// Piped stderr is refused before launch: this transport consumes only stdout.
+    /// A caller-owned stderr descriptor must retain its own live consumer.
+    /// A grant must come from authenticated host approval, never server configuration
+    /// or tool arguments. `None` retains ordinary native execution. A supplied grant
+    /// is enforced by the original process launch owner, with no unrestricted retry.
+    /// Confined commands require an explicit environment and workspace cwd; stderr
+    /// must also satisfy that owner's descriptor policy (for example, null).
     pub async fn spawn(
         mut command: ProcessCommand,
+        grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
         maximum_bytes: u32,
         timeout_ms: u32,
     ) -> Result<Self> {
         validate_bounds(maximum_bytes, timeout_ms)?;
+        if command.get_stderr().is_some_and(ProcessStdio::is_piped) {
+            return Err(Error::Invalid(
+                "MCP spawn rejected piped stderr: no stderr reader; recovery: command.stderr(ProcessStdio::null())".into(),
+            ));
+        }
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         let timeout = Duration::from_millis(u64::from(timeout_ms));
         let runtime = tokio::runtime::Handle::current();
@@ -85,9 +98,12 @@ impl StdioMcpTransport {
                 move || {
                     command
                         .stdin(ProcessStdio::piped())
-                        .stdout(ProcessStdio::piped())
-                        .stderr(ProcessStdio::inherit());
-                    ProcessTree::spawn(&mut command).map(|tree| ProcessOwner {
+                        .stdout(ProcessStdio::piped());
+                    let tree = match grant {
+                        Some(grant) => ProcessTree::spawn_granted(command, &grant, None),
+                        None => ProcessTree::spawn(&mut command),
+                    };
+                    tree.map(|tree| ProcessOwner {
                         tree: std::sync::Mutex::new(Some(tree)),
                         runtime,
                     })
