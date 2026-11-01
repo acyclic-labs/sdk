@@ -229,3 +229,110 @@ async fn a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer(
     left.await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", Bytes::from_static(b"seed")).await?;
+    let (sender, receiver) = mpsc::unbounded();
+    let mut greeting = hello(1_000_000, 100);
+    let Some(Body::Hello(hello)) = &mut greeting.body else {
+        return Err("missing greeting".into());
+    };
+    hello.credentials.push(testing::credential_with_grants(vec![
+        acyclic_auth::contract::ResourceGrant {
+            resource: acyclic_auth::contract::ResourcePattern {
+                name: "actors:/fixture".into(),
+                prefix: false,
+            },
+            actions: vec!["actors/invoke".into()],
+        },
+    ]));
+    sender.unbounded_send(Ok(greeting))?;
+    let mut socket = subscribe(9, "events", 0, false);
+    socket.credential = 1;
+    socket.kind = Some(Kind::ActorSocket(Bytes::from_static(b"open")));
+    sender.unbounded_send(Ok(interest(
+        1,
+        vec![
+            subscribe(1, "events", 0, false),
+            subscribe(3, "events", 1, false),
+            socket,
+        ],
+    )))?;
+    let (owner, stopped) = oneshot::channel::<()>();
+    let (gone, left) = oneshot::channel();
+    let mut output = serve_on_with_products(
+        provider,
+        testing::authority(),
+        Products {
+            sockets: Some(Arc::new(Echo {
+                gone: std::sync::Mutex::new(Some(gone)),
+                ends: false,
+            })),
+            ..Products::default()
+        },
+        "node".into(),
+        Limits::default(),
+        receiver.boxed(),
+        Some(Box::pin(async {
+            let _ = stopped.await;
+        })),
+    )?;
+    assert!(matches!(
+        next(&mut output).await?.body,
+        Some(Body::Welcome(_))
+    ));
+    let mut opened = 0;
+    while opened != 3 {
+        if matches!(next(&mut output).await?.body, Some(Body::Opened(_))) {
+            opened += 1;
+        }
+    }
+    let denied = [5, 7].map(|id| {
+        let mut subscription = subscribe(id, "events", 0, false);
+        subscription.credential = 9;
+        subscription
+    });
+    sender.unbounded_send(Ok(interest(2, denied.into())))?;
+    loop {
+        let frame = next(&mut output).await?;
+        if let Some(Body::Closed(close)) = frame.body {
+            assert_eq!(frame.channel_id, 5);
+            assert_eq!(close.code, "forbidden");
+            break;
+        }
+    }
+    drop(owner);
+    // One retained terminal response is emitted before any live channel's
+    // response. Keep the response stream alive but stop polling it here.
+    let first = next(&mut output).await?;
+    assert_eq!(first.channel_id, 7);
+    assert!(matches!(first.body, Some(Body::Closed(ref close)) if close.code == "forbidden"));
+    assert!(matches!(
+        futures::FutureExt::now_or_never(left),
+        Some(Ok(()))
+    ));
+    let mut closed = BTreeSet::new();
+    closed.insert((first.channel_id, first.generation));
+    while let Some(frame) = output.next().await.transpose()? {
+        let frame = frame.into_wire();
+        match frame.body {
+            Some(Body::Closed(close)) => {
+                assert_eq!(
+                    close.code,
+                    if frame.channel_id == 7 {
+                        "forbidden"
+                    } else {
+                        StreamError::Unavailable.code()
+                    }
+                );
+                assert!(closed.insert((frame.channel_id, frame.generation)));
+            }
+            Some(Body::InterestApplied(_)) => {}
+            other => panic!("unexpected frame after host shutdown: {other:?}"),
+        }
+    }
+    assert_eq!(closed, BTreeSet::from([(1, 1), (3, 1), (7, 1), (9, 1)]));
+    Ok(())
+}
