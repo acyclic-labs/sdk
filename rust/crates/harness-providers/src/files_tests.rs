@@ -238,8 +238,8 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
             );
             let count = shared.count(&provider).await?;
             count.validate(&shared.request, &mut None)?;
-            let sent = script.sent.lock().unwrap();
-            let counted = crate::json(&sent.last().unwrap().body)?;
+            let counted = script.counted.lock().unwrap();
+            let counted = crate::json(counted.as_ref().expect("original count was not sent"))?;
             assert_eq!(
                 counted["generateContentRequest"]["contents"],
                 generation["contents"]
