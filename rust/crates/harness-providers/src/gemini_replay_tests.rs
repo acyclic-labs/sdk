@@ -471,7 +471,10 @@ fn malformed_native_part_fields_fail_before_publication() {
             Some("functionCall") => json!({"name":"echo"}),
             _ => json!({}),
         };
-        let member = field.map_or_else(String::new, |field| format!(",{field:?}:{payload}"));
+        let member = field.map_or_else(
+            || r#", "text":null, "functionCall":null, "thought":null"#.into(),
+            |field| format!(",{field:?}:{payload}"),
+        );
         let raw = format!(
             r#"{{ "thoughtSignature":"original\u003d", "extension":{{"kept":true}}{member} }}"#
         );
@@ -567,9 +570,22 @@ fn malformed_native_part_fields_fail_before_publication() {
             "functionCall" => json!({"name":"echo","args":{}}),
             _ => json!({}),
         };
-        rejects(&format!(
-            r#"{{"thoughtSignature":"original==",{field:?}:{payload},{field:?}:{payload}}}"#
-        ));
+        for signature in ["", r#""thoughtSignature":"original==","#] {
+            rejects(&format!(
+                r#"{{{signature}{field:?}:{payload},{field:?}:{payload}}}"#
+            ));
+            rejects(&format!(
+                r#"{{{signature}{field:?}:null,{field:?}:{payload}}}"#
+            ));
+        }
+    }
+    for field in ["thought", "thoughtSignature"] {
+        let payload = if field == "thought" {
+            "true"
+        } else {
+            r#""original==""#
+        };
+        rejects(&format!(r#"{{{field:?}:null,{field:?}:{payload}}}"#));
     }
     for function in [
         r#"{"id":"call","id":"call","name":"echo","args":{}}"#,
@@ -578,9 +594,9 @@ fn malformed_native_part_fields_fail_before_publication() {
         r#"{"id":null,"id":"call","name":"echo","args":{}}"#,
         r#"{"name":"echo","args":null,"args":{}}"#,
     ] {
-        rejects(&format!(
-            r#"{{"thoughtSignature":"original==","functionCall":{function}}}"#
-        ));
+        for signature in ["", r#""thoughtSignature":"original==","#] {
+            rejects(&format!(r#"{{{signature}"functionCall":{function}}}"#));
+        }
     }
 }
 

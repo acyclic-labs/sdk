@@ -5,19 +5,36 @@ use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", bound(deserialize = "T: Deserialize<'de>"))]
 pub(crate) struct Part<T> {
+    #[serde(default, deserialize_with = "supplied")]
     pub text: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     pub thought: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     thought_signature: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     pub function_call: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     inline_data: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     function_response: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     file_data: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     executable_code: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     code_execution_result: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     tool_call: Option<T>,
+    #[serde(default, deserialize_with = "supplied")]
     tool_response: Option<T>,
+}
+
+fn supplied<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,6 +113,27 @@ impl<'a> Part<&'a Value> {
 }
 
 impl Part<&RawValue> {
+    // Preserve the existing unset meaning of JSON null, after the raw decoder
+    // has checked field presence. A first null must not hide a duplicate field.
+    fn without_nulls(mut self) -> Self {
+        for field in [
+            &mut self.text,
+            &mut self.thought,
+            &mut self.thought_signature,
+            &mut self.function_call,
+            &mut self.inline_data,
+            &mut self.function_response,
+            &mut self.file_data,
+            &mut self.executable_code,
+            &mut self.code_execution_result,
+            &mut self.tool_call,
+            &mut self.tool_response,
+        ] {
+            *field = field.filter(|raw| raw.get() != "null");
+        }
+        self
+    }
+
     /// Raw tokens have already passed the shared literal-safe traversal.
     /// Inspecting their kind neither decodes signatures nor constructs a tree.
     fn valid_raw(&self) -> bool {
@@ -112,22 +150,15 @@ fn raw_kind(value: &RawValue) -> Kind {
     }
 }
 
-/// Optional call fields distinguish omission from an explicitly invalid null.
-fn supplied_raw<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<&'de RawValue>, D::Error> {
-    <&RawValue>::deserialize(deserializer).map(Some)
-}
-
 /// Borrowed executable identity, validated before either execution or replay.
 /// https://ai.google.dev/api/generate-content#FunctionCall
 #[derive(Clone, Copy, Deserialize)]
 pub(crate) struct Function<'a> {
-    #[serde(default, borrow, deserialize_with = "supplied_raw")]
+    #[serde(default, borrow, deserialize_with = "supplied")]
     pub id: Option<&'a RawValue>,
     #[serde(borrow)]
     pub name: &'a RawValue,
-    #[serde(default, borrow, deserialize_with = "supplied_raw")]
+    #[serde(default, borrow, deserialize_with = "supplied")]
     pub args: Option<&'a RawValue>,
 }
 
@@ -144,7 +175,9 @@ pub(crate) fn native_part(raw: &RawValue) -> crate::Result<NativePart<'_>> {
             "Gemini part admission failed; recovery: return one typed data member and a well-formed functionCall per native part",
         )
     };
-    let part: Part<&RawValue> = serde_json::from_str(raw.get()).map_err(|_| invalid())?;
+    let part = serde_json::from_str::<Part<&RawValue>>(raw.get())
+        .map_err(|_| invalid())?
+        .without_nulls();
     if !part.valid_raw() {
         return Err(invalid());
     }
