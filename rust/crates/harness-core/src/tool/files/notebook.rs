@@ -316,8 +316,6 @@ pub(super) fn edit(
             } else {
                 (start, end, "")
             });
-            replacement = String::new();
-            _replacement_hold = None;
         }
     }
     substitutions.sort_unstable_by_key(|entry| entry.map_or(usize::MAX, |entry| entry.0));
