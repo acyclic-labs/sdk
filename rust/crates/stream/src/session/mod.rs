@@ -15,7 +15,6 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 mod authority;
-use authority::AuthorityEvent;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use authority::testing;

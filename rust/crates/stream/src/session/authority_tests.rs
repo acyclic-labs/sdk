@@ -54,6 +54,16 @@ impl ChangeSource for State {
 #[tokio::test]
 async fn alarm_producer_loss_terminates_the_original_authorized_session() {
     use crate::{AppendRequest, MemoryStream};
+    let state = State::new();
+    let auth = authority(state.clone());
+    let mut registration = auth.register_change();
+    state.lose_clock();
+    assert_eq!(
+        auth.changed(&mut registration, Some(signed::NOW + 1))
+            .now_or_never(),
+        Some(AuthorityEvent::ClockLost),
+        "a lost expiry producer is not an elapsed deadline",
+    );
     for early in [false, true] {
         let state = State::new();
         let provider = Arc::new(MemoryStream::default());
