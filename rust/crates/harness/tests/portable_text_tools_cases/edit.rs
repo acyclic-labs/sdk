@@ -94,7 +94,14 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         calls: AtomicUsize::new(0),
     };
     assert!(matches!(
-        ordinary.stage_at(OperationId::new(), &source, b"replacement", None, None),
+        ordinary.stage_at(
+            OperationId::new(),
+            &source,
+            b"replacement",
+            None,
+            None,
+            None
+        ),
         Err(Error::Unsupported(_))
     ));
     assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);

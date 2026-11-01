@@ -206,7 +206,8 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             "published.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(file.volume(), &harness.project);
     assert_eq!(
         std::fs::read(directory.path().join("published.txt")).map_err(storage)?,
@@ -229,7 +230,8 @@ async fn first_path_publication_keeps_the_seeded_diff_baseline() -> Result<()> {
             "seed.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let workspace = harness
         .workspace
         .as_ref()
@@ -342,7 +344,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
             "once.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert!(!directory.path().join("once.txt").exists());
     // Recovery normally enters through observe_staged_once, before executing
     // the tool again. It must repair the checkout as well as return its ref,
@@ -354,7 +357,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
             1024,
             crate::conversation::ContentAccess::default(),
         )?
-        .await?
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?
         .0
         .ok_or_else(|| Error::Invalid("the committed upload was not recovered".into()))?;
     let original = assert_republished(&recovered, &original);
@@ -372,7 +376,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
                 "once.txt",
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?
+            .await
+            .map(|(p, hold)| (p.file, hold))?
             .0,
         &original,
     );
@@ -387,7 +392,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
             "path.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert!(!directory.path().join("path.txt").exists());
     let original = assert_republished(
         &publisher
@@ -399,7 +405,8 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
                 "path.txt",
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?
+            .await
+            .map(|(p, hold)| (p.file, hold))?
             .0,
         &original,
     );
@@ -410,16 +417,18 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
 
     let operation = OperationId::new();
     let (replacement, _) = writer
-        .stage_at(operation, &original, b"replacement", None, None)?
-        .await?;
+        .stage_at(operation, &original, b"replacement", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(
         std::fs::read(directory.path().join("path.txt")).map_err(storage)?,
         b"path"
     );
     assert_republished(
         &publisher
-            .stage_at(operation, &original, b"replacement", None, None)?
-            .await?
+            .stage_at(operation, &original, b"replacement", None, None, None)?
+            .await
+            .map(|(p, hold)| (p.file, hold))?
             .0,
         &replacement,
     );
@@ -457,8 +466,9 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
     std::fs::write(directory.path().join("path.txt"), b"later user edit").map_err(storage)?;
     assert_republished(
         &publisher
-            .stage_at(operation, &original, b"replacement", None, None)?
-            .await?
+            .stage_at(operation, &original, b"replacement", None, None, None)?
+            .await
+            .map(|(p, hold)| (p.file, hold))?
             .0,
         &replacement,
     );
@@ -644,7 +654,8 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
                 path,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await
+            .map(|(p, hold)| (p.file, hold))?;
         assert_eq!(
             std::fs::read(directory.path().join(path)).map_err(storage)?,
             bytes
@@ -662,7 +673,8 @@ async fn one_operation_publishes_each_path_and_retries_without_overwriting_edits
                 file.display_name(),
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await
+            .map(|(p, hold)| (p.file, hold))?;
         assert_eq!(retried, file);
         assert_eq!(
             std::fs::read(directory.path().join(file.path())).map_err(storage)?,
@@ -705,7 +717,8 @@ fn checkout_publication_preserves_caller_ceilings() {
                                 &path,
                                 crate::conversation::ContentAccess::default(),
                             )?
-                            .await?;
+                            .await
+                            .map(|(p, hold)| (p.file, hold))?;
                         // Capture a real unrelated edit before obtaining the immutable
                         // replacement reference.
                         std::fs::write(
@@ -764,10 +777,12 @@ fn checkout_publication_preserves_caller_ceilings() {
                                 OperationId::new(),
                                 &fresh,
                                 b"replaced",
+                                None,
                                 Some(&ceiling),
                                 None,
                             )?
-                            .await;
+                            .await
+                            .map(|(p, hold)| (p.file, hold));
                         assert_eq!(
                             replacement.is_ok(),
                             allowed,
@@ -784,7 +799,8 @@ fn checkout_publication_preserves_caller_ceilings() {
                                     io: None,
                                 },
                             )?
-                            .await;
+                            .await
+                            .map(|(p, hold)| (p.map(|p| p.file), hold));
                         assert_eq!(observed.is_ok(), allowed, "{:?}", observed.as_ref().err());
                         for once in [false, true] {
                             let target = format!("{once}-{path}");
@@ -803,6 +819,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                         },
                                     )?
                                     .await
+                                    .map(|(p, hold)| (p.file, hold))
                             } else {
                                 publisher
                                     .stage(
@@ -817,6 +834,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                         },
                                     )?
                                     .await
+                                    .map(|(p, hold)| (p.file, hold))
                             };
                             assert_eq!(result.is_ok(), allowed, "{:?}", result.as_ref().err());
                             if allowed {
@@ -836,6 +854,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                             },
                                         )?
                                         .await
+                                        .map(|(p, hold)| (p.file, hold))
                                 } else {
                                     publisher
                                         .stage(
@@ -850,6 +869,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                             },
                                         )?
                                         .await
+                                        .map(|(p, hold)| (p.file, hold))
                                 };
                                 assert!(
                                     replay.is_err(),
@@ -999,7 +1019,8 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
                 io: None,
             },
         )?
-        .await;
+        .await
+        .map(|(p, hold)| (p.file, hold));
     assert!(matches!(
         denied,
         Err(Error::FilesystemAccessConfiguration(
@@ -1031,7 +1052,8 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
                     io: None
                 }
             )?
-            .await,
+            .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold)),
         Err(Error::FilesystemAccessConfiguration(
             "local checkout publication"
         ))
@@ -1133,7 +1155,8 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
                 "new",
                 crate::conversation::ContentAccess::default()
             )?
-            .await,
+            .await
+            .map(|(p, hold)| (p.file, hold)),
         Err(Error::FilesystemAccessConfiguration(
             "local checkout publication"
         ))
@@ -1196,12 +1219,21 @@ async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
             "result.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     // Before the fix the returned version named the staged generation, and
     // capturing the write's own host metadata made that generation stale.
     let (edited, _) = publisher
-        .stage_at(OperationId::new(), &written, b"after edit\n", None, None)?
-        .await?;
+        .stage_at(
+            OperationId::new(),
+            &written,
+            b"after edit\n",
+            None,
+            None,
+            None,
+        )?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(edited.path(), "result.txt");
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
@@ -1209,8 +1241,9 @@ async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
     );
     // The edit's own reference is just as current.
     publisher
-        .stage_at(OperationId::new(), &edited, b"third\n", None, None)?
-        .await?;
+        .stage_at(OperationId::new(), &edited, b"third\n", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"third\n"
@@ -1232,14 +1265,21 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
             "result.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let path = directory.path().join("result.txt");
     std::fs::write(&path, b"user bytes\n").map_err(storage)?;
-    let conflict =
-        match publisher.stage_at(OperationId::new(), &written, b"overwrite\n", None, None) {
-            Ok(staged) => staged.await.err(),
-            Err(error) => Some(error),
-        };
+    let conflict = match publisher.stage_at(
+        OperationId::new(),
+        &written,
+        b"overwrite\n",
+        None,
+        None,
+        None,
+    ) {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
     let conflict = conflict.ok_or_else(|| Error::Invalid("stale reference was accepted".into()))?;
     assert_eq!(
         conflict.code(),

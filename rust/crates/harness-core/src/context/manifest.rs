@@ -211,6 +211,7 @@ impl ContextManifest {
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
+        let reference = reference.file;
         reference.descriptor().verify(&bytes, &mut None)?;
         limits.validate_record(&reference, &mut None)?;
         if reference.volume() != publisher.volume()

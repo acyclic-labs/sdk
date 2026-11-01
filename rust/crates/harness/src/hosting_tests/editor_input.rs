@@ -66,7 +66,8 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             "document",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     let (sibling, _) = publisher
         .stage_once(
             OperationId::from_bytes([8; 16]),
@@ -76,7 +77,8 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             "sibling",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     *inherited
         .files
         .lock()

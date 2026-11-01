@@ -51,7 +51,8 @@ async fn image_conversion_authorizes_the_pinned_source_before_reading() -> Resul
             ContentAccess::default(),
         )?
         .await?
-        .0;
+        .0
+        .file;
     let tool = image_conversion::conversion_tool()?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
@@ -174,7 +175,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
-        .0;
+        .0
+        .file;
     let task = content_context(
         reader.clone(),
         Some(writer.clone()),
@@ -255,7 +257,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
-        .0;
+        .0
+        .file;
     assert_eq!(
         tool.executor
             .reconcile(invocation.clone(), Some(context))
@@ -337,7 +340,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
-        .0;
+        .0
+        .file;
     assert_eq!(
         patch_tool
             .executor

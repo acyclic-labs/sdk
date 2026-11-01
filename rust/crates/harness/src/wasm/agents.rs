@@ -865,7 +865,8 @@ impl WasmAgents {
             .map_err(js_error)?
             .await
             .map_err(js_error)?
-            .0)
+            .0
+            .file)
     }
 }
 

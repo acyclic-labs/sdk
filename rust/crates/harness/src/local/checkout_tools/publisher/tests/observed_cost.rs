@@ -54,12 +54,14 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
             "large.txt",
             Default::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let view = publisher.tools.workspace.view();
     let writer = publisher.writer_for(&harness.project, view.workspace(), None)?;
     let staged = writer
         .observe_staged_once(operation, None, publisher.maximum, Default::default())?
-        .await?
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?
         .0
         .ok_or_else(|| Error::NotFound("staged publication".into()))?;
     assert_ne!(
@@ -198,14 +200,16 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
             "changed.txt",
             Default::default(),
         )?
-        .await;
+        .await
+        .map(|(p, hold)| (p.file, hold));
     KILL_BEFORE_CAPTURE.set(false);
     assert!(pending.is_err());
     let view = publisher.tools.workspace.view();
     let writer = publisher.writer_for(&harness.project, view.workspace(), None)?;
     let staged = writer
         .observe_staged_once(operation, None, publisher.maximum, Default::default())?
-        .await?
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?
         .0
         .ok_or_else(|| Error::NotFound("pending publication".into()))?;
     std::fs::write(
@@ -261,7 +265,8 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
                     "authored-write-cost",
                     Default::default(),
                 )?
-                .await?
+                .await
+                .map(|(p, hold)| (p.file, hold))?
         } else {
             publisher
                 .stage(
@@ -272,7 +277,8 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
                     "authored-write-cost",
                     Default::default(),
                 )?
-                .await?
+                .await
+                .map(|(p, hold)| (p.file, hold))?
         };
         let elapsed = started.elapsed();
         let after = workspace

@@ -87,7 +87,7 @@ async fn stage(
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?;
-    Ok(file)
+    Ok(file.file)
 }
 
 /// Reads `file` from `store`, allowing at most `maximum` bytes.

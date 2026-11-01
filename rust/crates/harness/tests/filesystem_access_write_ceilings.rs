@@ -98,6 +98,7 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
                     }
                 )?
                 .await
+                .map(|(publication, hold)| (publication.file, hold))
                 .is_err()
         );
     }
@@ -108,10 +109,12 @@ async fn direct_writer_rejects_empty_and_unrelated_callers() -> Result<(), Box<d
             OperationId::new(),
             &fixture.file,
             b"blind replacement",
+            None,
             Some(&caller),
             None,
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     Ok(())
 }
 
@@ -136,7 +139,8 @@ async fn cached_reply_checks_the_callers_list_ceiling() -> Result<(), Box<dyn Er
             "cached",
             acyclic_harness::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     for (list, expired, allowed) in [
         (false, false, false),
         (true, true, false),

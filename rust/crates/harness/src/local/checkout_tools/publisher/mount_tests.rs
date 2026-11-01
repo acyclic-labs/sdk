@@ -12,7 +12,8 @@ async fn native_queries_select_original_stdout_and_keep_its_complete_spill() -> 
             "query.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let grants = Capabilities::new(
         harness
             .signed
@@ -488,7 +489,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             "branch.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let context = ToolContext::new(task, OperationId::new(), "select-branch")?;
     {
         let mut state = lock_owned(StateArc::clone(&tools.state)).await;
@@ -523,7 +525,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
                 "branch.txt",
                 crate::conversation::ContentAccess::default(),
             )?
-            .await;
+            .await
+            .map(|(p, hold)| (p.file, hold));
         super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
         let (file, _) = staged?;
         let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
@@ -540,7 +543,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
                 64,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await;
+            .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold));
         super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
         assert_eq!(recovered?.0, Some(file.clone()));
         let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
@@ -559,7 +563,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
                     64,
                     crate::conversation::ContentAccess::default(),
                 )?
-                .await?
+                .await
+                .map(|(p, hold)| (p.map(|p| p.file), hold))?
                 .0,
             Some(file)
         );
@@ -587,7 +592,8 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             "published.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(file.volume(), &harness.project);
     assert_eq!(
         std::fs::read(directory.path().join("published.txt")).map_err(storage)?,
@@ -614,7 +620,8 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             "private.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let grant = crate::conversation::ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
@@ -652,7 +659,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             "note",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(file.volume(), harness.scratch());
     assert_eq!(file.path(), "note");
     // The exact workspace resolver is shared with writes. Reads need neither
@@ -790,7 +798,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             "note",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let full_context = context_for(harness.signed.capabilities().clone(), true)?;
     assert!(
         run(
@@ -852,7 +861,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
                     io: None
                 }
             )?
-            .await,
+            .await
+            .map(|(p, hold)| (p.file, hold)),
         Err(Error::FilesystemAccessConfiguration(
             "local checkout publication"
         ))
@@ -866,7 +876,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
                 64,
                 crate::conversation::ContentAccess::default()
             )?
-            .await?
+            .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold))?
             .0,
         Some(file.clone())
     );
@@ -880,13 +891,15 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
                 "note",
                 crate::conversation::ContentAccess::default()
             )?
-            .await?
+            .await
+            .map(|(p, hold)| (p.file, hold))?
             .0,
         file
     );
     let (edited, _) = publisher
-        .stage_at(OperationId::new(), &changed, b"edited", None, None)?
-        .await?;
+        .stage_at(OperationId::new(), &changed, b"edited", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(edited.volume(), harness.scratch());
     // The trained tool reaches the same atomic publication for a mounted volume.
     let (patched, _) = run(full_context, crate::tools::variants::apply_patch()?,
@@ -1010,7 +1023,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             "later",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(
         publisher
             .observe_changes(
@@ -1024,8 +1038,16 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         Some(deletion)
     );
     let (restored, _) = publisher
-        .stage_at(OperationId::new(), &patched_files[1], b"edited", None, None)?
-        .await?;
+        .stage_at(
+            OperationId::new(),
+            &patched_files[1],
+            b"edited",
+            None,
+            None,
+            None,
+        )?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(restored.volume(), later.volume());
     // Auxiliary volumes exist physically only while a native command owns its
     // projection. Publication must persist their bytes without leaving a mount.
@@ -1087,7 +1109,8 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             "control",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert!(
         !primary_absent("/.volumes/scratch/control").await?,
         "negative control failed to expose the project-history leak"
@@ -1129,6 +1152,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
         publisher
             .observe_staged_once(operation, None, 1024, access())?
             .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold))
             .map(|(file, _)| file)
     };
     let operation = OperationId::new();
@@ -1141,7 +1165,8 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
             "result.txt",
             access(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     for strict in [false, true] {
         super::tests::OBSERVE_EVERY_MOUNT.set(strict);
         let missing = observe(OperationId::new()).await;
@@ -1173,7 +1198,8 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
                     io: None
                 },
             )?
-            .await,
+            .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold)),
         Err(Error::FilesystemAccessConfiguration(_) | Error::Unauthorized(_))
     ));
     Ok(())

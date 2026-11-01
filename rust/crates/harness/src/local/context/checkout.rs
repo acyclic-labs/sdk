@@ -279,7 +279,8 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     path.rsplit('/').next().unwrap_or(path),
                     crate::conversation::ContentAccess::default(),
                 )?
-                .await?
+                .await
+                .map(|(publication, hold)| (publication.file, hold))?
                 .0;
             Ok(crate::model::ProjectInstruction::Captured {
                 file,

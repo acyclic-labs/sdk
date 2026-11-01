@@ -75,7 +75,8 @@ impl LocalHarness {
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await
+            .map(|(publication, hold)| (publication.map(|publication| publication.file), hold))?;
         if let Some(reference) = &reference {
             self.limits.validate_record(reference, &mut None)?;
         }
@@ -235,7 +236,8 @@ impl LocalHarness {
                     "context-manifest.json",
                     crate::conversation::ContentAccess::default(),
                 )?
-                .await?
+                .await
+                .map(|(publication, hold)| (publication.file, hold))?
                 .0)
         })
     }
@@ -360,7 +362,8 @@ impl LocalHarness {
                 "attachments.json",
                 crate::conversation::ContentAccess::default(),
             )?
-            .await;
+            .await
+            .map(|(publication, hold)| (publication.file, hold));
         match staged {
             Ok((manifest, _)) => Ok(Some(manifest)),
             // A concurrent first send pinned its manifest first: that one stands.
@@ -384,7 +387,8 @@ impl LocalHarness {
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await
+            .map(|(publication, hold)| (publication.map(|publication| publication.file), hold))?;
         Ok(manifest)
     }
 

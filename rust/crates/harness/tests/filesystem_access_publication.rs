@@ -50,21 +50,25 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
             "receipt",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     assert_eq!(
         writer
             .observe_staged_path(operation, path, 4096, None)
-            .await?,
+            .await?
+            .map(|publication| publication.file),
         Some(first.clone())
     );
     let replacement = acyclic_harness::OperationId::from_bytes([53; 16]);
     let (next, _) = writer
-        .stage_at(replacement, &first, b"next", None, None)?
-        .await?;
+        .stage_at(replacement, &first, b"next", None, None, None)?
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     assert_eq!(
         writer
             .observe_staged_at(replacement, &first, 4096, None)
-            .await?,
+            .await?
+            .map(|publication| publication.file),
         Some(next)
     );
     let unknown = acyclic_harness::OperationId::from_bytes([54; 16]);
@@ -77,11 +81,13 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
             "unknown",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     assert_eq!(
         writer
             .observe_staged_once(unknown, None, 4096, ContentAccess::default())?
             .await
+            .map(|(publication, hold)| (publication.map(|publication| publication.file), hold))
             .err()
             .ok_or("metadata discovery unexpectedly succeeded")?
             .code(),
@@ -207,7 +213,8 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
             "cached",
             acyclic_harness::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     let cancel = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::BOUNDARY_BUDGET,
@@ -250,7 +257,8 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
                         io: Some(&io),
                     },
                 )?
-                .await;
+                .await
+                .map(|(publication, hold)| (publication.map(|publication| publication.file), hold));
             assert_eq!(result.is_ok(), !denied);
             drop(result);
             drop(io);

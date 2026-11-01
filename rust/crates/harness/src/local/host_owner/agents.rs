@@ -268,7 +268,8 @@ impl HostDriver {
                 "native",
                 ContentAccess::default(),
             )?
-            .await?
+            .await
+            .map(|(publication, hold)| (publication.file, hold))?
             .0)
     }
 
@@ -290,7 +291,8 @@ impl HostDriver {
         if let Some(file) = content
             .writer
             .observe_staged_once(operation, None, MAXIMUM_BYTES, ContentAccess::default())?
-            .await?
+            .await
+            .map(|(publication, hold)| (publication.map(|publication| publication.file), hold))?
             .0
         {
             let bytes = content
@@ -338,7 +340,8 @@ impl HostDriver {
                 "native",
                 ContentAccess::default(),
             )?
-            .await?
+            .await
+            .map(|(publication, hold)| (publication.file, hold))?
             .0)
     }
 

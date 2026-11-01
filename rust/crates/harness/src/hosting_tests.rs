@@ -268,7 +268,8 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             "stdout",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     // The effect precedes observation. Replay uses the original volume's
     // retained change stream, rather than a disposable notification.
     let resource = bound.tool_resource(root).await?;
@@ -390,7 +391,8 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             "private",
             ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(publication, hold)| (publication.file, hold))?;
     for (agent, path) in [
         (root.clone(), "../outside"),
         (root.clone(), "tools/missing"),

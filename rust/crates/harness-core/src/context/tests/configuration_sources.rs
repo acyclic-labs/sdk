@@ -20,7 +20,7 @@ proptest! {
                     let file = payloads.stage(
                         crate::OperationId::new(), &format!("config/{group}/{index}.json"),
                         body.as_bytes(), "application/json", "configuration.json", crate::conversation::ContentAccess::default(),
-                    )?.await?.0;
+                    )?.await?.0.file;
                     sources.push(file);
                 }
                 expected.extend(sources.iter().cloned());

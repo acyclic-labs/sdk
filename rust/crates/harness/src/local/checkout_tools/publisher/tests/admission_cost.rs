@@ -27,6 +27,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
                         Default::default(),
                     )?
                     .await
+                    .map(|(p, hold)| (p.file, hold))
             } else {
                 publisher
                     .stage(
@@ -38,6 +39,7 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
                         Default::default(),
                     )?
                     .await
+                    .map(|(p, hold)| (p.file, hold))
             }
         })?;
         let reader = crate::filesystem::FilesystemContentVerifier::new(
@@ -116,6 +118,7 @@ fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<
                     Default::default(),
                 )?
                 .await
+                .map(|(p, hold)| (p.file, hold))
                 .map(|(file, _)| file)
         })?);
     }

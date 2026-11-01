@@ -17,7 +17,8 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
             "result.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let (observed, _) = publisher
         .observe_staged_once(
             operation,
@@ -25,12 +26,14 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
             1024,
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?;
     let observed = observed.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
     assert_eq!(observed.version(), written.version());
     publisher
-        .stage_at(OperationId::new(), &observed, b"edited\n", None, None)?
-        .await?;
+        .stage_at(OperationId::new(), &observed, b"edited\n", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"edited\n"
@@ -78,12 +81,14 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
             1024,
             crate::conversation::ContentAccess::default(),
         ) {
-            Ok(observed) => observed.await.map(|(file, _)| file),
+            Ok(observed) => observed
+                .await
+                .map(|(publication, _)| publication.map(|publication| publication.file)),
             Err(error) => Err(error),
         }
     } else {
         match write() {
-            Ok(staged) => staged.await.map(|(file, _)| Some(file)),
+            Ok(staged) => staged.await.map(|(publication, _)| Some(publication.file)),
             Err(error) => Err(error),
         }
     };
@@ -106,10 +111,11 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
     let settled = capture.is_some_and(|capture| {
         hex::encode(capture.id().to_bytes().as_slice()) == replayed.version()
     });
-    let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None, None) {
-        Ok(staged) => staged.await.is_ok(),
-        Err(_) => false,
-    };
+    let edited =
+        match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None, None, None) {
+            Ok(staged) => staged.await.is_ok(),
+            Err(_) => false,
+        };
     Ok(settled && edited)
 }
 
@@ -184,11 +190,13 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
             "result.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let edit = OperationId::new();
     publisher
-        .stage_at(edit, &written, b"edited\n", None, None)?
-        .await?;
+        .stage_at(edit, &written, b"edited\n", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     // Bury the capture well past any walk bounded at 64 with commits that
     // leave the head's content, and so the checkout, unchanged.
     let workspace = harness
@@ -212,20 +220,22 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
             1024,
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?;
     let recovered =
         recovered.ok_or_else(|| Error::Invalid("the write was not recovered".into()))?;
     assert_eq!(recovered.version(), written.version());
     publisher
-        .stage_at(edit, &recovered, b"edited\n", None, None)?
-        .await?;
+        .stage_at(edit, &recovered, b"edited\n", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"edited\n"
     );
     let staged = staged_reference(&harness, &written).await?;
     assert_ne!(staged.version(), written.version());
-    let retried = match publisher.stage_at(edit, &staged, b"edited\n", None, None) {
+    let retried = match publisher.stage_at(edit, &staged, b"edited\n", None, None, None) {
         Ok(retry) => retry.await.map(|_| ()),
         Err(error) => Err(error),
     };
@@ -272,7 +282,8 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
             "other.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let (recovered, _) = publisher
         .observe_staged_once(
             operation,
@@ -280,7 +291,8 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
             1024,
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.map(|p| p.file), hold))?;
     let recovered = recovered
         .ok_or_else(|| Error::Invalid("the interrupted write was not recovered".into()))?;
     let key = acyclic_fs::IdempotencyKey::from_bytes(
@@ -331,7 +343,8 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
             "same.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await
+        .map(|(p, hold)| (p.file, hold))?;
     let tools = &publisher.tools;
     let view = tools.workspace.view();
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -425,12 +438,14 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
             "same.txt",
             crate::conversation::ContentAccess::default(),
         )?
-        .await?
+        .await
+        .map(|(p, hold)| (p.file, hold))?
         .0;
     let operation = OperationId::new();
     let captured = publisher
-        .stage_at(operation, &source, b"same bytes", None, None)?
-        .await?
+        .stage_at(operation, &source, b"same bytes", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?
         .0;
     let view = publisher.tools.workspace.view();
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -456,8 +471,9 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
         .id();
     std::fs::write(directory.path().join("same.txt"), b"later user edit").map_err(storage)?;
     let replayed = publisher
-        .stage_at(operation, &source, b"same bytes", None, None)?
-        .await?
+        .stage_at(operation, &source, b"same bytes", None, None, None)?
+        .await
+        .map(|(p, hold)| (p.file, hold))?
         .0;
     assert_eq!(replayed, captured);
     assert_eq!(
@@ -524,11 +540,12 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
                 crate::conversation::ContentAccess::default(),
             )?
             .await
+            .map(|(p, hold)| (p.map(|p| p.file), hold))
             .map(|(file, _)| file)
     };
     OWED_WRITE_UNAPPLIED.set(unapplied);
     let finished = match finish {
-        Finish::Replay => async { Ok(Some(write()?.await?.0)) }.await,
+        Finish::Replay => async { Ok(Some(write()?.await?.0.file)) }.await,
         Finish::Recovery => recover().await,
         Finish::AnotherWriteThenRecovery => {
             let other = async {
@@ -542,6 +559,7 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
                         crate::conversation::ContentAccess::default(),
                     )?
                     .await
+                    .map(|(p, hold)| (p.file, hold))
             }
             .await;
             match other {
@@ -574,10 +592,11 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
     let settled = capture.is_some_and(|capture| {
         hex::encode(capture.id().to_bytes().as_slice()) == finished.version()
     });
-    let edited = match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None) {
-        Ok(staged) => staged.await.is_ok(),
-        Err(_) => false,
-    };
+    let edited =
+        match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None, None) {
+            Ok(staged) => staged.await.is_ok(),
+            Err(_) => false,
+        };
     Ok(written.as_deref() == Some(b"agent bytes\n".as_slice()) && settled && edited)
 }
 

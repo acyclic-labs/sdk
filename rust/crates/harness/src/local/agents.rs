@@ -410,7 +410,8 @@ impl LocalHarness {
                 "policy",
                 ContentAccess::default(),
             )?
-            .await?
+            .await
+            .map(|(publication, hold)| (publication.file, hold))?
             .0)
     }
 

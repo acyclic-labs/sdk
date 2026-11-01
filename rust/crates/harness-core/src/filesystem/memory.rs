@@ -384,7 +384,7 @@ impl<
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
-        Ok(file)
+        Ok(file.file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.

@@ -56,7 +56,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &mut allocation(None, 0)?,
         )?;
         let generation = self.file_generation(source, None)?;
-        self.put_content(
+        self.put_content_impl(
             source.volume(),
             write,
             source.path(),
@@ -65,9 +65,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             source.display_name(),
             maximum_bytes,
             idempotency_key,
+            None,
             Some(&generation),
-            crate::conversation::ContentAccess::default(),
-        )
+            Some(result.replacements),
+            None,
+            None,
+        )?
         .await
+        .map(|publication| publication.file)
     }
 }

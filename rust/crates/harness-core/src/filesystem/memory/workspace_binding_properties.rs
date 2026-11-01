@@ -101,7 +101,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
             )
             .unwrap()
             .await
-            .map(|(file, _hold)| file)
+            .map(|(publication, _hold)| publication.file)
     };
     let left_bytes = read_workspace(&left, &path).await;
     let right_bytes = read_workspace(&right, &path).await;
