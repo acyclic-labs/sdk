@@ -106,7 +106,10 @@ pub(super) async fn run(
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
             let program: Promise = protect.call((ctx.eval_promise(code)?,))?;
-            let result = program.into_future::<rquickjs::Value>().await;
+            // Async eval wraps its completion in { value } to avoid assimilating
+            // a user-returned promise. Encode the completion's value once.
+            let result = program.into_future::<rquickjs::Object>().await
+                .and_then(|completion| completion.get::<_, rquickjs::Value>("value"));
             // Encoding can execute user getters/toJSON, including more tool calls.
             let json = result.and_then(|result| ctx.json_stringify(result));
             // Format exceptions before draining: their toString may also call tools.

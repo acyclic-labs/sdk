@@ -146,6 +146,34 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             );
         }
         assert_eq!(echo.0.load(Ordering::SeqCst), usize::from(approved));
+        let execution = StockExecution::ordinary(&executor);
+        let invocation = ToolInvocation::for_model_call(
+            input.operation_id,
+            0,
+            "program".into(),
+            "run_js".into(),
+            json!({"code":"await tools['example.echo']({value: 42})"}),
+            None,
+        )?;
+        let loads = journal.4.load(Ordering::SeqCst);
+        let ExecutionProgress::Ready(replayed) = execution
+            .run_js(
+                &journal,
+                (input.operation_id, 0),
+                &invocation,
+                &mut Vec::new(),
+            )
+            .await?
+        else {
+            panic!("settled inner call did not return its original receipt");
+        };
+        assert_eq!(crate::tools::code_mode::output(&replayed.value)?, &value);
+        // Invocation, result and projection are each loaded once. Restoring
+        // the post-settlement result lookup fails this real-engine control.
+        assert_eq!(
+            journal.4.load(Ordering::SeqCst) - loads,
+            3 * usize::from(approved)
+        );
         executor.execute(input, &journal).await?;
         assert_eq!(echo.0.load(Ordering::SeqCst), usize::from(approved));
         let records = journal.0.lock().unwrap();
@@ -227,7 +255,10 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
             &mut context,
         )
         .await?;
-    assert!(matches!(progress, ExecutionProgress::Ready(())));
+    let ExecutionProgress::Ready(Some((receipt, _hold))) = progress else {
+        panic!("settled replay did not retain its result");
+    };
+    assert_eq!(receipt, retained);
     let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
         &messages.last().unwrap().content
     else {

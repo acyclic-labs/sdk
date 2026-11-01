@@ -283,7 +283,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &mut Vec::new(),
             )
             .await?,
-        ExecutionProgress::Ready(())
+        ExecutionProgress::Ready(Some(_))
     ));
     let (_, records) = StockExecution::ordinary(&bound)
         .tool_records(&*journal, operation, 0, "status")
@@ -330,7 +330,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                     &mut Vec::new(),
                 )
                 .await?,
-            ExecutionProgress::Ready(())
+            ExecutionProgress::Ready(Some(_))
         ));
         assert_eq!(replay, messages, "replay changed the saved contents");
         assert_eq!(

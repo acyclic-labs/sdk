@@ -509,7 +509,7 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             assert!(matches!(result, Err(Error::NativeBoundary { .. })));
             assert!(journal.0.lock().unwrap().is_empty());
         } else {
-            assert!(matches!(result?, ExecutionProgress::Ready(())));
+            assert!(matches!(result?, ExecutionProgress::Ready(None)));
             let mut replayed = vec![call_message(&invocation)];
             StockExecution::ordinary(&executor)
                 .settle_tool_call(
