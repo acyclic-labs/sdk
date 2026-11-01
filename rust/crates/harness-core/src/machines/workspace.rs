@@ -102,7 +102,7 @@ impl MachinesWorkspace {
         input: ShellInput,
         maximum_output: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
-        self.shell_until(input, Some(maximum_output), None).await
+        self.shell_until(input, maximum_output, None).await
     }
 
     /// Runs one command to its end: the `shell` result every target
@@ -112,11 +112,11 @@ impl MachinesWorkspace {
         &self,
         operation: crate::OperationId,
         input: ShellInput,
-        maximum: u64,
+        maximum: Option<u64>,
         task_deadline: Option<u64>,
     ) -> Result<ToolResult> {
         let stream = self
-            .shell_until(input, Some(maximum), task_deadline)
+            .shell_until(input, maximum, task_deadline)
             .await
             .map_err(|error| match error {
                 Error::Machines(cause) => map_error(cause, Some(operation)),

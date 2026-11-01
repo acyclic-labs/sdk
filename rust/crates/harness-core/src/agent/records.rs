@@ -37,17 +37,33 @@ pub(crate) enum Unopened {
     Malformed,
 }
 
+#[derive(Serialize)]
+struct Sealed<'a, T: ?Sized> {
+    record: &'a T,
+    version: u32,
+}
+
 /// `record` under the shared header, as canonical JSON.
 pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> {
-    #[derive(Serialize)]
-    struct Sealed<'a, T: ?Sized> {
-        record: &'a T,
-        version: u32,
-    }
     crate::contract::canonical_json_bytes(&Sealed {
         record,
         version: RECORD_VERSION,
     })
+}
+
+/// A driver-supplied inbox frame must fit the same physical Streams record
+/// before the machine accepts its effects. Count the original envelope without
+/// allocating another encoding; logical payloads use their existing references.
+pub(super) fn fits_frame(record: &InboxRecord) -> bool {
+    crate::executor::json::json_byte_length(
+        &Sealed {
+            record,
+            version: RECORD_VERSION,
+        },
+        Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+        &mut None,
+    )
+    .is_ok()
 }
 
 /// The record under the shared header. The version is checked before any of

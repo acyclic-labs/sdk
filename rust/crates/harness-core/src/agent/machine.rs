@@ -299,7 +299,7 @@ pub enum Out {
         /// Complete original text, consumed only by the staging boundary.
         text: String,
     },
-    /// Append to this agent's conversation.
+    /// Append one physical Streams record to this agent's conversation.
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
     Roster([u8; 32]),
@@ -311,7 +311,7 @@ pub enum Out {
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
     Checkpoint,
-    /// Send an inbox record to another agent.
+    /// Send one physical Streams record to another agent's inbox.
     Send {
         /// Recipient.
         to: AgentPath,
@@ -728,12 +728,13 @@ fn valid_effect(out: &Out) -> bool {
     match out {
         // Only the machine stages the original failure after driver validation.
         Out::Diagnostic { .. } => false,
-        Out::Conversation(_) => true,
+        Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
                 record,
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::check(record).is_ok()
+                && super::records::fits_frame(record)
         }
         Out::Archive { .. } | Out::Checkpoint | Out::Roster(_) | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
