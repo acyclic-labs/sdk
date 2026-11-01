@@ -98,6 +98,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
     use crate::executor::phase::Publication;
     use acyclic_observability::Outcome;
 
+    complete_failures_obey_pinned_render_limits().await?;
     for rejected in [false, true] {
         for mode in 0..4 {
             let (journal, _issuer) = journal().await?;
@@ -319,6 +320,105 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
     });
     result.expect("measured publication ran")?;
     assert_eq!(observed.count_total, 0, "disabled observation allocated");
+    Ok(())
+}
+
+async fn complete_failures_obey_pinned_render_limits() -> Result<()> {
+    struct DiagnosticTool(&'static str, usize, AtomicUsize);
+    impl crate::tool::ToolExecutor for DiagnosticTool {
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            self.2.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Err(Error::Invalid(self.0.repeat(self.1))) })
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    // Both the complete text and its serialized result envelope must fit.
+    for (text, count, render_bytes, admitted) in [
+        ("x", 8192, 4096, false),
+        ("\"", 2048, 4096, false),
+        ("x", 8192, 16384, true),
+    ] {
+        let (journal, _issuer) = journal().await?;
+        let model = Arc::new(ScriptedModelProvider::new([
+            tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "call".into(),
+                "example.echo".into(),
+                json!({}),
+            ))]),
+            ScriptedTurn::Text("answer".into()),
+        ]));
+        let tool = Arc::new(DiagnosticTool(text, count, AtomicUsize::new(0)));
+        let limits = Limits {
+            render_bytes,
+            ..Limits::default()
+        };
+        let executor = uncompacted_executor(
+            Model::new("fixture".into(), "failure-limits".into(), "1".into())?,
+            model.clone(),
+            ContextPipeline::default(),
+            echo_tools(tool.clone(), json!(true), json!(true), json!(true))?,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                limits,
+            )?,
+            allowed()?,
+        )?
+        .with_limits(limits);
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([65; 16]),
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let result = executor.execute(input.clone(), &journal).await;
+        let records = journal.replay(input.operation_id, 0, 100, None)?.await?;
+        let failures: Vec<_> = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                ExecutionEvent::ToolFailed { cause, .. } => Some(cause),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool.2.load(Ordering::SeqCst), 1);
+        assert_eq!(failures.len(), usize::from(admitted));
+        if admitted {
+            let result = result?;
+            assert_eq!(result.text, "answer");
+            assert!(failures[0].message.ends_with(&text.repeat(count)));
+            let expected =
+                ToolFailureText(ToolFailureKind::ExecutorRejected, failures[0]).to_string();
+            assert_eq!(
+                super::tools_1::tool_error_text(&model.requests()[1].messages, "call"),
+                Some(expected)
+            );
+            assert_eq!(executor.execute(input, &journal).await?, result);
+            assert_eq!(model.requests().len(), 2);
+            assert_eq!(tool.2.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+            assert_eq!(model.requests().len(), 1);
+            // Refusal has not committed an unreplayable failure or a partial cause.
+            assert!(
+                records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+            );
+        }
+    }
     Ok(())
 }
 

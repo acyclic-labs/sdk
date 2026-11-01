@@ -1,9 +1,6 @@
 use super::*;
 use std::fmt::{self, Write as _};
 
-/// Most UTF-8 bytes of a recorded tool-failure message the model receives.
-pub const TOOL_FAILURE_MESSAGE_BYTES: usize = 256;
-
 /// Stable, credential-free category of the error behind a settled tool failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
@@ -56,15 +53,14 @@ impl ToolErrorClass {
     }
 }
 
-/// Bounded, sanitized cause of a settled tool failure: enough for the model to act on, while
-/// the raw error stays in the `warn` log.
+/// Sanitized cause of a settled tool failure, admitted on the caller's preparation ledger.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolFailureCause {
     /// Stable category.
     pub class: ToolErrorClass,
-    /// At most [`TOOL_FAILURE_MESSAGE_BYTES`] of the error's text, without control characters.
+    /// The complete error text, with control characters replaced by spaces.
     pub message: String,
 }
 
@@ -79,7 +75,7 @@ impl ToolFailureCause {
         })
     }
 
-    /// The reason a call was refused before dispatch, sanitized and bounded like
+    /// The reason a call was refused before dispatch, sanitized and admitted like
     /// every cause. The shared result renderer adds the tool-failure prefix.
     pub(crate) fn refusal(
         name: &str,
@@ -105,12 +101,10 @@ impl ToolFailureCause {
         Ok(Self { class, message })
     }
 
-    /// Whether a recorded cause has the bounded, sanitized, nonblank shape this module writes.
+    /// Whether a recorded cause has the sanitized, nonblank shape this module writes.
     #[must_use]
     pub fn is_canonical(&self) -> bool {
-        self.message.len() <= TOOL_FAILURE_MESSAGE_BYTES
-            && !self.message.chars().any(char::is_control)
-            && !self.message.trim().is_empty()
+        !self.message.chars().any(char::is_control) && !self.message.trim().is_empty()
     }
 }
 
@@ -179,16 +173,14 @@ impl fmt::Display for RefusalText<'_> {
     }
 }
 
-/// The sanitized, bounded text of the error behind a failure, never blank: an error whose text
+/// The sanitized text of the error behind a failure, never blank: an error whose text
 /// is blank is described by its stable class, so no cause is erased.
 pub(crate) struct CauseText<'a>(pub &'a Error);
 
 impl fmt::Display for CauseText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut probe = Visible(false);
-        // Probe the exact bounded text we will emit. A visible character beyond the bound
-        // cannot keep an all-whitespace prefix from erasing the recorded cause.
-        let _ = write!(probe, "{}", Sanitized(self.0));
+        let _ = write!(probe, "{}", self.0);
         if probe.0 {
             write!(formatter, "{}", Sanitized(self.0))
         } else {
@@ -209,38 +201,31 @@ impl fmt::Write for Visible {
     }
 }
 
-/// Displays text with control characters replaced and its UTF-8 bounded on a character.
+/// Displays the complete text with control characters replaced by spaces.
 pub(crate) struct Sanitized<'a>(pub &'a dyn fmt::Display);
 
 impl fmt::Display for Sanitized<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut bounded = Bounded {
-            output: formatter,
-            remaining: TOOL_FAILURE_MESSAGE_BYTES,
-        };
-        write!(bounded, "{}", self.0)
+        write!(Sanitizing(formatter), "{}", self.0)
     }
 }
 
-struct Bounded<'a, 'b> {
-    output: &'a mut fmt::Formatter<'b>,
-    remaining: usize,
-}
+struct Sanitizing<'a, 'b>(&'a mut fmt::Formatter<'b>);
 
-impl fmt::Write for Bounded<'_, '_> {
+impl fmt::Write for Sanitizing<'_, '_> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        for character in text.chars() {
-            let character = if character.is_control() {
-                ' '
-            } else {
-                character
-            };
-            if character.len_utf8() > self.remaining {
-                self.remaining = 0;
-                return Ok(());
+        let mut start = 0;
+        for (index, character) in text.char_indices() {
+            if character.is_control() {
+                if start != index {
+                    self.0.write_str(&text[start..index])?;
+                }
+                self.0.write_char(' ')?;
+                start = index + character.len_utf8();
             }
-            self.remaining -= character.len_utf8();
-            self.output.write_char(character)?;
+        }
+        if start != text.len() {
+            self.0.write_str(&text[start..])?;
         }
         Ok(())
     }
@@ -263,18 +248,23 @@ mod tests {
     ];
 
     /// The production constructor each entry point uses for its kind.
-    fn entry(kind: ToolFailureKind, name: &str, error: &Error) -> Result<ToolFailureCause> {
+    fn entry(
+        kind: ToolFailureKind,
+        name: &str,
+        error: &Error,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<ToolFailureCause> {
         match kind {
             // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
             ToolFailureKind::Unavailable | ToolFailureKind::InvalidInput => {
-                ToolFailureCause::refusal(name, kind, error, None, &mut None)
+                ToolFailureCause::refusal(name, kind, error, None, work)
             }
             // Executor error, output contract, projection and publication after a start.
             ToolFailureKind::ExecutorRejected
             | ToolFailureKind::InvalidOutput
             | ToolFailureKind::ProjectionRejected
             | ToolFailureKind::PublicationRejected
-            | ToolFailureKind::Interrupted => ToolFailureCause::of(error, &mut None),
+            | ToolFailureKind::Interrupted => ToolFailureCause::of(error, work),
         }
     }
 
@@ -300,14 +290,14 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(512))]
         // Class G: no settled tool failure reaches the model or the journal without its cause.
         #[test]
-        fn every_tool_failure_entry_point_carries_a_nonblank_bounded_cause(
+        fn every_tool_failure_entry_point_carries_a_nonblank_cause(
             kind in 0..KINDS.len(),
             variant in any::<u8>(),
             text in r"(\PC|[\n\t\x1b ]){0,400}",
             name in "[a-z_.@0-9]{1,300}",
         ) {
             let kind = KINDS[kind];
-            let cause = entry(kind, &name, &error(variant, text)).unwrap();
+            let cause = entry(kind, &name, &error(variant, text), &mut None).unwrap();
             prop_assert!(cause.is_canonical(), "{cause:?}");
             let rendered = ToolFailureText(kind, &cause).to_string();
             prop_assert!(!rendered.trim().is_empty());
@@ -353,15 +343,16 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]
-        fn bounded_native_causes_remain_visible_after_any_whitespace_prefix(
+        fn native_causes_retain_the_complete_diagnostic_on_original_admission(
             prefix in prop::collection::vec(prop::sample::select(vec![' ', '\t', '\n', '\u{2003}']), 0..400),
-            tail in "[a-zé]{1,400}",
+            tail in "[a-zé]{300,400}",
         ) {
             let prefix: String = prefix.into_iter().collect();
             let message = format!("{prefix}{tail}");
+            let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
-                &acyclic_fs::CancellationToken::new(),
+                &cancellation,
             ).map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;
             let custody = work.claim(message.capacity() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
             let error = Error::NativeDiagnostic {
@@ -369,33 +360,59 @@ mod tests {
                 message,
                 custody,
             };
+            let expected = format!("{}{tail}", prefix.replace('\t', " ").replace('\n', " "));
+            let baseline = work.live_allocation_bytes();
             for kind in KINDS {
-                let cause = entry(kind, "example.tool", &error).unwrap();
+                let io = PreparationIo::from_native_work(&work).unwrap();
+                let cause = with_history_io(Some(&io), |work| entry(kind, "example.tool", &error, work)).unwrap();
                 prop_assert!(cause.is_canonical(), "{kind:?}: {cause:?}");
+                prop_assert_eq!(cause.class, ToolErrorClass::Conflict);
+                if kind != ToolFailureKind::Unavailable {
+                    prop_assert!(cause.message.ends_with(&expected), "{kind:?}: {cause:?}");
+                }
+                prop_assert!(work.live_allocation_bytes() >= baseline + cause.message.capacity() as u64);
+                let rendered = tool_failure_content(kind, &cause, Some(&io)).unwrap();
+                with_history_io(Some(&io), |work| rendered.validate_limits(Limits::default(), work)).unwrap();
+                // The persisted cause uses the same codec shape and replays identical text.
+                let encoded = serde_json::to_vec(&cause).unwrap();
+                let replayed: ToolFailureCause = serde_json::from_slice(&encoded).unwrap();
+                prop_assert!(replayed.is_canonical());
+                prop_assert_eq!(&replayed, &cause);
+                prop_assert_eq!(&tool_failure_content(kind, &replayed, Some(&io)).unwrap(), &rendered);
+                drop(rendered);
+                drop(replayed);
+                drop(cause);
+                drop(io);
+                prop_assert_eq!(work.live_allocation_bytes(), baseline);
             }
-            // Negative control: the old unbounded probe always sees the tail, then emits
-            // a prefix the journal rejects if whitespace consumes the entire byte bound.
-            if prefix.len() >= TOOL_FAILURE_MESSAGE_BYTES {
-                let mut old_probe = Visible(false);
-                let _ = write!(old_probe, "{error}");
-                prop_assert!(old_probe.0);
-                let erased = ToolFailureCause {
-                    class: ToolErrorClass::of(&error),
-                    message: Sanitized(&error).to_string(),
-                };
-                prop_assert!(!erased.is_canonical());
-                prop_assert_eq!(entry(ToolFailureKind::ExecutorRejected, "example.tool", &error).unwrap().message, "conflict error");
-            }
+            // No copy capacity refuses rather than silently clipping to an admitted prefix.
+            let mut budget = acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024);
+            budget.bytes_copied = 0;
+            let exhausted = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;
+            let exhausted_baseline = exhausted.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&exhausted).unwrap();
+            let no_capacity = with_history_io(Some(&io), |work| ToolFailureCause::of(&error, work));
+            prop_assert!(matches!(&no_capacity, Err(Error::NativeWork { .. })), "copy admission must return the original typed failure: {no_capacity:?}");
+            drop(no_capacity);
+            drop(io);
+            prop_assert_eq!(exhausted.live_allocation_bytes(), exhausted_baseline);
+            // Cancellation refuses on the same ledger instead of returning partial success.
+            let io = PreparationIo::from_native_work(&work).unwrap();
+            cancellation.cancel();
+            prop_assert!(with_history_io(Some(&io), |work| entry(ToolFailureKind::ExecutorRejected, "example.tool", &error, work)).is_err());
+            drop(io);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
         }
     }
 
     #[test]
-    fn causes_are_bounded_on_characters_and_free_of_controls() -> Result<()> {
+    fn causes_retain_multibyte_diagnostics_and_remove_controls() -> Result<()> {
         let error = Error::NotFound(format!("line\none\u{1b}[31m{}", "é".repeat(400)));
         let cause = ToolFailureCause::of(&error, &mut None)?;
         assert_eq!(cause.class, ToolErrorClass::NotFound);
         assert!(cause.is_canonical());
-        assert!(cause.message.len() > TOOL_FAILURE_MESSAGE_BYTES - 2);
+        assert!(cause.message.ends_with(&"é".repeat(400)));
         assert!(cause.message.contains("line one [31m"));
         // Negative control: unsanitized text is not canonical.
         let raw = ToolFailureCause {
