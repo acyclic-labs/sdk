@@ -21,7 +21,8 @@ pub(crate) fn generate<'a>(
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
-        let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
+        let events = generate_encoded(provider, request, dispatch, body, auth, names);
+        futures::pin_mut!(events);
         while let Some(event) = events.next().await { yield event?; }
     })
 }
@@ -34,8 +35,8 @@ pub(crate) fn generate_encoded<'a>(
     body: bytes::Bytes,
     auth: (Option<Cow<'a, str>>, Option<String>),
     names: crate::tool_names::Names<'a>,
-) -> BoxProviderStream<'a, Result<ModelEvent>> {
-    Box::pin(async_stream::try_stream! {
+) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
+    async_stream::try_stream! {
         let input_bytes = body.len();
         #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
@@ -52,8 +53,9 @@ pub(crate) fn generate_encoded<'a>(
                 }
                 Ok(response) => {
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                    let mut events = crate::stream::events_named(provider.config.adapter, response.body,
+                    let events = crate::stream::events_named(provider.config.adapter, response.body,
                         provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
+                    futures::pin_mut!(events);
                     let mut failure = None;
                     while let Some(event) = events.next().await {
                         match event {
@@ -89,7 +91,7 @@ pub(crate) fn generate_encoded<'a>(
             Err(error)?;
         }
 
-    })
+    }
 }
 
 pub(crate) async fn authenticate<'a>(
