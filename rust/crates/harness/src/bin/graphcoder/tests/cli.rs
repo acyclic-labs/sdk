@@ -11,6 +11,9 @@ use std::{
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
+#[path = "../examples/embedded.rs"]
+mod embedded;
+
 mod build_metadata {
     #[expect(
         clippy::disallowed_macros,
@@ -56,7 +59,10 @@ async fn model(directory: &Path) -> Model {
     let catalog = directory.join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "models":{
+            "tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}},
+            "drifted":{"capacity":{"context_tokens":4096,"output_tokens":512},"features":{"tools":true,"images":false}}
+        },"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     Model {
@@ -312,6 +318,94 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
         .find(|body| body.to_string().contains("again"))
         .unwrap();
     assert!(later.to_string().contains("hello"), "{later}");
+    model.close().await;
+}
+
+#[tokio::test]
+async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
+    use acyclic_harness_providers::{Credentials, Registry};
+    let fixture = fixture();
+    std::fs::write(
+        fixture.workspace.join("AGENTS.md"),
+        "Preserve Unicode π and retain the complete answer in this checkout.\n",
+    )
+    .unwrap();
+    let model = model(fixture._directory.path()).await;
+    assert_eq!(
+        succeeded(
+            &graphcoder(
+                &fixture,
+                &model.catalog,
+                vec!["--default-config", "--operation", "parity", "-p", "hello"],
+                "",
+            )
+            .await
+        ),
+        "fixture answer\n"
+    );
+    let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
+    registry.load_catalog(&model.catalog).unwrap();
+    let config = registry
+        .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+        .without_user_settings()
+        .state_directory(fixture._directory.path().join("embedded-state"))
+        .working_directory(&fixture.workspace)
+        .unwrap();
+    assert_eq!(
+        embedded::answer(config, "parity", "hello").await.unwrap(),
+        "fixture answer"
+    );
+    let requests = model.requests.lock().unwrap().clone();
+    let [cli, embedded] = requests.as_slice() else {
+        panic!("both hosts must submit exactly one original request");
+    };
+    let same_contract = |left: &Value, right: &Value| {
+        [
+            "model",
+            "tools",
+            "instructions",
+            "input",
+            "max_output_tokens",
+            "reasoning",
+        ]
+        .iter()
+        .all(|field| left.get(field) == right.get(field))
+    };
+    assert_eq!(cli["model"], "tiny");
+    assert!(!cli["tools"].as_array().unwrap().is_empty());
+    assert!(cli.to_string().contains("Preserve Unicode π"));
+    assert!(
+        same_contract(cli, embedded),
+        "CLI={cli}; embedding={embedded}"
+    );
+    // The alternate embedding still returns the same answer from this endpoint.
+    // Its actual different model/capacity or missing tool must fail request parity.
+    for changed_model in [true, false] {
+        let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
+        registry.load_catalog(&model.catalog).unwrap();
+        let selected = if changed_model { "drifted" } else { "tiny" };
+        let mut config = registry
+            .graphcoder(
+                &fixture.workspace,
+                Some(format!("graphcoder-qual/{selected}")),
+            )
+            .without_user_settings()
+            .state_directory(fixture._directory.path().join(selected))
+            .working_directory(&fixture.workspace)
+            .unwrap();
+        if !changed_model {
+            let mut preset = acyclic_harness::preset::Preset::graphcoder();
+            preset.tools.remove(0);
+            config = config.preset(&preset);
+        }
+        assert_eq!(
+            embedded::answer(config, "parity", "hello").await.unwrap(),
+            "fixture answer"
+        );
+        let actual = model.requests.lock().unwrap().last().unwrap().clone();
+        assert!(!same_contract(cli, &actual), "{actual}");
+    }
+    assert_eq!(model.generated(), 4);
     model.close().await;
 }
 
