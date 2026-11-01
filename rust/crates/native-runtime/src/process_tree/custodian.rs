@@ -55,6 +55,8 @@ use wait::ExitWait;
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
 /// The line a custodian writes once it can take trees.
 const READY: &str = "ready";
+/// A native startup failure, on the same pipe as the readiness response.
+const FAILED: &str = "failed ";
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 /// The kernel completion key delivered once the owner has exited.
@@ -118,18 +120,7 @@ pub(super) fn current() -> io::Result<Arc<Custodian>> {
 }
 
 fn launch() -> io::Result<Custodian> {
-    // Keeps the initializer, and so the entry, in every linked executable
-    // that can start a custodian.
-    std::hint::black_box(&ENTRY);
-    // Detached, the custodian starts no console host of its own.
-    let mut child = super::spawner::spawn(
-        Command::new(std::env::current_exe()?)
-            .env(SWITCH, "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .creation_flags(DETACHED_PROCESS),
-    )?;
+    let mut child = launch_child()?;
     let started = hand_over(&mut child).and_then(|(input, endpoint)| {
         Ok((input, endpoint, identity(child.as_raw_handle().cast())?))
     });
@@ -148,10 +139,31 @@ fn launch() -> io::Result<Custodian> {
     }
 }
 
+fn launch_child() -> io::Result<Child> {
+    // Keeps the initializer, and so the entry, in every linked executable
+    // that can start a custodian.
+    std::hint::black_box(&ENTRY);
+    // Detached, the custodian starts no console host of its own.
+    super::spawner::spawn(
+        Command::new(std::env::current_exe()?)
+            .env(SWITCH, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .creation_flags(DETACHED_PROCESS),
+    )
+}
+
 fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
     let target: HANDLE = custodian.as_raw_handle().cast();
     // SAFETY: a synchronize-only handle to this process, for the custodian.
     let owner = unsafe { duplicate(GetCurrentProcess(), target, PROCESS_SYNCHRONIZE, 0) }?;
+    hand_over_owner(custodian, owner)
+}
+
+/// `owner` is the original process handle already transferred to this child.
+fn hand_over_owner(custodian: &mut Child, owner: HANDLE) -> io::Result<(ChildStdin, String)> {
+    let target: HANDLE = custodian.as_raw_handle().cast();
     let output = duplicate_output(target, STD_OUTPUT_HANDLE)?;
     let error = duplicate_output(target, STD_ERROR_HANDLE)?;
     let mut input = custodian.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
@@ -162,11 +174,36 @@ fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
         output.expose_provenance(),
         error.expose_provenance()
     )?;
+    Ok((input, startup_response(custodian)?))
+}
+
+/// Reads this original child's one complete startup response.
+fn startup_response(custodian: &mut Child) -> io::Result<String> {
     let mut ready = String::new();
     BufReader::new(custodian.stdout.take().ok_or(io::ErrorKind::BrokenPipe)?)
         .read_line(&mut ready)?;
-    let Some(endpoint) = ready.trim_end().strip_prefix(&format!("{READY} ")) else {
-        return Err(io::Error::other("the process custodian did not start"));
+    let response = ready.strip_suffix('\n').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "process custodian exited before a complete startup response",
+        )
+    })?;
+    // A complete failure response precedes any tree admission. A truncated
+    // response remains producer loss, never an inferred native cause.
+    if let Some(code) = response.strip_prefix(FAILED) {
+        let code = code
+            .parse::<i32>()
+            .map_err(|_| io::ErrorKind::InvalidData)?;
+        if code == 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        return Err(io::Error::from_raw_os_error(code));
+    }
+    let Some(endpoint) = response
+        .strip_prefix(READY)
+        .and_then(|line| line.strip_prefix(' '))
+    else {
+        return Err(io::ErrorKind::InvalidData.into());
     };
     let address = endpoint
         .parse::<std::net::SocketAddrV4>()
@@ -174,7 +211,7 @@ fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
     if !address.ip().is_loopback() {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    Ok((input, endpoint.to_owned()))
+    Ok(endpoint.to_owned())
 }
 
 /// Observes the original process once. A refused wait cannot admit a new
@@ -551,6 +588,20 @@ struct Tree {
 /// The custodian: watches each tree's Job, kills every tree when the owner
 /// exits, and exits once the owner has and no member of any tree remains.
 fn serve() -> io::Result<()> {
+    let mut ready_started = false;
+    let result = run(&mut ready_started);
+    if !ready_started && let Some(code) = result.as_ref().err().and_then(io::Error::raw_os_error) {
+        // No tree can have been handed over before READY. Deliver this
+        // original native cause through the existing startup response; a
+        // failed response write remains loss of that response producer.
+        let mut output = io::stdout();
+        writeln!(output, "{FAILED}{code}")?;
+        output.flush()?;
+    }
+    result
+}
+
+fn run(ready_started: &mut bool) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin());
     let mut line = String::new();
     input.read_line(&mut line)?;
@@ -587,6 +638,8 @@ fn serve() -> io::Result<()> {
     let requests = admission.start(port)?;
     let opened = read_trees(input, port)?;
     let mut output = io::stdout();
+    // A partial readiness write must never be followed by a failure frame.
+    *ready_started = true;
     writeln!(output, "{READY} {endpoint}")?;
     output.flush()?;
     let mut state = State {
@@ -973,6 +1026,55 @@ mod handoff_tests {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetHandleInformation};
     use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
     use windows_sys::Win32::System::Pipes::CreatePipe;
+
+    #[test]
+    fn startup_preserves_the_original_native_wait_refusal() -> io::Result<()> {
+        // Use the actual initializer and handover, denying only the original
+        // owner's SYNCHRONIZE right before any tree can be admitted.
+        let mut child = launch_child()?;
+        // SAFETY: both original process handles remain live. This transfers
+        // the deliberately restricted owner handle to the actual custodian.
+        let owner = unsafe {
+            duplicate(
+                GetCurrentProcess(),
+                child.as_raw_handle().cast(),
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+            )
+        };
+        let result = owner.and_then(|owner| hand_over_owner(&mut child, owner));
+        // No tree was submitted, so the original direct child's exit is the
+        // entire physical cleanup. Also clean up an unexpected READY result.
+        let _ = child.kill();
+        child.wait()?;
+        let failure = result.expect_err("the native owner wait must refuse missing SYNCHRONIZE");
+        assert_eq!(
+            failure.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED.cast_signed())
+        );
+        assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
+
+        // Withdraw the actual startup request producer. The initializer
+        // exits without a response; the same reader must report producer
+        // loss rather than accept EOF as readiness or invent a native cause.
+        let mut lost = launch_child()?;
+        drop(lost.stdin.take());
+        let reply = startup_response(&mut lost);
+        let _ = lost.kill();
+        lost.wait()?;
+        let failure = reply.expect_err("the actual initializer lost its startup input");
+        assert_eq!(failure.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(failure.raw_os_error(), None);
+
+        // The same launch/handshake still admits a valid native owner. Its
+        // original direct process is retained through the cleanup wait.
+        let mut running = launch()?;
+        let live = process_running(running.child.as_handle());
+        let _ = running.child.kill();
+        running.child.wait()?;
+        assert!(live?);
+        Ok(())
+    }
 
     #[test]
     fn recovery_uses_the_selected_retirement_and_refuses_original_producer_loss() -> io::Result<()>
