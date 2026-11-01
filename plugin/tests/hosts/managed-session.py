@@ -6,7 +6,7 @@ the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, signal, subprocess, sys, tempfile, time, traceback
 from native_events import native_event_fixture
-from native_fixture import fixture_environment
+from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
 if len(sys.argv) != 5:
  raise SystemExit(__doc__)
@@ -91,12 +91,8 @@ if prompt=='resumed':
  owner=None;bridge=None;mcp=None
  def start_owner():
   global owner
-  log=(root/'owner.log').open('w+')
-  owner=subprocess.Popen([graphcoder,'--host-workspace','--host-state-directory',str(state),'--workspace',str(workspace)],cwd=workspace,env=env,stdout=log,stderr=log)
-  deadline=time.monotonic()+2
-  while not (workspace/'.acyclic-sdk/host-files/owner.json').exists():
-   assert owner.poll() is None,(root/'owner.log').read_text()[-1000:]
-   assert time.monotonic()<deadline,'owner readiness';time.sleep(.01)
+  with (root/'owner.log').open('w+') as log:
+   owner=start_workspace_owner(graphcoder,workspace,state,root,env,log)
  def client(action):
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True,timeout=2)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
@@ -116,13 +112,8 @@ if prompt=='resumed':
   bridge=None
  def stop_owner():
   global owner
-  if owner and owner.poll() is None:
-   owner.terminate()
-   try:status=owner.wait(timeout=2)
-   except subprocess.TimeoutExpired:
-    owner.kill();owner.wait(timeout=2);raise
-   assert status==0,(root/'owner.log').read_text()[-1200:]
-  owner=None
+  previous,owner=owner,None
+  if previous:stop_workspace_owner(previous)
  try:
   # Native global policy flags must precede exec; this is checked without a model.
   base=[real_codex,'--sandbox','workspace-write','--ask-for-approval','never','--add-dir',str(workspace),'exec','--json','--cd',str(workspace)]

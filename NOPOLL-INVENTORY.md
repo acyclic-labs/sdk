@@ -4290,3 +4290,47 @@ The shared case wrapper and both web qualification scripts delete their implicit
 Required incremental work per case: timer allocation/registration/cancellation 1 -> 0; physical cleanup calls remain 1. The shared wrapper also deletes its memoized close closure because finally is now the sole close path. Added tasks, channels, syscalls, requests, payload copies and durability barriers: zero. The two web scripts retain their original HTTP and process terminal joins. Source review and whitespace checks only; no model calls, binary qualification or runtime result is claimed here.
 
 The Windows native-watch owner test uses the existing data-drop observer instead of repeated weak upgrades and one-millisecond sleeps. It adds one test channel registration; producer destruction disconnects that channel after the original payload and keepers. A single weak assertion remains after that terminal. The separate stop_completed recheck is still pending. This is SDK data destruction, not physical IOCP completion. Source-only; no Windows execution is claimed.
+### Plugin source scope and original readiness consumers
+
+The same analyzer now includes plugin/** for every previously supported source/config extension. There is no separate plugin scanner or blanket test exclusion. The existing actual-Git entry control adds a direct timer mutation in a tracked plugin, an indirect call into an unchanged hazardous package helper, and an untracked Python readiness loop. Restoring the old scope must make those original CLI refusal assertions fail. These strings are deliberate defective-source mutations, not captured provider/tool output. Runtime qualification is pending.
+
+The Python native fixtures reuse the existing workspace-owner.mjs bridge, whose original filesystem watch is armed before launch and whose original owner exit/watch error terminates readiness. Python consumes its one ready record or EOF, then closes the bridge's stdin and joins exit. No independent filesystem watcher or periodic Python probe is added. Signal/exception interruption during startup still closes and joins that original bridge. The shared sampler still queries the actual mount owner's resource oracle; its physical population assertions are retained.
+
+Required work: each affected fixture gains one Node bridge process and one stdout readiness record instead of repeated exists/process probes and 1 ms or 10 ms sleeps. The bridge retains its existing watch, process/tree ownership and physical cleanup; no new per-agent worker, timer, provider read, payload copy or durability barrier is introduced. Fixed bridge startup cost is unmeasured. It does not establish constant cost for the existing sampler or shared process report cleanup. Ready-before-arm, watcher failure and owner exit are inherited source contracts; the Python consumer controls have not run.
+
+The identity cancellation test deletes its 2 s shutdown watchdog and the file's three implicit 20 s process timers. It waits on the original child close after the actual cancelled response and stdin EOF. Challenge readiness also observes that same child terminal so an early child exit cannot strand the held HTTP fixture. Package output removal performs its one filesystem operation without five timed reattempts; a failed deletion remains a failure. Added runtime channels/tasks/requests/barriers for these deletions: zero. No native identity or packaging execution is claimed.
+
+| Site at preceding source | Kind | Original replacement event or required disposition | State |
+|---|---|---|---|
+| `scripts/no-polling.mjs:46` | Plugin scope omitted | Add plugin/** to the same exact source and dependency analyzer; original actual-Git CLI controls plant direct, indirect and untracked defects. | Actioned; source only |
+| `plugin/scripts/package.mjs:79` | Fixed deletion retries/backoff | One original owned-output deletion result; retain refusal instead of retrying. | Actioned; source only |
+| `plugin/tests/identity-agent.test.mjs:17` | Implicit process timer | Original child error/close result and captured output. | Actioned; source only |
+| `plugin/tests/identity-agent.test.mjs:160` | Implicit MCP process timer | Original MCP responses, stdin EOF and child close. | Actioned; source only |
+| `plugin/tests/identity-agent.test.mjs:207` | Implicit cancellation process timer | Original cancelled response, stdin EOF and child close. | Actioned; source only |
+| `plugin/tests/identity-agent.test.mjs:231` | Shutdown watchdog | Original child close; challenge readiness additionally observes original early child exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:99` | Owner readiness sleep/recheck | Existing shared workspace owner watched-descriptor ready record or bridge EOF/error. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:119` | Owner exit recheck/timed join | Close original bridge stdin and join its original process/tree retirement; nonzero status is typed. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:96` | Owner readiness sleep/recheck | Same existing workspace owner bridge ready record or EOF/error; retain actual mount sampler and population assertions. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:189` | Owner timed exit join | Same original bridge stdin EOF and exit result. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:203` | Owner timed cleanup join | Same original bridge stdin EOF and exit result; the independent MCP bridge wait is still pending. | Actioned for owner; source only |
+| `plugin/tests/hosts/managed-session.py:53` | Fixed blocked-input child hold | Original externally controlled native child cancellation/exit event; preserve the real backpressure and tree-retirement oracle. | Pending |
+| `plugin/tests/hosts/managed-session.py:81` | Fixed descendant hold | Original process-tree cancellation/physical descendant exit event; no automatic hold expiry may satisfy the oracle. | Pending |
+| `plugin/tests/hosts/managed-session.py:84` | Fixed native session hold | Original native session cancellation/exit event, retaining real capture and merge assertions. | Pending |
+| `plugin/tests/hosts/managed-session.py:145` | Child file readiness recheck | Original child file publication notification joined to its actual early-exit/owner terminal. | Pending |
+| `plugin/tests/hosts/managed-session.py:158` | Blocked-input file readiness recheck | Original first-byte producer publication notification plus native child terminal; preserve blocked remaining input. | Pending |
+| `plugin/tests/hosts/managed-session.py:79` | Nested MCP timed exit | Original nested stdin EOF, MCP reply and physical child exit. | Pending |
+| `plugin/tests/hosts/managed-session.py:101` | Implicit workspace command timeout | Original workspace command reply and process error/exit; no user-selected deadline established. | Pending |
+| `plugin/tests/hosts/managed-session.py:115` | MCP exit recheck/timed join | Original MCP stdin EOF and physical process exit. | Pending |
+| `plugin/tests/hosts/managed-session.py:130` | Implicit native help command timeout | Original real executable output and exit; preserve native flag/version oracle. | Pending |
+| `plugin/tests/hosts/managed-session.py:133` | Implicit host launch timeout | Original host launch result and physical command exit. | Pending |
+| `plugin/tests/hosts/managed-session.py:193` | Timed MCP cleanup/fallback kill | Original MCP cancellation/EOF and physical retirement terminal. | Pending |
+| `plugin/tests/hosts/shared-mount-scale.py:101` | Implicit host launch timeout | Original host launch result and command exit. | Pending |
+| `plugin/tests/hosts/shared-mount-scale.py:110` | Implicit workspace command timeout | Original workspace reply/error and command exit. | Pending |
+| `plugin/tests/hosts/shared-mount-scale.py:187` | Timed MCP exit join | Original stdin EOF and physical bridge exit. | Pending |
+| `plugin/identity/src/lib.rs:660` | Product device readiness retry | Product owner must expose original approval completion or an honest caller-observed pending result; interval/token reattempt is not transient transport backoff. | Pending; product owner |
+| `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original request/timer registration and explicit deterministic clock advancement after its producer event. | Pending; product owner |
+| `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Same explicit registered-operation event; no continuously runnable sampling task. | Pending; product owner |
+| `plugin/identity/src/mcp.rs:808` | Credential-file yield/recheck | Original credential commit/publication event, including its terminal failure. | Pending; product owner |
+| `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original login cancellation/settlement event followed by deterministic poll-count assertion. | Pending; product owner |
+
+The existing identity receipt/key re-send and failed-revocation caller re-send tests are not automatic retry loops. Their exact identities and real failure controls remain. This plugin extension is not a complete repository census and authorizes no surviving readiness delay.

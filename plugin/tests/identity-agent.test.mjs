@@ -14,7 +14,7 @@ assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
 
 function run(args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 });
+    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -157,7 +157,7 @@ test('CLI and MCP agent signup solve the published proof, preserve keys and sign
     assert.equal(JSON.parse(await readFile(failedPath, 'utf8')).agent.private_key, pending.agent.private_key);
 
     const child = spawn(binary, ['identity-mcp', '--endpoint', endpoint,
-      '--credentials', join(directory, 'mcp.json')], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
+      '--credentials', join(directory, 'mcp.json')], { stdio: ['pipe', 'pipe', 'pipe'] });
     const closed = once(child, 'close');
     const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
     let id = 0;
@@ -189,7 +189,7 @@ test('CLI and MCP agent signup solve the published proof, preserve keys and sign
 
 test('cancelling a pending signup challenge allows immediate MCP shutdown', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'acyclic-proof-cancel-'));
-  let started, signups = 0, timer;
+  let started, signups = 0;
   const challengeReady = new Promise(resolve => { started = resolve; });
   const server = createServer((request, response) => {
     response.setHeader('content-type', 'application/json');
@@ -204,7 +204,7 @@ test('cancelling a pending signup challenge allows immediate MCP shutdown', asyn
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(binary, ['identity-mcp', '--endpoint', `http://127.0.0.1:${server.address().port}`,
-    '--credentials', join(directory, 'identity.json')], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
+    '--credentials', join(directory, 'identity.json')], { stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = once(child, 'close');
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   let stderr = '';
@@ -219,7 +219,9 @@ test('cancelling a pending signup challenge allows immediate MCP shutdown', asyn
     send(1, 'initialize', { protocolVersion: '2025-11-25' });
     assert.equal((await response()).id, 1);
     send(2, 'tools/call', { name: 'identity_signup', arguments: {} });
-    await challengeReady;
+    await Promise.race([challengeReady, closed.then(([code]) => {
+      throw new Error(`step=observe signup challenge: identity process exited ${code}; recovery command: node --test --test-name-pattern 'cancelling a pending signup challenge allows immediate MCP shutdown' plugin/tests/identity-agent.test.mjs`);
+    })]);
     send(3, 'ping');
     assert.equal((await response()).id, 3);
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 2 } })}\n`);
@@ -227,13 +229,10 @@ test('cancelling a pending signup challenge allows immediate MCP shutdown', asyn
     assert.equal(cancelled.id, 2);
     assert.equal(cancelled.error.code, -32800);
     child.stdin.end();
-    const [code] = await Promise.race([closed, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('MCP shutdown is blocked by cancelled signup')), 2000);
-    })]);
+    const [code] = await closed;
     assert.equal(code, 0, stderr);
     assert.equal(signups, 0);
   } finally {
-    clearTimeout(timer);
     child.kill('SIGKILL');
     await closed;
     server.closeAllConnections();

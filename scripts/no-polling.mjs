@@ -43,7 +43,7 @@ function escapedSpelling(source) {
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+ return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */

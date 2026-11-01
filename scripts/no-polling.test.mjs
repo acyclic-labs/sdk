@@ -338,8 +338,8 @@ test('event and finite-work loops have no file or helper exemption', () => {
  assert.throws(() => newPollingSites(rust, '', source, [...accepted, ...accepted]), /duplicate/);
 });
 
-test('scope covers native adapters and scripts as well as both language packages', () => {
- for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json']) assert.ok(sourceInScope(file));
+test('scope covers native adapters, plugins and scripts as well as both language packages', () => {
+ for (const file of [rust, script, 'typescript/packages/client/test/source.mts', 'typescript/packages/client/test/source.cts', 'typescript/packages/client/test/source.jsx', 'rust/crates/fs/native/adapter.c', 'typescript/packages/client/test/start.sh', 'scripts/release.mjs', 'scripts/native.ps1', 'scripts/native.cs', 'scripts/native.py', 'rust/crates/fs/Cargo.toml', 'typescript/packages/client/settings.json', 'plugin/identity/src/lib.rs', 'plugin/tests/hosts/readiness.py', 'plugin/tests/hosts/wait.mjs', 'plugin/package.json']) assert.ok(sourceInScope(file));
  assert.equal(sourceInScope('docs/no-polling.md'), false);
  assert.equal(sourceInScope('scripts/no-polling-dispositions.json'), false);
  assert.throws(() => validateDispositions({ignore: ['scripts/**']}), /must be an array/);
@@ -369,10 +369,28 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const beforeCaller = "import {settle} from './helper.js'; export async function operation() {}\n";
   write(helper, 'export async function settle() { await Bun.sleep(10); }\n');
   write(caller, beforeCaller);
+  const plugin = 'plugin/tests/ready.mjs';
+  const beforePlugin = 'export async function ready() {}\n';
+  write(plugin, beforePlugin);
   write('scripts/no-polling-dispositions.json', '[]\n');
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
   assert.equal(check('HEAD').status, 0);
+  write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n');
+  const pluginTimer = check('HEAD');
+  assert.notEqual(pluginTimer.status, 0);
+  assert.match(pluginTimer.output, /file=plugin\/tests\/ready.mjs:1/);
+  write(plugin, "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function ready() { await settle(); }\n");
+  const pluginHelper = check('HEAD');
+  assert.notEqual(pluginHelper.status, 0);
+  assert.match(pluginHelper.output, /file=plugin\/tests\/ready.mjs:1 kind=polling-helper-reference/);
+  write(plugin, beforePlugin);
+  const pluginChild = 'plugin/tests/hosts/child.py';
+  write(pluginChild, 'import time\nwhile not ready():\n time.sleep(.01)\n');
+  const pluginUntracked = check('HEAD');
+  assert.notEqual(pluginUntracked.status, 0);
+  assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
+  rmSync(join(root, pluginChild));
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
   const modified = check('HEAD');
   assert.notEqual(modified.status, 0);
