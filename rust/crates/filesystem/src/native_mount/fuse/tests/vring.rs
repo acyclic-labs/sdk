@@ -52,7 +52,7 @@ impl crate::native_mount::NativeMountCallbackGuard for QueueGate {
                     std::panic::resume_unwind(Box::new(()));
                 }
             }
-            Ok(())
+            Ok::<(), std::io::Error>(())
         })
     }
 
@@ -232,11 +232,10 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
             assert_eq!(ram.read_obj::<u64>(GuestAddress(8200))?, 0);
         } else {
             if exit == 1 {
-                assert!(
-                    completion
-                        .map_err(|_| "cancelled packet producer unwound")?
-                        .is_err()
-                );
+                let error = completion
+                    .map_err(|_| "cancelled packet producer unwound")?
+                    .expect_err("original cancellation cannot complete a used entry");
+                assert_eq!(crate::native_mount::callback_errno(&error), libc::ECANCELED);
             } else {
                 assert!(completion.is_err());
             }

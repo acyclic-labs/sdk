@@ -282,53 +282,45 @@ pub(super) fn serve_vring_packet(
     hiprio: bool,
     features: RingFeatures,
 ) -> Result<QueueProgress, NativeMountError> {
-    let result = (|| {
-        let memory = scratch.memory.memory();
-        let Some(packet) = ({
-            let mut vring = batch.queue()?;
-            pop_packet(
-                &mut vring,
-                memory,
-                work,
-                features.indirect,
-                &mut scratch.segments,
-            )?
-        }) else {
-            return Ok(QueueProgress::Empty);
-        };
-        let maximum = session.packet_capacity();
-        let capacity = maximum.min(packet.writable);
-        let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
-        packet.gather(input, work)?;
-        let request = PacketRequest::parse(input)?;
-        if hiprio != matches!(request.opcode, 2 | 36 | 42) {
-            return Err(libc::EPROTO.into());
-        }
-        // Bound the packet entry before dispatching any filesystem effect.
-        let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
-        let running = session
-            .publish(&request, response, |reply| {
-                let slices = reply.slices();
-                let length = packet.scatter(
-                    slices.as_ref().map_or(&[], |slices| slices.as_slice()),
-                    work,
-                )?;
-                let mut vring = batch.queue()?;
-                packet.complete(&mut vring, memory.as_ref(), length, features.event_idx)
-            })
-            .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
-        Ok(if running {
-            QueueProgress::Completed
-        } else {
-            QueueProgress::Stopped
-        })
-    })();
-    if result.is_err() {
-        // Neither a malformed chain nor uncertain used publication authorizes
-        // replay, descriptor substitution, or a manufactured completion.
-        session.close();
+    let memory = scratch.memory.memory();
+    let Some(packet) = ({
+        let mut vring = batch.queue()?;
+        pop_packet(
+            &mut vring,
+            memory,
+            work,
+            features.indirect,
+            &mut scratch.segments,
+        )?
+    }) else {
+        return Ok(QueueProgress::Empty);
+    };
+    let maximum = session.packet_capacity();
+    let capacity = maximum.min(packet.writable);
+    let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
+    packet.gather(input, work)?;
+    let request = PacketRequest::parse(input)?;
+    if hiprio != matches!(request.opcode, 2 | 36 | 42) {
+        return Err(libc::EPROTO.into());
     }
-    result
+    // Bound the packet entry before dispatching any filesystem effect.
+    let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
+    let running = session
+        .publish(&request, response, |reply| {
+            let slices = reply.slices();
+            let length = packet.scatter(
+                slices.as_ref().map_or(&[], |slices| slices.as_slice()),
+                work,
+            )?;
+            let mut vring = batch.queue()?;
+            packet.complete(&mut vring, memory.as_ref(), length, features.event_idx)
+        })
+        .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
+    Ok(if running {
+        QueueProgress::Completed
+    } else {
+        QueueProgress::Stopped
+    })
 }
 
 fn transport_error(error: impl std::error::Error + Send + Sync + 'static) -> NativeMountError {
