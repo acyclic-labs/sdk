@@ -89,20 +89,10 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      const completed=await scope.run(native.program,[...native.args,...launch.args],
       {cwd:workspace,env:legEnv,scopeOperation:operation},prompt+'\n');
      captures.push({mode,...completed});
-     assertNativeCompletion(host,completed,answer);
-     if(live&&host==='claude-code') {
-      // The original startup record describes the actual admitted plugin set.
-      // Missing metadata cannot qualify a bare leg by absence of evidence.
-      const initialized=completed.stdout.split('\n').filter(Boolean).map(JSON.parse)
-       .find(event=>event.type==='system'&&event.subtype==='init');
-      assert.ok(initialized,'native Claude initialization missing');
-      assert.equal(initialized.model,live.model,'native Claude model differs from approved selection');
-      assert.deepEqual(initialized.plugins.map(plugin=>plugin.name),mode==='installed'?['acyclic']:[],
-       'native Claude plugin set differs from paired mode');
-      assert.deepEqual(initialized.mcp_servers.map(server=>({name:server.name,status:server.status})),
-       mode==='installed'?[{name:'plugin:acyclic:acyclic-sessions',status:'connected'}]:[],
-       'native Claude MCP connections differ from paired mode');
-     }
+     // Validate original startup metadata in the existing terminal decoder;
+     // missing evidence cannot qualify a bare leg, and needs no second parse.
+     assertNativeCompletion(host,completed,answer,live&&host==='claude-code'
+      ?{model:live.model,installed:mode==='installed'}:undefined);
      const effect=await readFile(join(workspace,'parent.txt'),'utf8');assert.equal(effect,'PARENT');
      samples.push({mode,binding,effect,physical:collector.complete(completed),transcripts:completed.transcripts});
      collector=undefined;

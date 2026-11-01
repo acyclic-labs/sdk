@@ -11,9 +11,9 @@ import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost,nativeProvider} from './native-host.mjs';
 
 // Host process success also requires its own successful model-turn terminal.
-export function assertNativeCompletion(host,result,answer) {
+export function assertNativeCompletion(host,result,answer,selection) {
  assert.equal(result.code,0,result.stderr);
- let terminal,text,completed=false;
+ let terminal,text,completed=false,initialized=false;
  for(const line of result.stdout.split('\n')) {
   if(!line)continue;
   const event=JSON.parse(line);
@@ -25,6 +25,15 @@ export function assertNativeCompletion(host,result,answer) {
    if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
    if(event.type==='turn.completed')completed=true;
   } else if(host==='claude-code') {
+   if(selection&&event.type==='system'&&event.subtype==='init') {
+    assert.equal(initialized,false,'duplicate native Claude initialization');initialized=true;
+    assert.equal(event.model,selection.model,'native Claude model differs from approved selection');
+    assert.deepEqual(event.plugins.map(plugin=>plugin.name),selection.installed?['acyclic']:[],
+     'native Claude plugin set differs from paired mode');
+    assert.deepEqual(event.mcp_servers.map(server=>({name:server.name,status:server.status})),
+     selection.installed?[{name:'plugin:acyclic:acyclic-sessions',status:'connected'}]:[],
+     'native Claude MCP connections differ from paired mode');
+   }
    if(event.type==='result')terminal=event;
   } else if(host==='pi') {
    const message=event.type==='message_end'?event.message:undefined;
@@ -41,6 +50,7 @@ export function assertNativeCompletion(host,result,answer) {
  }
  if(host==='codex')assert.equal(completed,true,'native Codex terminal missing');
  else if(host==='claude-code') {
+  if(selection)assert.equal(initialized,true,'native Claude initialization missing');
   assert.ok(terminal,'native Claude terminal missing');
   assert.equal(terminal.subtype,'success','native Claude turn failed');
   assert.equal(terminal.is_error,false,'native Claude turn failed');
