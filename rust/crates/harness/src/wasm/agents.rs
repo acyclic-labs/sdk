@@ -30,7 +30,7 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
-use futures::{TryStreamExt as _, future::AbortHandle};
+use futures::{FutureExt as _, TryStreamExt as _, future::AbortHandle};
 use js_sys::Function;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -329,19 +329,54 @@ pub struct WasmAgents {
     admission: TurnAdmission,
     sender: Sender,
     maximum_bytes: u64,
-    run: Option<AbortHandle>,
+    run: Option<BrowserRun>,
+}
+
+struct BrowserRun {
+    stop: AbortHandle,
+    terminal: futures::future::Shared<futures::future::LocalBoxFuture<'static, RunTerminal>>,
+}
+
+#[derive(Clone)]
+enum RunTerminal {
+    Failed(Arc<acyclic_actors::local::Error>),
+    Aborted,
 }
 
 impl Drop for WasmAgents {
     fn drop(&mut self) {
         if let Some(run) = &self.run {
-            run.abort();
+            run.stop.abort();
         }
     }
 }
 
 #[wasm_bindgen]
 impl WasmAgents {
+    /// Observes the original background runtime's terminal, including an abort
+    /// when this host is freed. Active and late observers retain the same cause.
+    /// Event-owned hosts have no background runtime and refuse this observation.
+    pub fn completion(&self) -> std::result::Result<js_sys::Promise, JsValue> {
+        let terminal = self
+            .run
+            .as_ref()
+            .ok_or_else(|| {
+                js_error(Error::Invalid(
+                    "event host has no background runtime".into(),
+                ))
+            })?
+            .terminal
+            .clone();
+        // The promise owns only the original run observation, so freeing the
+        // host can abort that run while a completion observer is still pending.
+        Ok(wasm_bindgen_futures::future_to_promise(async move {
+            match terminal.await {
+                RunTerminal::Failed(error) => Err(JsValue::from_str(&error.to_string())),
+                RunTerminal::Aborted => Err(JsValue::from_str("browser agent runtime aborted")),
+            }
+        }))
+    }
+
     /// Checks permanent creation input errors before an event host retains its
     /// recovery intent, returning its canonical path without provider IO.
     #[wasm_bindgen(js_name = validateCreate)]
@@ -482,7 +517,7 @@ impl WasmAgents {
         );
         let run = if background {
             let runner = Arc::clone(&agents);
-            let (run, handle) = futures::future::abortable(async move {
+            let (run, stop) = futures::future::abortable(async move {
                 let report = |actor: &ActorReference, error: &acyclic_actors::local::Error| {
                     if let Some(report) = &report {
                         let _ = report.call2(
@@ -494,11 +529,21 @@ impl WasmAgents {
                 };
                 let Err(error) = runner.run(&report).await;
                 tracing::error!(%error, "browser agent runtime stopped");
+                Arc::new(error)
             });
+            let terminal = async move {
+                match run.await {
+                    Ok(error) => RunTerminal::Failed(error),
+                    Err(_) => RunTerminal::Aborted,
+                }
+            }
+            .boxed_local()
+            .shared();
+            let driving = terminal.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = run.await;
+                let _ = driving.await;
             });
-            Some(handle)
+            Some(BrowserRun { stop, terminal })
         } else {
             None
         };
