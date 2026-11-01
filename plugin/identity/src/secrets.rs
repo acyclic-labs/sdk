@@ -134,23 +134,32 @@ fn input_error() -> Error {
     )
 }
 
-pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
+pub(super) async fn execute(
+    arguments: &[String],
+    context: Option<acyclic_auth::operation::Context>,
+) -> Result<Value, Error> {
     let options = Options::parse(arguments)?;
-    let transport = HttpTransport::new(&options.endpoint).map_err(client_error)?;
+    let context = context
+        .ok_or_else(|| client_error(acyclic_auth::secrets::Error::MissingOperationContext))?;
     let bearer_file = options.bearer_file;
-    let bytes = acyclic_native_runtime::run_blocking_io(
-        move || {
-            private_file::read(
-                &bearer_file,
-                acyclic_auth::credential::MAX_CREDENTIAL_BYTES as u64,
+    let bytes = context
+        .run(async move {
+            acyclic_native_runtime::run_blocking_io(
+                move || {
+                    private_file::read(
+                        &bearer_file,
+                        acyclic_auth::credential::MAX_CREDENTIAL_BYTES as u64,
+                    )
+                },
+                None,
             )
-        },
-        None,
-    )
-    .map_err(|_| input_error())?
-    .await
-    .map_err(|_| input_error())?
-    .map_err(|_| input_error())?;
+            .map_err(|_| input_error())?
+            .await
+            .map_err(|_| input_error())?
+            .map_err(|_| input_error())
+        })
+        .await
+        .map_err(|stopped| client_error(acyclic_auth::secrets::Error::Stopped(stopped)))??;
     let token = std::str::from_utf8(&bytes.0)
         .map_err(|_| input_error())?
         .trim_end_matches(['\r', '\n']);
@@ -158,12 +167,14 @@ pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
         return Err(input_error());
     }
     let token = Arc::new(Zeroizing::new(token.to_owned()));
+    let transport = HttpTransport::new(&options.endpoint).map_err(client_error)?;
     let client = Client::new(
         transport,
         CredentialProvider::new(move || {
             let token = token.clone();
             async move { Ok(token.to_string()) }
         }),
+        Some(context.clone()),
     );
     match options.operation {
         Operation::List => {
@@ -179,15 +190,24 @@ pub(super) async fn execute(arguments: &[String]) -> Result<Value, Error> {
                 .map_err(|_| client_error(acyclic_auth::secrets::Error::InvalidResponse))
         }
         Operation::Put => {
-            let mut value = match options.value_file {
-                Some(file) => {
-                    acyclic_native_runtime::run_blocking_io(move || read_value_file(&file), None)
+            let mut value = context
+                .run(async {
+                    let value = match options.value_file {
+                        Some(file) => acyclic_native_runtime::run_blocking_io(
+                            move || read_value_file(&file),
+                            None,
+                        )
                         .map_err(|_| input_error())?
                         .await
-                        .map_err(|_| input_error())??
-                }
-                None => read_stdin_value().await?,
-            };
+                        .map_err(|_| input_error())??,
+                        None => read_stdin_value().await?,
+                    };
+                    Ok::<_, Error>(value)
+                })
+                .await
+                .map_err(|stopped| {
+                    client_error(acyclic_auth::secrets::Error::Stopped(stopped))
+                })??;
             let request = Zeroizing::new(SecretPutRequest {
                 scope: options.scope,
                 name: options.name.ok_or_else(usage)?,
@@ -268,7 +288,7 @@ fn read_value(input: &mut impl std::io::Read) -> Result<Zeroizing<String>, Error
 }
 
 fn client_error(error: acyclic_auth::secrets::Error) -> Error {
-    Error::new("secrets_error", error.to_string())
+    Error::new(error.code(), error.to_string())
 }
 
 #[cfg(test)]
@@ -412,9 +432,15 @@ mod tests {
             value.display().to_string(),
         ];
         assert!(args.iter().all(|arg| !arg.contains(planted)));
-        let Err(error) = execute(&args).await else {
+        let (stop, stopped) = futures::channel::oneshot::channel::<()>();
+        let context = acyclic_auth::operation::Context::from_stopped(0, async move {
+            let _ = stopped.await;
+            acyclic_auth::operation::Stopped::Cancelled
+        });
+        let Err(error) = execute(&args, Some(context)).await else {
             return Err("CAS conflict admitted".into());
         };
+        drop(stop);
         assert!(error.to_string().contains("generation conflict"));
         assert!(!format!("{error:?} {error} {}", error.json()).contains(planted));
         server.abort();

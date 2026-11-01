@@ -5,7 +5,7 @@
 //! action and the canonical `secrets:/<scope>[/<name>]` resource.
 use crate::contract::*;
 use crate::credential::CredentialProvider;
-use crate::operation::ProtectedBytes;
+use crate::operation::{Context, ProtectedBytes, Stopped};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
@@ -67,6 +67,12 @@ where
 /// Redacted failures. Neither provider errors nor their source chains survive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// The embedding supplied no original invocation stop/deadline owner.
+    #[error("secrets: original operation context required")]
+    MissingOperationContext,
+    /// Waiting stopped; a mutation's remote outcome remains unknown.
+    #[error("secrets: {0}; remote mutation outcome is unknown")]
+    Stopped(Stopped),
     /// Invalid or unsupported request shape.
     #[error("secrets: invalid request")]
     InvalidRequest,
@@ -99,6 +105,9 @@ impl Error {
     /// Stable diagnostic code, without provider-controlled text.
     pub fn code(self) -> &'static str {
         match self {
+            Self::MissingOperationContext => "missing_operation_context",
+            Self::Stopped(Stopped::Cancelled) => "operation_cancelled",
+            Self::Stopped(Stopped::Deadline) => "operation_deadline",
             Self::InvalidRequest => "invalid_request",
             Self::InvalidResponse => "invalid_response",
             Self::PermissionDenied => "permission_denied",
@@ -371,18 +380,38 @@ pub trait Transport {
 pub struct Client<T> {
     transport: T,
     credentials: CredentialProvider,
+    context: Option<Context>,
 }
 
 impl<T: Transport> Client<T> {
-    /// Use an existing credential provider, resolved freshly for each call.
-    pub fn new(transport: T, credentials: CredentialProvider) -> Self {
+    /// Bind the original invocation and its credential provider. Missing context
+    /// refuses before serialization, credentials or transport. This creates no
+    /// clock, stop registration or allocation allowance. Reusing this client
+    /// keeps the SAME absolute deadline and terminal event across every page.
+    pub fn new(transport: T, credentials: CredentialProvider, context: Option<Context>) -> Self {
         Self {
             transport,
             credentials,
+            context,
         }
     }
 
     async fn post<R: DeserializeOwned>(
+        &self,
+        path: &'static str,
+        body: &impl Serialize,
+    ) -> Result<R, Error> {
+        let context = self
+            .context
+            .as_ref()
+            .ok_or(Error::MissingOperationContext)?;
+        context
+            .run(self.post_running(path, body))
+            .await
+            .map_err(Error::Stopped)?
+    }
+
+    async fn post_running<R: DeserializeOwned>(
         &self,
         path: &'static str,
         body: &impl Serialize,

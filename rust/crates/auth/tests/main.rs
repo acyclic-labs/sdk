@@ -1,5 +1,8 @@
 acyclic_test_support::counting_allocator!();
 
+#[path = "common/operation_context.rs"]
+mod operation_context;
+
 #[path = "admission.rs"]
 mod admission;
 

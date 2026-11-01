@@ -17,7 +17,11 @@ function admit<Schema extends DescMessage>(schema: Schema, request: MessageInitS
   }
 }
 
-/** Shared Rust client. Generation/version fields stay bigint at the JS boundary. */
+/** Shared Rust client. Generation/version fields stay bigint at the JS boundary.
+ * The current embedding has no invocation-context ingress: operations refuse
+ * with missing_operation_context before credentials or HTTP until the original
+ * host supplies that prerequisite.
+ */
 export class SecretsClient {
   readonly #inner: RustSecretsClient;
   constructor(endpoint: string, credential: () => string | Promise<string>) {

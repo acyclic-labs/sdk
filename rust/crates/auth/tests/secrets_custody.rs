@@ -1,5 +1,6 @@
 //! Original source invalidation cancels real HTTP headers and body waits.
 #![cfg(feature = "client")]
+use acyclic_auth::operation::Stopped;
 use acyclic_auth::{
     contract::SecretListRequest,
     credential::{
@@ -9,6 +10,7 @@ use acyclic_auth::{
     },
     secrets::{Client, Error, HttpTransport},
 };
+use futures::FutureExt as _;
 use futures::channel::oneshot;
 use std::sync::{
     Arc, Mutex,
@@ -20,8 +22,26 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    Watch,
     Resolve,
     Check(usize),
+}
+
+#[derive(Clone, Copy)]
+enum End {
+    Source,
+    Caller(Option<Stopped>),
+    // Replacing the invocation leaves this real operation pending. The same
+    // one-poll terminal oracle detects that regression without hanging.
+    Detached,
+}
+
+fn expected(end: End) -> Error {
+    match end {
+        End::Source => Error::Credential,
+        End::Caller(reason) => Error::Stopped(reason.unwrap_or(Stopped::Cancelled)),
+        End::Detached => Error::Stopped(Stopped::Cancelled),
+    }
 }
 
 struct PausedOwner {
@@ -82,19 +102,33 @@ impl CredentialSource for PausedSource {
         })
     }
     fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
+        let paused = self.owner.at(Phase::Watch);
         let changed = self.changed.lock().unwrap().take().unwrap();
-        Ok(Some(CredentialWatch::from_custodian(
-            CredentialValidity {
-                now_unix_seconds: 1,
-                revision: None,
-            },
-            async move { changed.await.map_err(|_| CredentialCacheError::Unavailable) },
-        )))
-        .into()
+        CredentialAction::Pending(Box::pin(async move {
+            let changed =
+                Box::pin(
+                    async move { changed.await.map_err(|_| CredentialCacheError::Unavailable) },
+                );
+            match futures::future::select(Box::pin(paused), changed).await {
+                futures::future::Either::Left((result, changed)) => {
+                    result?;
+                    Ok(Some(CredentialWatch::from_custodian(
+                        CredentialValidity {
+                            now_unix_seconds: 1,
+                            revision: None,
+                        },
+                        changed,
+                    )))
+                }
+                futures::future::Either::Right(_) => Err(CredentialError::Invalid),
+            }
+        }))
     }
 }
 
-async fn source_loss_ends_owner_wait(phase: Phase) -> TestResult {
+async fn source_loss_ends_owner_wait(phase: Phase, end: End) -> TestResult {
+    let (context, stop) = crate::operation_context::invocation();
+    let (detached, _detached_stop) = crate::operation_context::invocation();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let (entered, paused) = oneshot::channel();
@@ -111,14 +145,18 @@ async fn source_loss_ends_owner_wait(phase: Phase) -> TestResult {
             }),
             changed: Mutex::new(Some(changed)),
         }),
+        Some(if matches!(end, End::Detached) {
+            detached
+        } else {
+            context
+        }),
     );
     let request = SecretListRequest {
         scope: "fixture".into(),
         cursor: None,
         page_size: 0,
     };
-    let response = client.list(&request);
-    tokio::pin!(response);
+    let mut response = Box::pin(client.list(&request));
     let peer = async {
         let (mut socket, _) = listener.accept().await?;
         let mut request = Vec::new();
@@ -153,8 +191,22 @@ async fn source_loss_ends_owner_wait(phase: Phase) -> TestResult {
     }
     // No change is emitted: dropping the original producer must itself wake
     // the call, while its resolution/check producer remains deliberately held.
-    drop(source);
-    assert_eq!(response.await, Err(Error::Credential));
+    match end {
+        End::Source => drop(source),
+        End::Caller(Some(reason)) => stop.send(reason).unwrap(),
+        End::Caller(None) => drop(stop),
+        End::Detached => stop.send(Stopped::Cancelled).unwrap(),
+    }
+    let result = response.as_mut().now_or_never();
+    if matches!(end, End::Detached) {
+        assert!(
+            result.is_none(),
+            "replacement context escaped the negative control"
+        );
+    } else {
+        assert_eq!(result, Some(Err(expected(end))));
+    }
+    drop(response);
     assert!(
         resume.send(()).is_err(),
         "cancelled owner action must release its receiver"
@@ -162,7 +214,9 @@ async fn source_loss_ends_owner_wait(phase: Phase) -> TestResult {
     Ok(())
 }
 
-async fn source_change_ends_response_wait(body: bool) -> TestResult {
+async fn source_change_ends_response_wait(body: bool, end: End) -> TestResult {
+    let (context, stop) = crate::operation_context::invocation();
+    let (detached, _detached_stop) = crate::operation_context::invocation();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let cache = CredentialCache::new(
@@ -172,14 +226,21 @@ async fn source_change_ends_response_wait(body: bool) -> TestResult {
             revision: Some([1; 32].into()),
         },
     );
-    let client = Client::new(HttpTransport::new(&origin)?, cache.clone().into());
+    let client = Client::new(
+        HttpTransport::new(&origin)?,
+        cache.clone().into(),
+        Some(if matches!(end, End::Detached) {
+            detached
+        } else {
+            context
+        }),
+    );
     let request = SecretListRequest {
         scope: "fixture".into(),
         cursor: None,
         page_size: 0,
     };
-    let response = client.list(&request);
-    tokio::pin!(response);
+    let mut response = Box::pin(client.list(&request));
     let peer = async {
         let (mut socket, _) = listener.accept().await?;
         let mut request = Vec::new();
@@ -203,23 +264,74 @@ async fn source_change_ends_response_wait(body: bool) -> TestResult {
         peer = peer => peer?,
         _ = &mut response => return Err("request completed before source change".into()),
     };
-    cache.invalidate()?;
-    assert_eq!(response.await, Err(Error::Credential));
+    match end {
+        End::Source => cache.invalidate()?,
+        End::Caller(Some(reason)) => stop.send(reason).unwrap(),
+        End::Caller(None) => drop(stop),
+        End::Detached => stop.send(Stopped::Cancelled).unwrap(),
+    }
+    let result = response.as_mut().now_or_never();
+    if matches!(end, End::Detached) {
+        assert!(
+            result.is_none(),
+            "replacement context escaped the negative control"
+        );
+    } else {
+        assert_eq!(result, Some(Err(expected(end))));
+    }
     drop(socket);
     Ok(())
 }
 
 #[tokio::test]
 async fn source_change_cancels_original_http_response_waits() -> TestResult {
-    source_change_ends_response_wait(false).await?;
-    source_change_ends_response_wait(true).await?;
-    for phase in [
-        Phase::Resolve,
-        Phase::Check(1),
-        Phase::Check(2),
-        Phase::Check(3),
+    for end in [
+        End::Source,
+        End::Caller(Some(Stopped::Cancelled)),
+        End::Caller(Some(Stopped::Deadline)),
+        End::Caller(None),
+        End::Detached,
     ] {
-        source_loss_ends_owner_wait(phase).await?;
+        source_change_ends_response_wait(false, end).await?;
+        source_change_ends_response_wait(true, end).await?;
+        for phase in [
+            Phase::Watch,
+            Phase::Resolve,
+            Phase::Check(1),
+            Phase::Check(2),
+            Phase::Check(3),
+        ] {
+            source_loss_ends_owner_wait(phase, end).await?;
+        }
     }
+    let calls = Arc::new(AtomicUsize::new(0));
+    for missing in [true, false] {
+        let (context, stop) = crate::operation_context::invocation();
+        stop.send(Stopped::Cancelled).unwrap();
+        let counter = calls.clone();
+        let client = Client::new(
+            HttpTransport::new("http://127.0.0.1:1")?,
+            CredentialProvider::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async { Ok("harmless-fixture".into()) }
+            }),
+            if missing { None } else { Some(context) },
+        );
+        assert_eq!(
+            client
+                .list(&SecretListRequest {
+                    scope: "fixture".into(),
+                    cursor: None,
+                    page_size: 0
+                })
+                .await,
+            Err(if missing {
+                Error::MissingOperationContext
+            } else {
+                Error::Stopped(Stopped::Cancelled)
+            })
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     Ok(())
 }

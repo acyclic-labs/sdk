@@ -15,7 +15,7 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
             credentials.display().to_string(),
             "--invalid-fixture-option".to_owned(),
         ];
-        let pending = acyclic_plugin_identity::run(&arguments);
+        let pending = acyclic_plugin_identity::run(&arguments, None);
         let boundary_size = std::mem::size_of_val(&pending);
         if boundary_size != 2 * std::mem::size_of::<usize>() {
             return Err(format!(
@@ -29,6 +29,22 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !error.to_string().contains("--invalid-fixture-option") {
             return Err(format!("unexpected command error: {error}").into());
         }
+    }
+    let arguments = [
+        "secrets".to_owned(),
+        "list".to_owned(),
+        "--endpoint".to_owned(),
+        "http://127.0.0.1:1".to_owned(),
+        "--scope".to_owned(),
+        "fixture".to_owned(),
+        "--bearer-file".to_owned(),
+        directory.path().join("absent-bearer").display().to_string(),
+    ];
+    let Err(error) = runtime.block_on(acyclic_plugin_identity::run(&arguments, None)) else {
+        return Err("Secrets admitted an invocation without its original context".into());
+    };
+    if !error.to_string().starts_with("missing_operation_context:") {
+        return Err(format!("Secrets touched input before invocation admission: {error}").into());
     }
     println!("CLI and MCP entry boundaries passed on the default main-thread stack");
     Ok(())

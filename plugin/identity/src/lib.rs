@@ -974,11 +974,14 @@ impl Options {
 ///
 /// The returned future keeps the command state machine inside this crate, so
 /// callers compile only the shared future interface.
+/// Secrets requires the issuing host's original context; absence is a typed
+/// refusal before input IO. Other identity commands keep their existing owner.
 ///
 /// # Errors
 /// Returns command, credential-store, transport and output errors.
 pub fn run(
     arguments: &[String],
+    context: Option<acyclic_auth::operation::Context>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + '_>> {
     Box::pin(async move {
         if arguments
@@ -988,7 +991,7 @@ pub fn run(
             return mcp::serve(arguments).await;
         }
         let json_output = arguments.iter().any(|argument| argument == "--json");
-        let result = execute(arguments).await;
+        let result = execute(arguments, context).await;
         match result {
             Ok(value) => {
                 println!("{}", serde_json::to_string_pretty(&value)?);
@@ -1004,11 +1007,14 @@ pub fn run(
     })
 }
 
-async fn execute(arguments: &[String]) -> Result<Value, Error> {
+async fn execute(
+    arguments: &[String],
+    context: Option<acyclic_auth::operation::Context>,
+) -> Result<Value, Error> {
     if let Some((command, rest)) = arguments.split_first()
         && command == "secrets"
     {
-        return secrets::execute(rest).await;
+        return secrets::execute(rest, context).await;
     }
     let options = Options::parse(arguments)?;
     let identity = Identity::new(&options.endpoint)?;
