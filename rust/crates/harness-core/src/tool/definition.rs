@@ -225,7 +225,7 @@ impl ToolDefinition {
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
         self.validate(&mut None)?;
-        crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)
+        crate::executor::json::canonical_json_digest(self, None, &mut None)
     }
 }
 

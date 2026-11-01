@@ -193,15 +193,11 @@ impl<W: Write> RestoreGuard<W> {
     /// Input cannot mutate the displayed state. Keep this operation narrow:
     /// exposing the writer here would also permit untracked output changes.
     #[cfg(all(unix, not(loom)))]
-    pub(crate) fn receive(
-        &mut self,
-        bytes: &mut [u8],
-        deadline: std::time::Instant,
-    ) -> io::Result<usize>
+    pub(crate) fn receive(&mut self, bytes: &mut [u8]) -> io::Result<usize>
     where
-        W: super::ProbeIo,
+        W: std::io::Read,
     {
-        self.writer.receive(bytes, deadline)
+        self.writer.read(bytes)
     }
 
     pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -419,10 +415,6 @@ fn resume_reapplies_the_latest_exclusive_selection() {
 
 impl<W: Write> Drop for RestoreGuard<W> {
     fn drop(&mut self) {
-        // A transient write failure during teardown leaves journal entries to
-        // retry. Bound the retry so a disconnected terminal cannot hang exit.
-        if self.restore().is_err() {
-            let _ = self.restore();
-        }
+        let _ = self.restore();
     }
 }

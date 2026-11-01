@@ -355,7 +355,7 @@ impl<S> CachedObjectStore<S> {
         #[cfg(not(target_arch = "wasm32"))]
         let allocation = work
             .map(|work| {
-                let claim_bytes = size_of::<Flight>() as u64;
+                let claim_bytes = acyclic_native_runtime::arc_allocation_bytes::<Flight>() as u64;
                 work.claim(
                     claim_bytes,
                     u64::from(claim_bytes != 0),

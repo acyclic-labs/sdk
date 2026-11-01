@@ -1,11 +1,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use signal_hook::consts::signal::SIGTSTP;
 
 use super::lifecycle::{self, Arc, Mutex, Owner, State};
-use super::tty::RawTty;
+use super::tty::{InputWait, RawTty};
 use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
 use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -14,6 +14,7 @@ use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 /// serializes every output mutation with restore/close, including on resume.
 pub struct Tty {
     state: Arc<Mutex<State<RawTty>>>,
+    input: InputWait,
     owner: &'static Owner<RawTty>,
     decoder: Decoder,
     capabilities: Option<Capabilities>,
@@ -86,8 +87,20 @@ impl Tty {
     pub fn from_file(file: File) -> io::Result<Self> {
         let owner = super::signals::owner()?;
         let state = lifecycle::attach(owner, || RawTty::from_file(file))?;
+        let input = {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.on_change = Some(RawTty::notify_input);
+            state.guard.writer().take_input_waiter()
+        };
+        let Some(input) = input else {
+            lifecycle::detach(owner, &state, RawTty::restore)?;
+            return Err(io::ErrorKind::NotConnected.into());
+        };
         Ok(Self {
             state,
+            input,
             owner,
             decoder: Decoder::default(),
             capabilities: None,
@@ -129,15 +142,20 @@ impl Tty {
         lifecycle::resume(&self.state, RawTty::reapply)
     }
 
-    /// Read only classified events. Late probe replies remain in this decoder.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
+    /// Read classified events until input, owner close or an optional deadline.
+    /// Late probe replies remain in this decoder.
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
         let mut events = self.decoder.take_events();
         while events.is_empty() {
             let mut bytes = [0; 1024];
-            let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
+            let input_deadline = self.decoder.input_deadline(deadline);
+            let count = self.receive_input(&mut bytes, input_deadline)?;
+            if count == 0 && !input_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
-            if count == 0 || Instant::now() >= deadline {
+            if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.decoder.finish_input()?;
                 events = self.decoder.take_events();
                 break;
@@ -156,6 +174,28 @@ impl Tty {
         }
         Ok(output)
     }
+
+    fn receive_input(&mut self, bytes: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
+        loop {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(0);
+            }
+            // Drain before observing state so a concurrent restore/resume or
+            // close leaves its notification readable until the following wait.
+            self.input.acknowledge_changes()?;
+            // Only the nonblocking syscall holds state. Both output and the
+            // signal worker remain runnable while input waits for another byte.
+            let result = lifecycle::active(&self.state, |guard| guard.receive(bytes));
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let active = lifecycle::input_active(&self.state)?;
+                    self.input.wait(active, deadline)?;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
 }
 
 impl ProbeIo for Tty {
@@ -164,27 +204,7 @@ impl ProbeIo for Tty {
     }
 
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        loop {
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(0);
-            }
-            // Only the nonblocking syscall holds state. Both output and the
-            // signal worker remain runnable while input waits for another byte.
-            let result = lifecycle::active(&self.state, |guard| {
-                guard.receive(bytes, deadline.min(now + Duration::from_millis(1)))
-            });
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(
-                        Duration::from_millis(1)
-                            .min(deadline.saturating_duration_since(Instant::now())),
-                    );
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
-        }
+        self.receive_input(bytes, Some(deadline))
     }
 
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -203,9 +223,8 @@ impl Write for Tty {
 
 impl Drop for Tty {
     fn drop(&mut self) {
-        if lifecycle::detach(self.owner, &self.state, RawTty::restore).is_err() {
-            let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
-        }
+        // A failed detach retains the original owner and restoration journal.
+        let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
     }
 }
 
@@ -220,6 +239,66 @@ mod tests {
     use super::*;
     use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
+    use std::time::Duration;
+
+    fn input_waits_outside_owner_and_wakes_on_lifecycle() -> io::Result<()> {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let mut master = File::from(pty.controller);
+        let (mut tty, mut output) = Tty::from_file(File::from(pty.user))?.split();
+        let state = Arc::clone(&tty.state);
+        let (started, starting) = std::sync::mpsc::sync_channel(0);
+        let reader = std::thread::spawn(move || {
+            started.send(()).map_err(io::Error::other)?;
+            let mut bytes = [0; 8];
+            let count = tty.receive_input(&mut bytes, None)?;
+            Ok::<_, io::Error>((tty, bytes, count))
+        });
+        starting.recv().map_err(io::Error::other)?;
+        // This must finish while the input read is pending. Retaining the
+        // state lock across the indefinite OS wait would prevent output.
+        output.write_all(b"frame")?;
+        master.write_all(b"x")?;
+        let (mut tty, bytes, count) = reader
+            .join()
+            .map_err(|_| io::Error::other("input panicked"))??;
+        assert_eq!(&bytes[..count], b"x");
+
+        tty.restore()?;
+        master.write_all(b"resumed\n")?;
+        let (started, starting) = std::sync::mpsc::sync_channel(0);
+        let reader = std::thread::spawn(move || {
+            started.send(()).map_err(io::Error::other)?;
+            let mut bytes = [0; 32];
+            let count = tty.receive_input(&mut bytes, None)?;
+            Ok::<_, io::Error>((tty, bytes, count))
+        });
+        starting.recv().map_err(io::Error::other)?;
+        lifecycle::resume(&state, RawTty::reapply)?;
+        let (mut tty, bytes, count) = reader
+            .join()
+            .map_err(|_| io::Error::other("input panicked"))??;
+        assert_eq!(&bytes[..count], b"resumed\n");
+
+        // Closing an already restored terminal must still publish a change:
+        // there may be no pending input and no further OS restore operation.
+        tty.restore()?;
+        let (started, starting) = std::sync::mpsc::sync_channel(0);
+        let reader = std::thread::spawn(move || {
+            started.send(()).map_err(io::Error::other)?;
+            tty.receive_input(&mut [0; 8], None)
+        });
+        starting.recv().map_err(io::Error::other)?;
+        drop(output);
+        assert_eq!(
+            reader
+                .join()
+                .map_err(|_| io::Error::other("input panicked"))?
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotConnected
+        );
+        Ok(())
+    }
 
     fn read_redraw_model(tracked_read: bool) -> io::Result<usize> {
         use crate::ratatui::layout::Size;
@@ -251,12 +330,11 @@ mod tests {
                 if tracked_read {
                     // Negative control: the former polling path classified a
                     // read as outside output through the generic writer.
-                    let count = lifecycle::active(&tty.state, |guard| {
-                        guard.writer().receive(&mut [0; 8], deadline)
-                    })?;
+                    let count =
+                        lifecycle::active(&tty.state, |guard| guard.writer().read(&mut [0; 8]))?;
                     assert_eq!(count, 1);
                 } else {
-                    let events = tty.read_events(deadline)?;
+                    let events = tty.read_events(Some(deadline))?;
                     assert_eq!(events.len(), 1);
                 }
                 draw()?;
@@ -276,6 +354,7 @@ mod tests {
     fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
         // The signal dispatcher owns one terminal per process. Run all real
         // owner scenarios in this test so parallel tests cannot race attach.
+        input_waits_outside_owner_and_wakes_on_lifecycle()?;
         input_reads_leave_identical_real_pty_frames_without_output()?;
         let pty = rustix_openpty::openpty(None, None)?;
         let observer = File::from(pty.user);
@@ -289,7 +368,7 @@ mod tests {
         // signal callback can. No scheduling or timing assumptions are needed.
         let retained = Arc::clone(&old.state);
         let (mut old, output) = old.split();
-        let events = old.read_events(Instant::now())?;
+        let events = old.read_events(Some(Instant::now()))?;
         let typed: String = events
             .iter()
             .filter_map(|event| match event {

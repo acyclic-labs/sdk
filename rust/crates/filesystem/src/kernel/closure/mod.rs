@@ -1,4 +1,4 @@
-//! Bounded whole-generation authentication before authority publication.
+//! Whole-generation authentication before authority publication.
 
 use super::{
     AttributeName, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload, FileRecord,
@@ -14,17 +14,11 @@ use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
 
-/// Hard closure-walk limits admitted before generation publication.
+/// Canonical shape and semantic capabilities required before publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClosureLimits {
     /// Canonical decoder/page limits.
     pub decode: DecodeLimits,
-    /// Maximum distinct immutable objects read by the proof.
-    pub maximum_objects: u64,
-    /// Maximum path-independent file records.
-    pub maximum_files: u64,
-    /// Maximum cumulative canonical bytes read.
-    pub maximum_object_bytes: u64,
     /// Exact namespace profile whose representable kinds are admitted.
     pub profile: FilesystemProfile,
     /// Whether symbolic-link records are admitted.
@@ -46,7 +40,8 @@ pub struct GenerationProof {
     pub file_count: u64,
     /// Logical regular-file bytes, counting each file identity once, including holes.
     pub logical_file_bytes: u128,
-    /// Sorted immutable objects authenticated by this proof.
+    /// Immutable objects authenticated by this proof. Ordinary proofs use sorted
+    /// identities; publication proofs order dependencies before their parents.
     pub objects: Vec<ObjectId>,
     /// Exact proof work.
     pub work: WorkCounters,
@@ -67,33 +62,9 @@ pub enum ClosureError {
     /// Parent lower/upper bounds do not match authenticated child content.
     #[error("routing bounds do not match authenticated child content")]
     RoutingBoundsMismatch,
-    /// Closure exceeds its object-count bound.
-    #[error("generation closure has {observed} objects; maximum is {maximum}")]
-    TooManyObjects {
-        /// Distinct objects encountered.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
-    /// Closure exceeds its file-count bound.
-    #[error("generation closure has {observed} files; maximum is {maximum}")]
-    TooManyFiles {
-        /// File records encountered.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
     /// The sum of logical regular-file sizes cannot be represented.
     #[error("generation logical file byte total overflowed")]
     LogicalBytesOverflow,
-    /// Closure exceeds its cumulative canonical-byte bound.
-    #[error("generation closure read {observed} bytes; maximum is {maximum}")]
-    ClosureBytesExceeded {
-        /// Cumulative canonical bytes read.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
     /// File table contains the same stable identity twice.
     #[error("duplicate file record {0:?}")]
     DuplicateFileRecord(FileId),
@@ -182,102 +153,3 @@ pub(crate) use memory::{CachedProofs, ObservedProof, ProofGuard, ProofMeter};
 mod published;
 use crate::kernel::allocation::retained::RetainedArc;
 use memory::{ProofMap, ProofSet, ProofVec, map_get, map_insert, set_insert};
-use published::ProofSlot;
-pub(crate) use published::Unpublished;
-mod walk;
-pub(crate) use walk::ProofContext;
-
-pub(crate) struct CachedProof {
-    limits: ClosureLimits,
-    root: GenerationRoot,
-    generation_id: GenerationId,
-    file_count: u64,
-    logical_file_bytes: u128,
-    object_count: u64,
-    _guard: ProofGuard,
-    object_bytes: u64,
-}
-
-/// A publication proof whose reuse waits on its own append outcome.
-pub(crate) type PendingProof = Unpublished<RetainedArc<CachedProof>, CachedProofSlot>;
-pub(crate) type PublishedProof = published::Published<RetainedArc<CachedProof>>;
-type CachedProofSlot = RetainedArc<ProofSlot<RetainedArc<CachedProof>>>;
-
-/// Proves the complete immutable object closure and namespace/file-table consistency.
-pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<GenerationProof, GenerationProofFailure> {
-    generation_closure(store, generation_root, limits, budget, cancellation, false).await
-}
-
-pub(super) async fn generation_closure<S: crate::AsyncObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    publication_order: bool,
-) -> Result<GenerationProof, GenerationProofFailure> {
-    if generation_root.kind != ObjectKind::GenerationRoot {
-        return Err(OperationFailure::before_work(ClosureError::WrongObjectKind));
-    }
-    if limits.maximum_objects == 0 {
-        return Err(OperationFailure::before_work(
-            ClosureError::TooManyObjects {
-                observed: 1,
-                maximum: 0,
-            },
-        ));
-    }
-    let meter = ProofMeter::standalone(budget, cancellation)
-        .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;
-    let context = ProofContext::new(store, limits, meter.clone());
-    let mut context = if publication_order {
-        context.publication_order()
-    } else {
-        context
-    };
-    let result = context.prove(generation_root).await;
-    let (proof, guard) =
-        result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;
-    drop(guard);
-    Ok(proof)
-}
-
-#[cfg(feature = "s3-http")]
-pub(crate) async fn prove_blob_closure_async<S: crate::AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    expected_bytes: u64,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ObjectId>, WorkCounters), GenerationProofFailure> {
-    let meter = ProofMeter::standalone(budget, cancellation)
-        .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::default()))?;
-    let mut context = ProofContext::new(store, limits, meter);
-    let logical_bytes = context
-        .prove_blob(root)
-        .await
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
-    if logical_bytes != expected_bytes {
-        return Err(OperationFailure::new(
-            ClosureError::BlobLengthMismatch,
-            context.meter.work(),
-        ));
-    }
-    let (objects, guard) = context
-        .take_objects()
-        .map_err(|error| OperationFailure::new(closure_error(error), context.meter.work()))?;
-    drop(guard);
-    Ok((objects, context.meter.work()))
-}
-
-#[cfg(test)]
-#[cfg(feature = "memory")]
-#[path = "../tests/closure/mod.rs"]
-mod tests;

@@ -45,7 +45,6 @@ async fn fixture_with_filesystem(
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let file = host

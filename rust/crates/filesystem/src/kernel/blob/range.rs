@@ -179,15 +179,8 @@ impl BlobRangeMachine {
         if !limits.page_limits_valid(1) {
             return Err(BlobReadError::InvalidLimits.into());
         }
-        let maximum_visited = usize::try_from(limits.maximum_visited_pages)
-            .map_err(|_| BlobReadError::InvalidLimits)?;
-        let maximum_pending = maximum_visited
-            .checked_add(
-                usize::try_from(limits.maximum_page_items)
-                    .map_err(|_| BlobReadError::InvalidLimits)?,
-            )
-            .ok_or(BlobReadError::InvalidLimits)?;
-        let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+        let maximum_pending = limits.maximum_pending_frontier()?;
+        let visited = VisitedObjectSet::new_with_accounting(accounting)?;
         let output = allocate_read_buffer(allocation, accounting)?;
         let mut machine = Self {
             range,

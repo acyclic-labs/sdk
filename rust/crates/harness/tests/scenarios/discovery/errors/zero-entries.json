@@ -1,1 +1,1 @@
-{"seed":{},"discovery":{"limits":{"entries":0}},"expect":{"error":"discovery requires finite positive bounds"}}
+{"seed":{},"discovery":{"limits":{"entries":0}},"expect":{"error":"configured discovery allowances must be positive"}}
