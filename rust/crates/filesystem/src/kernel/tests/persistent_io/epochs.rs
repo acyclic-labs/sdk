@@ -17,8 +17,6 @@ fn options() -> ObjectCacheOptions {
     ObjectCacheOptions {
         maximum_entries: 8,
         maximum_bytes: 1_048_576,
-        maximum_in_flight: 8,
-        maximum_waiters_per_object: 8,
     }
 }
 
