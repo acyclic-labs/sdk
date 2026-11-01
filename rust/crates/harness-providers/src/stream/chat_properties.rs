@@ -105,7 +105,7 @@ proptest! {
         prop_assert!(parse(&mut state, &initial).unwrap().is_empty());
         prop_assert!(parse(&mut state, &complete).unwrap().is_empty());
         // Usage-only frames still belong to the original completed response.
-        prop_assert!(parse(&mut state, &json!({"choices":[],"usage":{"prompt_tokens":7}})).unwrap().is_empty());
+        prop_assert!(parse(&mut state, &json!({"choices":[],"usage":{"prompt_tokens":7}})).unwrap().is_empty(), "usage trailer emitted a candidate");
         let events = super::super::finish(state, crate::Adapter::Chat, dispatch).unwrap();
         prop_assert_eq!(events.iter().filter(|event| matches!(event, ModelEvent::ToolCall(_))).count(),1);
 
