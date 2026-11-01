@@ -209,11 +209,16 @@ impl ModelContent {
             }
             match part {
                 ModelContentPart::Notices { notices } => {
+                    crate::executor::json::json_byte_length_at_depth(
+                        part,
+                        limits.render_bytes,
+                        256,
+                        work,
+                    )?;
                     for notice in notices {
                         notice
                             .validate()
                             .map_err(|_| invalid(work, "invalid notice"))?;
-                        value_bound(&notice.body, limits.render_bytes, work)?;
                     }
                 }
                 ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
