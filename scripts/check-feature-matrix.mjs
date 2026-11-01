@@ -17,48 +17,10 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { metadata } from "./publish-cargo-crates.mjs";
+import { featureSets, selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
+export { enabled, featureSets } from "./cargo-feature-selection.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/** Everything `features` enables in this package: its own features and the
- *  optional dependencies and dependency features they name, transitively. */
-export function enabled(item, features) {
-  const seen = new Set();
-  const pending = [...features];
-  while (pending.length) {
-    const entry = pending.pop();
-    if (seen.has(entry)) continue;
-    seen.add(entry);
-    if (Object.hasOwn(item.features, entry)) pending.push(...item.features[entry]);
-  }
-  // No code here gates on `feature = "default"`, so it names no code of its own.
-  seen.delete("default");
-  return [...seen].sort().join(" ");
-}
-
-/** The Cargo argument sets for one package from its `cargo metadata` entry.
- *  The default checks each crate once, alone, with --all-features. Only the explicit full matrix (eachFeature) adds the
- *  no-default, default and single-feature selections; sets that enable exactly
- *  the same features and optional dependencies compile the same code, so each
- *  is checked once. */
-export function featureSets(item, eachFeature = false) {
-  if (!eachFeature) return [["check", "--locked", "--manifest-path", item.manifest_path, "--lib", "--all-features"]];
-  const own = Object.keys(item.features).filter(name => name !== "default").sort();
-  const defaults = Object.hasOwn(item.features, "default") ? ["default"] : [];
-  const sets = [
-    [["--no-default-features"], []],
-    [[], defaults],
-    [["--all-features"], Object.keys(item.features)],
-    ...own.map(feature => [["--no-default-features", "--features", feature], [feature]]),
-  ];
-  const checked = new Set();
-  return sets
-    .filter(([, features]) => {
-      const key = enabled(item, features);
-      return !checked.has(key) && checked.add(key);
-    })
-    .map(([set]) => ["check", "--locked", "--manifest-path", item.manifest_path, "--lib", ...set]);
-}
 
 // Keep each (package, feature selection) in the same cache when another crate
 // or feature is added, or when PR and main use different matrix sizes. Absolute
@@ -79,13 +41,14 @@ export function workerEnv(index, env = process.env) {
 // Keep the consumer library isolated from test dependencies, then compile
 // cfg(test) and other targets with the same feature selection. An all-features
 // test run cannot detect a feature-only field used by a test-visible caller.
-export function linuxCommands(args) {
-  return [args, [...args.slice(0, 4), "--all-targets", ...args.slice(5)]];
+export function linuxCommands(selection) {
+  return ["lib", "all-targets"].map(targets => ["check", "--locked",
+    ...cargoFeatureArguments(selection, { manifest: true, targets })]);
 }
 
-export function windowsCommands(args) {
-  const base = ["xwin", ...args.slice(0, 4), "--target", "x86_64-pc-windows-msvc"];
-  return ["--lib", "--all-targets"].map(target => [...base, target, ...args.slice(5)]);
+export function windowsCommands(selection) {
+  return ["lib", "all-targets"].map(targets => ["xwin", "check", "--locked",
+    ...cargoFeatureArguments(selection, { manifest: true, target: "x86_64-pc-windows-msvc", targets })]);
 }
 
 export function selectFeaturePackages(items, selected) {
@@ -107,28 +70,29 @@ async function main() {
   // Every publishable local crate, in publication order (the publish check
   // already proves the order lists each exactly once).
   const eachFeature = args.includes("--each-feature");
-  const items = [...metadata().values()];
+  const inventory = metadata();
+  const items = [...inventory.values()];
   const sets = selectFeaturePackages(items, selected).flatMap(item => featureSets(item, eachFeature)
-    .map(args => ({ name: item.name, args })));
+    .map(args => ({ name: item.name, args, selection: selectCargoFeatures(inventory, [item.name], args.slice(5)) })));
   if (list) {
-    for (const { args } of sets) for (const command of windows ? windowsCommands(args) : linuxCommands(args)) console.log(`cargo ${command.join(" ")}`);
+    for (const { selection } of sets) for (const command of windows ? windowsCommands(selection) : linuxCommands(selection)) console.log(`cargo ${command.join(" ")}`);
     return;
   }
   const failures = [];
   let passed = 0;
   const queues = Array.from({ length: workers }, () => []);
-  for (const { name, args } of sets) queues[featureWorker(name, args, workers)].push(args);
+  for (const unit of sets) queues[featureWorker(unit.name, unit.args, workers)].push(unit);
   async function worker(index) {
     const env = workerEnv(index);
     if (windows) {
       const cacheRoot = process.env.XWIN_CACHE_ROOT;
       if (cacheRoot) env.XWIN_CACHE_DIR = join(cacheRoot, `worker-${index}`);
     }
-    for (const set of queues[index]) {
+    for (const { args: set, selection } of queues[index]) {
       const checkStarted = Date.now();
       let succeeded = true;
       let rebuilt = 0;
-      for (const command of windows ? windowsCommands(set) : linuxCommands(set)) {
+      for (const command of windows ? windowsCommands(selection) : linuxCommands(selection)) {
         const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
         child.stdout.on("data", chunk => (output += chunk));
