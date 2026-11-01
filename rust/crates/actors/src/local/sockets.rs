@@ -215,7 +215,10 @@ impl Undecided {
         ) {
             return Err(error);
         }
-        executor.sleep(self.delay).await;
+        executor
+            .sleep(u64::from(self.delay))
+            .await
+            .map_err(super::ClockError::from)?;
         self.delay = self.delay.saturating_mul(2).min(BACKOFF_CEILING_MS);
         Ok(())
     }

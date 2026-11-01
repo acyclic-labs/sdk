@@ -752,11 +752,13 @@ impl Client {
             .scope(async {
                 let registration = super::runtime::waiting("session-open", id, registration);
                 match self.registration_timeout {
-                    Some(milliseconds) => {
-                        deadline::until(registration, self.pool.executor.sleep(milliseconds))
-                            .await
-                            .unwrap_or(Err(StreamError::DeadlineElapsed))
-                    }
+                    Some(milliseconds) => deadline::until(
+                        registration,
+                        self.pool.executor.sleep(u64::from(milliseconds)),
+                    )
+                    .await
+                    .map_err(|_| StreamError::Unavailable)?
+                    .unwrap_or(Err(StreamError::DeadlineElapsed)),
                     None => registration.await,
                 }
             })
