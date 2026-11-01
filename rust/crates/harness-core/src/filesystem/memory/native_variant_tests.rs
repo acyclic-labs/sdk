@@ -130,12 +130,44 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
 
 #[tokio::test]
 async fn native_patch_publishes_all_members_once_or_leaves_every_file_unchanged() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 4096).await?;
     let limits = Limits {
         file_bytes: 4096,
         ..Limits::default()
     };
-    run_admitted_file_case(&storage, limits, |task| async move {
+    // Destination publication alone intentionally grants no deletion. The
+    // positive move/delete case uses an explicit signed file-operation grant
+    // on the same publisher; no tool name can manufacture that authority.
+    let label = acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[
+            acyclic_fs::access::Action::Create,
+            acyclic_fs::access::Action::Write,
+            acyclic_fs::access::Action::Delete,
+        ],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let scope = storage.issuer.bootstrap_scope(
+        "patch-owner",
+        &Capabilities::new([storage.write_capability.clone(), label]),
+        Some(agent),
+        &mut None,
+    )?;
+    let verifier = storage.issuer.verifier(&mut None)?;
+    let mut authorized = storage.content_bindings();
+    authorized.writer = Some(FilesystemContentPublisher::new(
+        Arc::clone(&storage.host),
+        &storage.volume,
+        &verifier,
+        &scope,
+        4096,
+        None,
+    )?);
+    run_admitted_file_case(&storage, limits, move |task| {
+        let authorized = authorized.clone();
+        async move {
         let profile = NativeToolProfile::Openai;
         let revision = profile.tools()?.into_iter().find(|tool| tool.capability == "edit").unwrap();
         let original = Arc::new(crate::tools::variants::apply_patch()?);
@@ -151,6 +183,17 @@ async fn native_patch_publishes_all_members_once_or_leaves_every_file_unchanged(
         assert_eq!(call(&task, &read, json!({"path":"first"})).await?.1.value["text"], "old\n");
 
         let complete = "*** Begin Patch\n*** Update File: first\n*** Move to: moved\n-old\n+new\n*** Delete File: deleted\n*** Add File: added\n+created\n*** End Patch\n";
+        assert!(matches!(call(&task, &patch, json!({"input":complete})).await,
+            Err(Error::Unauthorized(_))));
+        assert_eq!(call(&task, &read, json!({"path":"first"})).await?.1.value["text"], "old\n");
+        assert_eq!(call(&task, &read, json!({"path":"deleted"})).await?.1.value["text"], "remove\n");
+        assert!(call(&task, &read, json!({"path":"moved"})).await.is_err());
+        assert!(call(&task, &read, json!({"path":"added"})).await.is_err());
+        let mut bindings = crate::runtime::Bindings::local();
+        bindings.scope = RuntimeScope::new(task.scope().grants().clone(), limits)?;
+        bindings.content = Some(authorized.clone());
+        let task = bindings.build()?.agent_context(
+            &Capabilities::new(Vec::<String>::new()), authorized)?;
         let (invocation, result) = call(&task, &patch, json!({"input":complete})).await?;
         assert!(call(&task, &read, json!({"path":"first"})).await.is_err());
         assert!(call(&task, &read, json!({"path":"deleted"})).await.is_err());
@@ -177,5 +220,6 @@ async fn native_patch_publishes_all_members_once_or_leaves_every_file_unchanged(
             Err(Error::Conflict(reason)) if reason == "original producer refused"));
         assert!(call(&task, &read, json!({"path":"forbidden"})).await.is_err());
         Ok(())
+        }
     }).await
 }
