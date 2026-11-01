@@ -62,8 +62,8 @@ pub struct Args {
     /// Project every committed event with source cursors as versioned JSONL.
     #[arg(long, global = true, value_enum, default_value_t)]
     pub output_format: OutputFormat,
-    /// Read source cursors from this file and replace it after each flushed event.
-    /// Reuse the same operation; a lost acknowledgement may replay one line.
+    /// Read source cursors here and replace the file after a complete flushed acknowledgement.
+    /// Reuse the same operation; an interrupted observation may replay its payload chunks.
     #[arg(long, requires = "operation")]
     pub event_cursor: Option<PathBuf>,
     /// Validate final JSON artifacts against this schema before reporting success.
