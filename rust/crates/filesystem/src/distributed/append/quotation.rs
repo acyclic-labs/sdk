@@ -7,6 +7,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         growth: usize,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError> {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
         let actor = self.actor(request.authority_id, work)?;
         let mut journal = actor.lease(work).await?;
         work.check()?;

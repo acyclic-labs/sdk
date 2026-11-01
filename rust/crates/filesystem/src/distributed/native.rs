@@ -58,7 +58,9 @@ impl<'a> AuthorityWork<'a> {
             drop(self.request_allocation.take());
             return Ok(());
         }
-        self.allocations.release_scratch().map_err(authority_error)
+        self.allocations
+            .release_scratch_to(self.scratch_floor)
+            .map_err(authority_error)
     }
 
     pub(super) fn hold_opaque(&mut self, bytes: u64) -> Result<(), AuthorityStoreError> {

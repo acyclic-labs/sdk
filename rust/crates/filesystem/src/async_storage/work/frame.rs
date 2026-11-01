@@ -42,6 +42,7 @@ impl<'a> AuthorityFrame<'a> {
         Ok(Self {
             value: AuthorityWork {
                 allocations: std::mem::take(allocations),
+                scratch_floor: 0,
                 work: std::mem::take(work),
                 budget,
                 cancellation,

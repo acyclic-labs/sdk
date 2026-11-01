@@ -119,21 +119,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         ),
         AuthorityStoreError,
     > {
-        let baseline = work.allocations.live_bytes();
-        let result = async {
-            self.authority_require_live(authority, work).await?;
-            self.snapshot_payload::<RETAIN>(authority, work).await
-        }
-        .await;
-        if result.is_err() && !work.is_native() {
-            work.release(
-                work.allocations
-                    .live_bytes()
-                    .checked_sub(baseline)
-                    .ok_or(crate::WorkError::Overflow)?,
-            )?;
-        }
-        result
+        self.authority_require_live(authority, work).await?;
+        self.snapshot_payload::<RETAIN>(authority, work).await
     }
 
     pub(super) async fn snapshot(

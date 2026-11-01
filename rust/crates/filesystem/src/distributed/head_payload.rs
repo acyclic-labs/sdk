@@ -7,7 +7,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         maximum_payload_bytes: u64,
         work: &mut AuthorityWork<'_>,
     ) -> Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError> {
-        work.check()?;
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
         async {
             let (snapshot, latest) = self
                 .fork_snapshot_payload::<true>(authority, work)

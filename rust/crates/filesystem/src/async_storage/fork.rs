@@ -54,6 +54,8 @@ pub(crate) async fn seal<G: AuthorityGuard>(
     work: &mut AuthorityWork<'_>,
 ) -> Result<(), AuthorityError<G::Error>> {
     if let Some(guard) = guard {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
         guard.seal(work).await?;
     }
     Ok(())

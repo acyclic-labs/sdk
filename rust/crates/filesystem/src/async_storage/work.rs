@@ -13,6 +13,7 @@ mod commit_tests;
 
 mod frame;
 pub(crate) use frame::AuthorityFrame;
+mod scope;
 
 /// Transfer retained custody only at an existing public value/guard boundary.
 /// Internal fallible operations keep `Owned` intact so its value drops first.
@@ -120,6 +121,7 @@ pub struct AuthorityWork<'a> {
     /// The original native ledger, when present.
     pub original: Option<&'a crate::NativeMaterializationWork>,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
+    pub(crate) scratch_floor: u64,
     pub(crate) read_observation: Option<(&'a crate::kernel::ProofDataCustody, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(any(test, feature = "distributed"))]
@@ -158,6 +160,7 @@ impl<'a> AuthorityWork<'a> {
             budget,
             cancellation,
             allocations: Default::default(),
+            scratch_floor: 0,
             read_observation: None,
             #[cfg(not(target_arch = "wasm32"))]
             #[cfg(any(test, feature = "distributed"))]
