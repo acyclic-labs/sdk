@@ -90,6 +90,40 @@ impl FileLock {
         Ok(())
     }
 
+    /// Runs `operation` while holding the requested lock, releasing it on
+    /// return or unwind. The file and any other holders remain owned by their
+    /// callers; releasing this scope does not close the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original acquisition or operation error, otherwise the
+    /// release error. Unwinding attempts release without replacing the panic.
+    pub fn with_lock<T>(
+        &self,
+        mode: FileLockMode,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        struct Release<'a>(Option<&'a FileLock>);
+
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                if let Some(lock) = self.0.take() {
+                    let _ = lock.unlock();
+                }
+            }
+        }
+
+        self.lock(mode)?;
+        let mut release = Release(Some(self));
+        let result = operation();
+        // Disarm before unlocking: one release attempt, including on error.
+        let unlocked = release.0.take().expect("scope retains its lock").unlock();
+        match result {
+            Ok(value) => unlocked.map(|()| value),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Takes the lock on this file only if no conflicting holder exists.
     ///
     /// # Errors

@@ -62,6 +62,31 @@ impl Default for Coalescer {
     }
 }
 
+/// The original drain owns its in-flight state until return or unwind. An
+/// unwound drain acknowledges no writes, but releases every waiting caller
+/// to attempt its own covering drain.
+struct Draining<'a> {
+    coalescer: &'a Coalescer,
+    number: u64,
+    completed: bool,
+}
+
+impl Drop for Draining<'_> {
+    fn drop(&mut self) {
+        let mut progress = self
+            .coalescer
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        progress.draining = false;
+        if self.completed {
+            progress.completed = self.number;
+        }
+        drop(progress);
+        self.coalescer.drained.notify_all();
+    }
+}
+
 impl Coalescer {
     /// Returns once a drain that started after this call began has finished.
     /// The caller has already staged its writes, so that drain covered them.
@@ -88,16 +113,15 @@ impl Coalescer {
             if !progress.draining {
                 progress.started += 1;
                 progress.draining = true;
-                let number = progress.started;
+                let mut draining = Draining {
+                    coalescer: self,
+                    number: progress.started,
+                    completed: false,
+                };
                 drop(progress);
                 let result = drain();
-                let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
-                progress.draining = false;
-                if result.is_ok() {
-                    progress.completed = number;
-                }
-                drop(progress);
-                self.drained.notify_all();
+                draining.completed = result.is_ok();
+                drop(draining);
                 return result;
             }
             progress = self
@@ -324,8 +348,7 @@ mod apple {
 
         fn settle(&self, ticket: u64, drain: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
             // Waits in the kernel while another process drains.
-            self.lock.lock(FileLockMode::Exclusive)?;
-            let result = (|| {
+            self.lock.with_lock(FileLockMode::Exclusive, || {
                 if self.completed.load(Ordering::SeqCst) >= ticket {
                     return Ok(());
                 }
@@ -336,8 +359,7 @@ mod apple {
                 drain()?;
                 self.completed.store(number, Ordering::SeqCst);
                 Ok(())
-            })();
-            result.and(self.lock.unlock())
+            })
         }
     }
 
@@ -576,6 +598,94 @@ mod tests {
                 arrived = self.changed.wait(arrived).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn failed_and_unwound_drains_release_original_lock_without_acknowledging() -> io::Result<()> {
+        use crate::{FileLock, FileLockMode};
+        use std::fs::OpenOptions;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("drain");
+        let open = || {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+        };
+        let lock = FileLock::new(open()?);
+        let coalescer = Coalescer::default();
+        for unwind in [false, true] {
+            let completed = coalescer.progress.lock().unwrap().completed;
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                coalescer.flush(|| {
+                    lock.with_lock(FileLockMode::Exclusive, || {
+                        assert_eq!(
+                            FileLock::try_acquire(open()?, FileLockMode::Exclusive)
+                                .unwrap_err()
+                                .kind(),
+                            io::ErrorKind::WouldBlock
+                        );
+                        if unwind {
+                            panic!("drain producer unwound");
+                        }
+                        std::fs::File::open(directory.path().join("missing")).map(drop)
+                    })
+                })
+            }));
+            if unwind {
+                assert_eq!(
+                    result.unwrap_err().downcast_ref::<&str>(),
+                    Some(&"drain producer unwound")
+                );
+            } else {
+                assert_eq!(result.unwrap().unwrap_err().kind(), io::ErrorKind::NotFound);
+            }
+            // Check before another acquisition: restoring either missing
+            // release fails here without waiting on the abandoned producer.
+            assert!(!coalescer.progress.lock().unwrap().draining);
+            assert!(!lock.is_held());
+            assert_eq!(coalescer.progress.lock().unwrap().completed, completed);
+            drop(FileLock::try_acquire(open()?, FileLockMode::Exclusive)?);
+            let mut attempts = 0;
+            coalescer.flush(|| {
+                attempts += 1;
+                lock.with_lock(FileLockMode::Exclusive, || Ok(()))
+            })?;
+            assert_eq!(attempts, 1, "failed drain cannot cover the next request");
+        }
+
+        // An actual concurrent request has entered the original coalescer
+        // before the producer unwinds. Its same-lock release and notification
+        // must let that request perform its own drain, never accept the failed one.
+        let coalescer = Arc::new(Coalescer::default());
+        std::thread::scope(|scope| {
+            let producer = Arc::clone(&coalescer);
+            let lock = &lock;
+            let first = scope.spawn(move || {
+                catch_unwind(AssertUnwindSafe(|| {
+                    producer.flush(|| {
+                        lock.with_lock(FileLockMode::Exclusive, || {
+                            producer.arrivals.wait_for(2);
+                            panic!("active drain producer unwound");
+                        })
+                    })
+                }))
+            });
+            coalescer.arrivals.wait_for(1);
+            let mut attempts = 0;
+            coalescer.flush(|| {
+                attempts += 1;
+                lock.with_lock(FileLockMode::Exclusive, || Ok(()))
+            })?;
+            assert_eq!(attempts, 1);
+            assert!(first.join().unwrap().is_err());
+            Ok::<(), io::Error>(())
+        })?;
+        Ok(())
     }
 
     #[test]
