@@ -143,7 +143,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
-                max_steps: 2,
+                max_steps: Some(2),
             };
             let result = executor
                 .execute(input.clone(), &journal)

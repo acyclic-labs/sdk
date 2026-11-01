@@ -150,8 +150,8 @@ fn check_comparison(value: &Value, expected: &[u8], buffered: bool) -> TestCaseR
     let mut encoded = 0;
     let mut storage = 0;
     let bounds = JsonBounds {
-        maximum_bytes: 65536,
-        maximum_items: 65536,
+        maximum_bytes: Some(65536),
+        maximum_items: Some(65536),
         maximum_depth: 256,
     };
     let mut charge = |event| {
