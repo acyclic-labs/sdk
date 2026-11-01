@@ -1,5 +1,29 @@
 # Polling and timed-wait inventory
 
+Identity credential publication successor, location on `88568da9ff`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:808` | Credential-file read/parse/yield readiness loop | The original HTTP exchange proves that the operation owns its server mutex. Await that mutex's release, then read and validate the committed credential once. | Source complete; unqualified |
+
+The original blocked-output login, refresh and refresh-after-EOF cases remain.
+The operation holds the same mutex through credential persistence and result
+publication. Completion before observation is retained by the unlocked mutex and
+committed file. Dropping the operation releases its guard; missing, malformed or
+unrotated credentials fail the one read/assertion instead of causing a retry.
+Restoring an early unlock would expose the seeded original token or absent login
+file; this source-level negative has not executed.
+
+Per exchange, credential reads change from unbounded to one, readiness yields
+from unbounded to zero and the helper's readiness deadline from one to zero.
+Observation adds one existing-mutex acquisition and one retained Arc clone in the
+test client. The production Arc/mutex remains one; its construction moves to the
+caller. No task, channel, worker, HTTP round trip, payload copy or durability
+barrier is added. Native syscall/allocation counts are unmeasured. Coordination
+is fixed per exchange; credential decoding remains proportional to record size.
+The separate cancellation quiet-window, clock pump and surrounding test deadline
+sites remain open in the census below.
+
 MCP registration deadline successor, location on `3d111c4519`:
 
 | Source | Kind | Replacement and terminal | Status |
@@ -4559,7 +4583,7 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/identity/src/lib.rs:660` | Product device readiness retry | Product owner must expose original approval completion or an honest caller-observed pending result; interval/token reattempt is not transient transport backoff. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original request/timer registration and explicit deterministic clock advancement after its producer event. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Same explicit registered-operation event; no continuously runnable sampling task. | Pending; product owner |
-| `plugin/identity/src/mcp.rs:808` | Credential-file yield/recheck | Original credential commit/publication event, including its terminal failure. | Pending; product owner |
+| `plugin/identity/src/mcp.rs:808` | Credential-file yield/recheck | Original operation mutex release, followed by one credential read/assertion. | Source complete; unqualified |
 | `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original login cancellation/settlement event followed by deterministic poll-count assertion. | Pending; product owner |
 
 The existing identity receipt/key re-send and failed-revocation caller re-send tests are not automatic retry loops. Their exact identities and real failure controls remain. This plugin extension is not a complete repository census and authorizes no surviving readiness delay.
