@@ -182,8 +182,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .filter(|cached| cached.root.volume_id == *volume)
                 .filter(|cached| reusable(&root.0, cached, self.limits, None))
         });
-        let base = match source {
-            Some((source, _)) if held.is_none() => self.proof_slot(cache, source)?,
+        // Keep the source's original root owner through every asynchronous proof read.
+        let base = match source.as_ref() {
+            Some((source, _)) if held.is_none() => self.proof_slot(cache, *source)?,
             Some(_) => None,
             None => slot.clone(),
         };

@@ -68,7 +68,7 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
                     crate::PublicationPermit::Unrestricted,
                     B,
                     &cancel,
-                    allow::<FsError>
+                    allow::<WorkspaceError>
                 )
                 .await?
                 .value,
