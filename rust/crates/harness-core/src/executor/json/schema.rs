@@ -22,6 +22,7 @@ macro_rules! schema {
 schema!(NONE => None, "", [], [], []);
 schema!(ROOT => Root, "", [], [], []);
 schema!(UNKNOWN, "", [], [], []);
+schema!(SCHEDULE => Schedule, "", [], ["body" => ROOT : 0], []);
 // ApprovalSubject::Tool arguments use deserialize_json_value: serde's private
 // marker keys stay literal. Their derived HeapLayout accounts their tree;
 // unlike question/form Values, they have no RawValue expansion to inspect.

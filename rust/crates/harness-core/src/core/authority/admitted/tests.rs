@@ -1040,6 +1040,8 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             let mut opening = turn_host.open(
                 &state,
                 OperationId::from_bytes([197; 16]),
+                0,
+                1,
                 &input,
                 stop.clone(),
             );
@@ -1079,7 +1081,14 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             stopped.cancel();
             assert!(matches!(
                 turn_host
-                    .open(&state, OperationId::from_bytes([198; 16]), &input, stopped)
+                    .open(
+                        &state,
+                        OperationId::from_bytes([198; 16]),
+                        0,
+                        1,
+                        &input,
+                        stopped
+                    )
                     .await,
                 Err(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled
@@ -1089,7 +1098,7 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
             if !held {
                 // A fresh turn still derives under this same live custodian.
                 assert!(
-                    matches!(turn_host.open(&state, OperationId::from_bytes([199; 16]), &input,
+                    matches!(turn_host.open(&state, OperationId::from_bytes([199; 16]), 0, 1, &input,
                     acyclic_actors::guest::CancellationToken::new()).await,
                     Err(Error::Invalid(reason)) if reason == "executor reached")
                 );

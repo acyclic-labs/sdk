@@ -1,6 +1,84 @@
 use super::*;
 use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef};
 
+#[tokio::test]
+async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()> {
+    use crate::agent::{AgentId, InboxRecord, IntentId, NoticeSelection};
+    use crate::conversation::wire::Notice;
+    use crate::model::ModelContentPart;
+    use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
+
+    let stream = MemoryStream::default();
+    let agent = AgentPath::root(&AgentId::from_bytes([194; 16]));
+    let count = acyclic_stream::MAX_ITEMS + 1;
+    let mut records = Vec::new();
+    for index in 0..=count {
+        if index == acyclic_stream::MAX_ITEMS / 2 {
+            records.push(InboxRecord::Awaited.encode().map_err(agent_error)?);
+        }
+        records.push(
+            InboxRecord::Notice {
+                id: IntentId::try_from(format!("event-{index}")).map_err(agent_error)?,
+                notice: Notice {
+                    source: "events".into(),
+                    kind: "source.changed".into(),
+                    body: serde_json::json!({"index": index}),
+                    wake: false,
+                    coalesce_key: Some("source".into()),
+                },
+            }
+            .encode()
+            .map_err(agent_error)?,
+        );
+    }
+    let mut from = 0;
+    for (page, records) in records.chunks(acyclic_stream::MAX_ITEMS).enumerate() {
+        stream
+            .append(AppendRequest {
+                path: agent.inbox().map_err(agent_error)?,
+                records: records.iter().cloned().map(Into::into).collect(),
+                if_tail: Some(from),
+                idempotency_key: IdempotencyKey::new(format!("notices-{page}").into_bytes())?,
+            })
+            .await?;
+        from += records.len() as u64;
+    }
+    let selected = NoticeSelection {
+        source: agent.clone(),
+        range: 0..count as u64 + 1,
+    };
+    let input = ModelContent::Text("prompt".into());
+    let (notices, retained) =
+        selected_notices(&stream, &agent, Some(&selected), input.clone()).await?;
+    assert_eq!(retained, Some(input));
+    let Some(ModelContent::Part(ModelContentPart::Notices { notices })) = notices else {
+        panic!("missing event boundary");
+    };
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].body["index"], count - 1);
+    let unavailable = NoticeSelection {
+        range: 0..from + 1,
+        ..selected
+    };
+    assert!(
+        selected_notices(
+            &stream,
+            &agent,
+            Some(&unavailable),
+            ModelContent::Text("prompt".into())
+        )
+        .await
+        .expect_err("a missing frozen suffix must refuse")
+        .uncertain()
+    );
+    for cause in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
+        let error = agent_error(crate::agent::Error::Stream(cause));
+        assert!(error.uncertain());
+        assert!(!Error::Invalid(error.to_string()).uncertain());
+    }
+    Ok(())
+}
+
 #[test]
 fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() -> Result<()> {
     let path = AgentPath::root(&crate::agent::AgentId::from_bytes([191; 16]));

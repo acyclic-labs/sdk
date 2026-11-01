@@ -81,6 +81,10 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    steering: journal
+                        .model_boundary()
+                        .map(|boundary| boundary.selection(input.operation_id, step))
+                        .transpose()?,
                 },
                 self.io,
             )?
@@ -105,6 +109,7 @@ impl StockExecution<'_> {
             ExecutionEvent::ContextPrepared {
                 step: recorded,
                 projection,
+                ..
             } if *recorded == step => Some(projection),
             _ => None,
         });
