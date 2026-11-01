@@ -1,6 +1,7 @@
 #[derive(Clone)]
 struct PathState {
     history: Option<Arc<History>>,
+    ranges: HistoryRanges,
     prefix: [Option<HistoryWindow>; 2],
     tail: u64,
 }

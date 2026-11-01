@@ -250,7 +250,7 @@ async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
         end: 3,
     });
     assert!(matches!(
-        cursor.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable),
+        cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable),
         Err(StreamError::Unavailable)
     ));
     Ok(())

@@ -51,10 +51,6 @@ impl<S: PageSource> PinnedCursor<S> {
         &self.source
     }
 
-    pub(crate) fn source_mut(&mut self) -> &mut S {
-        &mut self.source
-    }
-
     /// The next unread sequence, advanced only when a record is consumed.
     pub fn position(&self) -> u64 {
         self.next

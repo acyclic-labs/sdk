@@ -1,7 +1,7 @@
 struct CommitPlan {
     envelope: CommittedEnvelope,
     result: CommitOutcome,
-    histories: Vec<Arc<History>>,
+    histories: Vec<PreparedHistory>,
     paths: Vec<(StreamPath, PathState)>,
     resident: Allocation,
     output_claim: Allocation,
@@ -93,13 +93,13 @@ impl CommitPublication {
 }
 
 fn bind_histories(
-    histories: &mut [Arc<History>],
+    histories: &mut [PreparedHistory],
     commit_id: CommitId,
     time: u64,
 ) -> Result<(), StreamError> {
     for history in histories {
         if let History::Batch { records, .. } =
-            Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+            Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
         {
             for record in &mut Arc::get_mut(records)
                 .ok_or(StreamError::Unavailable)?
@@ -198,7 +198,7 @@ impl MemoryStream {
         &self,
         state: &State,
         facts: &[CommittedMutation],
-    ) -> Result<(Vec<Arc<History>>, Allocation), StreamError> {
+    ) -> Result<(Vec<PreparedHistory>, Allocation), StreamError> {
         let (mut histories, allocation) = self.vector(facts.len())?;
         for fact in facts {
             histories.push(self.history(state, fact)?);
@@ -210,7 +210,27 @@ impl MemoryStream {
         &self,
         state: &State,
         fact: &CommittedMutation,
-    ) -> Result<Arc<History>, StreamError> {
+    ) -> Result<PreparedHistory, StreamError> {
+        let (source_path, before) = match fact {
+            CommittedMutation::Append(append) => (&append.path, None),
+            CommittedMutation::Fork(fork) => (&fork.source, Some(fork.forked_at)),
+        };
+        let original = state.paths.get(source_path);
+        let mut ranges = original.map_or_else(HistoryRanges::default, |path| path.ranges.clone());
+        if let Some(History::Batch { records, .. }) =
+            original.and_then(|path| path.history.as_deref())
+            && let Some(first) = records.records.first()
+            && before.is_none_or(|before| first.sequence < before)
+        {
+            ranges = ranges.insert(
+                first.sequence.to_be_bytes(),
+                Arc::clone(records),
+                &mut HistoryIndexWork(self),
+            )?;
+        }
+        if let Some(before) = before {
+            ranges = ranges.prefix(before.to_be_bytes());
+        }
         let parent = match fact {
             CommittedMutation::Append(append) => state
                 .paths
@@ -223,13 +243,11 @@ impl MemoryStream {
                     .ok_or(StreamError::NotFound)?
                     .history
                     .clone();
-                let jump = self.history_jump(source.as_ref(), fork.forked_at)?;
                 Some(Arc::new(History::Prefix {
                     keys: source
                         .as_ref()
                         .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
-                    jump,
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))
@@ -237,7 +255,10 @@ impl MemoryStream {
         };
         let source = fact_records(fact);
         if source.is_empty() {
-            return parent.ok_or(StreamError::Unavailable);
+            return Ok(PreparedHistory {
+                history: parent.ok_or(StreamError::Unavailable)?,
+                ranges,
+            });
         }
         let (mut records, mut claim) = self.vector(source.len())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -263,38 +284,18 @@ impl MemoryStream {
             records,
             _allocation: claim,
         });
-        let jump = self.history_jump(
-            parent.as_ref(),
-            records
-                .records
-                .first()
-                .ok_or(StreamError::Unavailable)?
-                .sequence,
-        )?;
         let keys = parent
             .as_ref()
             .map_or_else(KeyTree::default, |parent| parent.keys().clone())
             .append(&records, self)?;
-        Ok(Arc::new(History::Batch {
-            keys,
-            parent,
-            jump,
-            records,
-            _allocation: self.allocate(std::mem::size_of::<History>())?,
-        }))
-    }
-
-    fn history_jump(
-        &self,
-        parent: Option<&Arc<History>>,
-        boundary: u64,
-    ) -> Result<HistoryJump, StreamError> {
-        HistoryJump::new(parent, boundary, || {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = &self.work {
-                work.record(inspect(&work.meter, || ()))?;
-            }
-            Ok(())
+        Ok(PreparedHistory {
+            history: Arc::new(History::Batch {
+                keys,
+                parent,
+                records,
+                _allocation: self.allocate(std::mem::size_of::<History>())?,
+            }),
+            ranges,
         })
     }
 
@@ -317,6 +318,7 @@ impl MemoryStream {
                     .ok_or(StreamError::InvalidPath)?,
                 PathState {
                     history: None,
+                    ranges: HistoryRanges::default(),
                     prefix: [None, None],
                     tail: 0,
                 },
@@ -611,39 +613,24 @@ impl MemoryStream {
             .tail
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut walk = HistoryWalk::new(path.history.as_ref(), path.tail, sequence);
-        loop {
+        let mut history = PinnedHistory::new(path, path.tail);
+        let window = history.page(sequence, 1, |items| {
             #[cfg(not(target_arch = "wasm32"))]
-            let next = if let Some(work) = &self.work {
-                work.record(inspect(&work.meter, || walk.next()))?
-            } else {
-                walk.next()
-            };
-            #[cfg(target_arch = "wasm32")]
-            let next = walk.next();
-            let Some((History::Batch { records, .. }, _)) = next else {
-                if next.is_none() {
-                    return Err(StreamError::Unavailable);
-                }
-                continue;
-            };
-            let lookup = || {
-                let first = records.records.first()?.sequence;
-                let offset = usize::try_from(sequence.checked_sub(first)?).ok()?;
-                records.records.get(offset).map(|record| record.commit_id)
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let commit = if let Some(work) = &self.work {
-                work.record(inspect(&work.meter, lookup))?
-            } else {
-                lookup()
-            };
-            #[cfg(target_arch = "wasm32")]
-            let commit = lookup();
-            if let Some(commit) = commit {
-                return Ok(commit);
+            if let Some(work) = &self.work {
+                work.record(work.meter.examine(items, 0))?;
             }
-        }
+            let _ = items;
+            Ok::<_, StreamError>(())
+        })?;
+        window
+            .and_then(|window| {
+                window
+                    .records
+                    .records
+                    .get(window.start)
+                    .map(|record| record.commit_id)
+            })
+            .ok_or(StreamError::Unavailable)
     }
 }
 
@@ -771,7 +758,7 @@ impl Namespace {
 fn stage_namespace(
     state: &State,
     paths: Vec<(StreamPath, PathState)>,
-    histories: Vec<Arc<History>>,
+    histories: Vec<PreparedHistory>,
     envelope: &CommittedEnvelope,
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<Namespace, StreamError> {
@@ -913,9 +900,10 @@ fn install_namespace(
 fn fact_data(
     paths: &Namespace,
     fact: &CommittedMutation,
-    history: Arc<History>,
+    prepared: PreparedHistory,
     tail: u64,
 ) -> Result<PathState, StreamError> {
+    let PreparedHistory { history, ranges } = prepared;
     let source = match fact {
         CommittedMutation::Append(append) => &append.path,
         CommittedMutation::Fork(fork) => &fork.source,
@@ -951,6 +939,7 @@ fn fact_data(
     Ok(PathState {
         prefix,
         history: Some(history),
+        ranges,
         tail,
     })
 }

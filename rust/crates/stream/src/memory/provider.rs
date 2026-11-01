@@ -245,14 +245,12 @@ fn last_record(stream: &PathState) -> Option<Record> {
     if let Some(window) = stream.prefix_window(from, stream.tail) {
         return window.records.records.get(window.start).cloned();
     }
-    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(|(history, ceiling)| {
-        if let History::Batch { records, .. } = history {
-            history_window(Arc::clone(records), ceiling, from)
-                .and_then(|window| window.records.records.get(window.start).cloned())
-        } else {
-            None
-        }
-    })
+    let mut history = PinnedHistory::new(stream, stream.tail);
+    let window = history.page(from, 1, |_| Ok::<_, std::convert::Infallible>(()));
+    match window {
+        Ok(window) => window.and_then(|window| window.records.records.get(window.start).cloned()),
+        Err(error) => match error {},
+    }
 }
 
 fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
@@ -732,7 +730,7 @@ impl MemoryStream {
             let meter = Arc::clone(&cursor_meter);
             async move {
                 let Some(record) = cursor.peek(
-                    || meter.examine(1, 0),
+                    |items| meter.examine(items, 0),
                     || std::io::ErrorKind::InvalidData.into(),
                 )?
                 else {

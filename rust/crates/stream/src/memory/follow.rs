@@ -47,7 +47,7 @@ impl MemoryStream {
         if let Some(anchor) = anchor {
             cursor.check_anchor(path, *anchor).await?;
         }
-        cursor.sync(path.history.as_ref(), path.tail);
+        cursor.sync(path);
         let mut examined = 0;
         while let Some(record) = cursor.next_record().await? {
             if anchor.is_some() {

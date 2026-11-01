@@ -14,6 +14,32 @@ pub use arc::arc_allocation_bytes;
 mod recent;
 pub use recent::RecentIndex;
 
+mod persistent;
+pub use persistent::{PersistentIndex, PersistentPosition};
+
+/// Original admission for an allocation-free index read. The same issuing
+/// owner checks cancellation and accounts for every examined fixed-width key.
+pub trait IndexReadWork {
+    /// The issuing owner's typed refusal or cancellation.
+    type Error;
+    /// Checks the original admission even for an empty index.
+    fn validate(&mut self) -> Result<(), Self::Error>;
+    /// Accounts examined nodes and fixed-width key comparisons before use.
+    fn examine(&mut self, items: u64) -> Result<(), Self::Error>;
+}
+
+impl<W: IndexWork> IndexReadWork for W {
+    type Error = W::Error;
+
+    fn validate(&mut self) -> Result<(), Self::Error> {
+        self.check()
+    }
+
+    fn examine(&mut self, items: u64) -> Result<(), Self::Error> {
+        self.charge_items(items)
+    }
+}
+
 /// Original caller admission and allocation custody for an index operation.
 ///
 /// Implementations borrow the issuing frame; they must not copy its remaining
