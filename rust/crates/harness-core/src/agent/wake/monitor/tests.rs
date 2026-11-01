@@ -75,13 +75,13 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
         let polls = Arc::new(AtomicUsize::new(0));
         let observed = polls.clone();
         let mut updates = updates;
-        let mut follow = MonitorFollow {
-            definition: definition.clone(),
-            updates: Some(Box::pin(futures::stream::poll_fn(move |cx| {
+        let mut follow = MonitorFollow::new(
+            &definition,
+            Box::pin(futures::stream::poll_fn(move |cx| {
                 observed.fetch_add(1, Ordering::SeqCst);
                 updates.poll_next_unpin(cx)
-            }))),
-        };
+            })),
+        );
         let first = follow.next().await?.ok_or("source ended early")?;
         assert_eq!(first.cursor.next, 1);
         assert!(first.notice.is_some());
@@ -96,7 +96,7 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
         let at_end = polls.load(Ordering::SeqCst);
         assert!(follow.next().await?.is_none());
         assert_eq!(polls.load(Ordering::SeqCst), at_end);
-        assert_eq!(follow.definition.cursor.next, 1);
+        assert_eq!(follow.cursor.next, 1);
     }
 
     // A real later record cannot silently stand in for skipped source progress.
@@ -115,13 +115,11 @@ async fn terminal_source_releases_the_follow_without_reading_a_later_record()
         selected.cursor.next = next;
         selected.cursor.preceding = (next != 0).then_some(*published.commit_id.as_bytes());
         selected.validate()?;
-        let mut follow = MonitorFollow {
-            definition: selected,
-            updates: Some(Box::pin(source.map_ok(FollowUpdate::Record))),
-        };
+        let mut follow =
+            MonitorFollow::new(&selected, Box::pin(source.map_ok(FollowUpdate::Record)));
         assert!(matches!(follow.next().await, Err(Error::Record(_))));
         assert!(follow.next().await?.is_none());
-        assert_eq!(follow.definition.cursor.next, next);
+        assert_eq!(follow.cursor.next, next);
     }
     Ok(())
 }

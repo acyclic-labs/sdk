@@ -95,7 +95,11 @@ pub struct MonitorEvent {
 
 /// The original follow, held only while this monitor is active.
 pub struct MonitorFollow {
-    definition: Monitor,
+    id: IntentId,
+    source: String,
+    cursor: MonitorCursor,
+    wake: bool,
+    coalesce_key: Option<String>,
     updates: Option<FollowStream>,
 }
 
@@ -153,14 +157,24 @@ impl Monitor {
         request.filter = self.filter.compile()?;
         request.progress = true;
         let updates = provider.follow(request).await.map_err(Error::Stream)?;
-        Ok(MonitorFollow {
-            definition: self.clone(),
-            updates: Some(updates),
-        })
+        Ok(MonitorFollow::new(self, updates))
     }
 }
 
 impl MonitorFollow {
+    fn new(definition: &Monitor, updates: FollowStream) -> Self {
+        // The admitted provider owns the compiled filter. Retain only delivery
+        // identity/policy here, without another copy of its key/value buffers.
+        Self {
+            id: definition.id.clone(),
+            source: definition.source.clone(),
+            cursor: definition.cursor.clone(),
+            wake: definition.wake,
+            coalesce_key: definition.coalesce_key.clone(),
+            updates: Some(updates),
+        }
+    }
+
     /// Waits on the source primitive. End or error retires the original source;
     /// subsequent calls return `None` without polling it again.
     /// Publish each returned notice and cursor together before requesting more.
@@ -189,13 +203,13 @@ impl MonitorFollow {
     fn observe(&mut self, update: FollowUpdate) -> Result<MonitorEvent, Error> {
         let (next, preceding, notice) = match update {
             FollowUpdate::Progress { next, preceding } => {
-                if next <= self.definition.cursor.next {
+                if next <= self.cursor.next {
                     return Err(invalid("monitor source cursor did not advance"));
                 }
                 (next, preceding, None)
             }
             FollowUpdate::Record(record) => {
-                if record.sequence != self.definition.cursor.next {
+                if record.sequence != self.cursor.next {
                     return Err(invalid("monitor source record skipped its cursor"));
                 }
                 let next = record
@@ -205,19 +219,19 @@ impl MonitorFollow {
                 let id = event_id(
                     "monitor",
                     &[
-                        self.definition.id.as_str().as_bytes(),
-                        self.definition.source.as_bytes(),
+                        self.id.as_str().as_bytes(),
+                        self.source.as_bytes(),
                         &record.sequence.to_le_bytes(),
                         record.commit_id.as_bytes(),
                     ],
                 )?;
                 let notice = crate::conversation::wire::Notice {
-                    source: self.definition.source.clone(),
+                    source: self.source.clone(),
                     kind: "monitor.match".into(),
-                    body: json!({"monitor": self.definition.id, "sequence": record.sequence,
+                    body: json!({"monitor": self.id, "sequence": record.sequence,
                         "commit": record.commit_id.as_bytes()}),
-                    wake: self.definition.wake,
-                    coalesce_key: self.definition.coalesce_key.clone(),
+                    wake: self.wake,
+                    coalesce_key: self.coalesce_key.clone(),
                 };
                 (
                     next,
@@ -230,7 +244,7 @@ impl MonitorFollow {
             next,
             preceding: Some(*preceding.as_bytes()),
         };
-        self.definition.cursor = cursor.clone();
+        self.cursor = cursor.clone();
         Ok(MonitorEvent { cursor, notice })
     }
 }
