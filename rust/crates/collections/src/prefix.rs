@@ -45,6 +45,55 @@ impl<V, A, const N: usize> ExtractedPrefix<V, A, N> {
         drop(parent);
         entries
     }
+
+    /// Consumes the detached entries in unsigned big-endian key order.
+    ///
+    /// Each yielded entry retains its original leaf funding through value
+    /// destruction. Branch backing retires only after its links are detached.
+    /// This needs no new admission and cannot strand entries on cancellation;
+    /// dropping a partially consumed iterator retires the remaining subtree.
+    /// Call this after leaving any lock that original funding may re-enter.
+    ///
+    /// Traversal uses the same constant-space retirement cursor as whole-index
+    /// destruction. It allocates nothing, examines only extracted nodes, and
+    /// performs O(extracted nodes) total work. Each call moves just the yielded
+    /// complete key/value; it does not accumulate output or restart from a root.
+    /// The infallible retained-owner `visit` sink observes node examinations,
+    /// including retirement on iterator drop. It never admits fresh work.
+    pub fn into_entries<F: FnMut(u64)>(self, visit: F) -> ExtractedEntries<V, A, N, F> {
+        ExtractedEntries {
+            entries: self.into_index(),
+            visit,
+        }
+    }
+}
+
+/// An owned, allocation-free retirement cursor over one extracted prefix.
+/// Its original subtree remains private while it is consumed or retired.
+pub struct ExtractedEntries<V, A, const N: usize, F: FnMut(u64)> {
+    entries: FixedIndex<V, A, N>,
+    visit: F,
+}
+
+impl<V, A, const N: usize, F: FnMut(u64)> Iterator for ExtractedEntries<V, A, N, F> {
+    type Item = Entry<V, A, N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        take_first_leaf(&mut self.entries.root, &mut self.visit).map(Entry::from_leaf)
+    }
+}
+
+impl<V, A, const N: usize, F: FnMut(u64)> std::iter::FusedIterator
+    for ExtractedEntries<V, A, N, F>
+{
+}
+
+impl<V, A, const N: usize, F: FnMut(u64)> Drop for ExtractedEntries<V, A, N, F> {
+    fn drop(&mut self) {
+        while let Some(leaf) = take_first_leaf(&mut self.entries.root, &mut self.visit) {
+            drop(leaf);
+        }
+    }
 }
 
 impl<V, A, const N: usize> FixedIndex<V, A, N> {

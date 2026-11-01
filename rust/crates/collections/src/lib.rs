@@ -15,7 +15,7 @@ mod recent;
 pub use recent::RecentIndex;
 
 mod prefix;
-pub use prefix::{ExtractedPrefix, PrefixTooLong};
+pub use prefix::{ExtractedEntries, ExtractedPrefix, PrefixTooLong};
 
 mod persistent;
 pub use persistent::{IndexInsertionBound, PersistentIndex, PersistentPosition};
@@ -102,6 +102,18 @@ pub struct Entry<V, A, const N: usize> {
 }
 
 impl<V, A, const N: usize> Entry<V, A, N> {
+    fn from_leaf(node: Node<V, A, N>) -> Self {
+        let Node { kind, _allocation } = node;
+        let Kind::Leaf { key, value } = *kind else {
+            unreachable!("extraction returns an original leaf")
+        };
+        Self {
+            key,
+            value,
+            _allocation,
+        }
+    }
+
     /// The original fixed-width key.
     pub fn key(&self) -> &[u8; N] {
         &self.key
@@ -551,15 +563,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             .root
             .take()
             .unwrap_or_else(|| unreachable!("verified registration"));
-        let Node { kind, _allocation } = retired;
-        let Kind::Leaf { key, value } = *kind else {
-            unreachable!("extraction detaches exactly the verified leaf")
-        };
-        Some(Entry {
-            key,
-            value,
-            _allocation,
-        })
+        Some(Entry::from_leaf(retired))
     }
 
     /// Retires one exact owner, destroying its value before its original token.
@@ -571,31 +575,45 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
 
 impl<V, A, const N: usize> Drop for FixedIndex<V, A, N> {
     fn drop(&mut self) {
-        // Rotate low branches onto the cursor, then detach their high link
-        // before retirement. Each rotation exposes one branch for retirement;
-        // each leaf and branch is dropped once. No stack, recursion or allocation
-        // depends on the key width or the number of retained identities.
-        let mut cursor = self.root.take();
-        while let Some(mut node) = cursor {
-            match node.kind.as_mut() {
-                Kind::Leaf { .. } => cursor = None,
-                Kind::Branch { low, high, .. } => match low.take() {
-                    None => cursor = high.take(),
-                    Some(mut lower) => match lower.kind.as_mut() {
+        while let Some(leaf) = take_first_leaf(&mut self.root, &mut |_| {}) {
+            drop(leaf);
+        }
+    }
+}
+
+// The same constant-space retirement cursor serves whole-index Drop and owned
+// prefix iteration. Rotations preserve leaf order; no index lookup may observe
+// this cursor after its first rotation. Each rotation exposes one branch for
+// retirement, and every leaf and branch retires once. No key/value copy, stack,
+// recursion or allocation is needed when the caller only destroys the index.
+fn take_first_leaf<V, A, const N: usize>(
+    cursor: &mut Link<V, A, N>,
+    visit: &mut impl FnMut(u64),
+) -> Option<Node<V, A, N>> {
+    while let Some(mut node) = cursor.take() {
+        visit(1);
+        match node.kind.as_mut() {
+            Kind::Leaf { .. } => return Some(node),
+            Kind::Branch { low, high, .. } => match low.take() {
+                None => *cursor = high.take(),
+                Some(mut lower) => {
+                    visit(1);
+                    match lower.kind.as_mut() {
                         Kind::Leaf { .. } => {
-                            drop(lower);
-                            cursor = Some(node);
+                            *cursor = Some(node);
+                            return Some(lower);
                         }
                         Kind::Branch { high: middle, .. } => {
                             *low = middle.take();
                             *middle = Some(node);
-                            cursor = Some(lower);
+                            *cursor = Some(lower);
                         }
-                    },
-                },
-            }
+                    }
+                }
+            },
         }
     }
+    None
 }
 
 #[cfg(test)]

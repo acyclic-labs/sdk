@@ -83,10 +83,44 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                             .collect();
                         expected.retain(|key, _| !selected.contains_key(key));
                         prop_assert!(visits <= 17 * 4 + 3);
-                        prop_assert_eq!(contents(extracted.index(), &mut work).map_err(TestCaseError::fail)?, selected);
-                        let detached = extracted.into_index();
+                        prop_assert_eq!(&contents(extracted.index(), &mut work).map_err(TestCaseError::fail)?, &selected);
+                        let items = work.items;
+                        let claims = work.claims;
+                        let mut drain_items = 0;
+                        work.cancelled = true;
+                        work.maximum_items = Some(0);
+                        work.maximum_claims = Some(0);
+                        prop_assert!(extracted.index().first(&mut work).is_err());
+                        let mut entries = extracted.into_entries(|n| drain_items += n);
+                        if value % 2 == 0 {
+                            // Withdrawing a partial consumer must retire only
+                            // the unconsumed subtree, never its delivered leaf.
+                            let entry = entries.next();
+                            prop_assert_eq!(entry.as_ref().map(|entry| (*entry.key(), *entry.value())), selected.first_key_value().map(|(key, value)| (*key, *value)));
+                            drop(entries);
+                            let retained = entry.as_ref().map_or(0, |entry| entry._allocation.bytes);
+                            let live = work.live.get();
+                            prop_assert!(live >= retained);
+                            drop(entry);
+                            prop_assert_eq!(work.live.get(), live - retained);
+                        } else {
+                            let mut delivered = Vec::new();
+                            for entry in &mut entries {
+                                delivered.push(entry.into_parts());
+                            }
+                            prop_assert!(entries.next().is_none());
+                            prop_assert!(entries.next().is_none());
+                            drop(entries);
+                            prop_assert_eq!(delivered.iter().map(|(key, value, _)| (*key, *value)).collect::<Vec<_>>(), selected.iter().map(|(key, value)| (*key, *value)).collect::<Vec<_>>());
+                            drop(delivered);
+                        }
+                        prop_assert!(drain_items <= 6 * selected.len().saturating_mul(2) as u64);
+                        prop_assert_eq!(work.claims, claims);
+                        prop_assert_eq!(work.items, items);
+                        work.cancelled = false;
+                        work.maximum_items = None;
+                        work.maximum_claims = None;
                         prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
-                        drop(detached);
                     }
                     prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
                 }
@@ -135,7 +169,17 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                 .count(),
             1
         );
-        drop((index, selected));
+        work.cancelled = true;
+        let mut drain_items = 0;
+        let mut entries = selected.into_entries(|n| drain_items += n);
+        assert_eq!(
+            entries.next().map(|entry| (*entry.key(), *entry.value())),
+            Some(([0; 9], 0))
+        );
+        assert!(entries.next().is_none());
+        drop(entries);
+        assert_eq!(drain_items, 1);
+        drop(index);
         assert_eq!(work.live.get(), 0);
     }
     assert_eq!(indexed[0], indexed[1]);
@@ -170,8 +214,20 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                 work.live.get() > 0,
                 "extracted prefix lost its original credit"
             );
-            drop(detached);
+            let before = acyclic_test_support::current_allocations().unwrap();
+            let mut drain_items = 0;
+            let mut entries = detached.into_entries(|n| drain_items += n);
+            let first = entries.next().ok_or("missing detached leaf")?;
+            assert_eq!(first.key(), &[127, 0, 0, 0]);
+            assert_eq!(*first.value(), 7);
+            drop(entries);
+            assert_eq!(work.live.get(), first._allocation.bytes);
+            let after = acyclic_test_support::current_allocations().unwrap();
+            assert_eq!(before.count_total, after.count_total);
+            assert_eq!(after.count_current, 0);
+            drop(first);
             assert_eq!(work.live.get(), 0);
+            assert!(drain_items <= 6 * 3);
 
             // Include every possible branch coordinate, constructed in reverse
             // order. The complete-key prefix reaches the deepest original leaf.
@@ -188,11 +244,56 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             assert!(visits <= 17 * 4 + 3);
             drop((index, detached));
             assert_eq!(work.live.get(), 0);
+
+            verify_drain_shape::<0>(&mut work)?;
+            verify_drain_shape::<4>(&mut work)?;
+            verify_drain_shape::<40>(&mut work)?;
             Ok(())
         })();
     });
     result?;
     assert_eq!(measured.bytes_current, 0);
     assert!(!work.early_refund.get());
+    Ok(())
+}
+
+fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static str> {
+    let mut index = FixedIndex::<usize, _, N>::default();
+    work.cancelled = false;
+    index.get_or_try_insert_with([0; N], work, |_| Ok(0))?;
+    // A deep adversarial tree includes every original coordinate. Only actual
+    // input construction visits a key-width path per inserted key.
+    for bit in (0..8 * N).rev() {
+        let mut key = [0; N];
+        key[bit / 8] = 0x80 >> (bit % 8);
+        index.get_or_try_insert_with(key, work, |_| Ok(bit + 1))?;
+    }
+    work.cancelled = true;
+    let original_items = work.items;
+    let original_claims = work.claims;
+    let before = acyclic_test_support::current_allocations().unwrap();
+    let detached = index.extract_prefix(&[], |_| {}).unwrap();
+    let mut visits = 0;
+    let mut entries = detached.into_entries(|n| visits += n);
+    let mut prior = None;
+    let mut count = 0;
+    for entry in &mut entries {
+        if let Some(prior) = prior {
+            assert!(prior < *entry.key(), "owned drain lost canonical order");
+        }
+        prior = Some(*entry.key());
+        count += 1;
+    }
+    assert!(entries.next().is_none());
+    drop(entries);
+    drop(index);
+    assert_eq!(count, 8 * N + 1);
+    assert!(visits <= 6 * (2 * count - 1) as u64);
+    let after = acyclic_test_support::current_allocations().unwrap();
+    assert_eq!(before.count_total, after.count_total);
+    assert_eq!(after.count_current, 0);
+    assert_eq!(work.items, original_items);
+    assert_eq!(work.claims, original_claims);
+    assert_eq!(work.live.get(), 0);
     Ok(())
 }
