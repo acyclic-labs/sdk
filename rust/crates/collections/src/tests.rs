@@ -224,9 +224,8 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
             .predecessor(composite(0, 9), &mut work)?
             .is_some()
     );
-    let corrected =
-        KeyedIndex::<_, _, 8>::default().insert(0_u64.to_be_bytes(), 9, 9, &mut work)?;
-    let corrected = corrected
+    let original = KeyedIndex::<_, _, 8>::default().insert(0_u64.to_be_bytes(), 9, 9, &mut work)?;
+    let corrected = original
         .cap(5)
         .insert(1_u64.to_be_bytes(), 5, 5, &mut work)?;
     assert_eq!(corrected.seek(0_u64.to_be_bytes(), 0, 20, &mut work)?, None);
@@ -234,7 +233,7 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
         corrected.seek(1_u64.to_be_bytes(), 0, 20, &mut work)?,
         Some((5, &5))
     );
-    drop((old, corrected));
+    drop((old, original, corrected));
     assert_eq!(work.live.get(), 0);
 
     let mut indexed_work = [[0; 3]; 2];
