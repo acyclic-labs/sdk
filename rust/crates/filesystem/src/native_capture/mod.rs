@@ -5,6 +5,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
+pub use crate::native_host::NativeDurability;
 use crate::native_host::NativeHostWork as _;
 use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::{

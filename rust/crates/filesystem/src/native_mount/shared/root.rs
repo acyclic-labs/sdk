@@ -390,7 +390,7 @@ fn reap_dead_roots(roots: &crate::HeldRoot) -> Result<usize, NativeMountError> {
         };
         reap_root(roots, Path::new(name))?;
         roots
-            .remove_file(Path::new(&file))
+            .remove_file(Path::new(&file), crate::NativeDurability::Durable)
             .map_err(crate::NativeTreeMaterializationError::from)?;
         reaped += 1;
     }

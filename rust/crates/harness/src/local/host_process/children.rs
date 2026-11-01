@@ -181,6 +181,7 @@ impl NativeChildren {
             .map_err(storage)?
             .create_directories(
                 &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
+                acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
         let ownership = FileLock::try_acquire(

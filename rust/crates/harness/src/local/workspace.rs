@@ -131,7 +131,10 @@ impl LocalWorkspace {
         }
         acyclic_fs::hold_root(root)
             .map_err(storage)?
-            .create_directories(Path::new(HOST_VIEW_ROOT))
+            .create_directories(
+                Path::new(HOST_VIEW_ROOT),
+                acyclic_fs::NativeDurability::Durable,
+            )
             .map_err(storage)
     }
 
@@ -191,7 +194,10 @@ impl LocalWorkspace {
             .to_string();
         let root = self
             .held_task_mount_root()?
-            .create_directories(&Path::new(".bindings").join(binding))
+            .create_directories(
+                &Path::new(".bindings").join(binding),
+                acyclic_fs::NativeDurability::Durable,
+            )
             .map_err(storage)?;
         let mut mounts = mounts::owner(
             root.path(),

@@ -92,8 +92,15 @@ pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
 mod held_files;
+pub use held_files::NativeDurability;
 #[cfg(any(test, feature = "native-mount"))]
 pub use held_files::PublishedPair;
+#[cfg(all(
+    feature = "test-support",
+    feature = "native-mount",
+    target_os = "linux"
+))]
+pub use held_files::publication_test_support;
 #[cfg(feature = "native-watch")]
 mod search;
 #[cfg(test)]
