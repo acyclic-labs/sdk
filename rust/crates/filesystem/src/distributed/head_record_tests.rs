@@ -40,8 +40,15 @@ async fn created() -> Result<StreamAuthorityStore<MemoryStream>, Box<dyn std::er
 async fn created_with(
     payload: Option<Bytes>,
 ) -> Result<StreamAuthorityStore<MemoryStream>, Box<dyn std::error::Error>> {
+    created_on(Arc::new(MemoryStream::default()), payload).await
+}
+
+async fn created_on<P: crate::distributed::AuthorityProvider>(
+    provider: Arc<P>,
+    payload: Option<Bytes>,
+) -> Result<StreamAuthorityStore<P>, Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
-    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let store = StreamAuthorityStore::new(provider);
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(BUDGET, &cancellation);
     if let Some(payload) = payload {
@@ -166,20 +173,44 @@ async fn default_head_payload_keeps_external_replay_funding_until_payload_drops(
 
 #[tokio::test]
 async fn exact_head_record_is_authenticated_once_with_default_fallback_equivalence() -> TestResult {
-    let store = created().await?;
-    let fixture = single_record(&store).await?;
+    use acyclic_stream::testing::{Counted, RequestClass};
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = created_on(
+        provider.clone(),
+        Some(Bytes::from_static(b"generation-payload")),
+    )
+    .await?;
+    let source = created().await?;
+    let fixture = single_record(&source).await?;
     let encoded =
         crate::streams_record::StreamsDurableRecord::encode(&fixture, STREAM_RECORD_LIMIT)?;
     let cancel = CancellationToken::new();
     let mut old = AuthorityWork::new(BUDGET, &cancel);
-    let (expected, _expected_allocation) = Fallback(&store)
+    let (expected, _expected_allocation) = Fallback(&source)
         .head_payload(AUTHORITY, 4096, &mut old)
         .await?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
-    let (actual, _actual_allocation) = Arc::new(store)
-        .head_payload(AUTHORITY, 4096, &mut work)
-        .await?;
+    let before = provider.requests();
+    let (actual, _actual_allocation) = store.head_payload(AUTHORITY, 4096, &mut work).await?;
+    let calls = provider.requests().since(before);
+    assert_eq!(calls.class(RequestClass::Head), 3);
+    assert_eq!(calls.auxiliary(Some(RequestClass::Head)), Some(0));
+    assert_eq!(work.spent().backend_read_operations, 3);
     assert_eq!(actual, expected);
+    let original = crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(e, _)| e)?;
+    let baseline = original.live_allocation_bytes();
+    let mut native = AuthorityWork::native(&original, &cancel);
+    let before = provider.requests();
+    let (native_value, native_allocation) =
+        store.head_payload(AUTHORITY, 4096, &mut native).await?;
+    assert_eq!(native_value, expected);
+    let calls = provider.requests().since(before);
+    assert_eq!(calls.class(RequestClass::Head), 3);
+    assert_eq!(calls.auxiliary(Some(RequestClass::Head)), Some(0));
+    drop(native);
+    assert!(original.live_allocation_bytes() > baseline);
+    drop((native_value, native_allocation));
+    assert_eq!(original.live_allocation_bytes(), baseline);
     let record = actual.1.ok_or("missing head payload")?;
     assert_eq!(old.spent().authority_records_read, 3);
     assert_eq!(work.spent().authority_records_read, 2);

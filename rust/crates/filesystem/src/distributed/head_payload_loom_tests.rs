@@ -65,6 +65,19 @@ struct ModelStream {
 }
 
 impl ModelStream {
+    fn observe_records(&self, records: bool) {
+        if records {
+            if matches!(self.change, Change::Retire) {
+                self.retired_at_record_read
+                    .fetch_or(self.completed.load(Ordering::SeqCst), Ordering::Relaxed);
+            }
+            if matches!(self.change, Change::Cancel) {
+                self.cancelled_at_record_read
+                    .fetch_or(self.cancellation.is_cancelled(), Ordering::Relaxed);
+            }
+        }
+    }
+
     async fn call<T>(&self, future: impl Future<Output = T>) -> T {
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let writer = (self.cut == Some(call)).then(|| {
@@ -98,19 +111,17 @@ impl StreamProvider for ModelStream {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.observe_records(
+            request.projection == acyclic_stream::HeadProjection::History
+                && request
+                    .paths
+                    .iter()
+                    .any(|path| path.as_str().ends_with("/records")),
+        );
         self.call(self.inner.heads(request)).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        if request.path.as_str().ends_with("/records") {
-            if matches!(self.change, Change::Retire) {
-                self.retired_at_record_read
-                    .fetch_or(self.completed.load(Ordering::SeqCst), Ordering::Relaxed);
-            }
-            if matches!(self.change, Change::Cancel) {
-                self.cancelled_at_record_read
-                    .fetch_or(self.cancellation.is_cancelled(), Ordering::Relaxed);
-            }
-        }
+        self.observe_records(request.path.as_str().ends_with("/records"));
         self.call(self.inner.read(request)).await
     }
     fn write(
@@ -267,7 +278,22 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         records: vec![[EPOCH_DOMAIN, &epoch].concat().into()],
     });
     let change_request = match change {
-        Change::Publish => Some(request("/records", vec![second_bytes.into()], 1, Some(2))),
+        Change::Publish => {
+            let mut publication = request("/records", vec![second_bytes.into()], 1, Some(2));
+            publication.conditions.push(CommitCondition::Tail {
+                path: stream_path(ID, "/epochs").unwrap(),
+                expected: 1,
+            });
+            publication.mutations.push(CommitMutation::Append {
+                path: stream_path(ID, "/epochs").unwrap(),
+                records: vec![
+                    [EPOCH_DOMAIN, &Epoch::new(2).unwrap().get().to_le_bytes()]
+                        .concat()
+                        .into(),
+                ],
+            });
+            Some(publication)
+        }
         Change::Fence => Some(request(
             "/epochs",
             vec![
@@ -372,6 +398,17 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
                 };
                 assert_eq!(head.sequence, expected.sequence);
                 assert_eq!(head.digest, expected.digest);
+                if matches!(change, Change::Publish) {
+                    assert_eq!(
+                        head.epoch,
+                        if head.sequence == first.sequence {
+                            Epoch::GENESIS
+                        } else {
+                            Epoch::new(2).unwrap()
+                        },
+                        "record and epoch came from different cuts"
+                    );
+                }
                 assert_eq!(
                     payload, expected.payload,
                     "head and payload came from different publications"
@@ -385,7 +422,8 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
                 }
                 assert!(
                     head.epoch == Epoch::GENESIS
-                        || matches!(change, Change::Fence) && head.epoch == Epoch::new(2).unwrap()
+                        || matches!(change, Change::Fence | Change::Publish)
+                            && head.epoch == Epoch::new(2).unwrap()
                 );
                 drop(payload);
                 drop(allocation);

@@ -144,27 +144,54 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         ),
         AuthorityStoreError,
     > {
-        let record_tail = self.tail_of(authority, "/records", work).await?;
-        let epoch_tail = self.tail_of(authority, "/epochs", work).await?;
+        let paths = [
+            work.path(&self.placement, authority, "/records", None)?,
+            work.path(&self.placement, authority, "/epochs", None)?,
+        ];
+        let path_bytes = paths.iter().map(|path| path.as_str().len() as u64).sum();
+        let result = self
+            .authority_heads(acyclic_stream::HeadProjection::History, &paths, work)
+            .await;
+        work.release(path_bytes)?;
+        let retained = result?;
+        let allocation = retained.1;
+        let mut heads = retained.0;
+        let mut epoch_head = heads
+            .heads
+            .pop()
+            .flatten()
+            .ok_or(AuthorityStoreError::Missing)?;
+        let mut record_head = heads
+            .heads
+            .pop()
+            .flatten()
+            .ok_or(AuthorityStoreError::Missing)?;
+        let record_tail = record_head.tail;
+        let epoch_tail = epoch_head.tail;
         if record_tail == 0 || epoch_tail == 0 {
             return Err(AuthorityStoreError::CorruptStatic(
                 "authority genesis paths are empty",
             ));
         }
-        let epoch = self
-            .read_at(
-                authority,
-                "/epochs",
-                epoch_tail - 1,
-                work,
-                |record, work| work.decode_epoch(&record.value, EPOCH_DOMAIN),
-            )
-            .await?;
+        let epoch_record = epoch_head
+            .last
+            .take()
+            .ok_or(AuthorityStoreError::CorruptStatic(
+                "authority epoch path is missing its record",
+            ))?;
+        let epoch = work.decode_epoch(&epoch_record.value, EPOCH_DOMAIN)?;
         #[cfg(all(test, loom, loom))]
         let epoch = super::head_payload_loom_tests::observed_epoch(epoch);
-        let record = self
-            .record_at(authority, "/records", record_tail - 1, work)
-            .await?;
+        let record = (
+            record_head
+                .last
+                .take()
+                .ok_or(AuthorityStoreError::CorruptStatic(
+                    "authority record path is missing its record",
+                ))?,
+            allocation,
+        );
+        drop((heads, epoch_head, record_head, epoch_record));
         if record_tail == 1 {
             work.decode_epoch(&record.0.value, GENESIS_DOMAIN)?;
             return Ok((
