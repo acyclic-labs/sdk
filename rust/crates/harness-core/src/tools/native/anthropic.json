@@ -186,7 +186,7 @@
   },
   {
     "name": "Bash",
-    "description": "Executes Bash commands with optional timeout and background execution.",
+    "description": "Executes Bash commands with an optional timeout.",
     "parametersJsonSchema": {
       "type": "object",
       "properties": {
@@ -196,7 +196,7 @@
         },
         "timeout": {
           "type": "number",
-          "description": "Optional timeout in milliseconds (max 600000 for a foreground command)"
+          "description": "Optional execution timeout in milliseconds. Omission leaves the relative execution lifetime unbounded."
         },
         "description": {
           "type": "string",
@@ -204,11 +204,11 @@
         },
         "run_in_background": {
           "type": "boolean",
-          "description": "Set to true to run this command in the background. With it, `timeout` limits how long the command may run in the background before it is stopped (default 1800000 ms, max 7200000 ms)."
+          "description": "Background execution is unavailable. Omit this field or set it to false."
         },
         "dangerouslyDisableSandbox": {
           "type": "boolean",
-          "description": "Set this to true to dangerously override sandbox mode and run commands without sandboxing."
+          "description": "Process policy is controlled by the host. Omit this field or set it to false."
         }
       },
       "required": [

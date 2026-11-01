@@ -52,3 +52,11 @@ complete matches before truncation.
 The Gemini read_file description replaces upstream fixed truncation thresholds
 with the shared reader's caller-admitted read and render credit. It introduces
 no default line, per-line character or whole-file byte ceiling.
+
+Command descriptions retain the native argument shapes while stating the
+supported lifetime and policy contract: omission is unbounded, background
+handoff is unavailable, and arguments cannot override host process policy.
+The Claude upstream fixed timeout ceilings and background defaults are not
+adopted. Gemini command source uses the selected workspace's native shell;
+its upstream process-group/PID presentation is not advertised by this profile.
+The original command executor still owns launch, cancellation and output.

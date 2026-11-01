@@ -157,13 +157,13 @@
   },
   {
     "name": "run_shell_command",
-    "description": "This tool executes a given shell command as `bash -c <command>`. Command can start background processes using `&`. Command is executed as a subprocess that leads its own process group. Command process group can be terminated as `kill -- -PGID` or signaled as `kill -s SIGNAL -- -PGID`.\n\n      The following information is returned:\n\n      Output: Combined stdout/stderr. Can be `(empty)` or partial on error and for any unwaited background processes.\n      Exit Code: Only included if non-zero (command failed).\n      Error: Only included if a process-level error occurred (e.g., spawn failure).\n      Signal: Only included if process was terminated by a signal.\n      Background PIDs: Only included if background processes were started.\n      Process Group PGID: Only included if available.",
+    "description": "This tool executes a shell command in the selected workspace and returns stdout, stderr, exit status and any retained output file. Commands use the workspace's native shell. Omitted execution lifetime is unbounded; cancellation and authorization expiry still apply. Background execution is unavailable.",
     "parametersJsonSchema": {
       "type": "object",
       "properties": {
         "command": {
           "type": "string",
-          "description": "Exact bash command to execute as `bash -c <command>`"
+          "description": "Exact command to execute in the workspace's native shell"
         },
         "description": {
           "type": "string",
@@ -175,11 +175,11 @@
         },
         "is_background": {
           "type": "boolean",
-          "description": "Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background."
+          "description": "Background execution is unavailable. Omit this field or set it to false."
         },
         "delay_ms": {
           "type": "integer",
-          "description": "Optional. Delay in milliseconds to wait after starting the process in the background. Useful to allow the process to start and generate initial output before returning."
+          "description": "Background execution is unavailable. Omit this field."
         }
       },
       "required": [
