@@ -41,15 +41,10 @@ pub(crate) fn generate_encoded<'a>(
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
         loop {
-            let (failure, retry_after) = match send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await {
-                Err(error) => (Some(error), None),
-                Ok(response) if !(200..300).contains(&response.status) => {
-                    attempt.refuse(response.status);
-                    let retry_after = response.retry_after;
-                    (Some(crate::diagnostic::rejection(crate::http_failure(response, provider.config.max_event_bytes, None).await)), retry_after)
-                }
+            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await;
+            let (failure, retry_after) = match attempt.response(response, provider.config.max_event_bytes, None).await {
+                Err((error, retry_after)) => (Some(error), retry_after),
                 Ok(response) => {
-                    attempt.accept();
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
                     let events = crate::stream::events_named(provider.config.adapter, response.body,
                         provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
@@ -225,6 +220,26 @@ impl GenerationAttempt {
         if self.admission != Admission::Accepted {
             self.admission = Admission::Refused(status);
         }
+    }
+
+    /// Record the HTTP boundary before a diagnostic body can fail or suspend.
+    /// Successful bodies pass directly to the caller's original parser.
+    pub(crate) async fn response(
+        &mut self,
+        response: Result<HttpResponse>,
+        maximum: usize,
+        work: acyclic_harness_core::NativeWork<'_>,
+    ) -> std::result::Result<HttpResponse, (acyclic_harness_core::Error, Option<std::time::Duration>)>
+    {
+        let response = response.map_err(|error| (error, None))?;
+        if (200..300).contains(&response.status) {
+            self.accept();
+            return Ok(response);
+        }
+        self.refuse(response.status);
+        let retry_after = response.retry_after;
+        let error = crate::http_failure(response, maximum, work).await;
+        Err((crate::diagnostic::rejection(error), retry_after))
     }
 
     /// Complete recovery before the caller may send another model request.

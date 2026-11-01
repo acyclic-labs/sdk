@@ -258,6 +258,8 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
             (200, Some(0)),
             (200, Some(12)),
             (200, Some(first + 8)),
+            (201, Some(0)),
+            (202, Some(first + 8)),
             (400, Some(0)),
             (400, Some(12)),
             (413, Some(0)),

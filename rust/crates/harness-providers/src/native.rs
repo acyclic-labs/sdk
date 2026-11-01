@@ -239,15 +239,9 @@ pub(crate) fn generate<'a>(
                     let mut response = response;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
                     loop {
-                        let (failure, retry_after) = match response {
-                            Err(error) => (Some(error), None),
-                            Ok(response) if !(200..300).contains(&response.status) => {
-                                attempt.refuse(response.status);
-                                let retry_after = response.retry_after;
-                                (Some(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), retry_after)
-                            }
+                        let (failure, retry_after) = match attempt.response(response, provider.config.max_event_bytes, Some(work)).await {
+                            Err((error, retry_after)) => (Some(error), retry_after),
                             Ok(response) => {
-                            attempt.accept();
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                             let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
