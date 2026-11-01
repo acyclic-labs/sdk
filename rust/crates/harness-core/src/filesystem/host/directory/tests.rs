@@ -473,7 +473,7 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
             access.require(&root).await?;
             if !changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
                 let mut policy: acyclic_fs::access::Policy =
-                    serde_json::from_slice(access::INITIAL_POLICY)?;
+                    serde_json::from_slice(access::INITIAL_POLICY).expect("valid initial policy");
                 policy.version = 2;
                 write_policy(&root, &policy)
                     .await
