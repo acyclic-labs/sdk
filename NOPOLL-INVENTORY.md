@@ -1,5 +1,21 @@
 # Polling and timed-wait inventory
 
+MCP registration deadline successor, location on `3d111c4519`:
+
+| Source | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-core/src/mcp/install/tests.rs:293` | Scheduler yield followed by task-finished inference | Drive the original registration future until its real worker announces entry, advance the configured startup deadline explicitly, then poll that same future once before releasing or withdrawing the worker's sole admission sender. Both paths must join worker retirement and return the original typed timeout. | Source complete; unqualified |
+
+The original off-runtime-thread and connection-retirement assertions remain.
+The direct poll rejects returning a timeout while the worker still owns its
+connection. Two distinct release/producer-loss cases replace eight identical
+runs. Each case uses one original entry channel and one original admission
+channel; the extra spawned async task, scheduler yield and task-status read
+are removed. No new task, channel, worker, syscall, payload copy, round trip
+or durability barrier is added. Exact native worker allocation/syscall counts
+remain unmeasured. Test coordination is fixed per registration, independent of
+history or agent count; no production operation changes.
+
 Capture control successor, location on `47ad15fec8`:
 
 | Source | Kind | Replacement and terminal | Status |
