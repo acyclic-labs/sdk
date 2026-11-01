@@ -12,6 +12,118 @@ fn request() -> ReportRequest {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn original_setup_refusal_survives_announcement_and_sink_loss() {
+    use std::{future::poll_fn, io::Write as _, task::Poll};
+    let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+    runtime.block_on(async {
+        for invalid_filter in [false, true] {
+            for sink in ["absent", "open", "closed", "blocked"] {
+                let report = WaitReport::default();
+                let error = subscriber(
+                    &report,
+                    Some(if invalid_filter { "[" } else { "info" }.into()),
+                    || Ok(None),
+                )
+                .err()
+                .expect("the original filter/storage admission must refuse");
+                assert_eq!(
+                    matches!(error, DiagnosticConfigurationError::Filter(_)),
+                    invalid_filter
+                );
+                let cause: Failure = Box::new(error);
+                let original = std::ptr::from_ref(cause.as_ref());
+                let (port, owner) = if sink == "absent" {
+                    (None, None)
+                } else {
+                    let (owner, mut child) = std::os::unix::net::UnixStream::pair().unwrap();
+                    owner.set_nonblocking(true).unwrap();
+                    child.set_nonblocking(true).unwrap();
+                    if sink == "blocked" {
+                        // Transfer bytes until the actual original kernel
+                        // socket refuses credit; no readiness retry follows.
+                        loop {
+                            match child.write(&[b'x'; 8192]) {
+                                Ok(0) => panic!("live report socket accepted no bytes"),
+                                Ok(_) => {}
+                                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                                Err(error) => panic!("fill original report socket: {error}"),
+                            }
+                        }
+                    }
+                    let owner = tokio::net::UnixStream::from_std(owner).unwrap();
+                    let child = tokio::net::UnixStream::from_std(child).unwrap();
+                    let port = ReportPort::new(GENERATION.into(), child).unwrap();
+                    if sink == "closed" {
+                        drop(owner);
+                        (Some(port), None)
+                    } else {
+                        (Some(port), Some(owner))
+                    }
+                };
+                let (terminate, stopped) = tokio::sync::oneshot::channel();
+                let shutdown = async {
+                    stopped.await.unwrap();
+                    Ok(143)
+                }
+                .boxed()
+                .shared();
+                let rejection =
+                    reject_startup(port, shutdown, CliPhase::Diagnostics, cause.as_ref());
+                let receive = async {
+                    let Some(owner) = owner else { return None };
+                    let mut reader = BufReader::new(owner);
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+                    assert_eq!(reader.read_line(&mut String::new()).await.unwrap(), 0);
+                    Some(serde_json::from_str::<serde_json::Value>(&line).unwrap())
+                };
+                let (observation, frame) = if sink == "blocked" {
+                    tokio::pin!(rejection);
+                    poll_fn(|cx| {
+                        assert!(rejection.as_mut().poll(cx).is_pending());
+                        Poll::Ready(())
+                    })
+                    .await;
+                    terminate.send(()).unwrap();
+                    let observation = rejection.await;
+                    // Keep the real peer alive through shutdown settlement.
+                    drop(receive);
+                    (observation, None)
+                } else {
+                    let result = tokio::join!(rejection, receive);
+                    drop(terminate);
+                    result
+                };
+                if let Some(frame) = frame {
+                    assert_eq!(frame["generation"], GENERATION);
+                    assert_eq!(frame["rejected"]["phase"], "diagnostics");
+                    assert_eq!(frame["rejected"]["cause"], cause.to_string());
+                    assert!(frame["rejected"]["raw_os_error"].is_null());
+                }
+                let failure = CliCompletion::rejected(CliPhase::Diagnostics, cause, observation)
+                    .into_result()
+                    .unwrap_err();
+                assert!(std::ptr::eq(original, failure.cause.as_ref()));
+                assert!(failure.cause.is::<DiagnosticConfigurationError>());
+                match (sink, failure.startup_report.unwrap()) {
+                    ("absent", StartupReport::Incomplete(None))
+                    | ("open", StartupReport::Written) => {}
+                    ("closed", StartupReport::Incomplete(Some(error))) => {
+                        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                    }
+                    ("blocked", StartupReport::Incomplete(Some(error))) => {
+                        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+                    }
+                    (_, other) => panic!("original sink disposition was lost: {sink}: {other:?}"),
+                }
+            }
+        }
+    });
+}
+
 #[test]
 fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();

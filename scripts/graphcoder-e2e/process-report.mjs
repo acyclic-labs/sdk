@@ -85,6 +85,15 @@ export class ProcessReport {
   }
   #receive(message) {
     if (this.#terminal) return;
+    if (!this.#ready && message.generation === this.generation
+      && message.rejected && typeof message.rejected.phase === "string" && message.rejected.phase.length > 0
+      && typeof message.rejected.cause === "string"
+      && (message.rejected.raw_os_error === null || Number.isInteger(message.rejected.raw_os_error))) {
+      // The original producer refused setup before announcing executable work.
+      // This is neither a diagnostic ACK nor a physical retirement receipt.
+      this.#finish("write-failed", "startup-rejected", [], false, message.rejected);
+      return;
+    }
     if (message.ready === true && message.generation === this.generation && !this.#ready) {
       this.#ready = true;
       this.#readyResolve();
@@ -109,9 +118,9 @@ export class ProcessReport {
     }
     this.#finish(message.outcome, undefined, message.waits, true);
   }
-  #finish(outcome, cause, waits = [], acknowledged = false) {
+  #finish(outcome, cause, waits = [], acknowledged = false, rejection) {
     if (this.#terminal) return;
-    this.#terminal = { outcome, cause, waits, acknowledged };
+    this.#terminal = { outcome, cause, waits, acknowledged, rejection };
     this.#endReady(outcome, cause);
     this.#resolve();
   }
@@ -120,8 +129,13 @@ export class ProcessReport {
     const reject = this.#readyReject;
     this.#readyReject = undefined;
     const error = new Error(`report capability ended: ${cause ?? outcome}`);
-    error.code = "REPORT_CONTROL_ENDED";
+    const rejection = this.#terminal?.rejection;
+    error.code = rejection ? "PROCESS_STARTUP_REJECTED" : "REPORT_CONTROL_ENDED";
     error.outcome = outcome;
+    if (rejection) {
+      error.cause = rejection;
+      error.generation = this.generation;
+    }
     reject(error);
   }
   request(deadline) {
@@ -139,17 +153,18 @@ export class ProcessReport {
       this.#ended ? "control-eof-before-acknowledgement" : "original-drain-deadline");
   }
   get termination() {
-    if (!this.#request) return undefined;
+    if (!this.#request && !this.#terminal?.rejection) return undefined;
     const terminal = this.#terminal ?? { outcome: "unacknowledged", waits: [] };
     return {
-      report_requested: true,
-      request_id: this.#request.request_id,
+      report_requested: !!this.#request,
+      request_id: this.#request?.request_id,
       generation: this.generation,
       report_outcome: terminal.outcome,
       report_cause: terminal.cause,
       report_acknowledged: terminal.acknowledged === true,
       stuck_on: terminal.waits,
       missing_wait_report: terminal.outcome !== "report" && terminal.outcome !== "empty",
+      ...(terminal.rejection ? { startup_rejection: terminal.rejection } : {}),
     };
   }
 }

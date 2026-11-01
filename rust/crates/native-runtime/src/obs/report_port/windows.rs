@@ -1,17 +1,19 @@
-use super::{ReportPort, identity};
+use super::{ReportAdmission, identity};
 use std::{
     io,
-    os::windows::io::AsRawHandle as _,
+    os::windows::{fs::OpenOptionsExt as _, io::AsRawHandle as _},
     sync::atomic::{AtomicBool, Ordering},
 };
-use tokio::net::windows::named_pipe::ClientOptions;
-use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+use windows_sys::Win32::{
+    Storage::FileSystem::{FILE_FLAG_OVERLAPPED, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT},
+    System::Pipes::GetNamedPipeServerProcessId,
+};
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
 // The original process owner listens before launch. A missing or busy pipe is
 // a failed admission, never a readiness condition to retry.
-pub(super) fn open() -> io::Result<Option<ReportPort>> {
+pub(super) fn open() -> io::Result<Option<ReportAdmission>> {
     let Some(endpoint) = std::env::var_os("ACYCLIC_REPORT_PIPE") else {
         return Ok(None);
     };
@@ -37,8 +39,19 @@ pub(super) fn open() -> io::Result<Option<ReportPort>> {
     connect(&endpoint, generation, owner).map(Some)
 }
 
-fn connect(endpoint: &std::ffi::OsStr, generation: String, owner: u32) -> io::Result<ReportPort> {
-    let channel = ClientOptions::new().open(endpoint)?;
+fn connect(
+    endpoint: &std::ffi::OsStr,
+    generation: String,
+    owner: u32,
+) -> io::Result<ReportAdmission> {
+    // Match the original byte-mode overlapped client admission, including
+    // identification-only impersonation, without requiring a reactor yet.
+    let channel = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_OVERLAPPED | SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
+        .open(endpoint)?;
     let mut server = 0;
     // SAFETY: the asynchronous pipe owns the live handle; server is writable.
     #[expect(unsafe_code, reason = "verifies the original native pipe owner")]
@@ -53,7 +66,10 @@ fn connect(endpoint: &std::ffi::OsStr, generation: String, owner: u32) -> io::Re
             "report pipe belongs to another process owner",
         ));
     }
-    ReportPort::new(generation, channel)
+    Ok(ReportAdmission {
+        generation,
+        channel: channel.into(),
+    })
 }
 
 #[cfg(test)]

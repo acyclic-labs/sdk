@@ -12,7 +12,9 @@ mod lifecycle;
 mod usage_export;
 mod view;
 
-pub use lifecycle::DiagnosticConfigurationError;
+pub use lifecycle::{
+    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, StartupReport,
+};
 
 use acyclic_harness::{
     OperationId,
@@ -24,7 +26,7 @@ use acyclic_harness_providers::{Credentials, Registry};
 use args::{Args, Command, InputFormat};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
-use std::{future::Future, process::ExitCode, sync::Arc};
+use std::{future::Future, sync::Arc};
 use tracing_subscriber::util::SubscriberInitExt as _;
 
 // Construct each phase on its own call frame. Boxing an already constructed
@@ -40,52 +42,110 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// self-deployed and a managed server share.
 /// Enabled diagnostics require caller-owned text buffers or an explicit paired
 /// CLI reservation. Logging off constructs no text delivery or storage pool.
-/// Errors are returned to the caller without starting a terminal output write.
+/// The original completion endpoint is admitted before runtime/setup. Setup
+/// rejection uses its same announcement before the shared terminal; an absent
+/// endpoint/runtime is explicitly incomplete observation. The original cause
+/// remains available through [`CliCompletion::into_result`]. No terminal output
+/// write, implicit text storage or replacement reporter is started on error.
 /// Diagnostic delivery ends with the original operation, report and shutdown
 /// owner; its best-effort failure never replaces the original operation result.
 pub fn main_with(
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     diagnostic_storage: Option<Vec<Box<[u8]>>>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+) -> CliCompletion {
+    let admission = match acyclic_native_runtime::obs::ReportAdmission::from_environment() {
+        Ok(admission) => admission,
+        Err(error) => {
+            return CliCompletion::rejected(
+                CliPhase::ReportAdmission,
+                Box::new(error),
+                StartupReport::Incomplete(None),
+            );
+        }
+    };
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
     }
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
-    acyclic_native_runtime::coordination_runtime()
-        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
-        .and_then(|runtime| {
-            // Keep Tokio's entry frame independent of the size of the CLI future.
-            let result = runtime.block_on(phase(|| async {
-                let report = acyclic_native_runtime::obs::WaitReport::default();
-                let (subscriber, receiver) =
-                    lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok(), || {
-                        lifecycle::storage(
-                            diagnostic_storage,
-                            args.diagnostic_records,
-                            args.diagnostic_record_bytes,
-                        )
-                    })?;
-                subscriber.try_init()?;
-                let diagnostics = receiver
-                    .map(|receiver| {
-                        acyclic_native_runtime::InheritedOutput::stderr()
-                            .map(|writer| (receiver, writer))
-                    })
-                    .transpose()?;
-                let shutdown = lifecycle::shutdown();
-                let port = acyclic_native_runtime::obs::ReportPort::from_environment();
-                let operation = phase(|| run(args, seams, shutdown.clone()));
-                let original = lifecycle::observe(&report, port, shutdown, graceful, operation);
-                let ((result, _report_result), _diagnostic_failure) =
-                    lifecycle::diagnostics(original, diagnostics).await;
-                result
-            }));
-            runtime.shutdown_background();
-            result
-        })
-        .map(ExitCode::from)
+    let runtime = match acyclic_native_runtime::coordination_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return CliCompletion::rejected(
+                CliPhase::Runtime,
+                Box::new(error),
+                StartupReport::Incomplete(None),
+            );
+        }
+    };
+    // Keep Tokio's entry frame independent of the size of the CLI future.
+    let result = runtime.block_on(phase(|| async {
+        let port = match admission
+            .map(acyclic_native_runtime::obs::ReportAdmission::into_port)
+            .transpose()
+        {
+            Ok(port) => port,
+            Err(error) => {
+                return CliCompletion::rejected(
+                    CliPhase::ReportRegistration,
+                    Box::new(error),
+                    StartupReport::Incomplete(None),
+                );
+            }
+        };
+        let report = acyclic_native_runtime::obs::WaitReport::default();
+        let shutdown = lifecycle::shutdown();
+        let setup = (|| {
+            let (subscriber, receiver) =
+                lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok(), || {
+                    lifecycle::storage(
+                        diagnostic_storage,
+                        args.diagnostic_records,
+                        args.diagnostic_record_bytes,
+                    )
+                })
+                .map_err(|error| {
+                    (
+                        CliPhase::Diagnostics,
+                        Box::new(error) as Box<dyn std::error::Error>,
+                    )
+                })?;
+            subscriber.try_init().map_err(|error| {
+                (
+                    CliPhase::Subscriber,
+                    Box::new(error) as Box<dyn std::error::Error>,
+                )
+            })?;
+            let diagnostics = receiver
+                .map(|receiver| {
+                    acyclic_native_runtime::InheritedOutput::stderr()
+                        .map(|writer| (receiver, writer))
+                })
+                .transpose()
+                .map_err(|error| {
+                    (
+                        CliPhase::OutputAdmission,
+                        Box::new(error) as Box<dyn std::error::Error>,
+                    )
+                })?;
+            Ok::<_, (CliPhase, Box<dyn std::error::Error>)>(diagnostics)
+        })();
+        let diagnostics = match setup {
+            Ok(diagnostics) => diagnostics,
+            Err((phase, cause)) => {
+                let report = lifecycle::reject_startup(port, shutdown, phase, cause.as_ref()).await;
+                return CliCompletion::rejected(phase, cause, report);
+            }
+        };
+        let operation = phase(|| run(args, seams, shutdown.clone()));
+        let original = lifecycle::observe(&report, Ok(port), shutdown, graceful, operation);
+        let ((result, _report_result), _diagnostic_failure) =
+            lifecycle::diagnostics(original, diagnostics).await;
+        CliCompletion::executed(result)
+    }));
+    runtime.shutdown_background();
+    result
 }
 
 /// The `GraphCoder` preset with argv's overrides for the local harness: the

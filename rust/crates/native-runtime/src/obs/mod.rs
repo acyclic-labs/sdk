@@ -9,7 +9,7 @@ mod capture;
 pub use capture::CaptureObservation;
 mod report_port;
 mod wait_report;
-pub use report_port::{ReportAck, ReportOutcome, ReportPort, ReportRequest};
+pub use report_port::{ReportAck, ReportAdmission, ReportOutcome, ReportPort, ReportRequest};
 mod waiting;
 pub use acyclic_observability::{
     DurabilitySyscall, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot,

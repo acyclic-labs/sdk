@@ -56,6 +56,57 @@ pub struct ReportAck {
 trait ReportIo: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> ReportIo for T {}
 
+/// The original inherited report endpoint, admitted before runtime construction.
+///
+/// Admission validates the selected launch and owns its original OS endpoint,
+/// without registering it with a reactor or submitting IO. Dropping this owner
+/// closes that endpoint; it does not certify that a CLI failure was delivered.
+pub struct ReportAdmission {
+    generation: String,
+    #[cfg(unix)]
+    channel: std::os::unix::net::UnixStream,
+    #[cfg(windows)]
+    channel: std::os::windows::io::OwnedHandle,
+}
+
+impl ReportAdmission {
+    /// Takes the selected launch's inherited endpoint exactly once.
+    pub fn from_environment() -> io::Result<Option<Self>> {
+        #[cfg(unix)]
+        return unix::open();
+        #[cfg(windows)]
+        return windows::open();
+        #[cfg(not(any(unix, windows)))]
+        Ok(None)
+    }
+
+    /// Transfers the same endpoint into the original enabled Tokio IO reactor.
+    /// Failure closes it and retains the original admission/registration error.
+    pub fn into_port(self) -> io::Result<ReportPort> {
+        tokio::runtime::Handle::try_current().map_err(io::Error::other)?;
+        #[cfg(unix)]
+        return ReportPort::new(
+            self.generation,
+            tokio::net::UnixStream::from_std(self.channel)?,
+        );
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::IntoRawHandle as _;
+            // SAFETY: admission owns this overlapped pipe exclusively. The
+            // original reactor takes that same handle, including on error.
+            #[expect(unsafe_code, reason = "transfers the admitted pipe to its one reactor")]
+            let channel = unsafe {
+                tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(
+                    self.channel.into_raw_handle(),
+                )
+            }?;
+            ReportPort::new(self.generation, channel)
+        }
+        #[cfg(not(any(unix, windows)))]
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 /// One inherited asynchronous control channel. It owns no process or timer.
 pub struct ReportPort {
     generation: String,
@@ -65,6 +116,7 @@ pub struct ReportPort {
 
 enum RequestState {
     Fresh,
+    Ready,
     Received(u128, u128),
     Finished,
 }
@@ -97,22 +149,14 @@ impl ReportPort {
 
     /// Opens the inherited selected-launch endpoint, if the owner supplied one.
     pub fn from_environment() -> io::Result<Option<Self>> {
-        #[cfg(unix)]
-        {
-            unix::open()
-        }
-        #[cfg(windows)]
-        {
-            windows::open()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Ok(None)
-        }
+        ReportAdmission::from_environment()?
+            .map(ReportAdmission::into_port)
+            .transpose()
     }
 
     /// Announces capability on this exact channel before accepting a request.
     pub async fn ready(&mut self) -> io::Result<()> {
+        self.announce()?;
         let line = format!(
             "{{\"ready\":true,\"generation\":\"{}\"}}\n",
             self.generation
@@ -120,9 +164,68 @@ impl ReportPort {
         self.channel.get_mut().write_all(line.as_bytes()).await
     }
 
+    fn announce(&mut self) -> io::Result<()> {
+        if !matches!(self.request, RequestState::Fresh) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "report startup disposition already submitted",
+            ));
+        }
+        // A partial write cannot be followed by another startup disposition.
+        self.request = RequestState::Ready;
+        Ok(())
+    }
+
+    /// Rejects setup on this same launch's announcement, before ready/request.
+    ///
+    /// The caller retains its original error through delivery and any native
+    /// write failure. This is rejection before execution, not a diagnostic ACK
+    /// or physical process retirement. No request, timer or retry is created.
+    /// If runtime construction or endpoint admission failed, this method was
+    /// never admitted: the caller must retain incomplete delivery separately.
+    pub async fn reject_startup(
+        &mut self,
+        phase: &'static str,
+        cause: &(dyn std::error::Error + 'static),
+    ) -> io::Result<()> {
+        self.announce()?;
+        self.request = RequestState::Finished;
+        #[derive(serde::Serialize)]
+        struct Rejection<'a> {
+            generation: &'a str,
+            rejected: Failure<'a>,
+        }
+        #[derive(serde::Serialize)]
+        struct Failure<'a> {
+            phase: &'static str,
+            #[serde(serialize_with = "display_error")]
+            cause: &'a (dyn std::error::Error + 'static),
+            raw_os_error: Option<i32>,
+        }
+        fn display_error<S: serde::Serializer>(
+            cause: &&(dyn std::error::Error + 'static),
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(cause)
+        }
+        let rejection = Rejection {
+            generation: &self.generation,
+            rejected: Failure {
+                phase,
+                cause,
+                raw_os_error: cause
+                    .downcast_ref::<io::Error>()
+                    .and_then(io::Error::raw_os_error),
+            },
+        };
+        let mut bytes = serde_json::to_vec(&rejection).map_err(io::Error::other)?;
+        bytes.push(b'\n');
+        self.channel.get_mut().write_all(&bytes).await
+    }
+
     /// Waits for the original channel's request or EOF, with no readiness probes.
     pub async fn request(&mut self) -> io::Result<Option<ReportRequest>> {
-        if !matches!(self.request, RequestState::Fresh) {
+        if !matches!(self.request, RequestState::Fresh | RequestState::Ready) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "report request already consumed",
