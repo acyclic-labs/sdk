@@ -173,7 +173,11 @@ fn notebook_native_outputs_reuse_original_publications_and_source_spans() -> Res
             _hold = hold;
             assert_eq!(native.value, result.value);
             let _projection = tool.projection.project(&invocation, &native, Some(&work))?;
+            work.remaining()?;
+            assert!(work.live_allocation_bytes() > baseline);
         }
+        // The original ledger reconciles checkout retirement at admission.
+        work.remaining()?;
         assert_eq!(work.live_allocation_bytes(), baseline);
         cancellation.cancel();
         let cancelled =
@@ -423,8 +427,12 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         )?)?;
         custody = retained;
         assert_eq!(native.value["text"], result.value["text"]);
+        work.remaining()?;
+        assert!(work.live_allocation_bytes() > baseline);
         drop(native);
         drop(custody);
+        // Observe the same retirement boundary as production admission.
+        work.remaining()?;
         assert_eq!(work.live_allocation_bytes(), baseline);
         cancellation.cancel();
         let cancelled =
