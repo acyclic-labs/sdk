@@ -1,17 +1,18 @@
 use super::*;
+use crate::Error;
 use crate::agent::*;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_machines::SimulatedMachines;
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, testing::Counted};
 use tokio::sync::Semaphore;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const TARGET: &str = "provisioned";
 
-fn manager(
-    stream: Arc<MemoryStream>,
+fn manager<P: crate::store::JournalProvider>(
+    stream: Arc<P>,
     provider: SimulatedMachines,
-) -> TestResult<Arc<AgentMachines<MemoryStream>>> {
+) -> TestResult<Arc<AgentMachines<P>>> {
     let provider_ref = crate::resources::ProviderRef::new(
         "example".into(),
         "machines".into(),
@@ -27,6 +28,141 @@ fn manager(
             network_policy_digest: [2; 32],
         }],
     )?))
+}
+
+#[tokio::test]
+async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
+    for target_count in [1, 100_000] {
+        let stream = Arc::new(Counted::new(MemoryStream::default()));
+        let provider = SimulatedMachines::default();
+        let original = manager(stream.clone(), provider.clone())?;
+        let target = original.target(TARGET)?.clone();
+        let unrelated = manager(
+            Arc::new(MemoryStream::default()),
+            SimulatedMachines::default(),
+        )?;
+        let mut targets = (1..target_count)
+            .map(|position| {
+                let mut target = unrelated.targets()[0].clone();
+                target.name = format!("unheld-{position}");
+                target
+            })
+            .collect::<Vec<_>>();
+        targets.push(target.clone());
+        let machines = AgentMachines::new(stream.clone(), targets)?;
+        let agent = AgentPath::root(&AgentId::from_bytes([9; 16]));
+
+        let before = stream.requests();
+        machines.suspend(&agent).await?;
+        machines.destroy(&agent).await?;
+        let empty = stream.requests().since(before);
+        assert_eq!(empty.data(), 0, "unheld targets were probed");
+        assert_eq!(empty.control(), 2);
+
+        // The original plan is the index even when no binding survived.
+        machines.plan(&agent, &target).await?;
+        let allocated = machines.create(&target, &agent).await?;
+        let sandbox = sandbox(&target, &allocated)?;
+        let reopened = AgentMachines::new(stream.clone(), machines.targets.clone())?;
+        drop(machines);
+        reopened.suspend(&agent).await?;
+        assert_eq!(
+            target.host.inspect(&sandbox).await?.state,
+            MachineState::Suspended
+        );
+        assert_eq!(reopened.binding(&agent, TARGET).await?, Some(allocated));
+
+        for destroy in [false, true, true] {
+            let before = stream.requests();
+            if destroy {
+                reopened.destroy(&agent).await?;
+            } else {
+                reopened.suspend(&agent).await?;
+            }
+            let held = stream.requests().since(before);
+            assert_eq!(held.data(), 1, "lifecycle read an unheld target");
+            assert_eq!(held.control(), 1);
+            assert_eq!(
+                target.host.inspect(&sandbox).await?.state,
+                if destroy {
+                    MachineState::Destroyed
+                } else {
+                    MachineState::Suspended
+                },
+            );
+        }
+        assert!(
+            unrelated.targets()[0]
+                .host
+                .provider
+                .list_machines(None, 1)
+                .await?
+                .machines
+                .is_empty()
+        );
+
+        // Losing the admitted configuration must refuse, not report that the
+        // original holder disappeared and silently skip its release.
+        let missing = AgentMachines::new(stream.clone(), Vec::new())?;
+        assert!(matches!(
+            missing.destroy(&agent).await,
+            Err(Error::Invalid(_))
+        ));
+        let mut nested = target;
+        nested.name = "nested/target".into();
+        assert!(AgentMachines::new(stream, vec![nested]).is_err());
+    }
+
+    // More than one page is still bounded by original plans, never by the
+    // target table or an accumulated list of bindings.
+    let stream = Arc::new(Counted::new(MemoryStream::default()));
+    let original = manager(stream.clone(), SimulatedMachines::default())?;
+    let targets = (0..65)
+        .map(|position| {
+            let mut target = original.targets()[0].clone();
+            target.name = format!("held-{position:03}");
+            target
+        })
+        .collect();
+    let machines = AgentMachines::new(stream.clone(), targets)?;
+    let agent = AgentPath::root(&AgentId::from_bytes([10; 16]));
+    for target in machines.targets() {
+        machines.machine_on(&agent, target).await?;
+    }
+    let before = stream.requests();
+    machines.destroy(&agent).await?;
+    let released = stream.requests().since(before);
+    assert_eq!(released.data(), 65);
+    assert_eq!(released.control(), 2);
+    for target in machines.targets() {
+        let binding = machines
+            .binding(&agent, &target.name)
+            .await?
+            .ok_or("binding lost")?;
+        assert_eq!(
+            target
+                .host
+                .inspect(&sandbox(target, &binding)?)
+                .await?
+                .state,
+            MachineState::Destroyed
+        );
+    }
+
+    // A changed hierarchy terminates this traversal with the original typed
+    // refusal. It cannot silently restart a partially completed lifecycle.
+    let held = machines.held_targets(&agent)?;
+    futures::pin_mut!(held);
+    for _ in 0..64 {
+        assert!(held.try_next().await?.is_some());
+    }
+    let other = AgentPath::root(&AgentId::from_bytes([11; 16]));
+    machines.plan(&other, &machines.targets()[0]).await?;
+    assert!(matches!(
+        held.try_next().await,
+        Err(Error::MachineOwnership(StreamError::HierarchyChanged))
+    ));
+    Ok(())
 }
 
 #[tokio::test]

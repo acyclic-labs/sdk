@@ -270,6 +270,12 @@ impl AgentPath {
     pub fn machine(&self, name: &str) -> Result<StreamPath, Error> {
         stream(&format!("{}/{MACHINES}/{name}", self.text))
     }
+
+    /// Parent of this agent's original Machine plans and settled bindings.
+    /// A plan is published before allocation, including when its reply is lost.
+    pub fn machines(&self) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{MACHINES}", self.text))
+    }
 }
 
 impl TryFrom<String> for AgentPath {
