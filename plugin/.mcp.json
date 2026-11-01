@@ -9,6 +9,7 @@
       ],
       "cwd": ".",
       "env_vars": [
+        "CODEX_HOME",
         "ACYCLIC_HOST_ARGS",
         "ACYCLIC_WORKSPACE",
         "ACYCLIC_TASK"

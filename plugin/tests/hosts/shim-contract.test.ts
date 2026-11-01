@@ -59,7 +59,7 @@ test("host manifests and shims fit the native hook budget without tool ledgers",
   assert.equal(hooks.PermissionRequest[0].matcher, "^mcp__acyclic[-_]sessions__");
   assert(Object.values(hooks).every((groups: any) => groups.every((group: any) => group.hooks.every((hook: any) => hook.type === "command"))));
   const mcp = JSON.parse(source("../../.mcp.json"));
-  assert.deepEqual(mcp.mcpServers["acyclic-sessions"].env_vars, ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
+  assert.deepEqual(mcp.mcpServers["acyclic-sessions"].env_vars, ["CODEX_HOME", "ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"]);
   assert(!source("../../.mcp.json").includes("XDG_STATE_HOME"));
 });
 

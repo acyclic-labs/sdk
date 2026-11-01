@@ -84,7 +84,7 @@ const expectedMcp = {
       command: "./bin/acyclic",
       args: ["__mcp", "codex"],
       cwd: ".",
-      env_vars: ["ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"],
+      env_vars: ["CODEX_HOME", "ACYCLIC_HOST_ARGS", "ACYCLIC_WORKSPACE", "ACYCLIC_TASK"],
       required: true,
     },
   },
