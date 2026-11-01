@@ -77,7 +77,9 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 }
                 Some("input_json_delta") => {
                     let index = index(value, "index")?;
-                    let partial = string(&delta["partial_json"])?;
+                    let partial = delta["partial_json"]
+                        .as_str()
+                        .ok_or_else(|| invalid("tool input fragment must be a string"))?;
                     if !state.calls.contains_key(&index) {
                         return Err(invalid("tool delta without block"));
                     }

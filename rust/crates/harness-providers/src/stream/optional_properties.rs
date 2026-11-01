@@ -111,8 +111,10 @@ proptest! {
         let mut malformed = Vec::new();
         for value in [Value::Null, json!(false), json!(7), json!("{}"), json!([])] {
             let mut frame = second.clone();
-            frame["content_block"]["input"] = value.clone();
+            frame["content_block"]["input"] = value;
             malformed.push(frame);
+        }
+        for value in [Value::Null, json!(false), json!(7), json!({}), json!([])] {
             malformed.push(json!({"type":"content_block_delta","index":0,
                 "delta":{"type":"input_json_delta","partial_json":value}}));
         }
@@ -140,14 +142,16 @@ proptest! {
 
         let delta = json!({"type":"content_block_delta","index":1,
             "delta":{"type":"input_json_delta","partial_json":input.to_string()}});
+        let empty = json!({"type":"content_block_delta","index":1,
+            "delta":{"type":"input_json_delta","partial_json":""}});
         let mut state = State::new(16384);
-        for frame in [&initial, &second, &delta, &stop] {
+        for frame in [&initial, &second, &empty, &delta, &stop] {
             prop_assert!(parse(&mut state, Adapter::Anthropic, &frame.to_string()).unwrap().is_empty());
         }
         // Original producer loss still terminates without exposing its pending calls.
         prop_assert!(finish(state, Adapter::Anthropic, dispatch).is_err());
 
-        let frames = format!("data: {initial}\n\ndata: {second}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
+        let frames = format!("data: {initial}\n\ndata: {second}\n\ndata: {empty}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
         let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
         let accepted = futures::executor::block_on(events(
             Adapter::Anthropic, Box::pin(body), 16384, dispatch,
