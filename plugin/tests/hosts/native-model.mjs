@@ -94,6 +94,8 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
   const settings=join(root,'claude-policy.json');
   await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
   const policy=['--model',model,'--settings',settings,'--permission-mode','default',
+   // Keep native login and managed policy without loading unrelated user plugins.
+   ...(live?['--setting-sources','']:[]),
    ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
   return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
