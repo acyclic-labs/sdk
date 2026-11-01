@@ -100,105 +100,92 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let first = group_first(requests, cuts)?;
         let actor = self.actor(first.authority_id, work)?;
         let mut journal = actor.lease(work).await?;
-        let mut child = work.operation()?;
-        let result = async {
-            let projection = self
-                .activate(
-                    first.authority_id,
-                    first.commit.publication.as_ref().map(|seal| seal.volume()),
-                    &mut journal,
-                    &mut child,
-                )
-                .await?;
-            let revision = actor.begin_publication(journal)?;
-            let prepared = self
-                .prepare_group(
-                    requests,
-                    &mut child,
-                    guard.as_deref_mut(),
-                    Some(&projection),
-                )
-                .await?;
-            let prepared = match prepared {
-                GroupPreparation::Ready(prepared) => prepared,
-                GroupPreparation::Rejected {
+        work.check()?;
+        let projection = self
+            .activate(
+                first.authority_id,
+                first.commit.publication.as_ref().map(|seal| seal.volume()),
+                &mut journal,
+                work,
+            )
+            .await?;
+        let revision = actor.begin_publication(journal)?;
+        let prepared = self
+            .prepare_group(requests, work, guard.as_deref_mut(), Some(&projection))
+            .await?;
+        let prepared = match prepared {
+            GroupPreparation::Ready(prepared) => prepared,
+            GroupPreparation::Rejected {
+                index,
+                outcome,
+                observed,
+            } => {
+                // Preparation issued no durability request. Restore the
+                // verified frontier only if no newer actor revision won
+                // while admission or a caller guard was in flight.
+                actor.complete(revision, projection, work).await?;
+                return Ok(AppendGroupOutcome::Rejected {
                     index,
                     outcome,
                     observed,
-                } => {
-                    // Preparation issued no durability request. Restore the
-                    // verified frontier only if no newer actor revision won
-                    // while admission or a caller guard was in flight.
-                    actor.complete(revision, projection, &mut child).await?;
-                    return Ok(AppendGroupOutcome::Rejected {
-                        index,
-                        outcome,
-                        observed,
-                    });
-                }
-            };
-            let next_projection = prepared.project(&self.placement, projection, &mut child)?;
-            let PreparedGroup {
-                anchor,
-                receipts: prepared,
-                mut outcomes,
-                transaction,
-                deadline,
-                deadline_owner,
-            } = prepared;
-            // Once I/O starts, only its authenticated receipt can reactivate
-            // this projection. Dropping or failing a continuation cannot leave
-            // the previous head available for a new writer.
-            let output = self
-                .publish_with_policy_cuts(
-                    transaction,
-                    deadline,
-                    cuts,
-                    &mut child,
-                    guard.as_deref_mut(),
-                )
-                .await;
-            let output =
-                match output {
-                    Ok(output) => output,
-                    Err(error) => {
-                        let index = error_owner(&error, deadline_owner);
-                        let member = prepared.value.get(index).ok_or(
-                            AuthorityStoreError::RejectedStatic("missing group error owner"),
-                        )?;
-                        let outcome = self
-                            .recover_append_error(member, error, &mut child, guard.as_deref_mut())
-                            .await?;
-                        return Ok(AppendGroupOutcome::Rejected {
-                            index,
-                            outcome,
-                            observed: anchor.head,
-                        });
-                    }
-                };
-            self.settle_group(
-                &prepared.value,
-                anchor,
-                &output.0,
-                &mut outcomes.value,
-                &mut child,
-                guard.as_deref_mut(),
-            )
-            .await?;
-            if let CommitOutcome::Committed(envelope) = &output.0 {
-                // The receipt is final. A busy cache cannot delay its delivery
-                // or require another admission after physical publication.
-                actor.complete_if_available(revision, next_projection.seal(envelope.commit_id));
+                });
             }
-            let (receipts, allocation) = crate::async_storage::authority_parts(outcomes);
-            Ok(AppendGroupOutcome::Published {
-                receipts,
-                allocation,
-            })
+        };
+        let next_projection = prepared.project(&self.placement, projection, work)?;
+        let PreparedGroup {
+            anchor,
+            receipts: prepared,
+            mut outcomes,
+            transaction,
+            deadline,
+            deadline_owner,
+        } = prepared;
+        // Once I/O starts, only its authenticated receipt can reactivate
+        // this projection. Dropping or failing a continuation cannot leave
+        // the previous head available for a new writer.
+        let output = self
+            .publish_with_policy_cuts(transaction, deadline, cuts, work, guard.as_deref_mut())
+            .await;
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                let index = error_owner(&error, deadline_owner);
+                let member =
+                    prepared
+                        .value
+                        .get(index)
+                        .ok_or(AuthorityStoreError::RejectedStatic(
+                            "missing group error owner",
+                        ))?;
+                let outcome = self
+                    .recover_append_error(member, error, work, guard.as_deref_mut())
+                    .await?;
+                return Ok(AppendGroupOutcome::Rejected {
+                    index,
+                    outcome,
+                    observed: anchor.head,
+                });
+            }
+        };
+        self.settle_group(
+            &prepared.value,
+            anchor,
+            &output.0,
+            &mut outcomes.value,
+            work,
+            guard.as_deref_mut(),
+        )
+        .await?;
+        if let CommitOutcome::Committed(envelope) = &output.0 {
+            // The receipt is final. A busy cache cannot delay its delivery
+            // or require another admission after physical publication.
+            actor.complete_if_available(revision, next_projection.seal(envelope.commit_id));
         }
-        .await;
-        work.record(child.spent())?;
-        result
+        let (receipts, allocation) = crate::async_storage::authority_parts(outcomes);
+        Ok(AppendGroupOutcome::Published {
+            receipts,
+            allocation,
+        })
     }
 
     pub(in crate::distributed) async fn settle_group<G: AuthorityGuard>(
