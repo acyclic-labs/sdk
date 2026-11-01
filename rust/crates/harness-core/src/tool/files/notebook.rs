@@ -72,17 +72,24 @@ struct Notebook<'a> {
 }
 
 #[derive(Deserialize, crate::HeapLayout)]
-struct Cell<'a> {
+pub(super) struct Cell<'a> {
     #[serde(borrow)]
-    id: Option<Cow<'a, str>>,
+    pub(super) id: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    cell_type: Cow<'a, str>,
+    pub(super) cell_type: Cow<'a, str>,
     #[serde(borrow)]
-    source: &'a RawValue,
+    pub(super) source: &'a RawValue,
     #[serde(borrow)]
     outputs: Option<&'a RawValue>,
     #[serde(borrow)]
     execution_count: Option<&'a RawValue>,
+}
+
+/// Publication outcomes consume these facts while the original source is live.
+/// Inserts have no prior cell; their index is the resolved insertion boundary.
+pub(super) struct EditFacts<'a> {
+    pub(super) index: u64,
+    pub(super) prior: Option<Decoded<Cell<'a>>>,
 }
 
 struct EachCell<F>(F);
@@ -354,11 +361,11 @@ fn convert_cell(
     Ok(())
 }
 
-pub(super) fn edit(
-    source: &str,
+pub(super) fn edit<'a>(
+    source: &'a str,
     operation: &NotebookEdit,
     work: crate::NativeWork<'_>,
-) -> Result<(String, crate::NativeCustody)> {
+) -> Result<(String, crate::NativeCustody, EditFacts<'a>)> {
     let notebook = notebook(source, work)?;
     let (target, after) = match operation {
         NotebookEdit::Replace { cell, .. } | NotebookEdit::Delete { cell } => (cell, false),
@@ -456,6 +463,7 @@ pub(super) fn edit(
     let mut substitutions: Substitutions<'_> = [None; 6];
     let _replacement_hold;
     let replacement;
+    let mut prior = None;
     match operation {
         NotebookEdit::Replace {
             source: new_source,
@@ -487,6 +495,7 @@ pub(super) fn edit(
             if let Some(kind) = cell_type {
                 convert_cell(source, raw, &cell, kind, &mut substitutions, work)?;
             }
+            prior = Some(cell);
         }
         NotebookEdit::Insert {
             id,
@@ -538,14 +547,14 @@ pub(super) fn edit(
         }
         NotebookEdit::Delete { .. } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let _cell = match selected_cell {
+            prior = Some(match selected_cell {
                 Some(cell) => cell,
                 None => decode(
                     JsonObject(std::marker::PhantomData::<Cell<'_>>),
                     raw.get(),
                     work,
                 )?,
-            };
+            });
             let (start, end) = span(source, raw);
             substitutions[0] = Some(if let Some(previous) = previous {
                 (previous, end, "")
@@ -595,5 +604,5 @@ pub(super) fn edit(
             .get(cursor..)
             .ok_or_else(|| executor::rejection(work, "invalid notebook span"))?,
     );
-    Ok((text, hold))
+    Ok((text, hold, EditFacts { index, prior }))
 }

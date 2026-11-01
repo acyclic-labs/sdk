@@ -31,7 +31,12 @@ proptest! {
         let source = format!(r#"{{"nbformat":4,"nbformat_minor":5,"cells":[{cells}],"metadata":{{"keep":true}},"extra":"retain"}}"#);
         let id = format!("cell-{index}");
         let replace = NotebookEdit::Replace { cell:NotebookCell::Index {index:index as u64, id:Some(id.clone())}, source:new_source.clone(), cell_type:None };
-        let (edited, _hold) = edit(&source, &replace, None).unwrap();
+        let (edited, _hold, facts) = edit(&source, &replace, None).unwrap();
+        prop_assert_eq!(facts.index, index as u64);
+        let prior = facts.prior.as_ref().unwrap();
+        prop_assert_eq!(prior.id.as_deref(), Some(id.as_str()));
+        prop_assert_eq!(prior.cell_type.as_ref(), "code");
+        prop_assert_eq!(serde_json::from_str::<Value>(prior.source.get()).unwrap(), json!([sources[index]]));
         let actual: Value = serde_json::from_str(&edited).unwrap();
         let mut expected = original.clone();
         expected["cells"][index]["source"] = json!(new_source);
@@ -41,7 +46,7 @@ proptest! {
         let by_id = NotebookEdit::Replace {
             cell: NotebookCell::Id { id: id.clone() }, source:new_source.clone(), cell_type:None,
         };
-        let (edited, _hold) = edit(&source, &by_id, None).unwrap();
+        let (edited, _hold, _facts) = edit(&source, &by_id, None).unwrap();
         prop_assert_eq!(serde_json::from_str::<Value>(&edited).unwrap(), expected);
         prop_assert!(edit(&source, &NotebookEdit::Delete {cell:NotebookCell::Index {index:index as u64,id:Some("stale".into())}}, None).is_err(), "stale cell id accepted");
 
@@ -49,8 +54,12 @@ proptest! {
         // directions, including the formerly empty notebook.
         let insert_at = position % (sources.len() + 1);
         let insert = NotebookEdit::Insert { cell:NotebookCell::Index {index:insert_at as u64,id:None},after:false,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
-        let (inserted, _insert_hold) = edit(&source, &insert, None).unwrap();
-        let (removed, _remove_hold) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
+        let (inserted, _insert_hold, facts) = edit(&source, &insert, None).unwrap();
+        prop_assert_eq!(facts.index, insert_at as u64);
+        prop_assert!(facts.prior.is_none());
+        let (removed, _remove_hold, facts) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
+        prop_assert_eq!(facts.index, insert_at as u64);
+        prop_assert_eq!(facts.prior.as_ref().unwrap().id.as_deref(), Some("inserted"));
         prop_assert_eq!(&serde_json::from_str::<Value>(&removed).unwrap(), &original);
         prop_assert!(edit(&source, &NotebookEdit::Insert {cell:NotebookCell::Index {index:0,id:None},after:false,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
 
@@ -58,7 +67,9 @@ proptest! {
             cell: NotebookCell::Id {id:format!("cell-{index}")}, after:true,
             id:"after".into(),cell_type:"code".into(),source:"inserted".into(),
         };
-        let (inserted, _hold) = edit(&source, &after, None).unwrap();
+        let (inserted, _hold, facts) = edit(&source, &after, None).unwrap();
+        prop_assert_eq!(facts.index, index as u64 + 1);
+        prop_assert!(facts.prior.is_none());
         let inserted: Value = serde_json::from_str(&inserted).unwrap();
         prop_assert_eq!(&inserted["cells"][index + 1]["id"], &json!("after"));
         let mut expected = original.clone();
@@ -72,7 +83,7 @@ proptest! {
             cell: NotebookCell::Id {id:format!("cell-{index}")},
             source:"markdown".into(),cell_type:Some("markdown".into()),
         };
-        let (converted, _hold) = edit(&source, &convert, None).unwrap();
+        let (converted, _hold, _facts) = edit(&source, &convert, None).unwrap();
         let mut expected = original.clone();
         let selected = expected["cells"][index].as_object_mut().unwrap();
         selected.insert("source".into(), json!("markdown"));
@@ -84,7 +95,8 @@ proptest! {
             cell: NotebookCell::Id {id:format!("cell-{index}")},
             source:"code".into(),cell_type:Some("code".into()),
         };
-        let (restored, _hold) = edit(&converted, &restore, None).unwrap();
+        let (restored, _hold, facts) = edit(&converted, &restore, None).unwrap();
+        prop_assert_eq!(facts.prior.as_ref().unwrap().cell_type.as_ref(), "markdown");
         let selected = expected["cells"][index].as_object_mut().unwrap();
         selected.insert("source".into(), json!("code"));
         selected.insert("cell_type".into(), json!("code"));
@@ -104,7 +116,7 @@ proptest! {
 #[test]
 fn empty_notebook_insert_delete_retains_metadata() {
     let source = r#"{"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"keep":true}}"#;
-    let (inserted, _hold) = edit(
+    let (inserted, _hold, _facts) = edit(
         source,
         &NotebookEdit::Insert {
             cell: NotebookCell::Index { index: 0, id: None },
@@ -119,7 +131,7 @@ fn empty_notebook_insert_delete_retains_metadata() {
     let cell: Value = serde_json::from_str(&inserted).unwrap();
     assert_eq!(cell["cells"][0]["execution_count"], Value::Null);
     assert_eq!(cell["cells"][0]["outputs"], json!([]));
-    let (removed, _hold) = edit(
+    let (removed, _hold, _facts) = edit(
         &inserted,
         &NotebookEdit::Delete {
             cell: NotebookCell::Id { id: "first".into() },
@@ -145,7 +157,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     // the raw source/output spans remain borrowed from this same document.
     let source = r#"{"nbformat":4,"cells":[{"i\u0064":"\u0061","cell_type":"code","source":["x\n"],"outputs":[],"execution_count":1}],"metadata":{"keep":true}}"#;
     let baseline = native.live_allocation_bytes();
-    let (text, hold) = edit(
+    let (text, hold, facts) = edit(
         source,
         &NotebookEdit::Replace {
             cell: NotebookCell::Id { id: "a".into() },
@@ -156,9 +168,18 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     )
     .unwrap();
     assert!(native.live_allocation_bytes() > baseline);
+    assert_eq!(facts.index, 0);
+    let prior = facts.prior.as_ref().unwrap();
+    assert_eq!(prior.id.as_deref(), Some("a"));
+    assert_eq!(prior.cell_type, "code");
+    assert_eq!(
+        serde_json::from_str::<Value>(prior.source.get()).unwrap(),
+        json!(["x\n"])
+    );
     let actual: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(actual["cells"][0]["source"], "\"\\\nλ");
     assert_eq!(actual["cells"][0]["execution_count"], Value::Null);
+    drop(facts);
     drop(text);
     drop(hold);
     assert_eq!(native.live_allocation_bytes(), baseline);
@@ -180,7 +201,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             "code",
         ),
     ] {
-        let (text, hold) = edit(
+        let (text, hold, facts) = edit(
             source,
             &NotebookEdit::Replace {
                 cell: NotebookCell::Id { id: "a".into() },
@@ -190,6 +211,8 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             Some(&native),
         )
         .unwrap();
+        assert_eq!(facts.index, 0);
+        assert_eq!(facts.prior.as_ref().unwrap().id.as_deref(), Some("a"));
         let value: Value = serde_json::from_str(&text).unwrap();
         let cell = &value["cells"][0];
         assert_eq!(cell["cell_type"], kind);
@@ -202,6 +225,7 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             assert!(cell.get("outputs").is_none());
             assert!(cell.get("execution_count").is_none());
         }
+        drop(facts);
         drop(text);
         drop(hold);
         assert_eq!(native.live_allocation_bytes(), baseline);
