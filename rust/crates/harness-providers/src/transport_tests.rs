@@ -1,5 +1,5 @@
 //! Real-socket transport failures: each class is typed, redelivered only when retryable and
-//! before output, and counted exactly.
+//! before response acceptance, and counted exactly.
 use super::*;
 use acyclic_harness_core::ModelTransportFailure;
 use std::collections::VecDeque;
@@ -12,6 +12,8 @@ enum Reply {
     Full(u16, &'static str),
     /// A 200 response declaring the whole body but sending only `usize` bytes before closing.
     Cut(&'static str, usize),
+    /// The server reads the request, then closes without returning headers.
+    Lost,
     /// Bytes that are not a TLS record.
     Garbage,
 }
@@ -33,6 +35,24 @@ impl HttpTransport for Counted {
     }
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()
+    }
+    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+        self.inner.supports_native(work)
+    }
+    fn send_with_native_work<'a>(
+        &'a self,
+        request: HttpRequest,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        self.inner.send_with_native_work(request, work)
+    }
+    fn delay_with_native_work(
+        &self,
+        wait: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
+        self.inner.delay_with_native_work(wait, work)
     }
 }
 
@@ -69,6 +89,7 @@ async fn serve(replies: Vec<Reply>) -> Result<(u16, Arc<AtomicUsize>)> {
                     &body[..sent]
                 ),
                 Reply::Garbage => "this is not a TLS record\r\n\r\n".repeat(4),
+                Reply::Lost => String::new(),
             };
             let _ = socket.write_all(bytes.as_bytes()).await;
             let _ = socket.flush().await;
@@ -196,36 +217,68 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
 }
 
 #[tokio::test]
-async fn reset_before_output_is_redelivered_and_after_output_is_final() -> Result<()> {
-    // Cut inside the first event: nothing reached the caller, so the request is resent.
-    let (port, accepted) = serve(vec![Reply::Cut(CHAT, 12), Reply::Full(200, CHAT)]).await?;
-    let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-    let events = generate(&provider).await?;
-    assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
-    assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
-    assert_eq!(accepted.load(Ordering::SeqCst), 2);
-    // Cut after the first event: output escaped, so the interruption is final.
+async fn accepted_response_keeps_its_original_interruption_before_and_after_output() -> Result<()> {
+    // Reuse the existing shared Chat response, cutting before any bytes,
+    // inside its first event and after one event. Also lose all response headers
+    // after the server reads the request. A second response would let the former
+    // before-output redelivery hide the original run's failure.
     let first = CHAT.find("\n\n").map_or(0, |end| end + 2);
-    let (port, accepted) = serve(vec![Reply::Cut(CHAT, first + 8), Reply::Full(200, CHAT)]).await?;
-    let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-    let (prepared, dispatch) = super::request(&provider)?;
-    let mut stream = provider.generate(&prepared, dispatch);
-    let mut output = 0;
-    let error = loop {
-        match stream.next().await {
-            Some(Ok(_)) => output += 1,
-            Some(Err(error)) => break error,
-            None => return Err(invalid("cut stream completed")),
+    for native in [false, true] {
+        for cut in [None, Some(0), Some(12), Some(first + 8)] {
+            let (port, accepted) = serve(vec![
+                cut.map_or(Reply::Lost, |cut| Reply::Cut(CHAT, cut)),
+                Reply::Full(200, CHAT),
+            ])
+            .await?;
+            let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let (prepared, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let mut output = 0;
+            let error = if native {
+                let mut stream = provider
+                    .generate_with_native_work(&prepared, dispatch, &work)?
+                    .await?;
+                let error = loop {
+                    match stream.next().await {
+                        Some(Ok(event)) => {
+                            output += 1;
+                            drop(event);
+                        }
+                        Some(Err(error)) => break error,
+                        None => return Err(invalid("cut stream completed")),
+                    }
+                };
+                assert!(stream.next().await.is_none());
+                error
+            } else {
+                let mut stream = provider.generate(&prepared, dispatch);
+                let error = loop {
+                    match stream.next().await {
+                        Some(Ok(_)) => output += 1,
+                        Some(Err(error)) => break error,
+                        None => return Err(invalid("cut stream completed")),
+                    }
+                };
+                assert!(stream.next().await.is_none());
+                error
+            };
+            assert_eq!(
+                output > 0,
+                cut.is_some_and(|cut| cut > first),
+                "native={native}, cut={cut:?}"
+            );
+            assert_eq!(
+                failure(&error),
+                Some(ModelTransportFailure::Interrupted),
+                "{error}"
+            );
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+            assert_eq!(accepted.load(Ordering::SeqCst), 1);
+            drop(error);
+            assert_eq!(work.live_allocation_bytes(), baseline);
         }
-    };
-    assert!(output > 0);
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Interrupted),
-        "{error}"
-    );
-    assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
-    assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    }
     Ok(())
 }
 

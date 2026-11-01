@@ -118,8 +118,10 @@ impl Default for TimeoutSpec {
     }
 }
 
-/// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected, before
-/// any output. Waits use the provider's `Retry-After` when present, otherwise exponential
+/// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected.
+/// A successful HTTP response or an uncertain reply loss ends generation redelivery,
+/// even before its first event. Read-only token counts retain their whole-body retry
+/// budget. Waits use the provider's `Retry-After` when present, otherwise exponential
 /// backoff with deterministic per-dispatch jitter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

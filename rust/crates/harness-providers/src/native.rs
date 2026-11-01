@@ -237,16 +237,17 @@ pub(crate) fn generate<'a>(
                 async_stream::try_stream! {
                     let _name_custody = name_custody;
                     let mut response = response;
-                    let mut recovery = dispatch::Recovery::default();
-                    let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch_id);
+                    let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
                     loop {
                         let (failure, retry_after) = match response {
                             Err(error) => (Some(error), None),
                             Ok(response) if !(200..300).contains(&response.status) => {
+                                attempt.refuse();
                                 let retry_after = response.retry_after;
                                 (Some(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), retry_after)
                             }
                             Ok(response) => {
+                            attempt.accept();
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                             let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
@@ -256,7 +257,7 @@ pub(crate) fn generate<'a>(
                             let mut failure = None;
                             while let Some(event) = events.next().await {
                                 match event {
-                                    Ok(event) => { recovery.output = true; yield event; }
+                                    Ok(event) => { yield event; }
                                     Err(error) => { failure = Some(error); break; }
                                 }
                             }
@@ -265,7 +266,7 @@ pub(crate) fn generate<'a>(
                         };
                         let Some(error) = failure else { break; };
                         if let Some(login) = &provider.codex_login {
-                            if recovery.retry(&error) {
+                            if attempt.refresh(&error) {
                                 drop(error);
                                 response = async {
                                     let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
@@ -277,7 +278,7 @@ pub(crate) fn generate<'a>(
                                 continue;
                             }
                         }
-                        if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
+                        if let Some(wait) = attempt.redeliver(&error, retry_after) {
                             drop(error);
                             crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
                             work.remaining()?;
