@@ -1,7 +1,7 @@
-use super::{File, io, unsupported};
+use super::{Backend, File, InheritedOutput, Synchronous, io};
 use std::os::{fd::AsRawFd as _, unix::fs::FileTypeExt as _};
 
-pub(super) fn admit(file: File) -> io::Result<File> {
+pub(super) fn admit(file: File) -> io::Result<InheritedOutput> {
     let descriptor = file.as_raw_fd();
     // SAFETY: F_GETFL reads flags on the caller's still-owned descriptor.
     #[expect(unsafe_code, reason = "reads the original descriptor's status flags")]
@@ -19,11 +19,9 @@ pub(super) fn admit(file: File) -> io::Result<File> {
     // SAFETY: isatty inspects only this live descriptor.
     #[expect(unsafe_code, reason = "classifies the original terminal descriptor")]
     let terminal = kind.is_char_device() && unsafe { libc::isatty(descriptor) } == 1;
-    if !kind.is_fifo() && !kind.is_socket() && !terminal {
-        return Err(unsupported());
-    }
-    if flags & libc::O_NONBLOCK != 0 {
-        return Ok(file);
+    let stream = kind.is_fifo() || kind.is_socket() || terminal;
+    if stream && flags & libc::O_NONBLOCK != 0 {
+        return readiness(file);
     }
     #[cfg(target_os = "linux")]
     if kind.is_fifo() {
@@ -33,10 +31,34 @@ pub(super) fn admit(file: File) -> io::Result<File> {
         // flags too. Only pipes are reopened: opening a terminal device can
         // create a different endpoint. Keep the original pipe alive until its
         // replacement is open.
-        return std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
-            .open(format!("/proc/self/fd/{descriptor}"));
+        return readiness(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY)
+                .open(format!("/proc/self/fd/{descriptor}"))?,
+        );
     }
-    Err(unsupported())
+    if stream || kind.is_file() || kind.is_char_device() {
+        Ok(InheritedOutput {
+            backend: Backend::Synchronous(Synchronous { file }),
+        })
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "inherited output requires a writable file, stream or device",
+        ))
+    }
+}
+
+fn readiness(file: File) -> io::Result<InheritedOutput> {
+    // SAFETY: this private File keeps the same descriptor and open file
+    // description alive until AsyncFd drops; no exchange is exposed.
+    #[expect(unsafe_code, reason = "registers an exclusively owned descriptor")]
+    let descriptor = unsafe {
+        tokio::io::unix::AsyncFd::register_with_interest(file, tokio::io::Interest::WRITABLE)
+    }
+    .map_err(io::Error::from)?;
+    Ok(InheritedOutput {
+        backend: Backend::Readiness(descriptor),
+    })
 }

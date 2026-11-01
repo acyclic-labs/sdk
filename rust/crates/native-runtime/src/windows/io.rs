@@ -15,6 +15,7 @@ use windows_sys::{
     Win32::{
         Foundation::{
             ERROR_HANDLE_EOF, ERROR_IO_PENDING, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+            RtlNtStatusToDosError,
         },
         Storage::FileSystem::{
             FILE_END_OF_FILE_INFO, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
@@ -176,14 +177,13 @@ pub(super) fn overlapped_range(offset: u64, length: usize) -> io::Result<u32> {
     Ok(length)
 }
 
-pub(super) fn is_overlapped(file: &File) -> bool {
+pub(crate) fn is_overlapped(file: &File) -> io::Result<bool> {
     let mut status = IO_STATUS_BLOCK::default();
     let mut mode = FILE_MODE_INFORMATION::default();
-    let Ok(length) = u32::try_from(std::mem::size_of::<FILE_MODE_INFORMATION>()) else {
-        return false;
-    };
+    let length = u32::try_from(std::mem::size_of::<FILE_MODE_INFORMATION>())
+        .map_err(|_| io::ErrorKind::InvalidInput)?;
     // SAFETY: the live handle and initialized output buffers outlive the mode query.
-    (unsafe {
+    let result = unsafe {
         NtQueryInformationFile(
             file.as_raw_handle(),
             &raw mut status,
@@ -191,8 +191,14 @@ pub(super) fn is_overlapped(file: &File) -> bool {
             length,
             FileModeInformation,
         )
-    }) >= 0
-        && mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0
+    };
+    if result < 0 {
+        // SAFETY: converts the native query's actual returned status only.
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    Ok(mode.Mode & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) == 0)
 }
 
 pub(super) fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
@@ -225,7 +231,7 @@ pub(crate) fn with_overlapped<T>(
     if let Some(meter) = meter {
         meter.admit_read(0)?;
     }
-    if is_overlapped(file) {
+    if is_overlapped(file)? {
         transfer(file)
     } else {
         if let Some(meter) = meter {

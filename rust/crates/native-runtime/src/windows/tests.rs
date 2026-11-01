@@ -23,8 +23,12 @@ fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()>
     };
     let synchronous = open("synchronous", 0)?;
     let overlapped = open("overlapped", FILE_FLAG_OVERLAPPED)?;
-    assert!(!is_overlapped(&synchronous));
-    assert!(is_overlapped(&overlapped));
+    assert!(!is_overlapped(&synchronous)?);
+    assert!(is_overlapped(&overlapped)?);
+    assert!(matches!(
+        crate::InheritedOutput::from_file(overlapped.try_clone()?),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported
+    ));
     for file in [&synchronous, &overlapped] {
         write_all_at(file, 3, b"positional")?;
         let mut bytes = [0; 8];
@@ -33,6 +37,16 @@ fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()>
         assert_eq!(read_at(file, 13, &mut bytes)?, 0);
     }
     assert_eq!((&synchronous).stream_position()?, 0);
+    let bytes = b"original redirected output".to_vec();
+    let pointer = bytes.as_ptr() as usize;
+    let output = crate::InheritedOutput::from_file(synchronous.try_clone()?)?;
+    let (output, bytes) = crate::coordination_runtime()?.block_on(output.write_owned(bytes))?;
+    assert_eq!(bytes.as_ptr() as usize, pointer);
+    drop(output);
+    assert_eq!((&synchronous).stream_position()?, bytes.len() as u64);
+    let mut actual = vec![0; bytes.len()];
+    assert_eq!(read_at(&synchronous, 0, &mut actual)?, bytes.len());
+    assert_eq!(actual, bytes);
     Ok(())
 }
 
