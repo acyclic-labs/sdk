@@ -130,12 +130,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         .map(|task| task.with_execution_journal(journal.clone()))
     };
     let base = uncompacted_executor(
-        Model::new(
-            "fixture".into(),
-            "bound-filesystem".into(),
-            "1".into(),
-            Value::Null,
-        )?,
+        Model::new("fixture".into(), "bound-filesystem".into(), "1".into())?,
         Arc::new(scripted_model()),
         ContextPipeline::default(),
         crate::tools::defaults()?,
