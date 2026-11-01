@@ -1,5 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 
+// Load only after source/package admission. Hash each original byte sequence
+// in process; the native receipt validator independently binds the report.
+export async function receiptDigester() {
+  const { blake3 } = await import("@noble/hashes/blake3.js").catch(cause => {
+    throw new Error("step=receipt-digest-load; recovery=bun install --frozen-lockfile", { cause });
+  });
+  return bytes => `blake3:${Buffer.from(blake3(
+    typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes,
+  )).toString("hex")}`;
+}
+
 // Packaging owns these bytes. This checks their binding, not their authenticity.
 export function verifyPackageProvenance(sourceCommit, checksums, sourceRevision, files) {
   if (sourceCommit.trim() !== sourceRevision) throw new Error("package source does not match the conformance checkout");

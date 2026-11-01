@@ -1,4 +1,4 @@
-import { verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
+import { receiptDigester, verifyPackageProvenance, verifyQualificationReceipt } from "./harness-conformance-evidence.mjs";
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -132,7 +132,7 @@ for (const [marker, target, name, features] of e2e) {
 command("cargo", ["build", "--quiet", "--locked", "-p", "acyclic-conformance", "--bin", "harness-conformance"]);
 const metadata = JSON.parse(command("cargo", ["metadata", "--locked", "--no-deps", "--format-version", "1"]));
 const runnerBinary = resolve(metadata.target_directory, `debug/harness-conformance${process.platform === "win32" ? ".exe" : ""}`);
-const hash = bytes => command(runnerBinary, ["digest"], bytes);
+const hash = await receiptDigester();
 const packageEvidenceDigest = hash(JSON.stringify([...packageDigests]));
 const cases = harnessCases.map(item => {
   const required = markers.get(item.name);
