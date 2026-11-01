@@ -567,7 +567,7 @@ mod tests {
                 };
                 (owner, reader, terminate)
             };
-            let ((result, report_result), (owner, reader, _terminate)) = tokio::join!(
+            let ((result, report_result, _failure_report), (owner, reader, _terminate)) = tokio::join!(
                 crate::lifecycle::observe(&report, Ok(Some(port)), shutdown, false, operation),
                 host,
             );

@@ -116,9 +116,11 @@ pub struct ReportPort {
 
 enum RequestState {
     Fresh,
+    Writing,
     Ready,
     Received(u128, u128),
     Finished,
+    Failed,
 }
 
 fn identity(value: &str) -> bool {
@@ -161,7 +163,9 @@ impl ReportPort {
             "{{\"ready\":true,\"generation\":\"{}\"}}\n",
             self.generation
         );
-        self.channel.get_mut().write_all(line.as_bytes()).await
+        self.channel.get_mut().write_all(line.as_bytes()).await?;
+        self.request = RequestState::Ready;
+        Ok(())
     }
 
     fn announce(&mut self) -> io::Result<()> {
@@ -172,7 +176,7 @@ impl ReportPort {
             ));
         }
         // A partial write cannot be followed by another startup disposition.
-        self.request = RequestState::Ready;
+        self.request = RequestState::Writing;
         Ok(())
     }
 
@@ -189,11 +193,55 @@ impl ReportPort {
         cause: &(dyn std::error::Error + 'static),
     ) -> io::Result<()> {
         self.announce()?;
-        self.request = RequestState::Finished;
-        #[derive(serde::Serialize)]
+        self.request = RequestState::Failed;
+        self.write_failure("rejected", phase, cause).await
+    }
+
+    /// Retains a returned execution failure on this same selected launch.
+    ///
+    /// This is independent of a diagnostic ACK and never certifies an effect
+    /// result or physical retirement. A canceled or failed earlier frame write
+    /// leaves an unknown prefix: appending another frame is then refused. The
+    /// caller retains the original cause and incomplete delivery separately.
+    pub async fn fail_execution(
+        &mut self,
+        cause: &(dyn std::error::Error + 'static),
+    ) -> io::Result<()> {
+        match self.request {
+            RequestState::Fresh
+            | RequestState::Ready
+            | RequestState::Received(_, _)
+            | RequestState::Finished => {}
+            RequestState::Writing | RequestState::Failed => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "report frame is incomplete or failure already submitted",
+                ));
+            }
+        }
+        self.request = RequestState::Failed;
+        self.write_failure("failed", "execution", cause).await
+    }
+
+    async fn write_failure(
+        &mut self,
+        disposition: &'static str,
+        phase: &'static str,
+        cause: &(dyn std::error::Error + 'static),
+    ) -> io::Result<()> {
         struct Rejection<'a> {
             generation: &'a str,
-            rejected: Failure<'a>,
+            disposition: &'static str,
+            failure: Failure<'a>,
+        }
+        impl serde::Serialize for Rejection<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeMap as _;
+                let mut frame = serializer.serialize_map(Some(2))?;
+                frame.serialize_entry("generation", self.generation)?;
+                frame.serialize_entry(self.disposition, &self.failure)?;
+                frame.end()
+            }
         }
         #[derive(serde::Serialize)]
         struct Failure<'a> {
@@ -210,7 +258,8 @@ impl ReportPort {
         }
         let rejection = Rejection {
             generation: &self.generation,
-            rejected: Failure {
+            disposition,
+            failure: Failure {
                 phase,
                 cause,
                 raw_os_error: cause
@@ -296,10 +345,12 @@ impl ReportPort {
                 "acknowledgement is for a different report request",
             ));
         }
-        self.request = RequestState::Finished;
+        self.request = RequestState::Writing;
         let mut bytes = serde_json::to_vec(ack).map_err(io::Error::other)?;
         bytes.push(b'\n');
-        self.channel.get_mut().write_all(&bytes).await
+        self.channel.get_mut().write_all(&bytes).await?;
+        self.request = RequestState::Finished;
+        Ok(())
     }
 }
 

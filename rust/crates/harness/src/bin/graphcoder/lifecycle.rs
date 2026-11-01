@@ -43,13 +43,13 @@ impl CliPhase {
     }
 }
 
-/// Observation of a setup rejection, independent of its original cause.
+/// Delivery of a returned CLI failure, independent of its original cause.
 #[derive(Debug)]
-pub enum StartupReport {
-    /// The original announcement write returned successfully. Peer receipt
+pub enum FailureReport {
+    /// The original channel write returned successfully. Peer receipt
     /// and physical process retirement remain independent observations.
     Written,
-    /// No complete announcement was observed. `None` means no usable endpoint
+    /// No complete failure frame was observed. `None` means no usable endpoint
     /// or runtime; `Some` retains the actual write or shutdown failure.
     Incomplete(Option<io::Error>),
 }
@@ -61,9 +61,9 @@ pub struct CliFailure {
     pub phase: CliPhase,
     /// The exact returned error; transport failure never replaces it.
     pub cause: Failure,
-    /// Setup rejection observation. `None` identifies an admitted operation's
-    /// failure, whose diagnostic ACK is not its result or retirement receipt.
-    pub startup_report: Option<StartupReport>,
+    /// The returned failure's independent delivery disposition. A diagnostic
+    /// ACK does not substitute for this frame or for physical retirement.
+    pub failure_report: FailureReport,
 }
 
 impl fmt::Display for CliFailure {
@@ -89,22 +89,22 @@ impl CliCompletion {
         self.0
     }
 
-    pub(super) fn rejected(phase: CliPhase, cause: Failure, report: StartupReport) -> Self {
+    pub(super) fn rejected(phase: CliPhase, cause: Failure, report: FailureReport) -> Self {
         Self(Err(CliFailure {
             phase,
             cause,
-            startup_report: Some(report),
+            failure_report: report,
         }))
     }
 
-    pub(super) fn executed(result: Result<u8, Failure>) -> Self {
+    pub(super) fn executed(result: Result<u8, Failure>, report: Option<FailureReport>) -> Self {
         Self(
             result
                 .map(std::process::ExitCode::from)
                 .map_err(|cause| CliFailure {
                     phase: CliPhase::Execution,
                     cause,
-                    startup_report: None,
+                    failure_report: report.unwrap_or(FailureReport::Incomplete(None)),
                 }),
         )
     }
@@ -127,19 +127,35 @@ pub(super) async fn reject_startup(
     shutdown: Shutdown,
     phase: CliPhase,
     cause: &(dyn std::error::Error + 'static),
-) -> StartupReport {
+) -> FailureReport {
+    write_failure(port, shutdown, phase, cause).await
+}
+
+async fn write_failure(
+    port: Option<ReportPort>,
+    shutdown: Shutdown,
+    phase: CliPhase,
+    cause: &(dyn std::error::Error + 'static),
+) -> FailureReport {
     let Some(mut port) = port else {
-        return StartupReport::Incomplete(None);
+        return FailureReport::Incomplete(None);
     };
-    // Setup has admitted no operation. Only its same announcement write or
-    // the original independently driven OS shutdown event can end this wait.
+    // The same channel's write or the original independently driven OS shutdown
+    // event ends this wait. No new shutdown or result owner is introduced.
+    let write = async {
+        if phase == CliPhase::Execution {
+            port.fail_execution(cause).await
+        } else {
+            port.reject_startup(phase.name(), cause).await
+        }
+    };
     tokio::select! {
-        result = port.reject_startup(phase.name(), cause) => match result {
-            Ok(()) => StartupReport::Written,
-            Err(error) => StartupReport::Incomplete(Some(error)),
+        result = write => match result {
+            Ok(()) => FailureReport::Written,
+            Err(error) => FailureReport::Incomplete(Some(error)),
         },
-        stopped = shutdown => StartupReport::Incomplete(Some(match stopped {
-            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted startup rejection"),
+        stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
+            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),
             Err(error) => io::Error::other(error),
         })),
     }
@@ -312,33 +328,55 @@ pub(super) async fn observe(
     shutdown: Shutdown,
     graceful: bool,
     operation: impl Future<Output = Result<u8, Failure>>,
-) -> (Result<u8, Failure>, io::Result<()>) {
-    let diagnostic = async {
-        let Some(mut port) = port? else {
-            return std::future::pending().await;
-        };
-        port.ready().await?;
-        if let Some(request) = port.request().await? {
-            let ack = port.snapshot(request, report);
-            port.acknowledge(&ack).await?;
-        }
-        Ok(())
+) -> (Result<u8, Failure>, io::Result<()>, Option<FailureReport>) {
+    let (mut port, mut admission_error) = match port {
+        Ok(port) => (port, None),
+        Err(error) => (None, Some(error)),
     };
     tokio::pin!(operation);
-    tokio::pin!(diagnostic);
-    let diagnostic = tokio::select! {
-        result = &mut operation => return (result, Ok(())),
-        stopped = shutdown.clone() => return (
-            finish(stopped, graceful, operation).await,
-            Err(io::ErrorKind::Interrupted.into()),
-        ),
-        result = &mut diagnostic => result,
+    let (result, mut diagnostic) = {
+        let diagnostic = async {
+            if let Some(error) = admission_error.take() {
+                return Err(error);
+            }
+            let Some(port) = port.as_mut() else {
+                return std::future::pending().await;
+            };
+            port.ready().await?;
+            if let Some(request) = port.request().await? {
+                let ack = port.snapshot(request, report);
+                port.acknowledge(&ack).await?;
+            }
+            Ok(())
+        };
+        tokio::pin!(diagnostic);
+        tokio::select! {
+            result = &mut operation => (result, Ok(())),
+            stopped = shutdown.clone() => (
+                finish(stopped, graceful, &mut operation).await,
+                Err(io::ErrorKind::Interrupted.into()),
+            ),
+            diagnostic = &mut diagnostic => {
+                let result = tokio::select! {
+                    result = &mut operation => result,
+                    stopped = shutdown.clone() => finish(stopped, graceful, &mut operation).await,
+                };
+                (result, diagnostic)
+            },
+        }
     };
-    let result = tokio::select! {
-        result = &mut operation => result,
-        stopped = shutdown => finish(stopped, graceful, operation).await,
+    if let Some(error) = admission_error {
+        diagnostic = Err(error);
+    }
+    // A snapshot can precede the operation's terminal. Retain the same port
+    // until that terminal and deliver its exact cause before returning it.
+    let failure_report = match &result {
+        Err(cause) => {
+            Some(write_failure(port, shutdown, CliPhase::Execution, cause.as_ref()).await)
+        }
+        Ok(_) => None,
     };
-    (result, diagnostic)
+    (result, diagnostic, failure_report)
 }
 
 async fn finish(
