@@ -793,6 +793,10 @@ async fn run<T: TurnDriver + ?Sized>(
     // returning an invalid effect fails without publishing those effects.
     if !turn.outs.iter().all(valid_effect)
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
+        || matches!(
+            &turn.wait,
+            Wait::Done(AgentOutcome::FailedDiagnostic { .. })
+        )
     {
         turn = TurnStep {
             checkpoint: None,
