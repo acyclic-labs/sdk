@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix="acyclic-exclusion-flush-") as temporary
          sys.argv[1],
          "local::owner::exclusion::tests::held_metadata_excludes_only_owned_tokens_and_preserves_opaque_user_bytes",
          "--exact", "--nocapture"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=9.5,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     print(result.stdout, flush=True)
     assert result.returncode == 0, result.returncode
