@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 /// Caller-owned lineage sealing. Implementations authenticate the plaintext,
 /// physical name, original generation and root directory identity together.
 /// Keys and transport identity remain outside filesystem objects.
