@@ -899,19 +899,11 @@ where
                 .dispatch(call.command(), &by, &approver, &authorization)
                 .await;
             if matches!(
-                (&result, call.command()),
-                (
-                    Ok(AgentReply::Diff { .. }
-                        | AgentReply::Usage { .. }
-                        | AgentReply::Directory { .. }),
-                    _
-                ) | (
-                    Ok(AgentReply::Content { .. }),
-                    AgentCommand::Read {
-                        target: ReadTarget::Private { .. },
-                        ..
-                    }
-                )
+                &result,
+                Ok(AgentReply::Diff { .. }
+                    | AgentReply::Usage { .. }
+                    | AgentReply::Directory { .. }
+                    | AgentReply::Content { .. })
             ) {
                 // The source may have awaited IO. No source data leaves after
                 // its original call credential or current host policy is revoked.

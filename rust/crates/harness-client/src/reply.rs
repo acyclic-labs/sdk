@@ -114,6 +114,7 @@ pub enum AgentReply {
     },
     /// Authorized names at one generation, without eager file reads.
     Directory {
+        /// Ordered visible names and the immutable generation that supplied them.
         page: PrivateDirectoryPage,
         /// Present only on the initial snapshot, never a follow grant.
         changes: Option<DirectoryChanges>,
