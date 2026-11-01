@@ -158,6 +158,10 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
             r#"{"nbformat":4,"cells":[{"outputs":[],"execution_count":1,"source":[],"cell_type":"code","id":"a"}]}"#,
             "raw",
         ),
+        (
+            r#"{"nbformat":4,"cells":[{"id":"a","source":[],"cell_type":"code","execution_count":1,"metadata":{"keep":true},"outputs":[]}]}"#,
+            "markdown",
+        ),
         // Escaped type/attachment labels use the same borrowed codec and spans.
         (
             r#"{"nbformat":4,"cells":[{"id":"a","cell_type":"markdown","source":[],"att\u0061chments":{"x":{"image/png":"ignored"}}}]}"#,
