@@ -50,7 +50,7 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
                 ..valid.clone()
             },
         ] {
-            // Admission cannot depend on a future, foreign, or closed revision
+            // Admission cannot depend on a future or foreign revision
             // producer. No watch registration or publication guard is needed.
             for foreign in [false, true] {
                 let mut cut = next.clone();
@@ -93,7 +93,7 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
         assert!(portable.next().await.is_none());
         drop(portable);
         let (mut native, allocation) = native.await??.into_parts();
-        let actual = native.next().await.ok_or("missing native record")??;
+        let actual = native.next().await.ok_or("missing native record")???;
         assert_eq!(actual.value(), &expected);
         drop(actual);
         assert!(native.next().await.is_none());
