@@ -157,6 +157,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                 0,
                 0,
                 Body::Hello(wire::SessionHello {
+                    credentials: vec![],
                     interest: None,
                     version: crate::session::VERSION,
                     client_id: bytes::Bytes::from_static(b"deferred-owner"),
