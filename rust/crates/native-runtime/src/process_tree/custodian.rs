@@ -27,7 +27,6 @@ use std::os::windows::io::{
 };
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle,
@@ -45,10 +44,12 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, DETACHED_PROCESS, ExitProcess, GetCurrentProcess, GetProcessId, INFINITE,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    RegisterWaitForSingleObject, SetEvent, UnregisterWaitEx, WT_EXECUTEONLYONCE,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, SetEvent,
     WaitForMultipleObjects, WaitForSingleObject,
 };
+
+mod wait;
+use wait::ExitWait;
 
 /// The environment variable that makes a process a custodian.
 const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
@@ -56,9 +57,9 @@ const SWITCH: &str = "ACYCLIC_PROCESS_CUSTODIAN";
 const READY: &str = "ready";
 /// The Job message that a process joined it; its value is the PID.
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
-/// The completion key the owner watch posts once the owner has exited.
+/// The kernel completion key delivered once the owner has exited.
 const OWNER_EXITED: usize = usize::MAX;
-/// The completion key a member's wait posts once it has exited; the
+/// The kernel completion key delivered once a member has exited; the
 /// message carries its PID.
 const MEMBER_EXITED: usize = usize::MAX - 1;
 /// The completion key the input reader posts for each tree it reads.
@@ -572,7 +573,15 @@ fn serve() -> io::Result<()> {
     if port.is_null() {
         return Err(io::Error::last_os_error());
     }
-    PORT.store(port.expose_provenance(), Ordering::Relaxed);
+    // SAFETY: the original owned port and transferred owner process handle
+    // remain live throughout this custodian. A failed association is refused
+    // before READY, so it cannot become an owner-death event.
+    let _owner_wait = ExitWait::new(
+        unsafe { BorrowedHandle::borrow_raw(port) },
+        unsafe { BorrowedHandle::borrow_raw(owner) },
+        OWNER_EXITED,
+        0,
+    )?;
     let admission = super::custodian_admission::Server::bind()?;
     let endpoint = admission.endpoint.clone();
     let requests = admission.start(port)?;
@@ -580,19 +589,9 @@ fn serve() -> io::Result<()> {
     let mut output = io::stdout();
     writeln!(output, "{READY} {endpoint}")?;
     output.flush()?;
-    let (owner_watch, port_watch) = (owner.expose_provenance(), port.expose_provenance());
-    std::thread::spawn(move || {
-        let owner: HANDLE = std::ptr::with_exposed_provenance_mut(owner_watch);
-        let port: HANDLE = std::ptr::with_exposed_provenance_mut(port_watch);
-        // SAFETY: handles this custodian owns for its whole life.
-        unsafe {
-            WaitForSingleObject(owner, INFINITE);
-            PostQueuedCompletionStatus(port, 0, OWNER_EXITED, std::ptr::null());
-        }
-    });
     let mut state = State {
         trees: IndexMap::new(),
-        members: Members::default(),
+        members: Members::new(port),
         owner_exited: false,
         input_closed: false,
         #[cfg(test)]
@@ -857,29 +856,27 @@ fn transport_lease(handle: HANDLE) -> Option<OwnedHandle> {
     }
 }
 
-/// The completion port that member exit waits post to; one per custodian.
-static PORT: AtomicUsize = AtomicUsize::new(0);
-
-/// Posts the exit of the member whose PID is `context`.
-unsafe extern "system" fn member_exited(context: *mut c_void, _timed_out: bool) {
-    let port: HANDLE = std::ptr::with_exposed_provenance_mut(PORT.load(Ordering::Relaxed));
-    let pid = u32::try_from(context.addr()).unwrap_or(0);
-    // SAFETY: the custodian's port, which lives as long as the process.
-    unsafe { PostQueuedCompletionStatus(port, pid, MEMBER_EXITED, std::ptr::null()) };
+/// Every tree's live members: each holds its process handle, a kernel wait
+/// packet that reports its exit and its tree, and is released on dequeue,
+/// so the custodian's cost tracks live members, never every member there was.
+struct Members {
+    port: HANDLE,
+    live: BTreeMap<u32, (HANDLE, ExitWait, usize)>,
 }
 
-/// Every tree's live members: each holds its process handle, a thread pool
-/// wait that reports its exit and its tree, and is released on that report,
-/// so the custodian's cost tracks live members, never every member there was.
-#[derive(Default)]
-struct Members(BTreeMap<u32, (HANDLE, HANDLE, usize)>);
-
 impl Members {
+    fn new(port: HANDLE) -> Self {
+        Self {
+            port,
+            live: BTreeMap::new(),
+        }
+    }
+
     /// Watches process `pid` if it is a member of `tree`'s Job. A PID whose
     /// process already exited is either gone or reused outside the Job; a
     /// held handle keeps a watched member's PID from being reused.
     fn admit(&mut self, tree: &mut Tree, id: usize, pid: u32) -> io::Result<bool> {
-        if self.0.contains_key(&pid) {
+        if self.live.contains_key(&pid) {
             return Ok(true);
         }
         // SAFETY: opening a handle to a PID; owned below.
@@ -921,25 +918,18 @@ impl Members {
     fn watch(&mut self, tree: &mut Tree, id: usize, process: HANDLE) -> io::Result<()> {
         // SAFETY: an owned process handle.
         let pid = unsafe { GetProcessId(process) };
-        let mut wait: HANDLE = std::ptr::null_mut();
-        // SAFETY: the owned process handle and a one-shot callback context;
-        // the wait reports once, with the PID as its context.
-        let registered = pid != 0
-            && unsafe {
-                RegisterWaitForSingleObject(
-                    &raw mut wait,
-                    process,
-                    Some(member_exited),
-                    std::ptr::with_exposed_provenance(pid as usize),
-                    INFINITE,
-                    WT_EXECUTEONLYONCE,
-                )
-            } != 0;
-        if !registered {
-            let error = io::Error::last_os_error();
-            return Err(error);
+        if pid == 0 {
+            return Err(io::Error::last_os_error());
         }
-        self.0.insert(pid, (process, wait, id));
+        // SAFETY: this custodian retains its original port and process handle
+        // through the exact exit packet. No user callback can lose a post.
+        let wait = ExitWait::new(
+            unsafe { BorrowedHandle::borrow_raw(self.port) },
+            unsafe { BorrowedHandle::borrow_raw(process) },
+            MEMBER_EXITED,
+            pid,
+        )?;
+        self.live.insert(pid, (process, wait, id));
         tree.members += 1;
         Ok(())
     }
@@ -947,14 +937,11 @@ impl Members {
     /// Releases the member `pid`, whose exit its wait reported, and answers
     /// its tree.
     fn release(&mut self, pid: u32) -> Option<usize> {
-        let (process, wait, tree) = self.0.remove(&pid)?;
-        // SAFETY: the reported wait, which never runs again, and the
-        // handle it watched. A null event returns without waiting for
-        // the reporting callback, which no longer uses either.
-        unsafe {
-            UnregisterWaitEx(wait, std::ptr::null_mut());
-            CloseHandle(process);
-        }
+        let (process, wait, tree) = self.live.remove(&pid)?;
+        // Dequeue ended this association before either original handle retires.
+        drop(wait);
+        // SAFETY: the retained process whose kernel exit packet was dequeued.
+        unsafe { CloseHandle(process) };
         Some(tree)
     }
 }
@@ -1061,7 +1048,7 @@ mod handoff_tests {
             ]
             .into_iter()
             .collect(),
-            members: Members::default(),
+            members: Members::new(std::ptr::null_mut()),
             owner_exited: true,
             input_closed: true,
             visits: 0,
@@ -1121,7 +1108,7 @@ mod handoff_tests {
             ]
             .into_iter()
             .collect(),
-            members: Members::default(),
+            members: Members::new(std::ptr::null_mut()),
             owner_exited: true,
             input_closed: true,
             visits: 0,
