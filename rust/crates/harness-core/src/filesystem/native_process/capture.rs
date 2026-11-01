@@ -257,7 +257,9 @@ fn start(
         .stderr(ProcessStdio::piped());
     handler.check()?;
     #[cfg(feature = "test-support")]
-    {
+    if invocation.execution_grant.is_none() {
+        // Output substitution cannot establish kernel enforcement. A granted
+        // invocation must reach the original native launch owner below.
         // The installed provider calls these sequentially on this worker.
         // Borrow the same handler for each callback without another owner.
         let handler = std::cell::RefCell::new(&mut *handler);
@@ -275,11 +277,14 @@ fn start(
         }
     }
     let input = invocation.standard_input;
-    let tree = match &invocation.process_custody {
-        Some(custody) => {
+    let tree = match (&invocation.execution_grant, &invocation.process_custody) {
+        (Some(grant), custody) => {
+            acyclic_native_runtime::ProcessTree::spawn_granted(command, grant, custody.as_deref())?
+        }
+        (None, Some(custody)) => {
             acyclic_native_runtime::ProcessTree::spawn_in_custody(&mut command, custody)?
         }
-        None => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
+        (None, None) => acyclic_native_runtime::ProcessTree::spawn(&mut command)?,
     };
     Ok(Ok((tree, input)))
 }
@@ -321,3 +326,6 @@ fn result(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod granted;

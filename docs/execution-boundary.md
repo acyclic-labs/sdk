@@ -161,6 +161,14 @@ adapter refuses confined execution. The stock shell is not yet wired to this
 API. No cross-platform confinement or runtime performance qualification is
 claimed by this milestone.
 
+Native capture invocations can carry a host-selected `execution_grant` through
+the existing owned completion, output retention and process custody. A selected
+grant reaches the same consuming native launch; capture never retries a refusal
+without it. Recorded output substitution cannot establish kernel enforcement,
+so granted invocations always reach the native owner. This transport does not
+issue authority: the authenticated host must select the grant after approval.
+Existing stock shell admission still supplies no execution grant.
+
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;
 cloning a grant adds no handles. Enforcement objects exist for active
