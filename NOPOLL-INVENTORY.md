@@ -1,5 +1,12 @@
 # Polling and timed-wait inventory
 
+Linux x86_64: the original live-descendant retirement control passed 1/1 at
+`51df694af1`, 0.122 seconds total execution. Both original cases retain a real
+Python child blocked in its OS signal wait, including inherited output. The
+original leader exit retires its process group before joining output closure;
+the assertion checks retirement at that exit event, without a delay. The
+restored-old-source mutation was not separately executed in this qualification.
+
 Package completion sites at `134933adbb`:
 
 | Source | Removed wait | Original completion and negative control |
