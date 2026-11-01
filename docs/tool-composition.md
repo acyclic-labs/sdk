@@ -55,6 +55,8 @@ only the provider declaration iterator filters them from the native prefix.
 The admitted request's explicit `compose_tools` setting controls this projection;
 stock execution sets it from the bound JavaScript executor. A custom tool named
 `code` retains ordinary declarations and does not announce a JavaScript table.
+Requests saved without the composition setting require fresh admission under
+the current request schema. Their original bytes and digests remain immutable.
 Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
