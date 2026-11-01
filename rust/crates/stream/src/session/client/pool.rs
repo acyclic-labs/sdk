@@ -354,34 +354,34 @@ impl Pool {
         self.grant(id)
     }
     fn receive(&mut self, node: &str, input: impl Into<Frame>) -> Result<(), StreamError> {
-        let Frame {
-            wire: input,
-            record,
-        } = input.into();
-        let id = input.channel_id;
+        let input = input.into();
+        let received = input.wire();
+        let id = received.channel_id;
         if id == 0 {
-            return self.control(node, input.generation, input.body.as_ref());
+            return self.control(node, received.generation, received.body.as_ref());
         }
-        if matches!(input.body, Some(Body::Data(_))) {
+        if matches!(received.body, Some(Body::Data(_))) {
             let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
-            wire_codec::session::consume_credit(&mut link.credit, &input)?;
+            wire_codec::session::consume_credit(&mut link.credit, received)?;
         }
         let epoch = self.links.get(node).ok_or(StreamError::Unavailable)?.epoch;
-        let length = input.encoded_len() as u64;
+        let length = received.encoded_len() as u64;
         let Some(route) = self
             .routes
             .get_mut(&id)
-            .filter(|route| route.node == node && route.generation == input.generation)
+            .filter(|route| route.node == node && route.generation == received.generation)
         else {
             // Return aggregate credit for fenced data without touching its successor.
-            if matches!(input.body, Some(Body::Data(_))) {
+            if matches!(received.body, Some(Body::Data(_))) {
                 self.release(node, epoch, length)?;
             }
             return Ok(());
         };
-        if matches!(input.body, Some(Body::Data(_))) {
-            wire_codec::session::consume_credit(&mut route.credit, &input)?;
+        if matches!(received.body, Some(Body::Data(_))) {
+            wire_codec::session::consume_credit(&mut route.credit, received)?;
+            return self.data(node, id, received.generation, input, length, epoch);
         }
+        let input = input.into_wire();
         if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
             && let Some(link) = self.links.get(node)
         {
@@ -436,9 +436,6 @@ impl Pool {
                 } else {
                     self.grant(id)
                 }
-            }
-            Some(Body::Data(data)) => {
-                self.data(node, id, input.generation, data, length, epoch, record)
             }
             Some(Body::Closed(closed)) => {
                 let error = Self::closed(route, id, &closed);
@@ -616,33 +613,31 @@ impl Pool {
         node: &str,
         id: u64,
         generation: u64,
-        data: wire::SessionData,
+        item: Frame,
         length: u64,
         epoch: u64,
-        record: Option<crate::Record>,
     ) -> Result<(), StreamError> {
         // Pending skipped progress shares the next data envelope in wire order.
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        let Some(Body::Data(data)) = &item.wire().body else {
+            return Err(StreamError::Unavailable);
+        };
         let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
         let sequence = match (&route.kind, data.item.as_ref()) {
             (Kind::Follow(follow), _) => {
-                wire_codec::session::follow_data_sequence(follow, route.received, &data)?
+                wire_codec::session::follow_data_sequence(follow, route.received, data)?
             }
             (Kind::ActorCall(_), Some(Item::ActorCall(_)))
             | (Kind::ChildrenPage(_), Some(Item::ChildrenPage(_)))
             | (Kind::Heads(_), Some(Item::Heads(_))) => wire_codec::session::actor_call_sequence(
                 route.received,
                 &route.received_opaque,
-                &data,
+                data,
             )?,
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
-        let item = Frame {
-            wire: frame(id, generation, Body::Data(data)),
-            record,
-        };
         route.buffered_data = route
             .buffered_data
             .checked_add(1)

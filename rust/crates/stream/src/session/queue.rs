@@ -17,7 +17,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         }) else {
             return Ok(());
         };
-        let (after, item, key, original) = match record {
+        let (frame, key) = match record {
             Ok(Event::Opened(preceding, applied)) => {
                 self.controls.push_back(frame(
                     identity.channel_id,
@@ -42,39 +42,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
             Ok(Event::Record(record)) => {
-                let original = record.clone();
-                let next = record
-                    .sequence
-                    .checked_add(1)
-                    .ok_or(StreamError::OutOfRange)?;
-                let (item, key) = if channel.latest {
-                    let [key] = record.headers.keys() else {
-                        return self.record(identity, Err(StreamError::InvalidArgument));
-                    };
-                    let attention = record
-                        .headers
-                        .attributes()
-                        .iter()
-                        .find(|a| a.name == "attention");
-                    let attention = match attention.map(|a| a.value.as_ref()) {
-                        None | Some(b"false") => false,
-                        Some(b"true") => true,
-                        _ => return self.record(identity, Err(StreamError::InvalidArgument)),
-                    };
-                    let value = wire::SessionLatestValue {
-                        key: Bytes::from_owner(key.clone()),
-                        value: Bytes::from_owner(record.value),
-                        attention,
-                    };
-                    let key = (!value.attention).then(|| value.key.clone());
-                    (Item::LatestValue(value), key)
-                } else {
-                    (
-                        Item::Record(wire_codec::record_wire(record, channel.followed.as_ref())),
-                        None,
-                    )
-                };
-                (cursor(next), item, key, Some(original))
+                match Frame::from_record(
+                    &identity,
+                    record,
+                    channel.followed.as_ref(),
+                    channel.latest,
+                ) {
+                    Ok(frame) => frame,
+                    Err(error) => return self.record(identity, Err(error)),
+                }
             }
             Ok(Event::CallChunk {
                 index,
@@ -84,12 +60,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }) => {
                 let next = index.checked_add(1).ok_or(StreamError::OutOfRange)?;
                 (
-                    wire::SessionCursor {
-                        next,
-                        opaque: Bytes::copy_from_slice(&total.to_le_bytes()),
-                    },
-                    item(bytes),
-                    None,
+                    Frame::data(
+                        &identity,
+                        wire::SessionCursor {
+                            next,
+                            opaque: Bytes::copy_from_slice(&total.to_le_bytes()),
+                        },
+                        item(bytes),
+                    ),
                     None,
                 )
             }
@@ -122,28 +100,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
         };
-        self.enqueue(identity, after, item, key, original)
+        self.enqueue(identity, frame, key)
     }
 
     fn enqueue(
         &mut self,
         identity: wire::SessionChannel,
-        after: wire::SessionCursor,
-        item: Item,
+        frame: Frame,
         key: Option<Bytes>,
-        original: Option<crate::Record>,
     ) -> Result<(), StreamError> {
-        let next = after.next;
-        let frame = frame(
-            identity.channel_id,
-            identity.generation,
-            Body::Data(wire::SessionData {
-                after: Some(after),
-                accepted: next,
-                durable: 0,
-                item: Some(item),
-            }),
-        );
         // Conflation is local to one bounded LATEST queue. Validate the
         // replacement before mutating it so capacity failures are atomic.
         let channel = self
@@ -159,7 +124,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let replaced = prior
             .and_then(|index| channel.pending.get(index))
             .map_or(0, |pending| pending.frame.wire().encoded_len());
-        let bytes = self.pending_bytes - replaced + frame.encoded_len();
+        let bytes = self.pending_bytes - replaced + frame.wire().encoded_len();
         let count = self.pending_frames + usize::from(prior.is_none());
         if bytes > self.limits.pending_bytes || count > self.limits.pending_frames {
             return Err(StreamError::Capacity);
@@ -167,13 +132,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         if let Some(index) = prior {
             channel.pending.remove(index);
         }
-        channel.pending.push_back(Pending {
-            frame: Frame {
-                wire: frame,
-                record: original,
-            },
-            key,
-        });
+        channel.pending.push_back(Pending { frame, key });
         self.pending_bytes = bytes;
         self.pending_frames = count;
         self.refresh_source(identity.channel_id);

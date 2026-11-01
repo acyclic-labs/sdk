@@ -65,9 +65,15 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             }
         };
         let mut decoded = None;
+        crate::changes::take_parsed_bytes();
         let allocations = acyclic_test_support::measure(|| {
             decoded = Some(frame.decode_record(Some(&path)));
         });
+        assert_eq!(
+            crate::changes::take_parsed_bytes(),
+            0,
+            "owned projection reparsed body"
+        );
         let decoded = decoded.ok_or("projection did not run")??;
         assert_eq!(decoded, first);
         let original = frame.original_record().ok_or("missing captured custody")?;
@@ -75,18 +81,21 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             decoded.headers.keys().as_ptr(),
             original.headers.keys().as_ptr()
         ));
-        let moved = Frame {
-            wire: frame.wire().clone(),
-            record: Some(original.clone()),
-        }
-        .into_record(&path)?;
-        assert!(std::ptr::eq(
-            moved.headers.keys().as_ptr(),
-            original.headers.keys().as_ptr()
-        ));
-        if records != 2 {
-            assert_eq!(allocations.count_total, 0, "owned projection allocated");
-        }
+        let keys = original.headers.keys().as_ptr();
+        assert_eq!(allocations.count_total, 0, "owned projection allocated");
+        // Repeated views share the original immutable body validation, even
+        // for changes whose canonical wire decoder must parse their keys.
+        let repeated = acyclic_test_support::measure(|| {
+            for _ in 0..8 {
+                assert_eq!(frame.decode_record(Some(&path)).unwrap(), first);
+            }
+        });
+        assert_eq!(repeated.count_total, 0, "repeated projection allocated");
+        assert_eq!(
+            crate::changes::take_parsed_bytes(),
+            0,
+            "owned projection reparsed body"
+        );
         assert!(frame.decode_record(None).is_err());
         assert!(
             frame
@@ -103,10 +112,14 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         let before = acyclic_test_support::measure(|| {
             baseline = Some(wire_codec::record(record.clone(), Some(&path)));
         });
+        let parsed_bytes = crate::changes::take_parsed_bytes();
+        if records == 2 {
+            assert_eq!(parsed_bytes, first.value.len());
+        }
         assert_eq!(baseline.ok_or("baseline did not run")??, first);
         assert!(before.count_total > allocations.count_total);
         eprintln!(
-            "record_projection records={records} before_allocations={} after_allocations={}",
+            "record_projection records={records} wire_allocations={} owned_allocations={} wire_parser_bytes={parsed_bytes} owned_parser_bytes=0",
             before.count_total, allocations.count_total
         );
         let mut invalid = frame.wire().clone();
@@ -123,13 +136,31 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             // could: immutable headers alone do not prove the public body.
             let mut original = decoded;
             original.value = OwnedBytes::from_static(b"\x80");
-            let invalid = Frame {
-                wire: frame.wire().clone(),
-                record: Some(original),
+            assert!(
+                Frame::from_record(
+                    &wire::SessionChannel {
+                        channel_id: 1,
+                        generation: 1,
+                    },
+                    original,
+                    Some(&path),
+                    false,
+                )
+                .is_err(),
+                "session admitted a mutated provider body"
+            );
+            let mut invalid = frame.wire().clone();
+            let Some(Body::Data(data)) = &mut invalid.body else {
+                return Err("missing captured data".into());
             };
-            assert!(invalid.decode_record(Some(&path)).is_err());
-            assert!(invalid.into_record(&path).is_err());
+            let Some(Item::Record(record)) = &mut data.item else {
+                return Err("missing captured record".into());
+            };
+            record.value = Bytes::from_static(b"\x80");
+            assert!(Frame::from(invalid).decode_record(Some(&path)).is_err());
         }
+        let moved = frame.into_record(&path)?;
+        assert!(std::ptr::eq(moved.headers.keys().as_ptr(), keys));
         drop(frames);
         let mut finite = client
             .read(crate::ReadRequest {

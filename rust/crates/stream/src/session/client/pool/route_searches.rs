@@ -408,7 +408,14 @@ fn old_receive(pool: &mut Pool, node: &str, input: wire::SessionFrame) -> Result
     }
     match input.body {
         Some(Body::Opened(opened)) => old_opened(pool, id, &opened),
-        Some(Body::Data(data)) => pool.data(node, id, input.generation, data, length, epoch, None),
+        Some(Body::Data(data)) => pool.data(
+            node,
+            id,
+            input.generation,
+            frame(id, input.generation, Body::Data(data)).into(),
+            length,
+            epoch,
+        ),
         Some(Body::Closed(closed)) => old_closed(pool, id, &closed),
         Some(Body::Moved(moved)) => {
             let destination = moved.node.ok_or(StreamError::Unavailable)?;
