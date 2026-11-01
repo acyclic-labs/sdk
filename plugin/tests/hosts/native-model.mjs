@@ -8,7 +8,7 @@ import {dirname,delimiter,isAbsolute,join,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost} from './native-host.mjs';
+import {nativeHost,nativeProvider} from './native-host.mjs';
 
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer) {
@@ -32,8 +32,7 @@ export function assertNativeCompletion(host,result,answer) {
    terminal=message;
    if(message.stopReason==='error') {
     const error=new Error(message.errorMessage,{cause:message});
-    error.code=message.errorMessage.startsWith('step=admit Pi keyless Responses provider:')
-     ?'UNSUPPORTED_NATIVE_KEYLESS_PROVIDER':'NATIVE_HOST_MODEL_FAILED';
+    error.code='NATIVE_HOST_MODEL_FAILED';
     throw error;
    }
   } else {
@@ -89,6 +88,7 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
 // actual host once against the caller's mock endpoint.
 export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute}) {
  const native=await nativeHost(host,fixture.env);
+ nativeProvider(native);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
  let endpoint;
