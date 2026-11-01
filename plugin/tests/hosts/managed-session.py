@@ -4,7 +4,7 @@ Run on Linux: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER
 Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
-import json, os, pathlib, signal, subprocess, sys, tempfile, time, traceback
+import json, os, pathlib, selectors, signal, socket, subprocess, sys, tempfile, time, traceback
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
@@ -19,13 +19,17 @@ def interrupted(signum, frame):
  traceback.print_stack(frame)
  raise SystemExit('fixture interrupted')
 signal.signal(signal.SIGTERM,interrupted)
-with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary:
+with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary, socket.socket() as barrier:
+ try:barrier.bind(('127.0.0.1',0));barrier.listen()
+ except OSError as error:
+  raise RuntimeError(f'step=arm native readiness: {error}; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX {scenario}') from error
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
  env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied'),'FIXTURE_HOST_SUPPORT':str(pathlib.Path(__file__).resolve().parent)})
+ env['FIXTURE_BARRIER']=str(barrier.getsockname()[1])
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
  fake=bin_dir/'codex'
  fake.write_text('''#!/usr/bin/env python3
-import json,os,pathlib,subprocess,sys,time,traceback
+import json,os,pathlib,socket,subprocess,sys,traceback
 sys.path.insert(0,os.environ['FIXTURE_HOST_SUPPORT'])
 from native_mcp import McpClient
 def failed(kind,error,stack):
@@ -48,9 +52,16 @@ assert args[args.index('--cd')+1]==str(cwd)
 assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volumes/agents')
 assert (cwd/'AGENTS.md').read_text()=='native instruction discovery fixture'
 first=sys.stdin.read(1)
+def hold_for_cancel():
+ try:
+  with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) as gate:
+   gate.sendall((json.dumps({'cwd':str(cwd)})+'\\n').encode())
+   gate.recv(1)
+ except OSError as error:
+  raise RuntimeError('step=hold native fixture: '+str(error)+'; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX lifecycle') from error
+ raise RuntimeError('step=hold native fixture: readiness owner closed or sent unexpected input; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX lifecycle')
 if first=='B':
- (cwd/'ready').write_text('ready')
- time.sleep(30)
+ hold_for_cancel()
 prompt=first+sys.stdin.read()
 assert prompt in ('failed','cancelled','recursive','first','resumed')
 (cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
@@ -77,17 +88,17 @@ if prompt=='recursive':
   try:nested.stdin.close()
   finally:assert nested.wait()==0
 if prompt=='cancelled':
- child=subprocess.Popen(['sh','-c','sleep 30'])
+ # Only original process-tree cancellation may end this descendant hold.
+ child=subprocess.Popen([sys.executable,'-c','import signal; signal.pause()'])
  (cwd/'descendant.pid').write_text(str(child.pid))
- (cwd/'ready').write_text('ready')
- time.sleep(30)
+ hold_for_cancel()
 if prompt=='failed': sys.exit(17)
 if prompt=='resumed':
  event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text())
  assert args[args.index('resume')+1]==event['thread_id']
 
 ''');fake.chmod(0o755)
- owner=None;bridge=None;mcp=None
+ owner=None;bridge=None;mcp=None;gates=[]
  def start_owner():
   global owner
   with (root/'owner.log').open('w+') as log:
@@ -104,6 +115,21 @@ if prompt=='resumed':
   return mcp.submit(name,reference,prompt)
  def response(identifier):return mcp.result(identifier)
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
+ def native_ready(view,waiter):
+  recovery='python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario
+  try:
+   with selectors.DefaultSelector() as ready:
+    ready.register(barrier,selectors.EVENT_READ,'ready')
+    ready.register(bridge.stdout,selectors.EVENT_READ,'terminal')
+    observed=ready.select()
+    if any(key.data=='terminal' for key,_ in observed):
+     raise RuntimeError(f'step=observe native readiness: child settled before readiness: {response(waiter)}; recovery command: {recovery}')
+   gate,_=barrier.accept();gates.append(gate)
+   with gate.makefile('rb') as messages:event=json.loads(messages.readline())
+  except (OSError,ValueError) as error:
+   raise RuntimeError(f'step=observe native readiness: {error}; recovery command: {recovery}') from error
+  if event!={'cwd':str(view)}:
+   raise RuntimeError(f'step=match native readiness: {event}; recovery command: {recovery}')
  def close_bridge():
   global bridge,mcp
   mcp=None
@@ -132,23 +158,24 @@ if prompt=='resumed':
    assert not (workspace/'failed.txt').exists(),'failed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/failed'});assert (workspace/'failed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS failed-capture-merge',flush=True)
-   cancelled=tool('spawn','cancelled','cancelled');view=pathlib.Path(cancelled['cwd']);deadline=time.monotonic()+2
+   cancelled=tool('spawn','cancelled','cancelled');view=pathlib.Path(cancelled['cwd'])
    print('NATIVE_FIXTURE_PASS cancelled-spawn',time.monotonic()-started,flush=True)
-   while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
+   waiter=submit('wait','cancelled');native_ready(view,waiter)
    print('NATIVE_FIXTURE_PASS cancelled-native-ready',time.monotonic()-started,flush=True)
    # Cancellation retires this view. Retain the observed process identity
-   # while its ready marker still proves the original native session is live.
+   # while its held readiness channel proves the original native session is live.
    pid=int((view/'descendant.pid').read_text())
-   waiter=submit('wait','cancelled');stopped=tool('cancel','cancelled');response(waiter)
+   stopped=tool('cancel','cancelled');response(waiter)
    assert stopped['control']=='interrupt' and stopped['status']['settled'],stopped
    proc=pathlib.Path('/proc')/str(pid)/'stat'
    assert not proc.exists() or proc.read_text().split()[2]=='Z','descendant still running after cancel'
    assert not (workspace/'cancelled.txt').exists(),'cancelled child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/cancelled'});assert (workspace/'cancelled.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS cancelled-capture-merge',flush=True)
-   blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd']);deadline=time.monotonic()+2
-   while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)
-   stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
+   blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd'])
+   waiter=submit('wait','blocked-input');native_ready(view,waiter)
+   stopped=tool('cancel','blocked-input');response(waiter)
+   assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
    recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
@@ -179,6 +206,9 @@ if prompt=='resumed':
    if error.is_file():print('FIXTURE_NATIVE_ERROR',view.name,error.read_text()[-4000:],flush=True)
   raise
  finally:
-  try:close_bridge()
-  finally:stop_owner()
+  try:
+   for gate in gates:gate.close()
+  finally:
+   try:close_bridge()
+   finally:stop_owner()
 assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'
