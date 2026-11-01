@@ -61,6 +61,7 @@ pub(crate) fn origin_len(origin: &crate::Provenance<crate::StreamPath, crate::Fo
 
 pub(crate) fn child_len(child: &crate::Child) -> usize {
     block_len(child.path.as_str().len())
+        .saturating_add(uint_len(child.tail))
         .saturating_add(
             child
                 .tail_record

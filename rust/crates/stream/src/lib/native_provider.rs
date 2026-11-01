@@ -57,6 +57,24 @@ pub trait NativeStreamProvider: StreamProvider {
             StreamError::code,
         )
     }
+    /// Coherent named heads and absence on the original ledger.
+    ///
+    /// Memory and Local currently support `HeadProjection::Tail` without
+    /// retained-record or child selections. Other projections refuse with
+    /// `Unsupported`; a native consumer must never fall back to ordinary work.
+    /// The returned snapshot binds every selected offset and missing path.
+    fn native_heads(
+        &self,
+        request: HeadsRequest,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, Heads> {
+        let _ = request;
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.heads"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
+    }
     /// Canonical finite read; original causes and output custody are retained.
     fn native_read(
         &self,

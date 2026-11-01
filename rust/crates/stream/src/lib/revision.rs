@@ -16,7 +16,12 @@ impl RevisionScope {
     /// Binds caller-owned authority bytes, such as an account or storage id.
     #[must_use]
     pub fn new(bytes: impl Into<Bytes>) -> Self {
-        Self(bytes.into())
+        // Promote uniquely owned transport bytes at scope admission. A later
+        // snapshot clone must not allocate a hidden shared header on its reader.
+        let bytes = bytes.into();
+        let shared = bytes.clone();
+        drop(bytes);
+        Self(shared)
     }
 
     /// The authority bytes.

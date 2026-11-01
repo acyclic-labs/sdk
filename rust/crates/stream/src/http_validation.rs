@@ -130,6 +130,14 @@ fn validate_children_page(value: &Value) -> Result {
     let mut previous: Option<&str> = None;
     for child in children {
         let child = object(child)?;
+        let tail = child.get("tail").map(u64_string).transpose()?;
+        let sequence = child
+            .get("tailRecord")
+            .map(|record| u64_string(field(object(record)?, "sequence")?))
+            .transpose()?;
+        if sequence != tail.and_then(|tail| tail.checked_sub(1)) {
+            return Err("child tail does not match its record");
+        }
         if let Some(record) = child.get("tailRecord") {
             validate_record(record)?;
         }

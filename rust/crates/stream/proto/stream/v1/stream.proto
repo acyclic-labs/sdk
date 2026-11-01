@@ -298,6 +298,8 @@ message Child {
   string path = 1;
   optional Record tail_record = 2;
   optional ForkOrigin origin = 3;
+  // Selected relative stream: absent means missing, zero means present empty.
+  optional uint64 tail = 4;
 }
 message ChildrenPageRequest {
   optional string tail_stream = 5;

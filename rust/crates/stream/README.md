@@ -108,6 +108,10 @@ named observations consume one slot each and the remaining slots bound children.
 The hierarchy continuation retains its existing revision fence. A refused named
 path refuses the entire view; it never appears as absence. Remote adapters carry
 this operation intact through the shared session rather than composing head calls.
+When a child page selects `tail_stream`, each `Child.tail` distinguishes a missing
+stream (`None`) from a present empty stream (`Some(0)`). A positive tail carries
+the original last record at `tail - 1`. These facts share the enclosing Heads cut;
+they require no additional per-child head request.
 
 `ReadRequest.key` seeks an exact opaque header key within
 `[from, min(key.before, tail at open))`. Its limit counts matching records;
@@ -338,6 +342,16 @@ owned typed guards and pre-funded completion retain their distinct custody.
 Unsupported guarantees return `Unsupported` before work. The portable-success
 negative control verifies that this refusal cannot fall back to a successful
 ordinary write, including zero native allocations and no publication.
+
+Memory and Local expose `native_heads` for named `HeadProjection::Tail`
+observations. The existing coherent capture returns accepted offsets, missing
+paths and their applied revision together. Its original native meter admits the
+concrete future and any named-result spill before allocation; the result retains
+that spill's credit until storage retires. Waiting for `at_least` precedes Local's
+publication fence, so the append satisfying that cut remains runnable. History,
+durability and child projections currently refuse `Unsupported` on this native
+method. They remain available through ordinary Heads and cannot be substituted
+for original native work.
 
 `HeadsRequest::retained` selects original records by publication, original
 destination and sequence. Heads, absence, selected records and children share

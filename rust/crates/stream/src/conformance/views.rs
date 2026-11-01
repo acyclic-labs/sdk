@@ -2,6 +2,7 @@ use super::*;
 use crate::StreamProviderExt as _;
 
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+    selected_child_tails(provider).await?;
     let paths = [path("coherent/a/state")?, path("coherent/b/state")?];
     let mut previous = None;
     let mut retained_previous = None;
@@ -190,6 +191,155 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         if old.value == current.value || old.commit_id == current.commit_id {
             return Err(StreamError::Unavailable);
         }
+    }
+    Ok(())
+}
+
+async fn selected_child_tails<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+    let source = path("selected-child-source")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![Bytes::from_static(b"original").into()],
+            if_tail: Some(0),
+            idempotency_key: key(b"selected-child-source")?,
+        })
+        .await?;
+    let names = ["absent", "empty", "many", "single"];
+    let selected: Vec<_> = names
+        .iter()
+        .map(|name| path(&format!("selected-children/{name}/state")))
+        .collect::<Result<_, _>>()?;
+    provider
+        .fork(ForkRequest {
+            exclude: Vec::new(),
+            source,
+            destination: selected[1].clone(),
+            at_tail: Some(0),
+            idempotency_key: key(b"selected-child-empty")?,
+        })
+        .await?;
+    let outcome = provider
+        .commit(CommitRequest {
+            conditions: Vec::new(),
+            mutations: vec![
+                CommitMutation::Append {
+                    path: path("selected-children/absent/anchor")?,
+                    records: vec![Bytes::from_static(b"anchor").into()],
+                },
+                CommitMutation::Append {
+                    path: selected[2].clone(),
+                    records: vec![
+                        Bytes::from_static(b"first").into(),
+                        Bytes::from_static(b"last").into(),
+                    ],
+                },
+                CommitMutation::Append {
+                    path: selected[3].clone(),
+                    records: vec![Bytes::from_static(b"single").into()],
+                },
+            ],
+            idempotency_key: key(b"selected-child-publication")?,
+            deadline_unix_millis: None,
+        })
+        .await?;
+    let CommitOutcome::Committed(receipt) = outcome else {
+        return Err(StreamError::Unavailable);
+    };
+    let request = crate::HeadsRequest {
+        retained: Default::default(),
+        durable_through: None,
+        projection: Default::default(),
+        paths: selected.into_iter().collect(),
+        children: Some(ChildrenPageRequest {
+            parent: Some(path("selected-children")?),
+            tail_stream: Some(path("state")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 4,
+        }),
+        limit: 8,
+        at_least: crate::RevisionCut::of(receipt.revision.clone()),
+    };
+    let view = provider.heads(request.clone()).await?;
+    view.validate_for(&request)?;
+    let page = view.children.as_ref().ok_or(StreamError::Unavailable)?;
+    if page.children.len() != names.len()
+        || view.snapshot != receipt.revision
+        || view.heads[0].is_some()
+        || page
+            .children
+            .iter()
+            .zip(&view.heads)
+            .zip([None, Some(0), Some(2), Some(1)])
+            .any(|((child, head), tail)| {
+                child.tail != tail
+                    || child.tail != head.as_ref().map(|head| head.tail)
+                    || child.tail_record != head.as_ref().and_then(|head| head.last.clone())
+            })
+    {
+        return Err(StreamError::Unavailable);
+    }
+    let wire = crate::wire_codec::heads_to_wire(view.clone())?;
+    let json = crate::http_response::value("heads", &prost::Message::encode_to_vec(&wire))
+        .map_err(|_| StreamError::InvalidResponse)?
+        .ok_or(StreamError::InvalidResponse)?;
+    crate::http_validation::validate("heads", &json).map_err(|_| StreamError::InvalidResponse)?;
+    if crate::wire_codec::requests::heads_len(&view) != prost::Message::encoded_len(&wire)
+        || crate::wire_codec::heads_from_response(wire)? != view
+    {
+        return Err(StreamError::Unavailable);
+    }
+    // An omitted cursor cannot turn an authentic nonempty stream into absence;
+    // a nonzero cursor cannot survive loss or replacement of its last record.
+    for (tail, remove_record) in [
+        (None, false),
+        (Some(0), false),
+        (Some(2), true),
+        (Some(1), false),
+    ] {
+        let mut torn = view.clone();
+        let child = &mut torn
+            .children
+            .as_mut()
+            .ok_or(StreamError::Unavailable)?
+            .children[2];
+        child.tail = tail;
+        if remove_record {
+            child.tail_record = None;
+        }
+        if torn.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            return Err(StreamError::Unavailable);
+        }
+        let mut torn_json = json.clone();
+        let child = torn_json["children"]["children"][2]
+            .as_object_mut()
+            .ok_or(StreamError::InvalidResponse)?;
+        if let Some(tail) = tail {
+            child.insert("tail".into(), serde_json::Value::String(tail.to_string()));
+        } else {
+            child.remove("tail");
+        }
+        if remove_record {
+            child.remove("tailRecord");
+        }
+        if crate::http_validation::validate("heads", &torn_json).is_ok() {
+            return Err(StreamError::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
+#[tokio::test]
+async fn selected_child_tails_preserve_missing_empty_and_original_record_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    selected_child_tails(&crate::MemoryStream::default()).await?;
+    #[cfg(feature = "local")]
+    {
+        let directory = tempfile::tempdir()?;
+        let provider = crate::LocalStream::open(directory.path(), Default::default()).await?;
+        selected_child_tails(&provider).await?;
     }
     Ok(())
 }

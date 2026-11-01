@@ -446,6 +446,79 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn child_visibility_keeps_selected_cursors_with_their_authorized_records() -> TestResult {
+    use acyclic_auth::contract::*;
+    let provider = Arc::new(MemoryStream::default());
+    tree(&provider).await?;
+    provider
+        .fork(crate::ForkRequest {
+            source: StreamPath::new("tree/a/status")?,
+            destination: StreamPath::new("tree/d/status")?,
+            at_tail: Some(0),
+            exclude: vec![],
+            idempotency_key: crate::IdempotencyKey::unique(),
+        })
+        .await?;
+    let client = local(&provider)?;
+    let request = crate::HeadsRequest {
+        retained: Default::default(),
+        durable_through: None,
+        projection: Default::default(),
+        paths: Default::default(),
+        children: Some(page("tree", 10)?),
+        limit: 10,
+        at_least: Default::default(),
+    };
+    let direct = provider.heads(request.clone()).await?;
+    let original = direct.children.as_ref().ok_or("missing page")?;
+    assert_eq!(original.children[0].tail, Some(2));
+    assert_eq!(original.children[3].tail, Some(0));
+    for (follow, predicate) in [(false, false), (true, true), (true, false)] {
+        let credential = acyclic_auth::testing::root(|block| {
+            let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
+            key.grants = GrantSet {
+                grants: vec![Grant {
+                    kind: GrantKind::Resource(ResourceGrant {
+                        resource: ResourcePattern {
+                            name: "streams:/tree".into(),
+                            prefix: true,
+                        },
+                        actions: if follow {
+                            vec!["streams/list".into(), "streams/follow".into()]
+                        } else {
+                            vec!["streams/list".into()]
+                        },
+                    }),
+                }],
+            };
+            if predicate {
+                block.caveats.push(Caveat {
+                    kind: CaveatKind::Pin(Pin {
+                        name: "owner".into(),
+                        value: PinValue::Literal(b"allowed".to_vec()),
+                    }),
+                });
+            }
+        });
+        client.register_credential(1, credential.into())?;
+        let mut expected = original.clone();
+        for child in &mut expected.children {
+            if !follow || (predicate && child.tail_record.is_some()) {
+                child.tail = None;
+                child.tail_record = None;
+            }
+        }
+        assert_eq!(client.children_page(page("tree", 10)?, 1).await?, expected);
+        let view = client.heads(request.clone(), 1).await?;
+        assert_eq!(view.snapshot, direct.snapshot);
+        assert_eq!(view.children, Some(expected));
+    }
+    // The same Session still returns the unfiltered original cut and records.
+    assert_eq!(client.heads(request, 0).await?, direct);
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;

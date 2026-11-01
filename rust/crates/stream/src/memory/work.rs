@@ -8,6 +8,11 @@ pub(crate) type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type Allocation = Option<()>;
 
+#[cfg(not(target_arch = "wasm32"))]
+type CaptureWork<'a> = Option<&'a Work>;
+#[cfg(target_arch = "wasm32")]
+type CaptureWork<'a> = Option<&'a ()>;
+
 struct RetainedReservation {
     slot: RetainedFactRef,
     growth: Option<RetainedGrowthReservation>,

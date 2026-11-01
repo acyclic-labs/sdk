@@ -180,6 +180,9 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
         .into_iter()
         .map(|child| {
             let mut value = serde_json::Map::from_iter([("path".into(), json!(child.path))]);
+            if let Some(tail) = child.tail {
+                value.insert("tail".into(), json!(tail.to_string()));
+            }
             if let Some(record) = child.tail_record {
                 value.insert("tailRecord".into(), record_json(&record));
             }
