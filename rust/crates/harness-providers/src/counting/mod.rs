@@ -284,28 +284,6 @@ async fn exchange_count(
             }
             Ok(response) => {
                 let retry_after = response.retry_after;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = work {
-                    // The bounded prefix, its lossy decoding and the excerpt.
-                    let mut hold = work.claim(
-                        4 * crate::EXCERPT_BYTES as u64 + 64,
-                        4,
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )?;
-                    let failure =
-                        crate::http_failure(response, provider.config.max_event_bytes, Some(work))
-                            .await;
-                    match crate::native::model_diagnostic::<()>(Err(failure), &mut hold) {
-                        Err(failure) => (failure, retry_after),
-                        Ok(()) => return Err(boundary(Some(work), "token count refusal lost")),
-                    }
-                } else {
-                    (
-                        crate::http_failure(response, provider.config.max_event_bytes, work).await,
-                        retry_after,
-                    )
-                }
-                #[cfg(target_arch = "wasm32")]
                 (
                     crate::http_failure(response, provider.config.max_event_bytes, work).await,
                     retry_after,

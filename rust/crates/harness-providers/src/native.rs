@@ -102,38 +102,40 @@ fn error_has_no_excerpt(error: &Error) -> bool {
 }
 
 pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
-    result.map_err(|error| {
-        let (code, message, semantic) = match error {
-            Error::Invalid(message) => (ErrorCode::Invalid, message, false),
-            Error::Unauthorized(message) => (ErrorCode::Unauthorized, message, false),
-            Error::Storage(message) => (ErrorCode::Storage, message, false),
-            Error::ModelDiagnostic {
-                code,
-                message,
-                custody: None,
-            } => (code, message, true),
-            // A native transport failure carries no excerpt to fund: it keeps its class.
-            error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
-            error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string(), true),
-            error => return error,
-        };
-        match allocation.split_off(message.capacity() as u64) {
-            Ok(custody) if semantic => Error::ModelDiagnostic {
-                code,
-                message,
-                custody: Some(custody),
-            },
-            Ok(custody) => Error::NativeDiagnostic {
-                code,
-                message,
-                custody,
-            },
-            Err(cause) => {
-                drop(message);
-                cause.into()
-            }
+    result.map_err(|error| diagnostic_error(error, allocation))
+}
+
+pub(crate) fn diagnostic_error(error: Error, allocation: &mut NativeAllocation) -> Error {
+    let (code, message, semantic) = match error {
+        Error::Invalid(message) => (ErrorCode::Invalid, message, false),
+        Error::Unauthorized(message) => (ErrorCode::Unauthorized, message, false),
+        Error::Storage(message) => (ErrorCode::Storage, message, false),
+        Error::ModelDiagnostic {
+            code,
+            message,
+            custody: None,
+        } => (code, message, true),
+        // A native transport failure carries no excerpt to fund: it keeps its class.
+        error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
+        error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string(), true),
+        error => return error,
+    };
+    match allocation.split_off(message.capacity() as u64) {
+        Ok(custody) if semantic => Error::ModelDiagnostic {
+            code,
+            message,
+            custody: Some(custody),
+        },
+        Ok(custody) => Error::NativeDiagnostic {
+            code,
+            message,
+            custody,
+        },
+        Err(cause) => {
+            drop(message);
+            cause.into()
         }
-    })
+    }
 }
 
 /// Apply the shared remote-response classification, then retain its original ledger.
@@ -242,9 +244,7 @@ pub(crate) fn generate<'a>(
                             Err(error) => (Some(error), None),
                             Ok(response) if !(200..300).contains(&response.status) => {
                                 let retry_after = response.retry_after;
-                                // The bounded prefix, its lossy decoding and the excerpt.
-                                let mut hold = work.claim(4 * crate::EXCERPT_BYTES as u64 + 64, 4, WorkCounters::UNCHARGED)?;
-                                (model_diagnostic::<()>(Err(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), &mut hold).err(), retry_after)
+                                (Some(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), retry_after)
                             }
                             Ok(response) => {
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
