@@ -9,23 +9,16 @@ where
 {
     pub(super) async fn recover_publication<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
+        publication: &mut PublicationState<'_, F>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        before_publication: &mut F,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
         selection: (SelectedPublication<'_>, Option<SelectedImportProof>),
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<Option<crate::NativePublicationSnapshot>, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
+        let (work, cancellation) = (publication.work, publication.cancellation);
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (selected, selected_proof) = selection;
         let remembered = self
@@ -69,10 +62,8 @@ where
                 .and(selected_proof));
             return self
                 .recover_committed_publication(
-                    permit,
+                    publication,
                     accounting,
-                    before_publication,
-                    acknowledged,
                     (
                         operation,
                         generation,
@@ -80,7 +71,6 @@ where
                         retained,
                         remembered.map(|(id, _)| id),
                     ),
-                    accounting_failure,
                 )
                 .await
                 .map(Some);
@@ -89,12 +79,9 @@ where
             if retained == Some(operation) {
                 return self
                     .recover_retained_publication(
-                        permit,
+                        publication,
                         accounting,
-                        before_publication,
-                        acknowledged,
                         (operation, remembered.and_then(|(_, proof)| proof)),
-                        accounting_failure,
                     )
                     .await
                     .map(Some);
@@ -113,59 +100,35 @@ where
     }
     async fn recover_committed_publication<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
+        publication: &mut PublicationState<'_, F>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        before_publication: &mut F,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
         committed: CommittedPublication,
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
         let (operation, generation, proof, retained, remembered) = committed;
 
         let context = self
             .publication_context(operation, Some(generation), proof, accounting)
             .await?;
-        *acknowledged = Some(crate::NativePublicationSnapshot {
+        *publication.acknowledged = Some(crate::NativePublicationSnapshot {
             context,
             operation: Some(operation),
             generation,
         });
         if retained == Some(operation) {
-            self.authored
-                .shared_checkout()
-                .publish(
-                    permit,
-                    crate::kernel::KernelAccounting::native(work, cancellation),
-                    Some(self.authored.cancellation()),
-                    before_publication,
-                    Some(context),
-                    acknowledged,
-                )
-                .await
-                .map_err(|(error, accounting)| {
-                    *accounting_failure = accounting;
-                    error
-                })?;
-            if !acknowledged.is_some_and(|snapshot| {
-                snapshot.operation() == Some(operation) && snapshot.generation() == generation
-            }) {
+            let published = self.publish_checkout(publication, context).await?;
+            if published.operation() != Some(operation) || published.generation() != generation {
                 return Err(MountSourceError::Indeterminate.into());
             }
         }
         self.finish_publication(operation, generation, proof, accounting)
             .await?;
         if remembered == Some(operation) {
-            self.finish_detached_publication(work)?;
+            self.finish_detached_publication(publication.work)?;
             self.clear_mount_removals()?;
         }
         Ok(crate::NativePublicationSnapshot {
@@ -176,35 +139,22 @@ where
     }
     async fn recover_retained_publication<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
+        publication: &mut PublicationState<'_, F>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        before_publication: &mut F,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
         remembered: (crate::OperationId, Option<SelectedImportProof>),
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { .. } = &*accounting else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
         let (operation, proof) = remembered;
 
         let context = self
             .publication_context(operation, None, proof, accounting)
             .await?;
-        self.complete_publication(
-            permit,
-            (context, operation, proof),
-            accounting,
-            before_publication,
-            acknowledged,
-            accounting_failure,
-        )
-        .await
+        self.complete_publication(publication, (context, operation, proof), accounting)
+            .await
     }
     pub(super) async fn cleanup_publication(
         &self,

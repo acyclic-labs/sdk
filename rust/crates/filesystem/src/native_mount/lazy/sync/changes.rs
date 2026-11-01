@@ -9,88 +9,41 @@ where
 {
     pub(super) async fn publish_clean<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
+        publication: &mut PublicationState<'_, F>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        before_publication: &mut F,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
-
         let context = NativeSnapshotContext::Lazy(
             self.lazy
                 .publication_cut(None, accounting)
                 .await
                 .map_err(lazy_error)?,
         );
-        self.authored
-            .shared_checkout()
-            .publish(
-                permit,
-                crate::kernel::KernelAccounting::native(work, cancellation),
-                Some(self.authored.cancellation()),
-                before_publication,
-                Some(context),
-                acknowledged,
-            )
-            .await
-            .map_err(|(error, accounting)| {
-                *accounting_failure = accounting;
-                error
-            })?;
-        let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
+        let published = self.publish_checkout(publication, context).await?;
         self.prune_detached()?;
         Ok(published)
     }
     pub(super) async fn complete_publication<F, Fut, E>(
         &self,
-        permit: crate::PublicationPermit,
-        publication: (
+        publication: &mut PublicationState<'_, F>,
+        prepared: (
             NativeSnapshotContext,
             crate::OperationId,
             Option<SelectedImportProof>,
         ),
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-        before_publication: &mut F,
-        acknowledged: &mut Option<crate::NativePublicationSnapshot>,
-        accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, E>
     where
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
-        let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-        else {
-            return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-        };
-        let (work, cancellation) = (*work, *cancellation);
-        let (context, operation, selected_proof) = publication;
-        self.authored
-            .shared_checkout()
-            .publish(
-                permit,
-                crate::kernel::KernelAccounting::native(work, cancellation),
-                Some(self.authored.cancellation()),
-                before_publication,
-                Some(context),
-                acknowledged,
-            )
-            .await
-            .map_err(|(error, accounting)| {
-                *accounting_failure = accounting;
-                error
-            })?;
-        let published = acknowledged.ok_or(MountSourceError::Indeterminate)?;
+        let (context, operation, selected_proof) = prepared;
+        let published = self.publish_checkout(publication, context).await?;
         self.finish_publication(
             operation,
             published.generation(),
@@ -98,9 +51,39 @@ where
             accounting,
         )
         .await?;
-        self.finish_detached_publication(work)?;
+        self.finish_detached_publication(publication.work)?;
         self.clear_mount_removals()?;
         Ok(published)
+    }
+
+    pub(super) async fn publish_checkout<F, Fut, E>(
+        &self,
+        publication: &mut PublicationState<'_, F>,
+        context: NativeSnapshotContext,
+    ) -> Result<crate::NativePublicationSnapshot, E>
+    where
+        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
+    {
+        self.authored
+            .shared_checkout()
+            .publish(
+                publication.permit,
+                crate::kernel::KernelAccounting::native(publication.work, publication.cancellation),
+                Some(self.authored.cancellation()),
+                publication.before_publication,
+                Some(context),
+                publication.acknowledged,
+            )
+            .await
+            .map_err(|(error, accounting)| {
+                *publication.accounting_failure = accounting;
+                error
+            })?;
+        publication
+            .acknowledged
+            .ok_or_else(|| MountSourceError::Indeterminate.into())
     }
     pub(super) async fn publication_context(
         &self,
