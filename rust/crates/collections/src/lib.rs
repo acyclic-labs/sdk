@@ -177,6 +177,27 @@ impl<A> Funding<A> {
 }
 
 impl<V, A, const N: usize> FixedIndex<V, A, N> {
+    /// Bounds node backing and examined items for unknown-key insertions.
+    ///
+    /// This allocation-free bound is independent of the current root, so it
+    /// remains valid when other serialized mutations precede the insertions.
+    /// Each insertion claims at most one leaf and one branch. Three paths
+    /// examine at most 8N branches each, plus complete key comparisons.
+    /// The value constructor's own work and backing are excluded. Actual node
+    /// claims and examinations still use the original `IndexWork`; this bound
+    /// neither issues admission nor replaces its cancellation check.
+    pub fn insertion_bound(insertions: u64) -> Option<IndexInsertionBound> {
+        let node_bytes = u64::try_from(std::mem::size_of::<Kind<V, A, N>>()).ok()?;
+        let width = u64::try_from(N).ok()?;
+        Some(IndexInsertionBound {
+            allocation_bytes: node_bytes.checked_mul(2)?.checked_mul(insertions)?,
+            examined_items: width
+                .checked_mul(26)?
+                .checked_add(3)?
+                .checked_mul(insertions)?,
+        })
+    }
+
     /// Reads one exact key without allocation. Checks admission even when empty.
     pub fn get<W: IndexWork<Allocation = A>>(
         &self,

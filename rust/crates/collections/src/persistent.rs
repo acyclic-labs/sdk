@@ -11,7 +11,7 @@ pub type PersistentIndex<V, A, const N: usize = 8> = Tree<V, A, N, std::convert:
 
 pub(crate) type QualifiedIndex<V, A, const N: usize> = Tree<V, A, N, u64>;
 
-/// Worst-case original funding for immutable insertions, bounded by key width.
+/// Worst-case original node funding and insertion work, bounded by key width.
 /// Actual claims and examinations still occur on `IndexWork`.
 #[derive(Clone, Copy, Debug)]
 pub struct IndexInsertionBound {
