@@ -525,6 +525,182 @@ mod tests {
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
+    fn listing_views_keep_original_projection_witness_and_cut() {
+        use super::super::{ListingProjection, Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("views").unwrap();
+            let alpha = StreamPath::new("alpha").unwrap();
+            let beta = StreamPath::new("beta").unwrap();
+            let witnesses = [
+                StreamPath::new("witness/a").unwrap(),
+                StreamPath::new("witness/b").unwrap(),
+            ];
+            for (path, value) in [
+                ("views/one/alpha", b"alpha".as_slice()),
+                ("views/one/beta", b"beta"),
+                ("witness/a", b"a"),
+                ("witness/b", b"b"),
+            ] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![value.into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(path.as_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            for witness in &witnesses {
+                reader.observed_head(witness, provider.head(witness.clone()).await.unwrap(), None);
+            }
+            let projections = [
+                ListingProjection {
+                    tail: Some(alpha.clone()),
+                    witness: Some(witnesses[0].clone()),
+                },
+                ListingProjection {
+                    tail: Some(beta.clone()),
+                    witness: Some(witnesses[0].clone()),
+                },
+                ListingProjection {
+                    tail: Some(alpha.clone()),
+                    witness: Some(witnesses[1].clone()),
+                },
+            ];
+            let want = |projection: &ListingProjection| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index: 0,
+                        tail: projection.tail.clone(),
+                        witness: projection.witness.clone(),
+                    },
+                    Priority::Visible,
+                )
+            };
+            reader.begin_frame(0);
+            reader.plan([want(&projections[0])]);
+            let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, 0);
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(0);
+            assert_eq!(
+                ops.len(),
+                2,
+                "a different projection or equal position on another witness was treated as satisfied"
+            );
+            for op in ops.into_iter().rev() {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 0);
+            }
+            for (path, bytes) in [
+                ("views/one/alpha", b"alpha".as_slice()),
+                ("views/one/beta", b"beta"),
+            ] {
+                assert_eq!(
+                    reader
+                        .cache()
+                        .record(&StreamPath::new(path).unwrap(), 0)
+                        .unwrap()
+                        .as_ref(),
+                    bytes
+                );
+            }
+            assert_eq!(
+                reader.cache().listings(&parent).count(),
+                1,
+                "projection requests duplicated the directory page"
+            );
+            for projection in &projections {
+                assert_eq!(
+                    reader
+                        .cache()
+                        .listing(&parent, 0)
+                        .unwrap()
+                        .projections
+                        .get(projection),
+                    Some(&Some(1))
+                );
+            }
+            reader.begin_frame(1);
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(1).is_empty(),
+                "completed views did not retain their original observations"
+            );
+            let before = reader.cache().listing(&parent, 0).unwrap().version;
+            // The page stays byte-identical while the original hierarchy cut
+            // moves elsewhere. An old observation cannot acquire that cut.
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("elsewhere/new").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::new(b"new hierarchy cut".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            provider
+                .append(AppendRequest {
+                    path: witnesses[1].clone(),
+                    records: vec![b"changed".as_slice().into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::new(b"witness moves".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            reader.observed_head(
+                &witnesses[1],
+                provider.head(witnesses[1].clone()).await.unwrap(),
+                None,
+            );
+            reader.plan(projections.iter().map(want));
+            let [op]: [Op; 1] = reader.poll(1).try_into().unwrap();
+            assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == &alpha));
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, 1);
+            assert_ne!(reader.cache().listing(&parent, 0).unwrap().version, before);
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(1);
+            assert_eq!(
+                ops.len(),
+                2,
+                "old projections were rebound to a different hierarchy cut"
+            );
+            for op in ops {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 1);
+            }
+            reader.plan(projections.iter().map(want));
+            assert!(reader.poll(1).is_empty());
+            assert_eq!(reader.next_deadline(), None);
+            let bytes = reader.snapshot().unwrap();
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(1);
+            assert_eq!(
+                ops.len(),
+                3,
+                "persistence fabricated fresh projection observations"
+            );
+            // Original indexed parent invalidation covers every projection,
+            // including a valid original reply arriving after cancellation.
+            let late_id = ops[0].id();
+            let late = execute(&provider, ops[0].clone()).await;
+            reader.denied(&parent);
+            assert_eq!(reader.take_cancelled().len(), 3);
+            reader.complete(late_id, late, 2);
+            assert!(reader.cache().listing(&parent, 0).is_none());
+            assert!(reader.poll(2).is_empty());
+        });
+    }
+
+    #[test]
     fn every_busy_follow_progresses_across_delivery_frames() {
         use super::super::ReaderPolicy;
         futures::executor::block_on(async {

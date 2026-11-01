@@ -111,7 +111,8 @@ mod tests {
                             .collect(),
                         next: page.next_after.clone(),
                         fresh: true,
-                        witnessed: None,
+                        projections: Default::default(),
+                        version: None,
                     },
                     Some(protected),
                 );
@@ -145,7 +146,8 @@ mod tests {
                             children: page.children.into_iter().map(|child| child.path).collect(),
                             next: page.next_after.clone(),
                             fresh: true,
-                            witnessed: None,
+                            projections: Default::default(),
+                            version: None,
                         },
                         None,
                     );

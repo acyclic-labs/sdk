@@ -135,7 +135,8 @@ impl Demands {
     pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {
         if let Some(first) = index.checked_add(1) {
             self.remove_range(
-                OpKey::Children(path.clone(), first)..=OpKey::Children(path.clone(), u32::MAX),
+                OpKey::children(path, first, super::ListingProjection::default())
+                    ..OpKey::children_end(path),
             );
         }
     }
@@ -156,7 +157,7 @@ impl Demands {
         }
     }
 
-    fn remove_range(&mut self, range: std::ops::RangeInclusive<OpKey>) {
+    fn remove_range(&mut self, range: impl std::ops::RangeBounds<OpKey>) {
         for (key, entry) in self.entries.extract_if(range, |_, _| true) {
             #[cfg(test)]
             {
