@@ -262,43 +262,6 @@ impl<R: Read> Read for ExpandedReader<R> {
     }
 }
 
-/// Read the whole checksum-verified archive; reject links and escaping members
-/// before writing any imported source. Normalized Cargo inputs remain intact.
-pub fn archive_members(
-    release: &RegistryVersion,
-    archive: &Path,
-) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    validate_name(&release.package)?;
-    validate_version(&release.num)?;
-    let expected = format!("sha256:{}", release.checksum);
-    let limits = ArchiveLimits::default();
-    let bytes = read_archive_snapshot(archive, limits)?;
-    if crate::sha256_bytes(&bytes) != expected {
-        return Err("released registry archive checksum differs".into());
-    }
-    let result =
-        decode_archive_members_with_limits(&bytes, &release.package, &release.num, limits)?;
-    if crate::sha256_bytes(&read_archive_snapshot(archive, limits)?) != expected {
-        return Err("registry archive changed during import".into());
-    }
-    Ok(result)
-}
-
-fn read_archive_snapshot(archive: &Path, limits: ArchiveLimits) -> Result<Vec<u8>, String> {
-    let file = fs::File::open(archive).map_err(|e| e.to_string())?;
-    if file.metadata().map_err(|e| e.to_string())?.len() > limits.compressed_bytes {
-        return Err("registry archive compressed-byte limit exceeded".into());
-    }
-    let mut bytes = Vec::new();
-    file.take(limits.compressed_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > limits.compressed_bytes {
-        return Err("registry archive compressed-byte limit exceeded".into());
-    }
-    Ok(bytes)
-}
-
 /// Reads plain tar or gzip Cargo archives without extracting to the filesystem.
 pub fn decode_archive_members(
     bytes: &[u8],

@@ -43,35 +43,22 @@ fn commit_identity_authenticates_every_generation_locator() {
 }
 
 #[test]
-fn current_state_round_trips_and_obsolete_versions_are_rejected() {
+fn current_state_round_trips_and_incompatible_records_are_rejected() {
     let state = GitCompatState::new("main", WorkspaceId::from_bytes([1; 16]));
     let encoded = serde_json::to_vec(&state).expect("encode current state");
     let mut decoded: GitCompatState =
         serde_json::from_slice(&encoded).expect("decode current state");
     assert!(validate_git_state(&decoded).is_ok());
+    let mut incomplete = serde_json::to_value(&state).expect("encode current state");
+    incomplete
+        .as_object_mut()
+        .unwrap()
+        .remove("retired_workspaces");
+    assert!(serde_json::from_value::<GitCompatState>(incomplete).is_err());
     for version in [0, 2, 9, u32::MAX] {
         decoded.version = version;
         assert!(validate_git_state(&decoded).is_err());
     }
-}
-
-#[test]
-fn records_saved_before_discard_existed_reopen_unchanged() {
-    // A repository persisted before branches could be discarded has no
-    // retired workspaces; it must reopen with its history intact.
-    let mut state = GitCompatState::new("main", WorkspaceId::from_bytes([1; 16]));
-    state.revision = 7;
-    let mut saved = serde_json::to_value(&state).expect("encode state");
-    saved
-        .as_object_mut()
-        .expect("state object")
-        .remove("retired_workspaces")
-        .expect("current records carry retired workspaces");
-    let reopened: GitCompatState =
-        serde_json::from_value(saved).expect("pre-discard record decodes");
-    assert!(reopened.retired_workspaces.is_empty());
-    assert_eq!(reopened, state);
-    assert!(validate_git_state(&reopened).is_ok());
 }
 
 #[tokio::test]

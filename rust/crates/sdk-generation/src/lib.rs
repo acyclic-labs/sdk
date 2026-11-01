@@ -31,8 +31,7 @@ mod artifacts;
 use sdk_docs::is_library_target;
 #[doc(hidden)]
 pub mod cache_record;
-#[path = "../../sdk-docs/src/concrete_versions.rs"]
-mod concrete_versions;
+use sdk_docs::concrete_versions;
 mod file_cache;
 mod shared_cache;
 mod source_selection;

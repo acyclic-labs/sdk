@@ -1,17 +1,18 @@
-import { wireRequest, validateWireRequest, wireWhenAbsent } from "./contract.js";
+import { validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { projectMemoryResponse, WasmSession, type WasmFollow, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { checkedRecord } from "./record.js";
-import { StreamError, commitId, type EncodedRecord, type FollowOptions, type Revision } from "./types.js";
+import { RevisionSchema, RecordSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamError, type EncodedRecord, type FollowOptions, type ReadOptions, type Revision } from "./types.js";
+import { checkedRecord, projectRecord } from "./record.js";
 
 export interface SessionTransport {
-  readonly incoming: AsyncIterable<wire.SessionFrame>;
+  /** Canonical v1 frames; the Rust session admits each untrusted message. */
+  readonly incoming: AsyncIterable<Uint8Array>;
   /** Abort withdraws a write that has not yet entered the transport queue. */
-  send(frame: wire.SessionFrame, signal?: AbortSignal): Promise<void>;
+  send(frame: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
@@ -38,9 +39,9 @@ export class StreamSessions {
       return {
         async next() {
           const item = await incoming.next();
-          return item.done ? null : toBinary(wire.SessionFrameSchema, item.value);
+          return item.done ? null : item.value;
         },
-        send(bytes: Uint8Array, writeSignal: AbortSignal) { return transport.send(fromBinary(wire.SessionFrameSchema, bytes), writeSignal); },
+        send(bytes: Uint8Array<ArrayBuffer>, writeSignal: AbortSignal) { return transport.send(bytes, writeSignal); },
         close() { transport.close(); },
       };
     }, acknowledge, revisionScope);
@@ -67,8 +68,8 @@ export class StreamSessions {
   async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {
     validateCredentialSlot(credential);
     const request = { kind: "heads" as const, ...structuredClone(options) };
-    await validateWireRequest(request);
-    try { return projectMemoryResponse("heads", await this.#inner.heads(wireRequest(request), credential)) as import("./types.js").Heads; }
+    const input = await validateWireRequest(request);
+    try { return projectMemoryResponse("heads", await this.#inner.heads(input, credential)) as import("./types.js").Heads; }
     catch (error) { throw streamError(error, "heads"); }
   }
 
@@ -78,11 +79,19 @@ export class StreamSessions {
     catch (error) { throw streamError(error, "session"); }
   }
 
+  /** Finite reads share the native pinned-end, revision and credit machinery. */
+  async *read(path: string, options: ReadOptions, maximumResponseBytes?: number): AsyncGenerator<EncodedRecord> {
+    const { from, limit, key } = structuredClone(options);
+    const request = { kind: "read" as const, path, from, limit, ...(key === undefined ? {} : { key }) };
+    const input = await validateWireRequest(request);
+    yield* this.#cursor(() => this.#inner.read(input), undefined,
+      bytes => projectRecord(fromBinary(RecordSchema, bytes), path), maximumResponseBytes);
+  }
+
   async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
-      const record = data.item.value;
-      yield checkedRecord(record, record.sequence, path);
+      yield checkedRecord(data.item.value, data.item.value.sequence, path);
     }
   }
 
@@ -146,7 +155,9 @@ export class StreamSessions {
   }
 
   async *#cursor<T>(open: () => WasmFollow, signal: AbortSignal | undefined,
-    project: (bytes: Uint8Array) => T): AsyncGenerator<T> {
+    project: (bytes: Uint8Array) => T, maximumResponseBytes?: number): AsyncGenerator<T> {
+    if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    let remaining = maximumResponseBytes;
     if (signal?.aborted) return;
     await ensureStreamWasm();
     if (signal?.aborted) return;
@@ -159,6 +170,10 @@ export class StreamSessions {
       for (;;) {
         const bytes = await cursor.next();
         if (signal?.aborted || bytes === null) return;
+        if (remaining !== undefined) {
+          if (bytes.byteLength > remaining) throw new StreamError("response_too_large", "response exceeds configured bound");
+          remaining -= bytes.byteLength;
+        }
         yield project(bytes);
       }
     } catch (error) {

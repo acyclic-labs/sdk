@@ -1,10 +1,42 @@
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
-import { RecordSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { RecordSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { decodeHttpResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { checkedRecord } from "../src/record.js";
 import { MemoryStreamProvider } from "../src/memory.js";
+import { StreamSessions } from "../src/session.js";
+import { SessionNode } from "./session-node.js";
 import { idempotencyKey, type EncodedRecord } from "../src/types.js";
+
+test("session follows validate original provider records and retire malformed deliveries", async () => {
+  const path = "origin/session";
+  const provider = new MemoryStreamProvider();
+  await provider.append(path, [Uint8Array.of(7)], { idempotencyKey: idempotencyKey(Uint8Array.of(1)) });
+  let original: EncodedRecord | undefined;
+  for await (const record of provider.read(path, { from: 0n, limit: 1 })) original = record;
+  if (original === undefined) throw new Error("original provider record missing");
+  for (const origin of ["", "origin/parent", path, "/invalid//path"]) {
+    const node = new SessionNode();
+    node.history.set(path, [create(RecordSchema, { ...original, origin })]);
+    const records = new StreamSessions(node.connect).follow(path, { from: 0n });
+    try {
+      if (origin === path || origin.startsWith("/")) {
+        await expect(records.next()).rejects.toMatchObject({ code: "invalid_response" });
+      } else {
+        expect((await records.next()).value?.origin).toBe(origin || path);
+      }
+    } finally { await records.return(undefined); }
+    await node.until(() => node.active === 0);
+    expect(node.outstandingFrames).toBe(0);
+  }
+  const node = new SessionNode();
+  node.history.set(path, [create(RecordSchema, { ...original, origin: "", value: new Uint8Array(StreamLimit.MAX_RECORD_BYTES + 1) })]);
+  const records = new StreamSessions(node.connect).follow(path, { from: 0n });
+  try { await expect(records.next()).rejects.toMatchObject({ code: "invalid_response" }); }
+  finally { await records.return(undefined); }
+  await node.until(() => node.active === 0);
+  expect(node.outstandingFrames).toBe(0);
+});
 
 test("nested fork records retain their original paths through read, follow and contextual projection", async () => {
   const provider = new MemoryStreamProvider();

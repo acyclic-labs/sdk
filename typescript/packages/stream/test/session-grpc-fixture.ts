@@ -10,6 +10,8 @@ import { StreamSessionService } from "../generated/proto/stream/v1/session_pb.js
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionNode } from "./session-node.js";
 import assert from "node:assert/strict";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 
 export async function grpcFixture(identity: { key: string; cert: string }, failure?: () => ConnectError | undefined) {
   const { key, cert } = identity;
@@ -33,9 +35,9 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
       const transport = await node.connect(undefined, context.signal);
       const abort = (): void => transport.close();
       context.signal.addEventListener("abort", abort, { once: true });
-      const pump = async (): Promise<void> => { try { for await (const value of input) await transport.send(value); } finally { transport.close(); } };
+      const pump = async (): Promise<void> => { try { for await (const value of input) await transport.send(toBinary(SessionFrameSchema, value)); } finally { transport.close(); } };
       void pump().catch(() => transport.close());
-      try { yield* transport.incoming; }
+      try { for await (const frame of transport.incoming) yield fromBinary(SessionFrameSchema, frame); }
       finally { context.signal.removeEventListener("abort", abort); transport.close(); }
     } });
   } }));

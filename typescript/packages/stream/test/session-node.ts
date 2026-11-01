@@ -43,8 +43,10 @@ export class SessionNode {
     const connection: Connection = { node: name, output: new SessionQueue(1024), routes: new Map(), credit: { bytes: 0n, frames: 0 }, closed: false };
     this.connections.push(connection);
     return {
-      incoming: connection.output,
-      send: async input => this.receive(connection, fromBinary(wire.SessionFrameSchema, toBinary(wire.SessionFrameSchema, input))),
+      incoming: { async *[Symbol.asyncIterator]() {
+        for await (const frame of connection.output) yield toBinary(wire.SessionFrameSchema, frame);
+      } },
+      send: async input => this.receive(connection, fromBinary(wire.SessionFrameSchema, input)),
       close: () => {
         connection.closed = true; connection.routes.clear(); connection.output.end();
         for (const notify of this.changed) notify();

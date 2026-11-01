@@ -1,6 +1,4 @@
 import { credentialProvider, credentialStream, resolveCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
-import { SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionQueue } from "./session-queue.js";
 import type { SessionConnect } from "./session.js";
@@ -28,7 +26,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       sourceSignal.throwIfAborted();
       const socket = factory(url.href, ["acyclic.session.v1", `acyclic.bearer.${credential}`]);
       socket.binaryType = "arraybuffer";
-      const incoming = new SessionQueue<import("../generated/proto/stream/v1/session_pb.js").SessionFrame>(StreamLimit.MAX_ITEMS);
+      const incoming = new SessionQueue<Uint8Array>(StreamLimit.MAX_ITEMS);
       let closed = false;
       let resolve!: () => void;
       let reject!: (error: unknown) => void;
@@ -75,8 +73,8 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
         try {
           check();
           if (!(event.data instanceof ArrayBuffer) || event.data.byteLength > StreamLimit.MAX_COMMAND_BYTES) throw new StreamError("invalid_response", "invalid session message framing");
-          incoming.push(fromBinary(SessionFrameSchema, new Uint8Array(event.data)));
-        } catch (error) { close(error instanceof StreamError ? error : new StreamError("invalid_response", "invalid session protobuf frame")); }
+          incoming.push(new Uint8Array(event.data));
+        } catch (error) { close(error instanceof StreamError ? error : new StreamError("invalid_response", "invalid session message framing")); }
       };
       socket.onerror = () => close(new StreamError("transport", "Streams session transport failed"));
       socket.onclose = () => close(new StreamError("unavailable", "Streams session transport closed"));
@@ -88,11 +86,10 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
         incoming: credentialStream(incoming, {
           token: () => lease.token(), check, reject: () => false,
         }, () => false),
-        async send(frame, writeSignal) {
+        async send(bytes, writeSignal) {
           writeSignal?.throwIfAborted();
           check();
           if (closed || socket.readyState !== WebSocket.OPEN) throw new StreamError("unavailable", "Streams session is closed");
-          const bytes = toBinary(SessionFrameSchema, frame);
           if (bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES || socket.bufferedAmount + bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES) throw new StreamError("capacity", "Streams session output capacity exceeded");
           socket.send(bytes);
         },

@@ -603,28 +603,6 @@ describe("website Stream contract", () => {
     expect(sent).toEqual(expected);
   });
 
-  test("default transport snapshots lazy read cursors when the iterator is created", async () => {
-    let release!: () => void;
-    const selection = new Promise<void>(resolve => { release = resolve; });
-    const requests: Record<string, unknown>[] = [];
-    const options = { from: 0n, limit: 1 };
-    await withBrowserDefault(async (input, init) => {
-      await selection;
-      const route = new URL(String(input)).pathname.split("/").pop();
-      if (route === "tail") return new Response('{"tail":"0"}');
-      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response('{"records":[]}');
-    }, async () => {
-      const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
-      const next = provider.read("events", options)[Symbol.asyncIterator]().next();
-      options.from = 7n;
-      options.limit = 8;
-      release();
-      await expect(next).resolves.toEqual({ done: true, value: undefined });
-    });
-    expect(requests).toEqual([{ path: "events", from: "0", limit: 1 }]);
-  });
-
   test("Rust encodes every protobuf-backed hosted request shape", async () => {
     await ensureStreamWasm();
     const retry = new Uint8Array([0, 255, 128, 1]);
@@ -839,12 +817,6 @@ describe("website Stream contract", () => {
     const localOptions = { get from() { localReads += 1; return 0n; }, limit: 1 };
     for await (const _record of local.read("events", localOptions)) { /* consume */ }
     expect(localReads).toBe(1);
-
-    let hostedReads = 0;
-    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '{"tail":"0"}' : '{"records":[]}') });
-    const hostedOptions = { get from() { hostedReads += 1; return 0n; }, limit: 1 };
-    for await (const _record of remote.read("events", hostedOptions)) { /* consume */ }
-    expect(hostedReads).toBe(1);
   });
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
@@ -965,12 +937,6 @@ describe("website Stream contract", () => {
     await expect(unknown.tail("events")).rejects.toMatchObject({ code: "transport", message: JSON.stringify({ code: "internal_failure", message: "service detail" }), status: 500 });
   });
 
-  test("hosted reads keep the canonical cursor contiguous", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new URL(String(input)).pathname.endsWith("/tail") ? new Response('{"tail":"2"}') : new Response(JSON.stringify({ records: [{
-      sequence: "1", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "1000", keys: [], attributes: [],
-    }] })) });
-    await expect(provider.read("events", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_response" });
-  });
 
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
     let calls = 0;

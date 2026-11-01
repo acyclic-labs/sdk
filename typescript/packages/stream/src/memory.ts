@@ -1,4 +1,4 @@
-import { checkedReadSequence, checkedRecord } from "./record.js";
+import { checkedReadSequence, projectRecord } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
@@ -8,7 +8,7 @@ import {
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
-import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, CommittedEnvelope,
   CommitId, CommitOptions, CommitResult,
@@ -51,7 +51,7 @@ class RustStreamProvider implements StreamProvider {
     try {
       const values = await (await this.#inner).read(request);
       return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value))
-        .map(record => checkedRecord(record, record.sequence, path)));
+        .map(record => projectRecord(record, path)));
     } catch (error) { throw streamError(error, "read"); }
   }
 
@@ -78,8 +78,7 @@ class RustStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options: AppendOptions = {}): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = structuredClone(options);
-    await validateAppend(path, records, authored);
-    const request = wireAppendRequest(path, records, authored);
+    const request = await validateAppend(path, records, authored);
     return this.#project<AppendResult>("append", request);
   }
 
@@ -117,7 +116,7 @@ class RustStreamProvider implements StreamProvider {
         try { bytes = await handle.next(); }
         catch (error) { throw streamError(error, "follow"); }
         if (bytes === null || signal?.aborted) return;
-        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield checkedRecord(decoded, decoded.sequence, path);
+        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield projectRecord(decoded, path);
       }
     } finally {
       signal?.removeEventListener("abort", close);
