@@ -12,6 +12,14 @@ struct Call {
     reply: oneshot::Sender<acyclic_stream::OwnedBytes>,
 }
 
+enum Request {
+    Tool(Call),
+    Log {
+        arguments: allocator::BridgeText,
+        reply: oneshot::Sender<acyclic_stream::OwnedBytes>,
+    },
+}
+
 struct Stop(CancellationToken);
 impl Drop for Stop {
     fn drop(&mut self) {
@@ -290,6 +298,7 @@ impl StockExecution<'_> {
                 interpreter::INTERRUPT_BUDGET,
             )));
             let mut ordinal = 0_u64;
+            let mut log_ordinal = 0_u64;
             let mut inner_context = Vec::new();
             let program = loop {
                 tokio::select! {
@@ -301,7 +310,38 @@ impl StockExecution<'_> {
                         return Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled));
                     }
                     result = &mut worker => break result.map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript worker failed"))?,
-                    Some(call) = receive.recv() => {
+                    Some(request) = receive.recv() => {
+                        let call = match request {
+                            Request::Tool(call) => call,
+                            Request::Log { arguments, reply } => {
+                                log_ordinal = log_ordinal.checked_add(1).ok_or_else(|| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log identity overflow"))?;
+                                #[derive(Serialize)]
+                                struct Log<'a> {
+                                    kind: &'static str,
+                                    call_id: &'a str,
+                                    ordinal: u64,
+                                    values: &'a serde_json::value::RawValue,
+                                }
+                                // Borrow the engine's JSON without allocating a second value tree.
+                                let values = serde_json::from_str(&arguments.value).map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log arguments are not JSON"))?;
+                                let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
+                                let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}", parent.operation_id), work))?;
+                                #[cfg(feature = "filesystem")]
+                                let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
+                                tokio::select! {
+                                    biased;
+                                    cancelled = journal.model_cancellation() => {
+                                        stop.0.cancel();
+                                        let _ = worker.await;
+                                        cancelled?;
+                                        return Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled));
+                                    }
+                                    result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
+                                }
+                                let _ = reply.send(acyclic_stream::OwnedBytes::from_static(b"null"));
+                                continue;
+                            }
+                        };
                         ordinal = ordinal.checked_add(1).ok_or_else(|| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript call identity overflow"))?;
                         let input_bytes = call.arguments.value.len();
                         let result = self.js_call(journal, identity, parent, ordinal, &call, &mut inner_context).await?;

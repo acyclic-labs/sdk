@@ -79,6 +79,13 @@ credit feeds them to ordinary settlement. Each settled call publishes a
 `code.call` JSON log under the turn's existing `tools/.results/` directory before
 its promise resolves. Follow that directory to stream tool name, success/failure
 and input/output JSON byte counts, associated with the parent call and ordinal.
+`console.log(...values)` publishes a `code.log` record there, with a JSON `values`
+array, the parent call ID and a separate log ordinal. Await its promise to observe
+publication before continuing. Unawaited logs, including logs created while
+encoding the result or formatting an exception, retire before the program returns.
+Replay reuses each immutable log's identity; logging does not change inner tool
+call identities. Log values follow JSON encoding, including its errors for cycles
+and BigInt. No formatting or retained console buffer is added.
 Logs stay in files without accumulating in the result or being omitted by a
 count limit. Each result uses the caller's admitted per-part render budget;
 oversized final values become `{ truncated: true, bytes }`. Input, history and

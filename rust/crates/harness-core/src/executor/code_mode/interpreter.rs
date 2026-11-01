@@ -1,4 +1,4 @@
-use super::{Call, CancellationToken};
+use super::{Call, CancellationToken, Request};
 use rquickjs::{AsyncContext, AsyncRuntime, CaughtError, Function, Promise, prelude::Async};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -19,7 +19,7 @@ impl<'js> rquickjs::IntoJs<'js> for Reply {
 pub(super) async fn run(
     code: String,
     definitions: acyclic_stream::OwnedBytes,
-    send: mpsc::Sender<Call>,
+    send: mpsc::Sender<Request>,
     cancellation: CancellationToken,
     maximum: usize,
     allocator: super::allocator::EngineAllocator,
@@ -50,13 +50,17 @@ pub(super) async fn run(
             // installed. Remove ambient time/randomness to make receipt replay
             // deterministic; the only external data comes from admitted tools.
             ctx.eval::<(), _>("delete globalThis.Date; delete Math.random;")?;
-            let rpc = Function::new(ctx.clone(), Async(move |name: rquickjs::String<'_>, arguments: rquickjs::String<'_>| {
+            let rpc = Function::new(ctx.clone(), Async(move |name: Option<rquickjs::String<'_>>, arguments: rquickjs::String<'_>| {
                 let send = send.clone();
-                let input = bridge.copy_text(&name).and_then(|name| bridge.copy_text(&arguments).map(|arguments| (name, arguments)));
+                let input = name.as_ref().map(|name| bridge.copy_text(name)).transpose().and_then(|name| bridge.copy_text(&arguments).map(|arguments| (name, arguments)));
                 async move {
                     let (name, arguments) = input?;
                     let (reply, receive) = oneshot::channel();
-                    send.send(Call { name, arguments, reply }).await.map_err(|_| rquickjs::Error::Unknown)?;
+                    let request = match name {
+                        Some(name) => Request::Tool(Call { name, arguments, reply }),
+                        None => Request::Log { arguments, reply },
+                    };
+                    send.send(request).await.map_err(|_| rquickjs::Error::Unknown)?;
                     receive.await.map(Reply).map_err(|_| rquickjs::Error::Unknown)
                 }
             }))?;
@@ -73,25 +77,32 @@ pub(super) async fn run(
                     const stable = promise => define(promise, 'constructor', {value: PromiseType});
                     let pending = 0, wake;
                     let closed = false;
+                    const invoke = async (name, args) => {
+                        pending++;
+                        try {
+                            const reply = parse(await stable(rpc(name, stringify(args))));
+                            if (name === null) return;
+                            if (!reply.ok) throw new ErrorType(reply.value);
+                            return reply.value;
+                        } finally {
+                            if (--pending === 0 && wake) wake();
+                        }
+                    };
                     for (const definition of parse(definitions)) {
-                        const invoke = async args => {
-                            pending++;
-                            try {
-                                const reply = parse(await stable(rpc(definition.name, stringify(args))));
-                                if (!reply.ok) throw new ErrorType(reply.value);
-                                return reply.value;
-                            } finally {
-                                if (--pending === 0 && wake) wake();
-                            }
-                        };
                         const tool = args => {
                             if (closed) throw new ErrorType('JavaScript calls are closed');
-                            return invoke(args);
+                            return invoke(definition.name, args);
                         };
                         Object.defineProperty(tool, 'input_schema', {value: definition.input_schema});
                         tools[definition.name] = Object.freeze(tool);
                     }
                     Object.defineProperty(globalThis, 'tools', {value: Object.freeze(tools)});
+                    Object.defineProperty(globalThis, 'console', {value: Object.freeze({
+                        log: (...values) => {
+                            if (closed) throw new ErrorType('JavaScript calls are closed');
+                            return invoke(null, values);
+                        }
+                    })});
                     return {
                         // The Rust promise future attaches its waker through then.
                         protect: promise => define(define(promise, 'constructor', {value: constructor}), 'then', {value: then}),
@@ -206,30 +217,35 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_the_dispatcher_wakes_the_pending_rpc_with_an_error() {
-        let tool = crate::tools::catalog()
-            .find(|tool| tool.name == "code")
-            .unwrap()
-            .bind()
-            .unwrap();
-        let definitions = serde_json::to_vec(&vec![tool.definition]).unwrap().into();
-        let (send, mut receive) = tokio::sync::mpsc::channel(1);
-        let (result, ()) = tokio::join!(
-            acyclic_native_runtime::blocking_future(super::run(
-                "await tools.code({code:'1'})".into(),
-                definitions,
-                send,
-                tokio_util::sync::CancellationToken::new(),
-                4096,
-                super::super::allocator::EngineAllocator::new(None),
-                super::INTERRUPT_BUDGET,
-            )),
-            async move {
-                let call = receive.recv().await.expect("engine submitted its call");
-                drop(receive);
-                drop(call);
-            }
-        );
-        assert!(result.unwrap().is_err());
+        for code in [
+            "await tools.code({code:'1'})",
+            "await console.log('message')",
+        ] {
+            let tool = crate::tools::catalog()
+                .find(|tool| tool.name == "code")
+                .unwrap()
+                .bind()
+                .unwrap();
+            let definitions = serde_json::to_vec(&vec![tool.definition]).unwrap().into();
+            let (send, mut receive) = tokio::sync::mpsc::channel(1);
+            let (result, ()) = tokio::join!(
+                acyclic_native_runtime::blocking_future(super::run(
+                    code.into(),
+                    definitions,
+                    send,
+                    tokio_util::sync::CancellationToken::new(),
+                    4096,
+                    super::super::allocator::EngineAllocator::new(None),
+                    super::INTERRUPT_BUDGET,
+                )),
+                async move {
+                    let call = receive.recv().await.expect("engine submitted its call");
+                    drop(receive);
+                    drop(call);
+                }
+            );
+            assert!(result.unwrap().is_err());
+        }
     }
 
     #[tokio::test]
