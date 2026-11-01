@@ -3,6 +3,8 @@ mod recent;
 pub(crate) use recent::RecentIndex;
 mod persistent;
 pub(crate) use persistent::PersistentIndex;
+mod prepared;
+pub(crate) use prepared::PreparedIndexWork;
 
 use crate::FsError;
 use crate::kernel::KernelAccounting;

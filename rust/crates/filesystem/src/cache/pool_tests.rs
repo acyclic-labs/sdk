@@ -96,8 +96,10 @@ fn pooled_eviction_preserves_an_active_payload() {
     let ReadPlan::Hit(held) = first
         .read_plan(
             object(1),
-            #[cfg(not(target_arch = "wasm32"))]
-            None,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::performance::BOUNDARY_BUDGET,
+                &CancellationToken::new(),
+            ),
         )
         .unwrap()
     else {
@@ -120,8 +122,10 @@ fn pooled_eviction_preserves_an_active_payload() {
 fn plan(cache: &CachedObjectStore<()>) -> Result<ReadPlan, ObjectStoreError> {
     cache.read_plan(
         object(1),
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
+        &mut crate::kernel::KernelAccounting::standalone(
+            crate::performance::BOUNDARY_BUDGET,
+            &CancellationToken::new(),
+        ),
     )
 }
 
@@ -135,7 +139,7 @@ fn fills_coalesce_only_within_their_namespace() {
     let ReadPlan::Follower(follower) = plan(&first.clone()).unwrap() else {
         panic!("no follower")
     };
-    assert!(Arc::ptr_eq(&flight, &follower));
+    assert!(flights::same_flight(&flight, &follower));
     let ReadPlan::Leader(second_flight) = plan(&second).unwrap() else {
         panic!("namespace did not receive its own flight")
     };

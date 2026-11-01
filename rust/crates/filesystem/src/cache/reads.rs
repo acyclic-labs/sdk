@@ -5,7 +5,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         &self,
         object_id: ObjectId,
         maximum: u64,
-        flight: Arc<Flight>,
+        flight: RetainedArc<Flight>,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         let epoch = flight.epoch;
@@ -66,11 +66,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         };
         let mut local_leaders = BTreeMap::<ObjectId, usize>::new();
         for request in requests {
-            let slot = match self.read_plan(
-                request.object_id,
-                #[cfg(not(target_arch = "wasm32"))]
-                work.original,
-            )? {
+            let slot = match self.read_plan(request.object_id, &mut work.accounting())? {
                 ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
                 ReadPlan::Leader(flight) => {
                     let index = prepared.leaders.value.len();
@@ -85,7 +81,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 ReadPlan::Follower(flight) => {
                     if let Some(&index) = local_leaders.get(&request.object_id)
                         && let Some(leader) = prepared.leaders.value.get_mut(index)
-                        && Arc::ptr_eq(&leader.flight, &flight)
+                        && flights::same_flight(&leader.flight, &flight)
                     {
                         leader.maximum_bytes = leader.maximum_bytes.max(request.maximum_bytes);
                         BatchSlot::LocalLeader(index)
