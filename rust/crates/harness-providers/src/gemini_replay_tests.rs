@@ -519,6 +519,34 @@ fn malformed_native_part_fields_fail_before_publication() {
             .unwrap()
             .unwrap();
         assert_eq!(serde_json::to_vec(&item).unwrap(), raw);
+        let (provider, _) = provider(Adapter::Gemini, 200);
+        let (prepared, dispatch) = request(&provider).unwrap();
+        let input = format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{}]}},\"finishReason\":\"STOP\"}}]}}\n\n",
+            std::str::from_utf8(&raw).unwrap(),
+        );
+        let events = futures::executor::block_on(
+            stream::events_named(
+                Adapter::Gemini,
+                chunks(&input, 1),
+                4096,
+                dispatch,
+                None,
+                Some(provider.reasoning_origin(provider.key.as_deref(), None)),
+            )
+            .try_collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut request = prepared.request().clone();
+        let mut answer = String::new();
+        append(events, &mut request, &mut answer);
+        finish(&mut request, &answer);
+        round_trip(
+            &provider,
+            request,
+            &answer,
+            &[std::str::from_utf8(&raw).unwrap().to_owned()],
+        );
         let mut body = json!({"contents":[
             {"role":"user","parts":[{"text":"question"}]},
             {"role":"model","parts":[part]},
