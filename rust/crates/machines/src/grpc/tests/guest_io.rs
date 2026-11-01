@@ -49,6 +49,7 @@ impl GuestIo {
         request: Request<tonic::Streaming<wire::ExecInput>>,
     ) -> Result<Response<ExecStreamWire>, Status> {
         use wire::exec_input::Input;
+        let relative_timeout = request.metadata().contains_key("grpc-timeout");
         let mut input = request.into_inner();
         let Some(Input::Start(start)) = input.message().await?.and_then(|frame| frame.input) else {
             return Err(Status::invalid_argument("missing command admission"));
@@ -57,6 +58,7 @@ impl GuestIo {
             start,
             argv: vec![],
             stdin: vec![],
+            relative_timeout,
         };
         let mut argument = Vec::new();
         let mut complete = false;
@@ -119,6 +121,7 @@ struct ReceivedCommand {
     start: wire::ExecStart,
     argv: Vec<String>,
     stdin: Vec<u8>,
+    relative_timeout: bool,
 }
 
 async fn fixture() -> (
@@ -223,7 +226,7 @@ async fn stop(shutdown: tokio::sync::oneshot::Sender<()>, task: ServerTask) {
 }
 
 fn command(timeout_ms: u64) -> ExecCommand {
-    ExecCommand::new(vec!["printf".into(), "hello".into()], timeout_ms).unwrap()
+    ExecCommand::new(vec!["printf".into(), "hello".into()], Some(timeout_ms)).unwrap()
 }
 
 fn frame(machine: MachineId, output: wire::exec_output::Output) -> wire::ExecOutput {
@@ -242,24 +245,24 @@ fn command_bounds_are_checked_before_dispatch() {
         (vec!["a".into()], 0),
     ] {
         assert!(matches!(
-            ExecCommand::new(argv, timeout),
+            ExecCommand::new(argv, Some(timeout)),
             Err(ProviderError::Invalid(_))
         ));
     }
-    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], 60_000).unwrap();
+    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], Some(60_000)).unwrap();
     assert_eq!(bounded.argv().len(), 8);
-    assert_eq!(bounded.timeout_ms(), 60_000);
-    assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());
+    assert_eq!(bounded.timeout_ms(), Some(60_000));
+    assert!(ExecCommand::new(vec!["a".into(), "".into()], Some(1)).is_ok());
     // The shell tool's whole u32-second range is representable, never clamped.
     for timeout in [60_001, 120_000, 300_000, u64::from(u32::MAX) * 1_000] {
-        assert_eq!(command(timeout).timeout_ms(), timeout);
+        assert_eq!(command(timeout).timeout_ms(), Some(timeout));
         let Some(wire::ExecInput {
             input: Some(wire::exec_input::Input::Start(start)),
         }) = super::super::input::encode(MachineId::new(), command(timeout)).next()
         else {
             panic!("exec input must start with its admission frame");
         };
-        assert_eq!(start.timeout_ms, timeout);
+        assert_eq!(start.timeout_ms, Some(timeout));
     }
 }
 
@@ -280,7 +283,7 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     ];
     argv.extend(std::iter::repeat_n("argument".into(), 65));
     let stdin = [0, 255, 10].repeat(50_000);
-    let command = ExecCommand::new(argv.clone(), 300_000)
+    let command = ExecCommand::new(argv.clone(), None)
         .unwrap()
         .with_stdin(stdin.clone())
         .with_cwd("/workspace/sub directory".into())
@@ -317,7 +320,23 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     );
     assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
     assert_eq!(request.start.maximum_output_bytes, Some(4));
-    assert_eq!(request.start.timeout_ms, 300_000);
+    assert_eq!(request.start.timeout_ms, None);
+    assert!(
+        request.relative_timeout,
+        "the original authority expiry lost its transport deadline"
+    );
+    let output = machine
+        .exec(ExecCommand::new(vec!["cat".into()], None).unwrap())
+        .await
+        .unwrap();
+    let request = io.commands.lock().unwrap().last().unwrap().clone();
+    assert_eq!(request.start.timeout_ms, None);
+    assert_eq!(request.start.expiry_unix_ms, None);
+    assert!(
+        !request.relative_timeout,
+        "an unbounded command without authority expiry gained a transport deadline"
+    );
+    drop(output);
     stop(shutdown, task).await;
 }
 
@@ -598,7 +617,7 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         let command = commands.first().unwrap();
         assert_eq!(command.start.machine, Some(encode_machine(machine.id())));
         assert_eq!(command.argv, ["printf", "hello"]);
-        assert_eq!(command.start.timeout_ms, 60_000);
+        assert_eq!(command.start.timeout_ms, Some(60_000));
         assert_eq!(command.start.protocol, Some(protocol()));
     }
     drop(output);

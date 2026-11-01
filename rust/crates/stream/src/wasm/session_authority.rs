@@ -79,9 +79,17 @@ impl AuthorityState for State {
     fn changes(&self) -> &dyn ChangeSource {
         self
     }
-    fn expires_at(&self, unix_seconds: u64) -> crate::BoxProviderFuture<'_, ()> {
+    fn expires_at(
+        &self,
+        unix_seconds: u64,
+    ) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>> {
         let milliseconds = (unix_seconds as f64 * 1000.0 - Date::now()).max(0.0);
-        crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32)
+        let expiry =
+            crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32);
+        Box::pin(async move {
+            expiry.await;
+            Ok(())
+        })
     }
 }
 

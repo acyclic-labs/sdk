@@ -13,6 +13,7 @@ struct State {
     trust: RwLock<Arc<signed::Snapshot>>,
     clock: AtomicU64,
     published: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
+    clock_events: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
 }
 impl State {
     fn new() -> Arc<Self> {
@@ -20,16 +21,21 @@ impl State {
             trust: RwLock::new(Arc::new(signed::Snapshot::default())),
             clock: AtomicU64::new(signed::NOW),
             published: tokio::sync::watch::channel(Ok(())).0,
+            clock_events: tokio::sync::watch::channel(Ok(())).0,
         })
     }
     fn publish(&self, trust: signed::Snapshot, now: u64) {
         *self.trust.write().unwrap() = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
-        self.published.send_replace(Ok(()));
+        let _ = self.published.send_replace(Ok(()));
+        let _ = self.clock_events.send_replace(Ok(()));
     }
     /// The trust owner is lost.
     fn lose(&self) {
-        self.published.send_replace(Err(SourceClosed));
+        let _ = self.published.send_replace(Err(SourceClosed));
+    }
+    fn lose_clock(&self) {
+        let _ = self.clock_events.send_replace(Err(SourceClosed));
     }
 }
 impl ChangeSource for State {
@@ -44,6 +50,74 @@ impl ChangeSource for State {
         })
     }
 }
+
+#[tokio::test]
+async fn alarm_producer_loss_terminates_the_original_authorized_session() {
+    use crate::{AppendRequest, MemoryStream};
+    let state = State::new();
+    let auth = authority(state.clone());
+    let mut registration = auth.register_change();
+    state.lose_clock();
+    assert_eq!(
+        auth.changed(&mut registration, Some(signed::NOW + 1))
+            .now_or_never(),
+        Some(AuthorityEvent::ClockLost),
+        "a lost expiry producer is not an elapsed deadline",
+    );
+    for early in [false, true] {
+        let state = State::new();
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("allowed/events").unwrap();
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"seed").into()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        let (_sender, mut output) =
+            live_session(provider, state.clone(), token("allowed", |_| {}), &path).unwrap();
+        for _ in 0..3 {
+            output.next().await.unwrap().unwrap();
+        }
+        if early {
+            state.lose_clock();
+        }
+        let next = output.next();
+        futures::pin_mut!(next);
+        if !early {
+            assert!(futures::poll!(next.as_mut()).is_pending());
+            state.lose_clock();
+        }
+        assert!(
+            matches!(
+                futures::poll!(next.as_mut()),
+                std::task::Poll::Ready(Some(Err(StreamError::Unavailable))),
+            ),
+            "clock loss must terminate, rather than expire, re-arm or park"
+        );
+        assert!(
+            state.check_open().is_ok(),
+            "the original trust feed remains alive"
+        );
+    }
+    let state = State::new();
+    let auth = authority(state.clone());
+    let mut registration = auth.register_change();
+    state.publish(signed::Snapshot::default(), signed::NOW + 1);
+    // Consume the independent trust publication before observing real expiry.
+    assert_eq!(
+        auth.changed(&mut registration, None).await,
+        AuthorityEvent::Trust(Ok(()))
+    );
+    let mut registration = auth.register_change();
+    assert_eq!(
+        auth.changed(&mut registration, Some(signed::NOW + 1)).await,
+        AuthorityEvent::Expired
+    );
+}
 impl AuthorityState for State {
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
         Ok(TrustSnapshot {
@@ -54,16 +128,19 @@ impl AuthorityState for State {
     fn changes(&self) -> &dyn ChangeSource {
         self
     }
-    fn expires_at(&self, deadline: u64) -> crate::BoxProviderFuture<'_, ()> {
-        let mut published = self.published.subscribe();
+    fn expires_at(&self, deadline: u64) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>> {
+        let mut published = self.clock_events.subscribe();
         Box::pin(async move {
             loop {
                 let lost = published.borrow_and_update().is_err();
-                if lost || self.clock.load(Ordering::SeqCst) >= deadline {
-                    break;
+                if lost {
+                    return Err(SourceClosed);
+                }
+                if self.clock.load(Ordering::SeqCst) >= deadline {
+                    return Ok(());
                 }
                 if published.changed().await.is_err() {
-                    break;
+                    return Err(SourceClosed);
                 }
             }
         })
@@ -273,7 +350,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
         },
         signed::NOW,
     );
-    assert_eq!(changed.await, Some(Ok(())));
+    assert_eq!(changed.await, AuthorityEvent::Trust(Ok(())));
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Revoked)

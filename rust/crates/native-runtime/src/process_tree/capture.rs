@@ -43,7 +43,8 @@ pub struct ProcessCaptureFailure {
 pub struct ProcessInput {
     /// Exact additional bytes, ordered after all previously queued input.
     pub bytes: Vec<u8>,
-    /// After queued input is written, close stdin and terminate containment.
+    /// After queued input is written, close stdin. An exchange additionally
+    /// terminates containment; interactive input leaves the process running.
     pub complete: bool,
 }
 
@@ -71,10 +72,15 @@ pub(super) struct PendingStdin<'a> {
     stopped: bool,
     terminate_on_completion: bool,
     require_delivery: bool,
+    interactive: bool,
     pub(super) meter_owner: Option<std::sync::Arc<dyn crate::NativeReadMeter>>,
 }
 
 impl<'a> PendingStdin<'a> {
+    pub(super) fn accepted_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+
     #[cfg(windows)]
     pub(super) fn waiting_bytes(&self) -> Option<&[u8]> {
         self.bytes
@@ -90,7 +96,7 @@ impl<'a> PendingStdin<'a> {
             ));
         }
         if actual == 0 {
-            if self.terminate_on_completion {
+            if self.terminate_on_completion || self.require_delivery {
                 return Err(io::ErrorKind::BrokenPipe.into());
             }
             self.written = self.bytes.len();
@@ -142,6 +148,7 @@ impl<'a> PendingStdin<'a> {
             stopped: false,
             terminate_on_completion,
             require_delivery: false,
+            interactive: false,
             meter_owner: owner.cloned(),
         })
     }
@@ -150,6 +157,15 @@ impl<'a> PendingStdin<'a> {
         &mut self,
         tree: &mut ProcessTree,
         meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<bool> {
+        self.poll_observed(tree, meter, &mut |_| {})
+    }
+
+    pub(super) fn poll_observed(
+        &mut self,
+        tree: &mut ProcessTree,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        progress: &mut impl FnMut(CaptureProgress),
     ) -> io::Result<bool> {
         let mut progressed = false;
         if self.written < self.bytes.len() {
@@ -194,6 +210,9 @@ impl<'a> PendingStdin<'a> {
                 return Err(io::Error::other("invalid process write length"));
             }
             self.written += actual;
+            if actual != 0 {
+                progress(CaptureProgress::InputWritten(actual));
+            }
             progressed |= actual != 0;
             #[cfg(unix)]
             recorded_bytes?;
@@ -210,8 +229,21 @@ impl<'a> PendingStdin<'a> {
                 meter.check()?;
             }
         }
+        if self.interactive && !self.writing() {
+            // The original pipe operation has completed. Retire its payload
+            // even when this was the final transfer and no producer is called again.
+            self.bytes = std::borrow::Cow::Owned(Vec::new());
+            self.written = 0;
+        }
         if self.complete && self.written == self.bytes.len() && !self.stopped {
+            let open = tree
+                .child
+                .as_ref()
+                .is_some_and(|child| child.stdin.is_some());
             tree.capture_close_stdin(meter)?;
+            if open {
+                progress(CaptureProgress::StdinClosed);
+            }
             if self.terminate_on_completion {
                 tree.capture_terminate_descendants(meter)?;
             }
@@ -223,14 +255,19 @@ impl<'a> PendingStdin<'a> {
 
     /// Owned input for a capture that outlives its caller; unmetered.
     pub(super) fn owned(input: super::OwnedCaptureInput) -> io::Result<PendingStdin<'static>> {
-        let (bytes, maximum, terminate_on_completion) = match input {
-            super::OwnedCaptureInput::Exchange { initial, maximum } => (initial, maximum, true),
+        let (bytes, maximum, terminate_on_completion, interactive) = match input {
+            super::OwnedCaptureInput::Interactive { initial, maximum } => {
+                (initial, maximum, false, true)
+            }
+            super::OwnedCaptureInput::Exchange { initial, maximum } => {
+                (initial, maximum, true, false)
+            }
             super::OwnedCaptureInput::Literal(bytes) => {
                 let maximum = bytes.len();
-                (bytes, maximum, false)
+                (bytes, maximum, false, false)
             }
         };
-        if (terminate_on_completion && maximum == 0) || bytes.len() > maximum {
+        if ((terminate_on_completion || interactive) && maximum == 0) || bytes.len() > maximum {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid process input allowance",
@@ -240,10 +277,11 @@ impl<'a> PendingStdin<'a> {
             bytes: std::borrow::Cow::Owned(bytes),
             written: 0,
             maximum,
-            complete: !terminate_on_completion,
+            complete: !terminate_on_completion && !interactive,
             stopped: false,
             terminate_on_completion,
-            require_delivery: false,
+            require_delivery: interactive,
+            interactive,
             meter_owner: None,
         })
     }
@@ -258,6 +296,35 @@ impl<'a> PendingStdin<'a> {
         self.stopped
     }
 
+    pub(super) fn awaiting_reply(&self) -> bool {
+        self.terminate_on_completion && !self.complete
+    }
+
+    /// Reuses the original writer and moves its next owned buffer. No prefix
+    /// compaction or historical input retention is needed between transfers.
+    pub(super) fn receive(
+        &mut self,
+        next: &mut impl FnMut() -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
+    ) -> io::Result<()> {
+        if !self.interactive || self.complete || self.writing() {
+            return Ok(());
+        }
+        let next = next()?;
+        if next.bytes.len() > self.maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "interactive process input exceeds transfer credit",
+            ));
+        }
+        if !next.bytes.is_empty() {
+            progress(CaptureProgress::InputAccepted(next.bytes.len()));
+        }
+        self.bytes = std::borrow::Cow::Owned(next.bytes);
+        self.complete = next.complete;
+        Ok(())
+    }
+
     /// Whether queued input still waits for room in the pipe.
     pub(super) fn writing(&self) -> bool {
         self.written < self.bytes.len()
@@ -265,13 +332,14 @@ impl<'a> PendingStdin<'a> {
 
     /// Whether an exchange still holds input the child never took.
     pub(super) fn undelivered(&self) -> bool {
-        self.terminate_on_completion && self.written < self.bytes.len()
+        (self.terminate_on_completion || self.require_delivery) && self.writing()
     }
 
     pub(super) fn observe(
         &mut self,
         chunk: &[u8],
         observe: &mut impl FnMut(&[u8]) -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
         let action = observe(chunk)?;
@@ -296,6 +364,7 @@ impl<'a> PendingStdin<'a> {
                 }
                 meter.admit_examination(0, action.bytes.len() as u64)?;
                 bytes.extend_from_slice(&action.bytes);
+                progress(CaptureProgress::InputAccepted(action.bytes.len()));
                 meter.record_examination(0, action.bytes.len() as u64)?;
             } else {
                 let bytes = self.bytes.to_mut();
@@ -303,6 +372,7 @@ impl<'a> PendingStdin<'a> {
                     .try_reserve(total - bytes.len())
                     .map_err(io::Error::other)?;
                 bytes.extend_from_slice(&action.bytes);
+                progress(CaptureProgress::InputAccepted(action.bytes.len()));
             }
         }
         self.complete = action.complete;
@@ -334,11 +404,68 @@ impl std::error::Error for ProcessCaptureFailure {
     }
 }
 
-pub(super) fn drain_pipe<T: Read + platform::Pipe>(
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_interactive_payload_retires_at_original_pipe_completion() -> io::Result<()> {
+        let mut command = ProcessCommand::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "process_tree::stream::tests::child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_STREAM_CAPTURE", "credit")
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let mut input = PendingStdin::owned(super::super::OwnedCaptureInput::Interactive {
+            initial: Vec::new(),
+            maximum: 4,
+        })?;
+        input.receive(
+            &mut || {
+                Ok(ProcessInput {
+                    bytes: vec![7; 4],
+                    complete: true,
+                })
+            },
+            &mut |_| {},
+        )?;
+        assert_eq!(input.bytes.len(), 4);
+        input.poll(&mut tree, None)?;
+        assert!(!input.writing());
+        assert!(input.finished());
+        let std::borrow::Cow::Owned(bytes) = &input.bytes else {
+            panic!("interactive input lost its original owned representation");
+        };
+        assert_eq!(
+            bytes.capacity(),
+            0,
+            "final transfer retained its payload backing"
+        );
+        input.receive(
+            &mut || panic!("final transfer requested more input"),
+            &mut |_| {},
+        )?;
+        assert!(!tree.is_reaped());
+        tree.terminate(None)?;
+        assert!(tree.is_reaped());
+        Ok(())
+    }
+}
+
+pub(super) fn drain_pipe_observed<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
     remaining: &mut usize,
     meter: Option<&dyn crate::NativeReadMeter>,
+    read: impl FnOnce(usize) -> CaptureProgress,
+    eof: CaptureProgress,
+    progress: &mut impl FnMut(CaptureProgress),
 ) -> io::Result<bool> {
     let Some(reader) = pipe.as_mut() else {
         return Ok(false);
@@ -389,6 +516,9 @@ pub(super) fn drain_pipe<T: Read + platform::Pipe>(
         output.set_len(before + retained);
     }
     *remaining -= retained;
+    if actual != 0 {
+        progress(read(actual));
+    }
     recorded_bytes?;
     let (read, recorded_operation) = transfer?;
     recorded_operation?;
@@ -400,6 +530,7 @@ pub(super) fn drain_pipe<T: Read + platform::Pipe>(
                     Ok(())
                 })?;
             closed?;
+            progress(eof);
             recorded?;
         }
         Some(read) => {

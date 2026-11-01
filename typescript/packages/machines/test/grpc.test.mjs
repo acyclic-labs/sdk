@@ -266,14 +266,16 @@ test("exec yields output before the command completes", async t => {
   let finish;
   const completion = new Promise(resolve => { finish = resolve; });
   const { machines } = await fixture(t, {
-    async *exec(_query, context) {
+    async *exec(query, context) {
       authenticate(context);
+      assert.equal(query.timeoutMs, undefined);
+      assert.equal(context.requestHeader.get("grpc-timeout"), null);
       yield { machine, output: channelData(new Uint8Array([0, 255])) };
       await completion;
       yield { machine, output: { case: "exitCode", value: 0 } };
     },
   });
-  const iterator = machines.exec({ protocol, machine, argv: ["echo"], timeoutMs: 1000n });
+  const iterator = machines.exec({ protocol, machine, argv: ["echo"] });
   const first = await iterator.next();
   assert.deepEqual(first.value.output, channelData(new Uint8Array([0, 255])));
   finish();

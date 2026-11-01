@@ -92,14 +92,20 @@ where
             terminal: Box::pin(async move {
                 let deadline = async {
                     match deadline_rx.await {
-                        Ok(Some(deadline)) => terminal.authorization.expires_at(deadline).await,
+                        Ok(Some(deadline)) => terminal
+                            .authorization
+                            .expires_at(deadline)
+                            .await
+                            .err()
+                            .unwrap_or(StreamError::AccessDenied),
                         Ok(None) => future::pending().await,
-                        Err(_) => (),
+                        Err(_) => StreamError::AccessDenied,
                     }
                 };
-                let _ =
-                    future::select(Box::pin(terminal.watch.changed()), Box::pin(deadline)).await;
-                StreamError::AccessDenied
+                match future::select(Box::pin(terminal.watch.changed()), Box::pin(deadline)).await {
+                    future::Either::Left(_) => StreamError::AccessDenied,
+                    future::Either::Right((error, _)) => error,
+                }
             }),
             open: Box::pin(async move {
                 // An edit in flight at the follow finishes before its policy is

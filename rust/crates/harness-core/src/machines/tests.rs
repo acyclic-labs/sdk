@@ -109,7 +109,7 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
         host.inspect(&foreign).await,
         Err(Error::Invalid(_))
     ));
-    let command = acyclic_machines::ExecCommand::new(vec!["true".into()], 300_000)
+    let command = acyclic_machines::ExecCommand::new(vec!["true".into()], Some(300_000))
         .map_err(|error| map_error(error, None))?;
     assert!(matches!(
         host.exec(&foreign, command).await,

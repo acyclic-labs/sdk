@@ -75,8 +75,8 @@ machine_mutations! {
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
             let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
             let mut request = Request::new(input);
-            if let Some(deadline) = &deadline {
-                request.set_timeout(deadline.remaining());
+            if let Some(remaining) = deadline.as_ref().and_then(transport::Deadline::remaining) {
+                request.set_timeout(remaining);
             }
             let output = transport::run(deadline.as_ref(), client.exec(request))
                 .await

@@ -49,6 +49,15 @@ impl From<Duration> for CaptureSchedule {
 /// Owned input for a capture that outlives its caller's borrows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OwnedCaptureInput {
+    /// Independently signalled input. Each transfer is bounded by `maximum`;
+    /// completed transfers are retired, so total input is unbounded. Closing
+    /// stdin does not terminate the process or require a stdout reply.
+    Interactive {
+        /// Initial owned bytes, written before requesting another transfer.
+        initial: Vec<u8>,
+        /// Caller-funded maximum bytes in one outstanding transfer.
+        maximum: usize,
+    },
     /// A streaming exchange with bounded queued input.
     Exchange {
         /// Bytes written before observing output.
@@ -91,6 +100,28 @@ impl From<Vec<ProcessWake>> for CaptureWakes {
     }
 }
 
+/// Metadata from the original capture operation, without pipe contents.
+/// These are observations, not delivery acknowledgements from the child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureProgress {
+    /// Input admitted to the original ordered buffer.
+    InputAccepted(usize),
+    /// Bytes accepted by the original OS pipe write, not necessarily consumed.
+    InputWritten(usize),
+    /// The original owner closed its stdin handle; the child may still run.
+    StdinClosed,
+    /// Bytes returned by the original stdout read.
+    StdoutRead(usize),
+    /// Bytes returned by the original stderr read.
+    StderrRead(usize),
+    /// The original stdout read returned EOF.
+    StdoutEof,
+    /// The original stderr read returned EOF.
+    StderrEof,
+    /// The original direct child's status, before descendant retirement.
+    RootExited(ExitStatus),
+}
+
 /// The owner callbacks of an async capture, run on the blocking pool.
 pub trait CaptureHandler: Send + 'static {
     /// Transfers the fixed signals once, on the first blocking turn.
@@ -99,12 +130,37 @@ pub trait CaptureHandler: Send + 'static {
     }
     /// Confirms that capture may continue; an error stops and cleans it up.
     fn check(&mut self) -> io::Result<()>;
+    /// Takes the next owned interactive transfer only after the previous
+    /// transfer reached the OS pipe. Empty, incomplete input means pending:
+    /// its producer must notify a signal returned by `take_wakes`, including
+    /// on producer loss. Report that loss as an error, never an empty success.
+    /// `complete` closes stdin after these bytes, without killing the tree.
+    /// This callback is not used for literal input or stdout exchanges.
+    fn input(&mut self) -> io::Result<ProcessInput> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interactive process input has no producer",
+        ))
+    }
     /// Observes newly captured output, returning exchange input.
     fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput>;
+    /// Observes the original operation on its worker, without another reader.
+    /// Keep this callback nonblocking. The handler owns correlation and any
+    /// clock or fixed scalar records; capture creates none. Output callbacks
+    /// can occur more than once. No observation substitutes for `retired`.
+    /// Initial admission and stdin closure are reported on the first turn;
+    /// a callback timestamp measures observation, not earlier setup work.
+    fn progress(&mut self, _progress: CaptureProgress) {}
     /// Releases live execution admission after the original physical cleanup.
     /// Observation may retain this handler longer; it cannot delay retirement.
     /// Owner loss skips this callback and must remain an unproved retirement.
     fn retired(&mut self, _cleanup_completed: bool) {}
+    /// Borrows opt-in telemetry owned by this same handler. Retain it through
+    /// `retired`; the original result is recorded only after that callback
+    /// returns. The default adds no observation or physical ownership.
+    fn observation(&mut self) -> Option<&mut crate::obs::CaptureObservation> {
+        None
+    }
 }
 
 /// A finished async capture: its handler and the bounded result. A tree
@@ -119,11 +175,16 @@ pub struct CaptureOutcome<H> {
 
 impl<H: CaptureHandler> CaptureOutcome<H> {
     pub(super) fn new(mut handler: H, result: Result<Output, ProcessCaptureFailure>) -> Self {
-        handler.retired(
-            result
-                .as_ref()
-                .map_or_else(|failure| failure.cleanup_completed, |_| true),
-        );
+        let cleanup_completed = result
+            .as_ref()
+            .map_or_else(|failure| failure.cleanup_completed, |_| true);
+        handler.retired(cleanup_completed);
+        if let Some(observation) = handler.observation() {
+            observation.retired(
+                cleanup_completed,
+                result.as_ref().err().map(|failure| &failure.error),
+            );
+        }
         Self { handler, result }
     }
 }
@@ -139,6 +200,8 @@ pub(super) struct Pump<'a> {
     readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,
     streaming: bool,
+    observed_start: bool,
+    closed_stdin_on_start: bool,
 }
 
 /// What a turn left to do.
@@ -166,6 +229,8 @@ pub(super) fn handled_turn<H: CaptureHandler>(
         tree,
         &mut || shared.borrow_mut().check(),
         &mut |chunk| shared.borrow_mut().observe(chunk),
+        &mut || shared.borrow_mut().input(),
+        &mut |progress| shared.borrow_mut().progress(progress),
         None,
     )
 }
@@ -195,6 +260,11 @@ impl<'a> Pump<'a> {
                 )));
             }
         };
+        let closed_stdin_on_start = input.is_none()
+            && tree
+                .child
+                .as_ref()
+                .is_some_and(|child| child.stdin.is_some());
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -241,6 +311,8 @@ impl<'a> Pump<'a> {
             readers,
             status: None,
             streaming: false,
+            observed_start: false,
+            closed_stdin_on_start,
         })
     }
 
@@ -253,8 +325,15 @@ impl<'a> Pump<'a> {
     }
 
     /// While output credit is withheld, only owner control or the deadline
-    /// can advance capture. Readable output must not wake this wait.
-    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait<'static>> {
+    /// can advance capture. Readable output must not wake this wait. With
+    /// neither producer, the caller waits only for its original output credit.
+    pub(super) fn arm_control(
+        &self,
+        wakes: &[ProcessWake],
+    ) -> io::Result<Option<events::Wait<'static>>> {
+        if wakes.is_empty() && self.deadline.is_none() {
+            return Ok(None);
+        }
         let sources = wakes
             .iter()
             .map(|wake| {
@@ -272,7 +351,7 @@ impl<'a> Pump<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        events::arm(&sources, self.wake_at())
+        events::arm(&sources, self.wake_at()).map(Some)
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
@@ -300,10 +379,12 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        input: &mut impl FnMut() -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> Turn {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.advance(tree, check, observe, meter)
+            self.advance(tree, check, observe, input, progress, meter)
         }));
         match result {
             Ok(Ok(true)) => Turn::Done(Ok(())),
@@ -322,34 +403,64 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         check: &mut impl FnMut() -> io::Result<()>,
         observe: &mut impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        input: &mut impl FnMut() -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
+        // Setup observations share the turn's panic boundary and physical
+        // owner, just like output observations. Never call a new observer
+        // before the tree, pipe buffers and handler have joined that owner.
+        if !self.observed_start {
+            self.observed_start = true;
+            if let Some(input) = &self.input {
+                progress(CaptureProgress::InputAccepted(input.accepted_bytes()));
+            }
+            if self.closed_stdin_on_start {
+                progress(CaptureProgress::StdinClosed);
+            }
+        }
         loop {
             if self.streaming {
                 self.check_deadline()?;
             }
             check()?;
-            let mut progressed = self
-                .input
-                .as_mut()
-                .map_or(Ok(false), |stdin| stdin.poll(tree, meter))?;
+            let mut progressed = self.input.as_mut().map_or(Ok(false), |stdin| {
+                stdin.receive(input, progress)?;
+                stdin.poll_observed(tree, meter, progress)
+            })?;
             let [stdout_output, stderr_output] = &mut self.output;
             let before_stdout = stdout_output.len();
             let before_stderr = stderr_output.len();
             let drained = (|| {
                 Ok::<_, io::Error>(
-                    drain_pipe(&mut self.stdout, stdout_output, &mut self.remaining, meter)?
-                        | drain_pipe(&mut self.stderr, stderr_output, &mut self.remaining, meter)?,
+                    drain_pipe_observed(
+                        &mut self.stdout,
+                        stdout_output,
+                        &mut self.remaining,
+                        meter,
+                        CaptureProgress::StdoutRead,
+                        CaptureProgress::StdoutEof,
+                        progress,
+                    )? | drain_pipe_observed(
+                        &mut self.stderr,
+                        stderr_output,
+                        &mut self.remaining,
+                        meter,
+                        CaptureProgress::StderrRead,
+                        CaptureProgress::StderrEof,
+                        progress,
+                    )?,
                 )
             })();
             if stdout_output.len() > before_stdout {
                 let chunk = stdout_output
                     .get(before_stdout..)
                     .ok_or_else(|| io::Error::other("invalid observed process stdout"))?;
-                if let Some(input) = self.input.as_mut().filter(|input| !input.complete) {
+                if let Some(input) = self.input.as_mut().filter(|input| input.awaiting_reply()) {
                     input.observe(
                         chunk,
                         &mut |bytes| observe(ProcessOutput::Stdout(bytes)),
+                        progress,
                         meter,
                     )?;
                 } else {
@@ -366,7 +477,7 @@ impl<'a> Pump<'a> {
             // Exchange replies can only arrive on stdout. EOF withdraws that
             // producer even when the root remains alive with stderr open.
             if self.stdout.is_none()
-                && let Some(input) = self.input.as_ref().filter(|input| !input.complete)
+                && let Some(input) = self.input.as_ref().filter(|input| input.awaiting_reply())
             {
                 return Err(io::Error::new(
                     if input.undelivered() {
@@ -381,6 +492,7 @@ impl<'a> Pump<'a> {
                 && let Some(exit) = tree.try_wait(meter)?
             {
                 self.status = Some(exit);
+                progress(CaptureProgress::RootExited(exit));
                 tree.capture_terminate_descendants(meter)?;
             }
             if self.status.is_some() && self.stdout.is_none() && self.stderr.is_none() {

@@ -169,7 +169,7 @@ pub type OperationStream =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
-    pub(crate) timeout_ms: u64,
+    pub(crate) timeout_ms: Option<u64>,
     pub(crate) cwd: Option<String>,
     pub(crate) stdin: Vec<u8>,
     pub(crate) expiry_unix_ms: Option<u64>,
@@ -177,13 +177,14 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
-    /// Checks argv admission and a positive command deadline in milliseconds,
-    /// which also bounds an implicit wake of an idle-suspended Machine.
-    pub fn new(argv: Vec<String>, timeout_ms: u64) -> Result<Self, ProviderError> {
+    /// Checks argv admission and an optional positive lifetime in milliseconds.
+    /// A supplied lifetime also covers an implicit wake of a suspended Machine.
+    /// Omission registers no relative deadline; authority expiry is independent.
+    pub fn new(argv: Vec<String>, timeout_ms: Option<u64>) -> Result<Self, ProviderError> {
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)
             || argv.iter().any(|value| value.contains('\0'))
-            || timeout_ms == 0
+            || timeout_ms == Some(0)
         {
             return Err(ProviderError::Invalid("invalid guest command".into()));
         }
@@ -245,7 +246,7 @@ impl ExecCommand {
     }
 
     #[must_use]
-    pub fn timeout_ms(&self) -> u64 {
+    pub fn timeout_ms(&self) -> Option<u64> {
         self.timeout_ms
     }
 }

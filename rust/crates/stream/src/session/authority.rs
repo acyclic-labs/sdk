@@ -30,7 +30,19 @@ pub trait AuthorityState: crate::ProviderPlatform {
     /// [`SourceClosed`] when the owner is lost.
     fn changes(&self) -> &dyn ChangeSource;
     /// Completes at the absolute UTC deadline, independently of record credit.
-    fn expires_at(&self, unix_seconds: u64) -> crate::BoxProviderFuture<'_, ()>;
+    /// Registration failure or loss of the clock producer returns `SourceClosed`;
+    /// neither may be reported as expiry or left pending.
+    fn expires_at(
+        &self,
+        unix_seconds: u64,
+    ) -> crate::BoxProviderFuture<'_, Result<(), SourceClosed>>;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum AuthorityEvent {
+    Trust(Result<(), SourceClosed>),
+    Expired,
+    ClockLost,
 }
 
 /// Authenticated recipient and holder binding for one session host.
@@ -565,12 +577,13 @@ impl Authority {
         Some(changes.changed())
     }
     /// Waits for the registered trust change, consuming it, or for the
-    /// credential expiry at `deadline`, which yields `None`.
+    /// credential expiry at `deadline`. Clock producer loss is terminal and
+    /// distinct from trust loss, whose original feed may recover.
     pub(super) async fn changed(
         &self,
         registration: &mut Option<Changed>,
         deadline: Option<u64>,
-    ) -> Option<Result<(), SourceClosed>> {
+    ) -> AuthorityEvent {
         let changed = std::pin::pin!(async move {
             let Some(changed) = registration.as_mut() else {
                 return future::pending::<Result<(), SourceClosed>>().await;
@@ -582,11 +595,12 @@ impl Authority {
         match deadline {
             Some(deadline) => {
                 match future::select(changed, self.state.expires_at(deadline)).await {
-                    future::Either::Left((result, _)) => Some(result),
-                    future::Either::Right(((), _)) => None,
+                    future::Either::Left((result, _)) => AuthorityEvent::Trust(result),
+                    future::Either::Right((Ok(()), _)) => AuthorityEvent::Expired,
+                    future::Either::Right((Err(SourceClosed), _)) => AuthorityEvent::ClockLost,
                 }
             }
-            None => Some(changed.await),
+            None => AuthorityEvent::Trust(changed.await),
         }
     }
 }
@@ -678,13 +692,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
     /// Acts on what [`Authority::changed`] waited for.
-    pub(super) fn trust_event(
-        &mut self,
-        event: Option<Result<(), SourceClosed>>,
-    ) -> Result<(), StreamError> {
+    pub(super) fn trust_event(&mut self, event: AuthorityEvent) -> Result<(), StreamError> {
         match event {
-            Some(Err(SourceClosed)) => self.fence(),
-            Some(Ok(())) | None => self.revalidate(None),
+            AuthorityEvent::Trust(Err(SourceClosed)) => self.fence(),
+            AuthorityEvent::Trust(Ok(())) | AuthorityEvent::Expired => self.revalidate(None),
+            AuthorityEvent::ClockLost => Err(StreamError::Unavailable),
         }
     }
     /// Applies a trust change or credential expiry that happened since the
@@ -700,7 +712,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         match changed.now_or_never() {
             Some(event) => {
                 self.trust_changed = None;
-                self.trust_event(Some(event))
+                self.trust_event(AuthorityEvent::Trust(event))
             }
             None => self.expire(),
         }

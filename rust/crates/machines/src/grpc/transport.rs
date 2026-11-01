@@ -24,7 +24,7 @@ pub trait Endpoint: ProviderPlatform + Clone + 'static {
 /// Implementations use their existing clock event; they never renew the budget.
 pub trait Deadline: ProviderPlatform + 'static {
     /// Remaining original budget for the transport's deadline metadata.
-    fn remaining(&self) -> Duration;
+    fn remaining(&self) -> Option<Duration>;
     /// Stop observation on the original expiry event, retaining admitted uncertainty.
     fn run<F>(&self, future: F) -> impl Future<Output = Option<F::Output>> + ProviderTask
     where
@@ -58,7 +58,7 @@ impl<T, S: Stream<Item = Result<T, Status>> + Unpin> Messages<T> for S {}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Deadline for crate::provider::deadline::GuestDeadline {
-    fn remaining(&self) -> Duration {
+    fn remaining(&self) -> Option<Duration> {
         self.remaining()
     }
     async fn run<F>(&self, future: F) -> Option<F::Output>

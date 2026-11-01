@@ -73,7 +73,7 @@ impl LocalMachine {
         &self,
         command: ExecCommand,
         mut handler: H,
-        deadline: std::time::Instant,
+        deadline: Option<std::time::Instant>,
     ) -> LocalExecution<H> {
         let machine = self.id;
         let (maximum, control) = match admit(&command) {
@@ -96,7 +96,7 @@ impl LocalMachine {
                 let mut handler = control.bind(handler);
                 let started = (|| {
                     handler.check().map_err(StartFailure::Refused)?;
-                    if std::time::Instant::now() >= deadline {
+                    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                         return Err(StartFailure::Refused(io::ErrorKind::TimedOut.into()));
                     }
                     let mut argv = command.argv.into_iter();
@@ -134,7 +134,7 @@ impl LocalMachine {
                 match started {
                     Ok((tree, input)) => Ok(tree.stream_capture(
                         &spawner,
-                        CaptureSchedule::until(deadline),
+                        deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
                         maximum,
                         input,
                         handler,

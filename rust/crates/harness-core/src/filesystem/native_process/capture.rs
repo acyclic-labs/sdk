@@ -1,6 +1,5 @@
 use super::*;
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
-use std::time::Duration;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -120,9 +119,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
             };
             match start(&invocation, &mut handler) {
                 Ok(Ok((tree, input))) => {
-                    let schedule = acyclic_native_runtime::CaptureSchedule::new(
-                        Duration::from_millis(u64::from(invocation.timeout_ms)),
-                    );
+                    let schedule = invocation.schedule;
                     // Transfer physical custody before returning from the
                     // worker. Losing the waiter cannot drop an unsubmitted tree.
                     match retention {
@@ -224,7 +221,7 @@ fn start<T>(
         if let Some(output) = acyclic_native_runtime::testing::capture_process(
             acyclic_native_runtime::testing::ProcessCapture {
                 command: &command,
-                timeout: Duration::from_millis(u64::from(invocation.timeout_ms)),
+                schedule: invocation.schedule,
                 maximum: invocation.maximum_output_bytes,
                 input,
             },

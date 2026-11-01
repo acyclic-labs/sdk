@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 #[test]
 fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
@@ -30,55 +30,77 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         .max_blocking_threads(1)
         .enable_all()
         .build()?;
-    let handle = runtime.handle().clone();
-    let observed = Arc::new(AtomicUsize::new(0));
-    let completed = Arc::clone(&observed);
     let root = tempfile::tempdir()?;
-    let invocation = Invocation {
-        executable: std::env::current_exe()?,
-        argv: vec![
-            "--exact".into(),
-            "filesystem::native_process::capture::tests::capture_output_child".into(),
-            "--nocapture".into(),
-        ],
-        cwd: root.path().into(),
-        environment: Default::default(),
-        inherit_environment: true,
-        timeout_ms: 300_000,
-        control_timeout_ms: 1000,
-        maximum_output_bytes: 32_768,
-        standard_input: None,
-        process_custody: None,
-    };
-    let observer = Arc::new(move |_: acyclic_native_runtime::ProcessOutput<'_>| {
-        // The old capture owner occupied this runtime's only blocking worker.
-        // Detect that placement before attempting re-entry, so its negative
-        // control fails immediately instead of leaving a blocked worker.
-        assert!(
-            tokio::runtime::Handle::try_current().is_err(),
-            "capture occupies the publication executor"
-        );
-        let completed = Arc::clone(&completed);
-        handle.block_on(async move {
-            tokio::task::spawn_blocking(move || {
-                completed.fetch_add(1, Ordering::SeqCst);
+    for (schedule, stopped) in [
+        (acyclic_native_runtime::CaptureSchedule::Unbounded, None),
+        (
+            acyclic_native_runtime::CaptureSchedule::until(std::time::Instant::now()),
+            Some(NativeProcessStopKind::Timeout),
+        ),
+        (
+            acyclic_native_runtime::CaptureSchedule::new(Duration::MAX),
+            Some(NativeProcessStopKind::CaptureFailed),
+        ),
+    ] {
+        let handle = runtime.handle().clone();
+        let observed = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::clone(&observed);
+        let invocation = Invocation {
+            executable: std::env::current_exe()?,
+            argv: vec![
+                "--exact".into(),
+                "filesystem::native_process::capture::tests::capture_output_child".into(),
+                "--nocapture".into(),
+            ],
+            cwd: root.path().into(),
+            environment: Default::default(),
+            inherit_environment: true,
+            schedule,
+            control_timeout_ms: 1000,
+            maximum_output_bytes: 32_768,
+            standard_input: None,
+            process_custody: None,
+        };
+        let observer = Arc::new(move |_: acyclic_native_runtime::ProcessOutput<'_>| {
+            // The old capture owner occupied this runtime's only blocking worker.
+            // Detect that placement before attempting re-entry, so its negative
+            // control fails immediately instead of leaving a blocked worker.
+            assert!(
+                tokio::runtime::Handle::try_current().is_err(),
+                "capture occupies the publication executor"
+            );
+            let completed = Arc::clone(&completed);
+            handle.block_on(async move {
+                tokio::task::spawn_blocking(move || {
+                    completed.fetch_add(1, Ordering::SeqCst);
+                })
+                .await
+                .map_err(std::io::Error::other)
             })
-            .await
-            .map_err(std::io::Error::other)
-        })
-    });
-    let (output, ()) = runtime.block_on(capture_with_custody(
-        invocation,
-        move |(), chunk| observer(chunk),
-        || Ok(()),
-        (),
-        None,
-        OutputRetention::Observe,
-    ))?;
-    let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
-    assert!(output.success, "{output:?}");
-    assert!(output.stdout.is_empty() && output.stderr.is_empty());
-    assert!(observed.load(Ordering::SeqCst) > 0);
+        });
+        let (output, ()) = runtime.block_on(capture_with_custody(
+            invocation,
+            move |(), chunk| observer(chunk),
+            || Ok(()),
+            (),
+            None,
+            OutputRetention::Observe,
+        ))?;
+        let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        if let Some(kind) = stopped {
+            let stop = output
+                .stop
+                .expect("the original deadline was erased or restarted");
+            assert!(!output.success);
+            assert_eq!(stop.kind, kind);
+            assert!(stop.cleanup_completed, "{stop:?}");
+            assert_eq!(observed.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(output.success, "{output:?}");
+            assert!(observed.load(Ordering::SeqCst) > 0);
+        }
+    }
     Ok(())
 }
 
@@ -131,7 +153,10 @@ mod simulation {
                         request.command.get_args().collect::<Vec<_>>(),
                         ["-c", "printf dst"]
                     );
-                    assert_eq!(request.timeout, Duration::from_millis(1000));
+                    assert_eq!(
+                        request.schedule,
+                        acyclic_native_runtime::CaptureSchedule::Unbounded
+                    );
                     assert_eq!(request.maximum, 3);
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
@@ -157,7 +182,7 @@ mod simulation {
                 cwd: "/".into(),
                 environment: Default::default(),
                 inherit_environment: false,
-                timeout_ms: 1000,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
                 control_timeout_ms: 1000,
                 maximum_output_bytes: 3,
                 process_custody: None,

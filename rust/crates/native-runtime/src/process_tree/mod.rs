@@ -21,7 +21,11 @@ mod capture;
 #[cfg(not(target_arch = "wasm32"))]
 mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
-pub use external_host::run_external_process_host;
+pub use external_host::{
+    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostFailure,
+    ProcessHostPartialProgress, ProcessHostPhase, ProcessHostProgress, run_external_process_host,
+    run_external_process_host_with_progress,
+};
 #[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
@@ -46,7 +50,10 @@ mod stdio;
 pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
 #[cfg(windows)]
 mod spawner;
-pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
+pub use pump::{
+    CaptureHandler, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
+    OwnedCaptureInput,
+};
 #[cfg(windows)]
 mod custodian_admission;
 #[cfg(any(windows, test))]
@@ -89,7 +96,7 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
+use capture::{PendingStdin, drain_pipe_observed, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
@@ -152,6 +159,14 @@ pub struct ProcessTree {
 pub struct ProcessReadiness(events::Wait<'static>);
 
 pub use events::ProcessWaitOutcome;
+
+impl ProcessReadiness {
+    /// Cancels this observation without releasing the original process owner.
+    /// An already settled readiness or service failure remains the outcome.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
 
 impl std::future::Future for ProcessReadiness {
     type Output = ProcessWaitOutcome;
@@ -917,7 +932,14 @@ impl ProcessTree {
                         break 'capture Err(error);
                     }
                 }
-                match pump.turn(self, &mut check, &mut observe, meter) {
+                match pump.turn(
+                    self,
+                    &mut check,
+                    &mut observe,
+                    &mut || Ok(ProcessInput::default()),
+                    &mut |_| {},
+                    meter,
+                ) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
                         Ok(wait) => {
@@ -1041,9 +1063,14 @@ impl ProcessTree {
                     Err(CaptureOutcome::new(handler, result))
                 }
             },
-            Err(failure) => {
+            Err(mut failure) => {
                 // Cleanup of an unstarted capture may block; it runs on the
-                // pool like every other turn.
+                // pool like every other turn. Observe the original physical
+                // result before dropping its owner, as a running pump does.
+                if let Err(error) = self.capture_terminate(None) {
+                    failure.error = error;
+                }
+                failure.cleanup_completed = self.is_reaped();
                 drop(self);
                 Err(CaptureOutcome::new(handler, Err(failure)))
             }

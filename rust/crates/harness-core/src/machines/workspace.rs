@@ -115,7 +115,7 @@ impl MachinesWorkspace {
         let expiry = self.verifier.expiry(&self.signed)?.checked_mul(1000)
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
         let expiry = task_deadline.map_or(expiry, |deadline| deadline.min(expiry));
-        let timeout = u64::from(input.timeout_ms()?);
+        let timeout = input.timeout_ms()?.map(u64::from);
         let (arguments, stdin) = self.shell.prepare(input.command);
         let argv = std::iter::once(self.executable.clone())
             .chain(arguments)

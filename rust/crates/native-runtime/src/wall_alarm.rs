@@ -12,12 +12,11 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-/// Called once, on the alarm thread, when its deadline has passed. It must
-/// only signal its owner and return.
-pub type AlarmCallback = Arc<dyn Fn() + Send + Sync>;
+/// Called once on expiry or loss of the original alarm producer. It must
+/// only signal its owner and return. Failure retains the original native cause.
+pub type AlarmCallback = Arc<dyn Fn(Result<(), Arc<io::Error>>) + Send + Sync>;
 
 /// A pending alarm. Dropping it cancels the alarm.
 #[must_use = "dropping the registration cancels the alarm"]
@@ -30,15 +29,11 @@ impl WallAlarm {
     /// it already has.
     pub fn register(deadline_unix_ms: u64, fire: AlarmCallback) -> io::Result<Self> {
         let alarms = alarms()?;
-        let key = locked(&alarms.index).insert(deadline_unix_ms, fire);
-        // A failed thread fires everything registered before it set the
-        // flag; a later registration must not wait on it.
-        if alarms.failed.load(Ordering::SeqCst) {
-            locked(&alarms.index).entries.remove(&key);
-            return Err(io::Error::other("wall-clock alarm thread failed"));
-        }
+        let key = locked(&alarms.index).insert(deadline_unix_ms, fire)?;
         let registration = Self { key };
-        alarms.waiter.rearm()?;
+        if let Err(error) = alarms.waiter.rearm() {
+            return Err(retained_error(&fail(&alarms.index, error)));
+        }
         Ok(registration)
     }
 }
@@ -57,19 +52,29 @@ impl Drop for WallAlarm {
 struct Index {
     next: u64,
     entries: BTreeMap<(u64, u64), AlarmCallback>,
+    failure: Option<Arc<io::Error>>,
 }
 
 impl Index {
-    fn insert(&mut self, deadline: u64, fire: AlarmCallback) -> (u64, u64) {
+    fn insert(&mut self, deadline: u64, fire: AlarmCallback) -> io::Result<(u64, u64)> {
+        if let Some(error) = &self.failure {
+            return Err(retained_error(error));
+        }
         let key = (deadline, self.next);
-        self.next = self.next.wrapping_add(1);
+        self.next = self.next.checked_add(1).ok_or_else(|| {
+            io::Error::other(
+                "step=wall-alarm-registration; recovery=restart the exhausted alarm owner",
+            )
+        })?;
         self.entries.insert(key, fire);
-        key
+        Ok(key)
     }
 
     /// Removes and returns the callbacks due at `now`, and the next deadline.
     fn take_due(&mut self, now: u64) -> (Vec<AlarmCallback>, Option<u64>) {
-        let pending = self.entries.split_off(&(now.saturating_add(1), 0));
+        let pending = now
+            .checked_add(1)
+            .map_or_else(BTreeMap::new, |after| self.entries.split_off(&(after, 0)));
         let due = std::mem::replace(&mut self.entries, pending);
         (
             due.into_values().collect(),
@@ -81,7 +86,22 @@ impl Index {
 struct Alarms {
     index: Arc<Mutex<Index>>,
     waiter: Arc<platform::Waiter>,
-    failed: Arc<AtomicBool>,
+}
+
+fn retained_error(error: &Arc<io::Error>) -> io::Error {
+    io::Error::new(error.kind(), Arc::clone(error))
+}
+
+fn fail(index: &Mutex<Index>, error: io::Error) -> Arc<io::Error> {
+    let (error, pending) = {
+        let mut index = locked(index);
+        let error = Arc::clone(index.failure.get_or_insert_with(|| Arc::new(error)));
+        (error, std::mem::take(&mut index.entries))
+    };
+    for fire in pending.into_values() {
+        fire(Err(Arc::clone(&error)));
+    }
+    error
 }
 
 fn locked(index: &Mutex<Index>) -> MutexGuard<'_, Index> {
@@ -89,26 +109,21 @@ fn locked(index: &Mutex<Index>) -> MutexGuard<'_, Index> {
 }
 
 fn alarms() -> io::Result<&'static Alarms> {
-    static ALARMS: OnceLock<Result<Alarms, String>> = OnceLock::new();
+    static ALARMS: OnceLock<Result<Alarms, Arc<io::Error>>> = OnceLock::new();
     ALARMS
-        .get_or_init(|| start().map_err(|error| error.to_string()))
+        .get_or_init(|| start().map_err(Arc::new))
         .as_ref()
-        .map_err(|cause| io::Error::other(format!("wall-clock alarm unavailable: {cause}")))
+        .map_err(retained_error)
 }
 
 fn start() -> io::Result<Alarms> {
     let index = Arc::new(Mutex::new(Index::default()));
     let waiter = Arc::new(platform::Waiter::new()?);
-    let failed = Arc::new(AtomicBool::new(false));
-    let (driven, waits, failure) = (Arc::clone(&index), Arc::clone(&waiter), Arc::clone(&failed));
+    let (driven, waits) = (Arc::clone(&index), Arc::clone(&waiter));
     std::thread::Builder::new()
         .name("acyclic-wall-alarm".into())
-        .spawn(move || drive(&driven, &*waits, &failure, now_unix_ms))?;
-    Ok(Alarms {
-        index,
-        waiter,
-        failed,
-    })
+        .spawn(move || drive(&driven, &*waits, now_unix_ms))?;
+    Ok(Alarms { index, waiter })
 }
 
 /// What one wait of the alarm thread does; the platform waiter and the test
@@ -125,20 +140,48 @@ impl Wait for platform::Waiter {
     }
 }
 
-fn drive(index: &Mutex<Index>, waiter: &dyn Wait, failed: &AtomicBool, now: impl Fn() -> u64) {
-    loop {
-        let (due, next) = locked(index).take_due(now());
-        for fire in due {
-            fire();
+struct Driver<'a> {
+    index: &'a Mutex<Index>,
+    due: std::vec::IntoIter<AlarmCallback>,
+}
+
+impl Drop for Driver<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
         }
-        if waiter.wait(next).is_err() {
-            // An unusable timer cannot keep any deadline: fire everything so
-            // owners fail closed, and refuse later registrations.
-            failed.store(true, Ordering::SeqCst);
-            let due = std::mem::take(&mut locked(index).entries);
-            for fire in due.into_values() {
-                fire();
+        let error = fail(
+            self.index,
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "step=wall-alarm-producer; recovery=restart the lost alarm owner",
+            ),
+        );
+        for fire in self.due.by_ref() {
+            fire(Err(Arc::clone(&error)));
+        }
+    }
+}
+
+fn drive(index: &Mutex<Index>, waiter: &dyn Wait, now: impl Fn() -> u64) {
+    let mut driver = Driver {
+        index,
+        due: Vec::new().into_iter(),
+    };
+    loop {
+        let (due, next) = {
+            let mut index = locked(index);
+            if index.failure.is_some() {
+                return;
             }
+            index.take_due(now())
+        };
+        driver.due = due.into_iter();
+        for fire in driver.due.by_ref() {
+            fire(Ok(()));
+        }
+        if let Err(error) = waiter.wait(next) {
+            fail(index, error);
             return;
         }
     }
@@ -175,6 +218,15 @@ mod platform {
     }
 
     impl Waiter {
+        #[cfg(test)]
+        pub(super) fn refused_timer() -> io::Result<Self> {
+            let mut waiter = Self::new()?;
+            // A real regular-file descriptor is refused by the original
+            // timerfd_settime syscall before the OS wait can begin.
+            waiter.timer = std::fs::File::open(std::env::current_exe()?)?.into();
+            Ok(waiter)
+        }
+
         pub(super) fn new() -> io::Result<Self> {
             // SAFETY: plain descriptor-creating calls without pointers.
             let timer = owned(unsafe {
@@ -563,7 +615,7 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
 
     fn counter() -> (Arc<AtomicU64>, AlarmCallback) {
@@ -571,7 +623,7 @@ mod tests {
         let count = Arc::clone(&fired);
         (
             fired,
-            Arc::new(move || {
+            Arc::new(move |_outcome| {
                 count.fetch_add(1, Ordering::SeqCst);
             }),
         )
@@ -585,13 +637,14 @@ mod tests {
         let sender = Mutex::new(sender);
         let _alarm = WallAlarm::register(
             now_unix_ms() + 50,
-            Arc::new(move || {
-                let _ = locked_sender(&sender).send(());
+            Arc::new(move |outcome| {
+                let _ = locked_sender(&sender).send(outcome);
             }),
         )?;
         received
             .recv()
-            .map_err(|_| io::Error::other("quiet alarm never fired"))
+            .map_err(|_| io::Error::other("quiet alarm never fired"))?
+            .map_err(|error| retained_error(&error))
     }
 
     fn locked_sender<T>(sender: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -604,13 +657,14 @@ mod tests {
         let sender = Mutex::new(sender);
         let _elapsed = WallAlarm::register(
             0,
-            Arc::new(move || {
-                let _ = locked_sender(&sender).send(());
+            Arc::new(move |outcome| {
+                let _ = locked_sender(&sender).send(outcome);
             }),
         )?;
         received
             .recv()
-            .map_err(|_| io::Error::other("elapsed alarm never fired"))?;
+            .map_err(|_| io::Error::other("elapsed alarm never fired"))?
+            .map_err(|error| retained_error(&error))?;
         let (fired, fire) = counter();
         let pending = WallAlarm::register(u64::MAX, fire)?;
         let key = pending.key;
@@ -642,29 +696,75 @@ mod tests {
     }
 
     #[test]
-    fn wait_failure_fires_every_registered_deadline() {
+    #[cfg(target_os = "linux")]
+    fn alarm_producer_loss_retains_native_failure_and_refuses_late_registration() {
         let index = Mutex::new(Index::default());
-        let (fired, fire) = counter();
-        for deadline in [0, 1, u64::MAX] {
-            locked(&index).insert(deadline, Arc::clone(&fire));
+        let (sender, received) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        let fire: AlarmCallback = Arc::new(move |outcome| {
+            locked_sender(&sender).send(outcome).unwrap();
+        });
+        for deadline in [1, u64::MAX] {
+            locked(&index).insert(deadline, Arc::clone(&fire)).unwrap();
         }
-        let script = Script {
-            clock: Arc::new(AtomicU64::new(0)),
-            steps: Mutex::new(Vec::new()),
-        };
-        let failed = AtomicBool::new(false);
-        drive(&index, &script, &failed, || 0);
-        assert!(failed.load(Ordering::SeqCst));
-        assert_eq!(fired.load(Ordering::SeqCst), 3);
+        let waiter = platform::Waiter::refused_timer().unwrap();
+        let original = waiter.wait(None).unwrap_err();
+        drive(&index, &waiter, || 0);
+        let first = received.try_recv().unwrap().unwrap_err();
+        assert_eq!(first.kind(), original.kind());
+        assert_eq!(first.raw_os_error(), original.raw_os_error());
+        let second = received.try_recv().unwrap().unwrap_err();
+        assert!(Arc::ptr_eq(&first, &second));
+        let late = locked(&index).insert(1, fire).unwrap_err();
+        assert!(Arc::ptr_eq(
+            &first,
+            late.get_ref()
+                .unwrap()
+                .downcast_ref::<Arc<io::Error>>()
+                .unwrap()
+        ));
+        let retained = fail(
+            &index,
+            io::Error::new(io::ErrorKind::BrokenPipe, "later producer loss"),
+        );
+        assert!(Arc::ptr_eq(&first, &retained));
         assert!(locked(&index).entries.is_empty());
+
+        struct Lost;
+        impl Wait for Lost {
+            fn wait(&self, _: Option<u64>) -> io::Result<()> {
+                panic!("original producer unwound");
+            }
+        }
+        let index = Mutex::new(Index::default());
+        let (sender, received) = mpsc::channel();
+        let sender = Mutex::new(sender);
+        locked(&index)
+            .insert(
+                1,
+                Arc::new(move |outcome| {
+                    locked_sender(&sender).send(outcome).unwrap();
+                }),
+            )
+            .unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drive(&index, &Lost, || 0);
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            received.try_recv().unwrap().unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
     }
 
     #[test]
     fn deadline_registration_rearms_after_a_clock_jump() {
         let index = Mutex::new(Index::default());
         let (fired, fire) = counter();
-        locked(&index).insert(10_000, Arc::clone(&fire));
-        locked(&index).insert(60_000, fire);
+        locked(&index).insert(10_000, Arc::clone(&fire)).unwrap();
+        locked(&index).insert(60_000, fire).unwrap();
         let clock = Arc::new(AtomicU64::new(0));
         // The first wait arms 10s; the clock is then set forward past it
         // before that monotonic span could elapse. The wake re-reads the
@@ -680,8 +780,7 @@ mod tests {
         };
         let now = Arc::clone(&clock);
         // The finished script ends the loop through its failure path.
-        let failed = AtomicBool::new(false);
-        drive(&index, &script, &failed, move || now.load(Ordering::SeqCst));
+        drive(&index, &script, move || now.load(Ordering::SeqCst));
         assert_eq!(fired.load(Ordering::SeqCst), 2);
         assert!(locked(&index).entries.is_empty());
     }

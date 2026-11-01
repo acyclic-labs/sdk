@@ -490,18 +490,19 @@ mod tests {
         assert!(notification.0.load(Ordering::Acquire));
         // A later producer error cannot replace the original native cause.
         hub.fail(io::ErrorKind::BrokenPipe.into());
-        for wait in [&mut active, &mut early] {
+        let mut late = arm_on(&hub, &[], None)?;
+        for wait in [&mut active, &mut early, &mut late] {
             match Pin::new(wait).poll(&mut context) {
                 Poll::Ready(ProcessWaitOutcome::ServiceFailed(error)) => {
                     assert_eq!(error.raw_os_error(), original.raw_os_error());
+                    assert!(Arc::ptr_eq(
+                        &error,
+                        hub.registry().failure.as_ref().unwrap()
+                    ));
                 }
                 other => panic!("exit callback lost its original terminal: {other:?}"),
             }
         }
-        assert_eq!(
-            arm_on(&hub, &[], None).err().unwrap().raw_os_error(),
-            original.raw_os_error()
-        );
         let registry = hub.registry();
         assert!(registry.armed.is_empty());
         assert!(registry.positions.is_empty());

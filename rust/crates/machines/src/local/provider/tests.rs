@@ -73,7 +73,7 @@ async fn lost_admission_reply_keeps_original_incarnation_closed()
             local
                 .exec(
                     machine,
-                    ExecCommand::new(vec!["must-not-spawn".into()], 5_000)?
+                    ExecCommand::new(vec!["must-not-spawn".into()], Some(5_000))?
                 )
                 .await,
             Err(ProviderError::Conflict(_))
@@ -162,7 +162,7 @@ async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
                 "local::tests::child".into(),
                 "--nocapture".into(),
             ],
-            5_000,
+            Some(5_000),
         )?;
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
         let mut submitted = Box::pin(schedule.scope(local.exec(machine, command)));

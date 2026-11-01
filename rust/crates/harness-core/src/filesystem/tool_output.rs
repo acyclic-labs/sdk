@@ -3,7 +3,7 @@
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
-    trust::{ChangeSource, Follower},
+    trust::{ChangeSource, Follower, SourceClosed},
     verify::VerifyError,
 };
 use acyclic_stream::UnixMillisClock;
@@ -188,33 +188,32 @@ impl AuthorityState for LocalTrust {
     /// Completes once the harness's clock reaches `unix_seconds`. The wait is
     /// the process's one wall-clock alarm, re-armed only while the harness's
     /// clock still runs behind when it fires.
-    fn expires_at(&self, unix_seconds: u64) -> acyclic_stream::BoxProviderFuture<'_, ()> {
+    fn expires_at(
+        &self,
+        unix_seconds: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<(), SourceClosed>> {
         Box::pin(async move {
             let deadline = unix_seconds.saturating_mul(1000);
             loop {
                 let remaining = deadline.saturating_sub(self.clock.now_unix_millis());
                 if remaining == 0 {
-                    return;
+                    return Ok(());
                 }
                 let wall = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-                let (fired, wake) = tokio::sync::oneshot::channel::<()>();
+                let (fired, wake) = tokio::sync::oneshot::channel();
                 let fired = std::sync::Mutex::new(Some(fired));
                 let alarm = acyclic_native_runtime::WallAlarm::register(
                     wall.saturating_add(remaining),
-                    Arc::new(move || {
+                    Arc::new(move |outcome| {
                         if let Some(fired) = fired.lock().ok().and_then(|mut fired| fired.take()) {
-                            let _ = fired.send(());
+                            let _ = fired.send(outcome);
                         }
                     }),
                 );
-                match alarm {
-                    Ok(_alarm) => {
-                        let _ = wake.await;
-                    }
-                    // Without the alarm thread nothing can wake this wait; the
-                    // credential's own expiry still refuses each admission.
-                    Err(_) => futures::future::pending::<()>().await,
-                }
+                let _alarm = alarm.map_err(|_| SourceClosed)?;
+                wake.await
+                    .map_err(|_| SourceClosed)?
+                    .map_err(|_| SourceClosed)?;
             }
         })
     }
