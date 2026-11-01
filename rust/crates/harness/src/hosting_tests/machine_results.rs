@@ -32,6 +32,10 @@ struct NativeTurns {
 }
 
 impl TurnExecutors for NativeTurns {
+    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
+        Some(crate::profile::Profiles::builtin())
+    }
+
     fn executor<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -274,6 +278,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
                 parent: root,
                 id: IntentId::try_from("fork-shell")?,
                 brief: ModelContent::Text("shell".into()),
+                role: "worker".into(),
             },
         )
         .await?

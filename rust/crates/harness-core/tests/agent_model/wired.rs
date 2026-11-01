@@ -876,6 +876,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
             .await?;
     }
     let forked = ForkAdopted {
+        profile: None,
         agent: id(6),
         parent: Some(parent.clone()),
         forked_at: 0,
@@ -1559,14 +1560,18 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 }
 
 #[tokio::test]
-async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
+async fn spawn_admits_children_by_role_within_the_open_children_limit() -> Result {
+    use acyclic_harness_core::{agent::SpawnProfiles, profile::Profiles};
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
     let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
     state.open_children.insert(path.child(&id(10))?);
-    // Each spawn call in order, under `limit`: which ones the tool refused.
-    let refused = |state: AgentState, limit: Option<u32>| {
+    let profiles = Profiles::builtin();
+    state.profile = Some(profiles.root()?);
+    // Each spawn call in order: which ones the tool refused.
+    let refused = |state: AgentState, calls: [(u8, &'static str, &'static str); 3]| {
         let volume = binding.volume.clone();
+        let profiles = profiles.clone() as Arc<dyn SpawnProfiles>;
         async move {
             let effects = Arc::new(Recorded::default());
             let mut tools = ToolRegistry::default();
@@ -1576,11 +1581,14 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
                 (effects.clone() as Arc<dyn TurnEffects>, None),
                 Arc::new(Writer(volume)),
                 1024,
-                (&acyclic_harness_core::tools::default_names(), limit),
+                (
+                    &acyclic_harness_core::tools::default_names(),
+                    Some(profiles),
+                ),
             )?;
             let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
             let mut refused = Vec::new();
-            for (call, name) in [(1, "b"), (2, "b"), (3, "c")] {
+            for (call, name, role) in calls {
                 let result = spawn
                     .executor
                     .execute(
@@ -1588,7 +1596,7 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
                             operation_id: OperationId::from_bytes([call; 16]),
                             call_id: format!("call-{call}"),
                             name: "spawn".into(),
-                            arguments: serde_json::json!({"task": "work", "name": name}),
+                            arguments: serde_json::json!({"task": "work", "name": name, "role": role}),
                         },
                         None,
                     )
@@ -1598,18 +1606,28 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
             Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
         }
     };
-    // One open child and a limit of two: `b` fits (twice, as one child), `c` does not.
+    let roles = [(1, "b", "worker"), (2, "b", "worker"), (3, "c", "reviewer")];
+    // Every admitted spawn is recorded; `b`'s second call names the same child.
     assert_eq!(
-        refused(state.clone(), Some(2)).await?,
-        (vec![false, false, true], 2)
-    );
-    // Control: without a configured limit every spawn is recorded.
-    assert_eq!(
-        refused(state.clone(), None).await?,
+        refused(state.clone(), roles).await?,
         (vec![false, false, false], 3)
     );
-    // Without one the agent's hard limit still holds: one below it, `b` fits
-    // and `c` is refused to the model rather than dropped by the step.
+    // The parent's role decides: the top-level role and unknown roles refuse.
+    let disallowed = [
+        (1, "b", "worker"),
+        (2, "c", "orchestrator"),
+        (3, "d", "planner"),
+    ];
+    assert_eq!(
+        refused(state.clone(), disallowed).await?,
+        (vec![false, true, true], 1)
+    );
+    // Negative control: an agent without a role pin spawns nothing.
+    let mut unpinned = state.clone();
+    unpinned.profile = None;
+    assert_eq!(refused(unpinned, roles).await?, (vec![true, true, true], 0));
+    // The agent's hard limit still holds: one below it, `b` fits and `c` is
+    // refused to the model rather than dropped by the step.
     let mut full = state;
     for n in 0..MAX_OPEN_CHILDREN - 2 {
         let mut bytes = [0; 16];
@@ -1618,7 +1636,7 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
             .insert(path.child(&AgentId::from_bytes(bytes))?);
     }
     assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
+    assert_eq!(refused(full, roles).await?, (vec![false, false, true], 2));
     Ok(())
 }
 

@@ -622,11 +622,18 @@ where
                         .map(|after| children_cursor(&listed.hierarchy_version, &after)),
                 })
             }
-            AgentCommand::Spawn { parent, id, brief } => {
+            AgentCommand::Spawn {
+                parent,
+                id,
+                brief,
+                role,
+            } => {
                 let parent = self.within_tree(parent)?;
                 if !self.platform.runs_children() {
                     return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
                 }
+                // The parent's role admits the child's before anything commits.
+                let profile = self.bound.child_profile(parent, role).await?;
                 let brief = text(brief)?;
                 let brief = self
                     .bound
@@ -636,6 +643,7 @@ where
                     by: by.clone(),
                     id: id.clone(),
                     brief: Box::new(brief),
+                    profile,
                 });
                 let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
                     return Err(Error::Record("the parent is archived"));

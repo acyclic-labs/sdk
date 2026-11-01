@@ -29,7 +29,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// execution-target roster its turn announced. Version 5 adds primitive Notices
 /// and the frozen original notice range retained by a settled turn.
 /// Version 6 retains waking Notice payloads by immutable file reference.
-pub const RECORD_VERSION: u32 = 6;
+/// Version 7 pins each stock agent's role profile at adoption.
+pub const RECORD_VERSION: u32 = 7;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -217,6 +218,40 @@ pub struct VolumeBinding {
     pub volume: VolumeRef,
 }
 
+/// Conversation a role selects for its agents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnContext {
+    /// A root role that is never admitted as a child.
+    TopLevel,
+    /// Only the self-contained brief and explicitly sent files.
+    Fresh,
+    /// A stream fork at the parent's conversation cut, plus the brief.
+    Fork,
+}
+
+/// The role profile an agent was adopted with, pinned for its lifetime. A
+/// role change is a new fork with another pin, never an edit of this one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProfilePin {
+    /// Role file identity.
+    pub role: String,
+    /// Digest of the role file the agent was adopted under.
+    pub digest: [u8; 32],
+    /// Conversation the role selects.
+    pub context: SpawnContext,
+}
+
+/// A host's admitted role profiles, shared by every turn.
+pub trait SpawnProfiles: acyclic_stream::ProviderPlatform {
+    /// The pin of a `role` child of `parent`, after `parent`'s role admits
+    /// it. Refusals are tool failures the model can act on.
+    fn child(&self, parent: &AgentProfilePin, role: &str) -> crate::Result<AgentProfilePin>;
+    /// The pin of every root these profiles create.
+    fn root(&self) -> crate::Result<AgentProfilePin>;
+}
+
 /// First record of every agent, written by the spawn fork or by root creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -225,6 +260,8 @@ pub struct ForkAdopted {
     pub agent: AgentId,
     /// Spawning agent, `None` for a root.
     pub parent: Option<AgentPath>,
+    /// Role profile; `None` when an external host owns the agent's loop.
+    pub profile: Option<AgentProfilePin>,
     /// Inbox sequence of this record; the agent's first consumed input.
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.
@@ -310,7 +347,8 @@ pub struct Approval {
 
 /// An authorized caller asks this agent to spawn a child. The agent's next
 /// step spawns it exactly as its own turn's spawn tool does; the child is
-/// named by this record's inbox sequence, so no two requests collide.
+/// named by this record's inbox sequence, so no two requests collide. The host
+/// admits the child's role against this agent's role before committing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnRequest {
@@ -320,6 +358,8 @@ pub struct SpawnRequest {
     pub id: IntentId,
     /// Task brief, staged on the parent's private volume.
     pub brief: Box<FileRef>,
+    /// The child's admitted role profile.
+    pub profile: AgentProfilePin,
 }
 
 /// A child delegates an approval request to this agent (the parent approver).
@@ -716,6 +756,11 @@ mod tests {
             &mut None,
         )?;
         let spawn = InboxRecord::Spawn(SpawnRequest {
+            profile: AgentProfilePin {
+                role: "worker".into(),
+                digest: [0; 32],
+                context: SpawnContext::Fork,
+            },
             by: Sender::User {
                 principal: "p".into(),
             },

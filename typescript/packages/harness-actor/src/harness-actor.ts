@@ -102,10 +102,9 @@ export const actor = defineActor<Opened, HarnessBindings>({
     const workspace = BrowserMachinesWorkspace.open(owner, env.workspace);
     try { registry.bindMachinesWorkspace(workspace); } finally { workspace.free(); }
     const state = new ActorStateStorage(env.storage);
-    // Shared history alone does not admit a child Actor's placement and wake.
-    // Keep both spawn entrances closed until the original producer owns them.
-    const childless = { ...options, preset: { ...options.preset, max_children: 0 } };
-    const host = new EventAgentHost(state.domain("actor"), ledger, name, childless, owner, registry, env.access);
+    // Shared history alone does not admit a child Actor's placement and wake,
+    // so this host leaves `children` unset and both spawn entrances refuse.
+    const host = new EventAgentHost(state.domain("actor"), ledger, name, options, owner, registry, env.access);
     await host.create(name);
     return { host };
   },

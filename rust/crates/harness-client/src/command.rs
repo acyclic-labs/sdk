@@ -189,6 +189,8 @@ pub enum AgentCommand {
         id: IntentId,
         /// Brief staged by the host, not a client-created volume grant.
         brief: ModelContent,
+        /// The child's role; the parent's role must admit it.
+        role: String,
     },
     /// Discover only one bounded page of direct children.
     Children {
@@ -334,6 +336,7 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::Spawn { role, .. } if role.is_empty() => Err(CommandError::Invalid),
             Self::Prompt { body, .. }
             | Self::Spawn { brief: body, .. }
             | Self::Compact {

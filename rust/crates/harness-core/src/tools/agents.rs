@@ -21,7 +21,8 @@
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnChildren, TurnEffect, TurnEffects,
+        AgentPath, AgentProfilePin, AgentState, IntentId, MAX_OPEN_CHILDREN, SpawnProfiles,
+        TurnChildren, TurnEffect, TurnEffects,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -45,10 +46,13 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
+    /// Child name, unique under this agent; it names the child's path and branch.
+    pub name: String,
     /// Self-contained task brief, including the child's file ownership.
     pub task: String,
-    /// Optional child name, unique under this agent; it names the child's path.
-    pub name: Option<String>,
+    /// Role file selecting the child's context and permissions: `worker` forks
+    /// your settled conversation; `advisor` and `reviewer` see only the brief.
+    pub role: String,
 }
 
 /// Send one message to the parent or an open child.
@@ -101,8 +105,9 @@ struct Turn {
     observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
-    /// Open children allowed at once, this turn's spawns included.
-    max_children: Option<u32>,
+    /// This agent's role pin and the host's role profiles; spawn refuses
+    /// when either is absent.
+    profiles: Option<(AgentProfilePin, Arc<dyn SpawnProfiles>)>,
     /// Held from a spawn's limit check through its record, so concurrent
     /// spawns of one turn see each other.
     spawning: futures::lock::Mutex<()>,
@@ -166,29 +171,25 @@ impl AgentTool {
                 if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("task is empty or too large"));
                 }
-                let Ok(intent) = IntentId::try_from(format!(
-                    "{SPAWN}{}",
-                    input.name.as_deref().unwrap_or(&operation)
-                )) else {
+                let Ok(intent) = IntentId::try_from(format!("{SPAWN}{}", input.name)) else {
                     return Ok(rejected(
                         "name must be short printable ASCII without spaces",
                     ));
                 };
-                // The configured bound, never past the agent's hard limit:
-                // a spawn the step would refuse is refused here, before the
-                // model is told it succeeded.
-                let limit = turn.max_children.map_or(MAX_OPEN_CHILDREN, |limit| {
-                    usize::try_from(limit)
-                        .map_or(MAX_OPEN_CHILDREN, |limit| limit.min(MAX_OPEN_CHILDREN))
-                });
-                if limit == 0 {
+                let Some((parent, profiles)) = &turn.profiles else {
                     return Ok(super::rejected_input(Error::Unsupported(
-                        "this host runs no children".into(),
+                        "this agent has no role profile to spawn under".into(),
                     )));
-                }
-                if !self.within(&intent, limit).await? {
+                };
+                let profile = match profiles.child(parent, &input.role) {
+                    Ok(profile) => profile,
+                    Err(error) => return Ok(super::rejected_input(error)),
+                };
+                // The agent's hard limit: a spawn the step would refuse is
+                // refused here, before the model is told it succeeded.
+                if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
                     return Ok(rejected(format!(
-                        "at most {limit} open children; archive one or wait for one to finish"
+                        "at most {MAX_OPEN_CHILDREN} open children; archive one or wait for one to finish"
                     )));
                 }
                 let brief = turn
@@ -206,6 +207,7 @@ impl AgentTool {
                 TurnEffect::Spawn {
                     intent,
                     brief: Box::new(brief),
+                    profile,
                 }
             }
             "send" => {
@@ -511,7 +513,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child in a fork of your volumes and settled conversation. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child with a role in a fork of your volumes. A worker also forks your settled conversation; an advisor or reviewer sees only its task and sent files. Your role decides which roles you may spawn. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
@@ -546,16 +548,15 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
 /// `effects`, the `observer` its `wait` reads, and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
-/// bound, so a host omits or swaps each one like any standard tool.
-/// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open
-/// children; `spawn` refuses a child beyond it.
+/// bound, so a host omits or swaps each one like any standard tool. `spawn`
+/// admits a child only through `profiles`, under `agent`'s role pin.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
     (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
-    (names, max_children): (&[String], Option<u32>),
+    (names, profiles): (&[String], Option<Arc<dyn SpawnProfiles>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         agent: agent.path.clone(),
@@ -565,7 +566,7 @@ pub fn bind_agent_tools(
         observer,
         writer,
         maximum_bytes,
-        max_children,
+        profiles: agent.profile.clone().zip(profiles),
         spawning: futures::lock::Mutex::new(()),
     });
     for (name, definition) in selected(names)? {

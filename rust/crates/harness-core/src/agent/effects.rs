@@ -23,6 +23,8 @@ pub enum TurnEffect {
         intent: IntentId,
         /// Task brief, staged on the spawning agent's private volume.
         brief: Box<FileRef>,
+        /// The child's role profile, admitted by the spawning agent's role.
+        profile: super::AgentProfilePin,
     },
     /// Send a message to the parent or an open child.
     Send {
@@ -105,13 +107,16 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
     recorded
         .into_iter()
         .filter_map(|effect| match effect {
-            TurnEffect::Spawn { intent, brief } => {
-                spawned.insert(intent.clone()).then(|| Out::Spawn {
-                    intent,
-                    brief: Some(*brief),
-                    volumes: Vec::new(),
-                })
-            }
+            TurnEffect::Spawn {
+                intent,
+                brief,
+                profile,
+            } => spawned.insert(intent.clone()).then(|| Out::Spawn {
+                intent,
+                brief: Some(*brief),
+                profile: Some(profile),
+                volumes: Vec::new(),
+            }),
             TurnEffect::Send { to, id, body } => Some(Out::Send {
                 to,
                 record: InboxRecord::Message(Message {

@@ -16,7 +16,7 @@ type Hosted = Server<dyn StreamProvider, Objects>;
 struct Policy {
     policy: Function,
     admitted: Function,
-    /// The preset's open-children bound is not zero.
+    /// The opener places and wakes children.
     children: bool,
 }
 
@@ -97,8 +97,7 @@ impl WasmAgentServer {
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let limits = options.limits;
-        // A host without a child execution producer refuses both spawn entrances.
-        let children = options.preset.max_children != Some(0);
+        let children = options.children;
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;

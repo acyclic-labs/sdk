@@ -357,9 +357,16 @@ impl Providers {
             )),
             None => Arc::new(Grants(grants)),
         };
-        Ok(options
-            .preset
-            .executors((model, provider), tools, (limits, compaction), context))
+        let executors =
+            options
+                .preset
+                .executors((model, provider), tools, (limits, compaction), context);
+        // Roles admit children only where the host places and wakes them.
+        Ok(if options.children {
+            executors.with_profiles(crate::profile::Profiles::builtin())
+        } else {
+            executors
+        })
     }
 
     pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {

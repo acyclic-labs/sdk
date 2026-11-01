@@ -30,6 +30,10 @@ impl TurnExecutors for Never {
     ) -> BoxProviderFuture<'a, crate::Result<Arc<dyn Executor>>> {
         Box::pin(async { Err(crate::Error::Unsupported("no turns in this test".into())) })
     }
+
+    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
+        Some(crate::profile::Profiles::builtin())
+    }
 }
 
 /// Allows every command until denied; runs children unless childless.
@@ -645,6 +649,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
         brief: ModelContent::Text("child".into()),
+        role: "worker".into(),
     };
     // A host that runs no children refuses the spawn itself, typed, and
     // commits nothing: no child is created to wait forever.
@@ -658,6 +663,24 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
     owner.childless.store(false, Ordering::SeqCst);
+    // The parent's role decides: a role it does not admit is refused the
+    // same way, before anything commits.
+    for role in ["orchestrator", "planner"] {
+        let refused = AgentCommand::Spawn {
+            parent: root.clone(),
+            id: IntentId::try_from("s0")?,
+            brief: ModelContent::Text("child".into()),
+            role: role.into(),
+        };
+        assert!(matches!(
+            call(&client, "agents", &refused).await?,
+            Err(AgentControlFailure::Refused { code, .. }) if code == "spawn_refused"
+        ));
+    }
+    assert!(matches!(
+        call(&client, "agents", &children).await?,
+        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+    ));
     // A spawn is the parent's own step: the reply names the child, and the
     // running host's next step for the parent creates it.
     let runner = {

@@ -2,8 +2,8 @@
   "id": "nested-children",
   "workspace": {"kind":"plain", "files":{}},
   "model": {"steps":[
-    {"when":{"user":"NESTED_ROOT"},"tools":[{"id":"spawn-worker","name":"spawn","arguments":{"name":"worker","task":"NESTED_WORKER"}}]},
-    {"when":{"user":"NESTED_WORKER"},"tools":[{"id":"spawn-leaf","name":"spawn","arguments":{"name":"leaf","task":"NESTED_LEAF"}}]},
+    {"when":{"user":"NESTED_ROOT"},"tools":[{"id":"spawn-worker","name":"spawn","arguments":{"name":"worker","task":"NESTED_WORKER","role":"worker"}}]},
+    {"when":{"user":"NESTED_WORKER"},"tools":[{"id":"spawn-leaf","name":"spawn","arguments":{"name":"leaf","task":"NESTED_LEAF","role":"worker"}}]},
     {"when":{"user":"NESTED_LEAF"},"text":["NESTED_LEAF_DONE"]},
     {"when":{"user":"NESTED_WORKER","tool_result":"leaf"},"tools":[{"id":"wait-leaf","name":"wait","arguments":{"agents":["leaf"],"mode":"all"}}]},
     {"when":{"user":"NESTED_WORKER"},"text":["NESTED_WORKER_DONE"]},

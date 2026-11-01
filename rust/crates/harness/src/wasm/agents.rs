@@ -143,6 +143,11 @@ struct WasmBrowserAgentOptions {
     #[serde(default)]
     #[tsify(optional)]
     handler_timeout_ms: Option<u64>,
+    /// This host places and wakes child agents. Its turns then run under the
+    /// built-in role profiles; otherwise both spawn entrances refuse.
+    #[serde(default)]
+    #[tsify(optional)]
+    children: bool,
 }
 
 /// Outcome of one control commit.
@@ -597,6 +602,7 @@ impl WasmAgents {
             .create(
                 &IntentId::try_from(intent).map_err(agent_error)?,
                 ForkAdopted {
+                    profile: None,
                     agent: id,
                     parent: None,
                     forked_at: 0,

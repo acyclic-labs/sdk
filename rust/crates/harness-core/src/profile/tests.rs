@@ -163,6 +163,7 @@ fn role_changes_append_policy_without_rewriting_the_model_prefix() -> Result<()>
     assert_eq!(orchestrator.admit_child(&worker)?, SpawnContext::Fork);
     assert_eq!(worker.admit_child(&reviewer)?, SpawnContext::Fresh);
     assert_eq!(worker.admit_child(&advisor)?, SpawnContext::Fresh);
+    assert_eq!(advisor.admit_child(&advisor)?, SpawnContext::Fresh);
     assert!(
         advisor.admit_child(&reviewer).is_err(),
         "role-file spawn policy"
@@ -277,5 +278,48 @@ fn unverified_output_and_untyped_override_paths_refuse() -> Result<()> {
         .is_err(),
         "one model-visible name cannot be declared twice"
     );
+    Ok(())
+}
+
+#[test]
+fn builtin_roles_pin_context_and_spawn_permissions() -> Result<()> {
+    use crate::agent::SpawnProfiles;
+    let profiles = Profiles::builtin();
+    let root = profiles.root()?;
+    assert_eq!(
+        (root.role.as_str(), root.context),
+        (ROOT_ROLE, SpawnContext::TopLevel)
+    );
+    let pin = |parent: &crate::agent::AgentProfilePin, role| profiles.child(parent, role);
+    for (role, context) in [
+        ("worker", SpawnContext::Fork),
+        ("advisor", SpawnContext::Fresh),
+        ("reviewer", SpawnContext::Fresh),
+    ] {
+        assert_eq!(pin(&root, role)?.context, context);
+    }
+    let advisor = pin(&root, "advisor")?;
+    let worker = pin(&root, "worker")?;
+    let reviewer = pin(&root, "reviewer")?;
+    for allowed in ["worker", "advisor"] {
+        pin(&advisor, allowed)?;
+    }
+    for allowed in ["worker", "advisor", "reviewer"] {
+        pin(&worker, allowed)?;
+        pin(&reviewer, allowed)?;
+    }
+    // Negative controls: role policy, the top-level role and unknown roles.
+    assert!(pin(&advisor, "reviewer").is_err());
+    assert!(pin(&worker, ROOT_ROLE).is_err());
+    assert!(pin(&worker, "planner").is_err());
+    // A pin from another revision of its role file is refused, not reinterpreted.
+    let stale = crate::agent::AgentProfilePin {
+        digest: [0; 32],
+        ..worker.clone()
+    };
+    assert!(pin(&stale, "worker").is_err());
+    assert!(profiles.pinned(&stale).is_err());
+    assert_eq!(profiles.pinned(&worker)?.name(), "worker");
+    assert!(!profiles.directive(&worker)?.messages.is_empty());
     Ok(())
 }

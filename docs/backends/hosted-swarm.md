@@ -238,9 +238,10 @@ terminal gRPC trailers follow the body, and runs an agent call the platform
 routed from a session ActorCall (`/agents/bind`, `/agents/command`, with the
 caller's original command as the body) through the same authenticated call,
 under the credential of the invocation's `hostAccess` admission. Its tree lives
-in that one actor's journal, so the artifact runs no children: it binds a preset
-with `max_children: 0`, its spawn tool answers `unsupported capability`, and a
-spawn command is refused as `spawn_refused` before anything commits.
+in that one actor's journal, so the artifact runs no children. It leaves the
+`children` option unset, so its turns bind no role profiles. Its spawn tool
+answers `unsupported capability`, and a spawn command is refused as
+`spawn_refused` before anything commits.
 
 `machinesWorkspace` is a `BrowserMachinesWorkspaceSource` (`provider`,
 `observation`, `open`). The entry opens it with

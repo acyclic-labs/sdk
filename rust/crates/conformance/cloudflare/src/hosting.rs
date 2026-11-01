@@ -208,6 +208,7 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
                 parent: root,
                 id: IntentId::try_from("adoption-fixture")?,
                 brief: ModelContent::Text("Respond after explicit adoption".into()),
+                role: "worker".into(),
             },
         )
         .await??

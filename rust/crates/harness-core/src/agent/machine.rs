@@ -48,6 +48,8 @@ pub enum SpawnRefusal {
     Limit,
     /// The host runs no children, so it creates none to wait forever.
     Unhosted,
+    /// The parent's role does not admit the requested role.
+    Role,
 }
 
 /// What the step that applied a spawn did with it.
@@ -74,6 +76,8 @@ pub struct AgentState {
     pub path: AgentPath,
     /// Spawning agent.
     pub parent: Option<AgentPath>,
+    /// Role profile pinned at adoption.
+    pub profile: Option<super::AgentProfilePin>,
     /// Owned volumes.
     pub volumes: Vec<VolumeBinding>,
     /// Approval policy file.
@@ -184,6 +188,7 @@ impl AgentState {
         Ok(Self {
             path,
             parent: adopted.parent.clone(),
+            profile: adopted.profile.clone(),
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             brief,
@@ -371,6 +376,9 @@ pub enum Out {
         /// Task brief, staged on the spawning agent's private volume; the
         /// child's adoption names it.
         brief: Option<FileRef>,
+        /// Role profile admitted before the spawn effect was recorded; `None`
+        /// for a host-requested spawn.
+        profile: Option<super::AgentProfilePin>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -581,6 +589,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             outs.push(Out::Spawn {
                 intent: requested_intent(sequence)?,
                 brief: Some(*spawn.brief),
+                profile: Some(spawn.profile),
                 volumes: Vec::new(),
             });
             // A turn in progress keeps the slots its recorded spawns take.
