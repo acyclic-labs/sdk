@@ -132,9 +132,9 @@ impl<P: ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         bytes: OwnedBytes,
         work: &mut KernelAccounting<'_>,
     ) -> Result<OwnedBytes, crate::FsError> {
-        let mut context = AuthorityWork::new(work.remaining()?, work.cancellation());
+        let mut context = crate::async_storage::AuthorityFrame::borrow(work)?;
         let result = self.sealer.open(id, bytes, &mut context);
-        crate::kernel::complete_standalone_backend(work, context.spent(), 0)?;
+        context.spent().verify(context.budget)?;
         result.map_err(Into::into)
     }
 }

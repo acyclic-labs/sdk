@@ -403,14 +403,6 @@ pub(crate) fn read_store_error(error: crate::storage::ObjectStoreError) -> FsErr
     }
 }
 
-pub(crate) fn complete_standalone_backend(
-    accounting: &mut KernelAccounting<'_>,
-    completed: WorkCounters,
-    retained: u64,
-) -> Result<(), FsError> {
-    record_standalone_backend(accounting, completed, retained).map_err(|(error, _)| error)
-}
-
 fn record_standalone_backend(
     accounting: &mut KernelAccounting<'_>,
     completed: WorkCounters,
