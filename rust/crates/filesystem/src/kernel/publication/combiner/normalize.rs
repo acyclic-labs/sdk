@@ -198,6 +198,7 @@ impl Proposal {
                 prefix_result: None,
                 error: None,
                 seal: None,
+                publication: None,
             }),
             _allocation: allocation,
         }))

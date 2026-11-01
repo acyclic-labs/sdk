@@ -512,3 +512,4 @@ async fn native_owned_composition_withdrawal_discards_a_collected_predecessor_wi
 }
 
 mod prefix;
+mod publication;

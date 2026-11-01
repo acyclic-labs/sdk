@@ -99,7 +99,7 @@ pub(super) async fn retain_and_pin<O: crate::AsyncObjectStore>(
         pin,
     })
 }
-fn retain_authentication(
+pub(super) fn retain_authentication(
     authenticated: Authenticated,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<crate::kernel::allocation::retained::Retained<Authenticated>, crate::FsError> {
