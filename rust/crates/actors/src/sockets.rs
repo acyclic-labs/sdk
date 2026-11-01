@@ -10,7 +10,7 @@
 use crate::addressing::ActorReference;
 use crate::guest::{
     Delivery, GuestError, GuestEventResult, GuestSocketEvent, SocketCloseInitiator, SocketPayload,
-    SocketTransport, Trigger,
+    SocketTransport, Trigger, WebSocketAutoResponse,
 };
 use crate::invocation::Invocation;
 use acyclic_stream::{AppendRecord, Attribute, RecordHeaders};
@@ -94,6 +94,13 @@ enum FrameKind {
 struct FrameWire {
     #[prost(oneof = "FrameKind", tags = "1, 2, 3, 4, 5")]
     kind: Option<FrameKind>,
+}
+
+impl WebSocketAutoResponse {
+    /// Size of the response in the canonical channel encoding, without copying it.
+    pub(crate) fn response_frame_len(&self) -> usize {
+        prost::encoding::string::encoded_len(1, &self.response)
+    }
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

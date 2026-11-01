@@ -633,6 +633,102 @@ async fn admitted_close_fixture(
 }
 
 #[tokio::test]
+async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound() -> TestResult {
+    let executor = Arc::new(HeldCloseExecutor::default());
+    let sockets = Sockets::open(
+        Store::new(Arc::new(MemoryStream::default()), root()?),
+        executor.clone(),
+        Arc::new(SystemClock),
+    )
+    .await?;
+    let shared = &sockets.shared;
+    let (connection, inbox, last, mut frames) =
+        admitted_close_fixture(&sockets, "automatic-reply-bound").await?;
+    let actor = shared
+        .lock()
+        .sockets
+        .get(&connection)
+        .unwrap()
+        .actor
+        .clone();
+    let maximum = acyclic_stream::MAX_RECORD_BYTES;
+    let seed = "x".repeat(maximum - 128);
+    let overhead = SocketFrame::Message(SocketPayload::Text { text: seed.clone() })
+        .encode()
+        .len()
+        - seed.len();
+    let boundary = WebSocketAutoResponse {
+        request: "ping".into(),
+        response: "x".repeat(maximum - overhead),
+    };
+    let expected = SocketFrame::Message(SocketPayload::Text {
+        text: boundary.response.clone(),
+    });
+    assert_eq!(expected.encode().len(), maximum);
+    sockets.set_web_socket_auto_response(&actor, Some(boundary.clone()))?;
+    for length in [maximum - overhead + 1, maximum] {
+        assert_eq!(
+            sockets.set_web_socket_auto_response(
+                &actor,
+                Some(WebSocketAutoResponse {
+                    request: "replacement".into(),
+                    response: "x".repeat(length),
+                }),
+            ),
+            Err(host_error(
+                "WebSocket frame exceeds the channel record bound"
+            )),
+            "a refused update cannot replace the original automatic reply"
+        );
+        shared.message(
+            &connection,
+            SocketPayload::Text {
+                text: "ping".into(),
+            },
+        )?;
+        let frame = frames.try_recv()?;
+        assert_eq!(frame.len(), maximum);
+        assert_eq!(SocketFrame::decode(&frame)?, expected);
+        assert!(executor.tasks.lock().unwrap().is_empty());
+        assert!(!shared.lock().sockets.get(&connection).unwrap().peer_closed);
+    }
+    // Empty text still carries the present oneof field; it is a valid reply.
+    sockets.set_web_socket_auto_response(
+        &actor,
+        Some(WebSocketAutoResponse {
+            request: "ping".into(),
+            response: String::new(),
+        }),
+    )?;
+    shared.message(
+        &connection,
+        SocketPayload::Text {
+            text: "ping".into(),
+        },
+    )?;
+    assert_eq!(
+        SocketFrame::decode(&frames.try_recv()?)?,
+        SocketFrame::Message(SocketPayload::Text {
+            text: String::new()
+        })
+    );
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
+    assert!(executor.tasks.lock().unwrap().is_empty());
+    shared.peer_close(
+        &connection,
+        Close::new(1000, "done", SocketCloseInitiator::Peer),
+    )?;
+    executor.take()?.await;
+    assert!(matches!(
+        SocketFrame::decode(&last.await?)?,
+        SocketFrame::Close { code: 1000, .. }
+    ));
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
+    assert!(sockets.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn close_custody_and_peer_terminal_order_use_original_publications() -> TestResult {
     let executor = Arc::new(HeldCloseExecutor::default());
     let sockets = Sockets::open(
