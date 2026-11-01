@@ -26,15 +26,15 @@ impl<E: RpcEndpoint> Provider<E> {
         if let Some(remaining) = deadline.remaining() {
             request.set_timeout(remaining);
         }
-        let mut output = deadline
-            .run(client.read_file(request))
-            .await
-            .map_err(|stop| stop.file(machine))?
-            .map_err(|error| {
-                obs::failed_rpc(observation, &error);
-                file_error(machine, &error)
-            })?
-            .into_inner();
+        let mut output = transport::dispatch(Some(&deadline), client.read_file(request), |stop| {
+            stop.file(machine)
+        })
+        .await?
+        .map_err(|error| {
+            obs::failed_rpc(observation, &error);
+            file_error(machine, &error)
+        })?
+        .into_inner();
         let response = deadline
             .run(output.message())
             .await
@@ -70,15 +70,15 @@ impl<E: RpcEndpoint> Provider<E> {
         if let Some(remaining) = deadline.remaining() {
             request.set_timeout(remaining);
         }
-        let mut output = deadline
-            .run(client.write_file(request))
-            .await
-            .map_err(|stop| stop.file(machine))?
-            .map_err(|error| {
-                obs::failed_rpc(observation, &error);
-                file_error(machine, &error)
-            })?
-            .into_inner();
+        let mut output = transport::dispatch(Some(&deadline), client.write_file(request), |stop| {
+            stop.file(machine)
+        })
+        .await?
+        .map_err(|error| {
+            obs::failed_rpc(observation, &error);
+            file_error(machine, &error)
+        })?
+        .into_inner();
         let response = deadline
             .run(output.message())
             .await

@@ -355,13 +355,21 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                     command.expiry_unix_ms,
                 )?;
                 let busy = self.busy();
+                let mut dispatched = false;
                 let output = deadline
                     .run(async {
                         self.running(machine).await?;
+                        dispatched = true;
                         self.backend.exec(command, deadline.until()).await
                     })
                     .await
-                    .map_err(|stop| stop.command(machine))??;
+                    .map_err(|stop| {
+                        if dispatched {
+                            stop.command(machine)
+                        } else {
+                            stop.before_dispatch()
+                        }
+                    })??;
                 Ok(match busy {
                     None => output,
                     // The Machine stays busy for as long as its output is observable.

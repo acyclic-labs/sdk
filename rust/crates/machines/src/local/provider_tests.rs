@@ -534,7 +534,7 @@ async fn deadline_during_implicit_wake_never_strands_the_machine()
     // The physical wake is held, so this caller's deadline passes mid-wake.
     assert!(matches!(
         local.exec(machine, command(50)?).await,
-        Err(ProviderError::CommandIndeterminate(_))
+        Err(ProviderError::Rejected(_))
     ));
     gate.notify_one();
     let mut output = local.exec(machine, command(60_000)?).await?;

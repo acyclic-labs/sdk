@@ -64,6 +64,20 @@ impl GuestDeadline {
         self.until.map(tokio::time::Instant::into_std)
     }
 
+    #[cfg(test)]
+    pub(crate) fn controlled() -> (Self, impl Fn(Result<(), Arc<std::io::Error>>)) {
+        let (terminal, wake) = terminal();
+        (
+            Self {
+                until: None,
+                expiry: None,
+                wake: Some(wake),
+                _alarm: None,
+            },
+            move |outcome| terminal.finish(outcome),
+        )
+    }
+
     pub(crate) async fn run<T>(
         &self,
         future: impl std::future::Future<Output = T>,

@@ -50,6 +50,32 @@ where
     }
 }
 
+/// Enter the original RPC only when its deadline admits polling the transport.
+/// A terminal observed before that point is a refusal, not uncertain dispatch.
+pub(crate) async fn dispatch<D: Deadline, F>(
+    deadline: Option<&D>,
+    future: F,
+    after_dispatch: impl FnOnce(DeadlineStop) -> ProviderError + ProviderTask,
+) -> Result<F::Output, ProviderError>
+where
+    F: Future + ProviderTask,
+    F::Output: ProviderTask,
+{
+    let mut dispatched = false;
+    run(deadline, async {
+        dispatched = true;
+        future.await
+    })
+    .await
+    .map_err(|stop| {
+        if dispatched {
+            after_dispatch(stop)
+        } else {
+            stop.before_dispatch()
+        }
+    })
+}
+
 /// Read one frame without imposing native `Send` on browser response producers.
 pub(super) trait Messages<T>: Stream<Item = Result<T, Status>> + Unpin {
     fn message(&mut self) -> impl Future<Output = Result<Option<T>, Status>> + ProviderTask

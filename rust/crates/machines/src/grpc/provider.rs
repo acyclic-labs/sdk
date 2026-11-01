@@ -78,9 +78,9 @@ machine_mutations! {
             if let Some(remaining) = deadline.as_ref().and_then(transport::Deadline::remaining) {
                 request.set_timeout(remaining);
             }
-            let output = transport::run(deadline.as_ref(), client.exec(request))
+            let output = transport::dispatch(deadline.as_ref(), client.exec(request), |stop| stop.command(machine))
                 .await
-                .map_err(|stop| stop.command(machine))?
+                ?
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
                     command_error(machine, &error)

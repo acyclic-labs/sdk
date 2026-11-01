@@ -12,6 +12,7 @@ impl LocalBackend {
         deadline: &GuestDeadline,
         transfer: impl FnOnce(&File) -> io::Result<T> + Send + 'static,
     ) -> Result<Result<T, NonZeroU32>, ProviderError> {
+        let mut dispatched = false;
         deadline
             .run(async {
                 admission(&access)?;
@@ -49,6 +50,7 @@ impl LocalBackend {
                 };
                 let submitted = acyclic_native_runtime::run_blocking_io(operation, None)
                     .map_err(|_| ProviderError::FileIndeterminate(self.machine.id))?;
+                dispatched = true;
                 // The native worker retains its physical lease even if this wait ends.
                 // Deadline, stop or observer loss latches uncertainty; only actual
                 // worker completion can release its original cleanup guard.
@@ -66,7 +68,13 @@ impl LocalBackend {
                 }
             })
             .await
-            .map_err(|stop| stop.file(self.machine.id))?
+            .map_err(|stop| {
+                if dispatched {
+                    stop.file(self.machine.id)
+                } else {
+                    stop.before_dispatch()
+                }
+            })?
     }
 }
 

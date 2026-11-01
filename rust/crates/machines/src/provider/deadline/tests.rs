@@ -74,6 +74,34 @@ async fn original_alarm_terminal_reaches_active_and_late_observers()
     assert_eq!(first, late);
     assert!(matches!(first, DeadlineStop::SourceLost(_)));
 
+    #[cfg(feature = "grpc")]
+    for after_dispatch in [false, true] {
+        let (deadline, finish) = GuestDeadline::controlled();
+        let cause = Arc::new(std::io::Error::from_raw_os_error(5));
+        if !after_dispatch {
+            finish(Err(cause.clone()));
+        }
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let mut dispatch = Box::pin(crate::grpc::transport::dispatch(
+            Some(&deadline),
+            async {
+                let _ = entered.send(());
+                std::future::pending::<()>().await
+            },
+            |stop| stop.command(machine),
+        ));
+        if after_dispatch {
+            assert!(dispatch.as_mut().now_or_never().is_none());
+            entering.await?;
+            finish(Err(cause.clone()));
+        }
+        assert!(
+            matches!(dispatch.now_or_never().expect("original terminal must settle dispatch"),
+            Err(ProviderError::DeadlineSourceLost { machine: actual, cause: failure })
+                if actual == after_dispatch.then_some(machine) && Arc::ptr_eq(&failure.0, &cause))
+        );
+    }
+
     // Exercise the actual native WallAlarm and the exact production callback.
     let expiry = u64::try_from(
         std::time::SystemTime::now()
