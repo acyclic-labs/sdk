@@ -117,10 +117,20 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     fn target(&self, name: &str) -> Result<&ProvisionedTarget> {
+        self.target_at(self.target_position(name)?)
+    }
+
+    fn target_position(&self, name: &str) -> Result<usize> {
         self.targets
             .iter()
-            .find(|target| target.name == name)
+            .position(|target| target.name == name)
             .ok_or_else(|| Error::Invalid(format!("'{name}' is not a provisioned target")))
+    }
+
+    fn target_at(&self, position: usize) -> Result<&ProvisionedTarget> {
+        self.targets
+            .get(position)
+            .ok_or_else(|| Error::Invalid("admitted Machine target is missing".into()))
     }
 
     /// `agent`'s binding on `target`, `None` before its first use.
@@ -190,7 +200,15 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// call names the same Machine.
     pub async fn machine(&self, agent: &AgentPath, target: &str) -> Result<SandboxRef> {
         let provisioned = self.target(target)?;
-        if let Some(binding) = self.binding(agent, target).await? {
+        self.machine_on(agent, provisioned).await
+    }
+
+    async fn machine_on(
+        &self,
+        agent: &AgentPath,
+        provisioned: &ProvisionedTarget,
+    ) -> Result<SandboxRef> {
+        if let Some(binding) = self.binding(agent, &provisioned.name).await? {
             return sandbox(provisioned, &binding);
         }
         let plan = self.plan(agent, provisioned).await?;
@@ -198,7 +216,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             Some(parent) => self.fork(provisioned, agent, &parent).await?,
             None => self.create(provisioned, agent).await?,
         };
-        self.bind(agent, binding).await
+        self.bind(agent, provisioned, binding).await
     }
 
     async fn plan(&self, agent: &AgentPath, target: &ProvisionedTarget) -> Result<ProvisionPlan> {
@@ -307,8 +325,12 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     /// Commits `binding` once; a concurrent first use committed the same one.
-    async fn bind(&self, agent: &AgentPath, binding: MachineBinding) -> Result<SandboxRef> {
-        let target = self.target(&binding.target)?;
+    async fn bind(
+        &self,
+        agent: &AgentPath,
+        target: &ProvisionedTarget,
+        binding: MachineBinding,
+    ) -> Result<SandboxRef> {
         let path = agent.machine(&binding.target).map_err(agent_error)?;
         let value = serde_json::to_vec(&binding)
             .map_err(|error| Error::Invalid(format!("Machine binding encode: {error}")))?;
@@ -467,14 +489,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentMachines<P> {
         target: &str,
         executors: Arc<dyn MachineExecutors>,
     ) -> Result<Arc<dyn ToolExecutor>> {
-        self.target(target)?;
-        Ok(Arc::new(OnFirstUse {
-            machines: Arc::clone(self),
-            agent,
-            target: target.to_owned(),
-            executors,
-            bound: OnceCell::new(),
-        }))
+        Ok(Arc::new(OnFirstUse::new(self, agent, target, executors)?))
     }
 }
 
@@ -508,17 +523,34 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> crate::agent::AgentLif
 struct OnFirstUse<P: ?Sized> {
     machines: Arc<AgentMachines<P>>,
     agent: AgentPath,
-    target: String,
+    // Position admitted once in this retained, immutable target table.
+    target: usize,
     executors: Arc<dyn MachineExecutors>,
     bound: OnceCell<Arc<dyn ToolExecutor>>,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static> OnFirstUse<P> {
+    fn new(
+        machines: &Arc<AgentMachines<P>>,
+        agent: AgentPath,
+        target: &str,
+        executors: Arc<dyn MachineExecutors>,
+    ) -> Result<Self> {
+        let target = machines.target_position(target)?;
+        Ok(Self {
+            machines: Arc::clone(machines),
+            agent,
+            target,
+            executors,
+            bound: OnceCell::new(),
+        })
+    }
+
     async fn executor(&self) -> Result<Arc<dyn ToolExecutor>> {
         self.bound
             .get_or_try_init(|| async {
-                let target = self.machines.target(&self.target)?;
-                let sandbox = self.machines.machine(&self.agent, &self.target).await?;
+                let target = self.machines.target_at(self.target)?;
+                let sandbox = self.machines.machine_on(&self.agent, target).await?;
                 let observed = target.host.inspect(&sandbox).await?;
                 self.executors.bind(target, sandbox, observed)
             })
@@ -588,12 +620,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
                 None => {
                     // Recovery observes the original binding; it cannot create
                     // a replacement Machine for an interrupted command.
+                    let target = self.machines.target_at(self.target)?;
                     let binding = self
                         .machines
-                        .binding(&self.agent, &self.target)
+                        .binding(&self.agent, &target.name)
                         .await?
                         .ok_or(Error::Indeterminate(invocation.operation_id))?;
-                    let target = self.machines.target(&self.target)?;
                     self.bind(target, sandbox(target, &binding)?).await?
                 }
             };
