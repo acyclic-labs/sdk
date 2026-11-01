@@ -3,7 +3,7 @@
 //! editor and screen widgets.
 use acyclic_harness::local::{
     Event,
-    agent_conversation::{Conversation, checkpoint},
+    agent_conversation::{Conversation, UsageQuery, checkpoint},
 };
 use acyclic_harness::{
     agent::{AgentOutcome, ContextAction, IntentId, Phase, TurnOutcome},
@@ -11,7 +11,8 @@ use acyclic_harness::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
     tui::{
-        Action, AppAction, Editor, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
+        Action, AppAction, Editor, InputEffect, PromptInput, QueryPage, Screen, TranscriptRows,
+        Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -19,6 +20,7 @@ use acyclic_harness::{
             text::{Line, Span},
         },
         term::{Environment, FrameTerminal, ScreenMode, Tty},
+        usage_summary,
     },
 };
 use futures::{StreamExt as _, stream::LocalBoxStream};
@@ -26,6 +28,11 @@ use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 mod diff;
+
+async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bool>) {
+    let result = query.advance().await;
+    (query, result)
+}
 
 /// Settled turns shown when a conversation reopens.
 const HISTORY: u64 = 64;
@@ -461,6 +468,12 @@ pub async fn run(
     let diff_loading = [Line::raw("Loading…")];
     let mut diff_query = std::pin::pin!(None);
     let mut diff_credit = 0;
+    let mut usage_future = std::pin::pin!(Some(usage(conversation.usage_query())));
+    let mut usage_page = QueryPage::<()>::new(vec![Line::raw("Loading usage…")], None, false);
+    let usage_unavailable = [Line::raw("Usage unavailable")];
+    // Retain the failed query's exact frontier and contribution. Redraw cannot
+    // restart replay or turn an unavailable source into a successful total.
+    let mut usage_stopped: Option<(UsageQuery, acyclic_harness::Error)> = None;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
     input
@@ -473,6 +486,7 @@ pub async fn run(
     loop {
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
+        usage_page.wrap(size.width);
         let busy = view.busy();
         input.busy = busy;
         let back = view.back;
@@ -500,6 +514,11 @@ pub async fn run(
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
+                usage: if usage_stopped.is_some() {
+                    &usage_unavailable[..]
+                } else {
+                    &usage_page.lines
+                },
                 overlay: overlay.as_ref().map_or_else(
                     || {
                         diff_panel.as_ref().map_or_else(
@@ -556,6 +575,26 @@ pub async fn run(
                 .set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
         }
         tokio::select! {
+            (query, result) = async {
+                match usage_future.as_mut().as_pin_mut() {
+                    Some(query) => query.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                usage_future.set(None);
+                match result {
+                    Ok(changed) => {
+                        if changed && query.synchronized() {
+                            usage_page = QueryPage::new(vec![usage_summary(query.totals())], None, false);
+                        }
+                        usage_future.set(Some(usage(query)));
+                    }
+                    Err(error) => {
+                        view.notice = Some(format!("Usage query ended: {error}"));
+                        usage_stopped = Some((query, error));
+                    }
+                }
+            }
             result = async {
                 match diff_query.as_mut().as_pin_mut() {
                     Some(query) => query.await,

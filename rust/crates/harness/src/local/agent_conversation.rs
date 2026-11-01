@@ -12,6 +12,7 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod usage;
+mod usage_query;
 use crate::{
     Error, Result,
     agent::{
@@ -30,6 +31,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+pub use usage_query::UsageQuery;
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())

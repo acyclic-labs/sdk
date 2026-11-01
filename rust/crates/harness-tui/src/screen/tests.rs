@@ -20,11 +20,13 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
         }
         input.refresh_completions();
     }
+    let usage = Line::raw("committed usage");
     let screen = Screen {
         transcript: &transcript,
         tools: &tools,
         feedback: hidden == 1,
         overlay: if hidden == 2 { &help } else { &[] },
+        usage: std::slice::from_ref(&usage),
         ..Screen::default()
     };
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();

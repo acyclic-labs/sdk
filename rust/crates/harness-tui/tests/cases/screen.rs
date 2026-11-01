@@ -1,7 +1,7 @@
 //! Composed-screen parity: layout, prompt routing, persistence and resize.
 #![cfg(feature = "tui")]
 use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line};
-use acyclic_harness_tui::{Editor, PromptInput, Screen, Viewport};
+use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Screen, Viewport};
 use proptest::prelude::*;
 
 fn visible(terminal: &Terminal<TestBackend>) -> String {
@@ -24,6 +24,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     let goal = [Line::from("finish rewrite")];
     let plans = [Line::from("implement layout")];
     let notices = [Line::from("task completed")];
+    let usage = Line::from("estimated token charge: ? · in ? · out ?");
     let screen = Screen {
         header: Line::from("parent / ● current"),
         transcript: &transcript,
@@ -33,7 +34,8 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         goal: &goal,
         plans: &plans,
         notifications: &notices,
-        status: Line::from("Esc · model · tokens"),
+        usage: std::slice::from_ref(&usage),
+        status: Line::from("approval requested"),
         ..Screen::default()
     };
     let input = PromptInput::new(Editor::new("draft"));
@@ -55,11 +57,52 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         "implement layout",
         "task completed",
         "draft",
-        "Esc · model · tokens",
+        "estimated token charge: ? · in ? · out ?",
+        "approval requested",
     ] {
         assert!(text.contains(expected), "missing {expected}");
     }
     assert!(viewport.cursor.is_some());
+
+    // Wrapped usage may consume only the space left by the editable prompt.
+    // Exercise both the two-row summary and a footer larger than the viewport.
+    let mut detects_usage_first = false;
+    for height in [6u16, 12] {
+        for count in [2u16, 100] {
+            let usage = vec![Line::from("usage"); usize::from(count)];
+            let compact = Screen {
+                usage: &usage,
+                status: Line::from("approval requested"),
+                ..Screen::default()
+            };
+            let mut painted = Terminal::new(TestBackend::new(80, height))?;
+            painted.draw(|frame| {
+                compact.render(frame, &input, &mut viewport, 0, 1000);
+            })?;
+            let text = visible(&painted);
+            assert!(text.contains("draft"));
+            assert!(text.contains("approval requested"));
+            assert!(viewport.cursor.is_some());
+
+            // The previous usage-first allocation loses typed input behind
+            // the prompt border. Render that allocation against the same oracle.
+            let old_height = PromptBox::new(&input, 0)
+                .height(80, height)
+                .min(height.saturating_sub(2).saturating_sub(count));
+            painted.draw(|frame| {
+                frame.render_stateful_widget(
+                    PromptBox::new(&input, 1000),
+                    Rect::new(0, 1, 80, old_height),
+                    &mut viewport,
+                );
+            })?;
+            detects_usage_first |= !visible(&painted).contains("draft");
+        }
+    }
+    assert!(
+        detects_usage_first,
+        "usage-first allocation must hide input"
+    );
 
     // A page cursor may advance only over rows the bordered modal actually
     // paints. Check the real renderer across collapsed and resized viewports,
@@ -146,12 +189,13 @@ fn completion_overlays_above_prompt_and_resize_preserves_input()
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(96))]
     // Property: every visible region stays inside the supplied viewport,
-    // primary regions never overlap, and prompt growth stays bounded.
+    // primary regions never overlap, and usage cannot reduce prompt capacity.
     #[test]
-    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100) {
+    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100, usage in 0usize..100) {
         let rows = vec![Line::from("row"); count];
         let tools = vec![Line::from("tool"); tools];
-        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
+        let summary = vec![Line::from("committed usage"); usage];
+        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: &summary, ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
         input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();
@@ -159,7 +203,7 @@ proptest! {
         let areas = screen.areas(outer, &input);
         let scroll = screen.tail_scroll(outer, &input);
         prop_assert_eq!(scroll, (count + tools.len()).saturating_sub(usize::from(areas.transcript.height)));
-        let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status];
+        let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status, areas.usage];
         for area in primary.into_iter().chain([areas.completions]) {
             prop_assert!(area.x >= outer.x && area.y >= outer.y);
             prop_assert!(area.right() <= outer.right() && area.bottom() <= outer.bottom());
@@ -170,6 +214,9 @@ proptest! {
             }
         }
         prop_assert!(areas.prompt.height <= height / 2);
+        prop_assert_eq!(areas.prompt.height, Screen::default().areas(outer, &input).prompt.height);
+        prop_assert_eq!(areas.status.height, u16::from(height > 1));
+        prop_assert_eq!(usize::from(areas.usage.height), usage.min(usize::from(height.saturating_sub(2).saturating_sub(areas.prompt.height))));
     }
 }
 
