@@ -40,11 +40,13 @@ impl Diagnostic {
         }
     }
 
-    /// Original stream containing raw text chunks, in byte order.
+    /// Original stream containing raw text chunks, in byte order. The original
+    /// agent identity keeps inherited ancestor diagnostics in a distinct slot.
     pub fn path(&self) -> Result<StreamPath, Error> {
         StreamPath::new(format!(
-            "{}/diagnostics/{}",
+            "{}/diagnostics/{}/{}",
             self.agent.as_str(),
+            self.agent.id().as_str(),
             blake3::Hash::from_bytes(self.digest).to_hex()
         ))
         .map_err(Error::Stream)

@@ -118,6 +118,26 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
     let mut adoption = adopted(id(1));
     adoption.brief = Some(super::driver::file("root")?);
     let root = host.create(&intent("create"), adoption).await?;
+    // A fork inherits its ancestor's staged records. Even the same diagnostic
+    // bytes must use the child's original identity rather than that inherited
+    // slot; an interrupted ancestor publication must not prevent settlement.
+    let ancestor = Diagnostic {
+        agent: root.clone(),
+        digest: *blake3::hash(expected.as_bytes()).as_bytes(),
+        bytes: expected.len() as u64,
+    };
+    provider
+        .append(AppendRequest {
+            path: ancestor.path()?,
+            records: vec![
+                expected.as_bytes()[..acyclic_stream::MAX_RECORD_BYTES]
+                    .to_vec()
+                    .into(),
+            ],
+            if_tail: Some(0),
+            idempotency_key: intent_key("ancestor-diagnostic", &["original"])?,
+        })
+        .await?;
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let child = root.child(&AgentId::derive(&root.id(), "large-failure"))?;
