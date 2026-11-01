@@ -12,16 +12,16 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
             match block["type"].as_str() {
                 Some("tool_use") => {
                     let index = index(value, "index")?;
+                    let input = block["input"]
+                        .as_object()
+                        .ok_or_else(|| invalid("tool input must be a JSON object"))?;
                     if state.calls.contains_key(&index) {
                         return Err(invalid("repeated tool block"));
                     }
                     let (call, budget) = state.call(index)?;
                     budget.string(&mut call.id, string(&block["id"])?)?;
                     budget.string(&mut call.name, string(&block["name"])?)?;
-                    if block["input"]
-                        .as_object()
-                        .is_some_and(|map| !map.is_empty())
-                    {
+                    if !input.is_empty() {
                         budget.encoded(&mut call.arguments, &block["input"])?;
                     }
                 }
@@ -77,11 +77,12 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 }
                 Some("input_json_delta") => {
                     let index = index(value, "index")?;
+                    let partial = string(&delta["partial_json"])?;
                     if !state.calls.contains_key(&index) {
                         return Err(invalid("tool delta without block"));
                     }
                     let (call, budget) = state.call(index)?;
-                    budget.append(&mut call.arguments, delta.get("partial_json"))?;
+                    budget.append_str(&mut call.arguments, partial)?;
                 }
                 _ => {}
             }
