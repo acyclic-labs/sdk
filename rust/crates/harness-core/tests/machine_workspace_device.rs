@@ -322,9 +322,14 @@ async fn committed_handover(refused_close: bool) -> Result {
         let std::task::Poll::Ready(recovered) = futures::poll!(recovery.as_mut()) else {
             return Err("rejected command recovery waited for an unpublished Run".into());
         };
-        let recovered = recovered?.ok_or("rejected command recovery lost its verdict")?;
+        // This standalone public context has no durable selected target. Only
+        // Stock's retained claim may bind one during replay; direct recovery
+        // must refuse without resolving the current roster or waiting on Run.
+        assert!(matches!(
+            recovered,
+            Err(acyclic_harness_core::Error::Indeterminate(id)) if id == oversized.operation_id
+        ));
         let refusal = shell.execute(oversized, Some(context)).await?;
-        assert_eq!(recovered.value, refusal.value);
         assert!(
             refusal.value["error"]
                 .as_str()
@@ -473,7 +478,8 @@ async fn committed_handover(refused_close: bool) -> Result {
                     &contributed,
                     None
                 )?
-                .await?
+                .await
+                .map_err(|error| format!("atomic start/run/wake claim for {op}: {error}"))?
         );
         let admitted = journal.replay(op, 0, 3, None)?.await?;
         assert_eq!(admitted.len(), 2);
@@ -683,7 +689,9 @@ async fn committed_handover(refused_close: bool) -> Result {
                 recovery.await
             };
             if let Some(exit) = expected_exit {
-                let result = recovered?.ok_or("committed Exit disappeared during recovery")?;
+                let result = recovered
+                    .map_err(|error| format!("committed Exit recovery for {operation}: {error}"))?
+                    .ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);
             } else {
                 assert!(
