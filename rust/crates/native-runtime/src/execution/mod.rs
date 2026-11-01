@@ -240,12 +240,33 @@ impl ExecutionGrant {
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
+        self.check_authority(access, &network)?;
+        let requested = Self::new(workspace, access, read, network)?;
+        self.check_roots(&requested)?;
+        Ok(requested)
+    }
+
+    /// Verifies an already bound grant against this host ceiling, without
+    /// rebuilding either grant or weakening root object identity checks.
+    pub fn check_attenuation(&self, requested: &Self) -> io::Result<()> {
+        self.check_authority(requested.0.access, &requested.0.network)?;
+        self.check_roots(requested)
+    }
+
+    fn check_authority(
+        &self,
+        access: ExecutionAccess,
+        network: &ExecutionNetwork,
+    ) -> io::Result<()> {
         if (self.0.access == ExecutionAccess::ReadOnly && access == ExecutionAccess::WorkspaceWrite)
-            || !self.0.network.permits(&network)
+            || !self.0.network.permits(network)
         {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
-        let requested = Self::new(workspace, access, read, network)?;
+        Ok(())
+    }
+
+    fn check_roots(&self, requested: &Self) -> io::Result<()> {
         if !self.0.workspace.contains(&requested.0.workspace)? {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
@@ -275,7 +296,7 @@ impl ExecutionGrant {
                 return Err(refused("execution grant exceeds its authority ceiling"));
             }
         }
-        Ok(requested)
+        Ok(())
     }
 
     /// Workspace to which the policy bound this execution.

@@ -228,6 +228,10 @@ impl CheckoutTools {
                 request,
                 maximum,
             } = command;
+            let execution_grant = context
+                .execution_grant()
+                .or(self.execution_grant.as_ref())
+                .cloned();
             let State {
                 active, watcher, ..
             } = &mut *state;
@@ -247,7 +251,7 @@ impl CheckoutTools {
                 workspace::volumes::native_scope(&mounts, async |claims| {
                     let (result, state, files, claims) = self
                         .shell(
-                            (input, invocation.operation_id),
+                            (input, invocation.operation_id, execution_grant),
                             maximum,
                             state,
                             files,
@@ -291,6 +295,25 @@ impl CheckoutTools {
 }
 
 impl ToolExecutor for CheckoutTools {
+    fn authorize_execution_grant(
+        &self,
+        invocation: &ToolInvocation,
+        _context: &ToolContext,
+        grant: &acyclic_native_runtime::execution::ExecutionGrant,
+    ) -> Result<()> {
+        if invocation.name != crate::tools::shell::PLATFORM.name {
+            return Err(Error::Unsupported(
+                "checkout physical grants apply to shell execution; recovery: authorize file operations through their filesystem grants".into(),
+            ));
+        }
+        if let Some(ceiling) = &self.execution_grant {
+            ceiling
+                .check_attenuation(grant)
+                .map_err(Error::process_io)?;
+        }
+        Ok(())
+    }
+
     fn read_path<'a>(
         &'a self,
         path: &'a str,

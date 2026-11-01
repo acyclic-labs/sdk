@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod physical_grants;
+
 #[tokio::test]
 async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
     let wide = RuntimeScope::new(
@@ -153,6 +156,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
                 &invocation,
                 (tool, None),
                 true,
+                None,
             )
             .await;
         if deny {

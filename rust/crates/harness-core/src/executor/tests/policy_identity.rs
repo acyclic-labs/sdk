@@ -96,6 +96,7 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
                 &invocation,
                 (tool, None),
                 false,
+                None,
             )
             .await;
         assert_eq!(policy.ordinary.load(Ordering::SeqCst), 0);

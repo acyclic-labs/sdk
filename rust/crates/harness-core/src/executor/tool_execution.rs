@@ -320,6 +320,7 @@ impl<'io> StockExecution<'io> {
                         &invocation,
                         (tool, target),
                         started,
+                        context.as_mut(),
                     )
                     .await?
                 {
@@ -587,6 +588,7 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         (tool, target): (&crate::tool::Tool, Option<&crate::agent::TargetRecord>),
         started: bool,
+        context: Option<&mut crate::runtime::ToolContext>,
     ) -> Result<Option<PolicyStop>> {
         // Every call, ordinary or native, passes the one pinned policy. A
         // call reaching here without one has no tool authority, so it is
@@ -670,6 +672,34 @@ impl<'io> StockExecution<'io> {
                 }
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !started {
+            let selected = policy.execution_grant(tool, invocation, context.as_deref(), self.io);
+            if matches!(&selected, Ok(Some(_))) && !identity_matches()? {
+                return Err(Error::Conflict(
+                    "stock policy changed during physical admission".into(),
+                ));
+            }
+            let admitted = selected.and_then(|grant| {
+                if let Some(grant) = grant {
+                    let context = context.ok_or_else(|| Error::Unauthorized(
+                        "physical admission requires the original task context; recovery: bind the task before dispatch".into(),
+                    ))?;
+                    tool.executor.authorize_execution_grant(invocation, context, &grant)?;
+                    context.execution_grant = Some(grant);
+                }
+                Ok(())
+            });
+            if let Err(error) = admitted {
+                return if error.is_tool_failure() {
+                    Ok(Some(PolicyStop::Failed(error)))
+                } else {
+                    Err(error)
+                };
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = context;
         Ok(None)
     }
 }

@@ -94,6 +94,18 @@ struct WorkspaceExecutor {
 }
 
 impl ToolExecutor for WorkspaceExecutor {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authorize_execution_grant(
+        &self,
+        invocation: &ToolInvocation,
+        context: &ToolContext,
+        grant: &acyclic_native_runtime::execution::ExecutionGrant,
+    ) -> Result<()> {
+        target(context, invocation, None)?
+            .executor()
+            .authorize_execution_grant(invocation, context, grant)
+    }
+
     fn authorize_replay<'a>(
         &'a self,
         context: Option<&'a ToolContext>,

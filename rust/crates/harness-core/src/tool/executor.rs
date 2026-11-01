@@ -77,6 +77,22 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
+    /// Checks that this exact executor can enforce a policy-selected physical
+    /// grant before dispatch. Unsupported adapters must refuse, never drop it.
+    /// An implementation returning success must consume the context's grant
+    /// at its original launch boundary and preserve any narrower host ceiling.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authorize_execution_grant(
+        &self,
+        _invocation: &ToolInvocation,
+        _context: &crate::runtime::ToolContext,
+        _grant: &acyclic_native_runtime::execution::ExecutionGrant,
+    ) -> Result<()> {
+        Err(Error::Unsupported(
+            "selected tool executor cannot enforce a physical grant; recovery: bind an executor that forwards the grant to its native launch".into(),
+        ))
+    }
+
     /// Rechecks mutable source authority before exposing a completed result.
     /// The invocation has already passed `authorize` and its recorded identity
     /// check. This must only authorize reads: it cannot execute or reconcile the
