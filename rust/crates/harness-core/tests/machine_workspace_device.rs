@@ -150,7 +150,9 @@ async fn committed_handover(refused_close: bool) -> Result {
     let (owner, scope, workspace) = super::workspace_fixture().await?;
     let workspace = Arc::new(workspace);
     let provider = Arc::new(MemoryStream::default());
-    let owner_actor = ActorReference::new(b"device-owner", b"agents", b"tree")?;
+    // The original signed session credential certifies this account; a grant
+    // for an Actor namespace does not authorize a different account's devices.
+    let owner_actor = ActorReference::new(b"account", b"agents", b"tree")?;
     let paths = TargetPaths::new(StreamPath::new("harness/devices/tree")?, owner_actor);
     let target = InProcessTargets::local_record("desktop", "ana");
     let store = Store::new(provider.clone(), StreamPath::new("harness/actors")?);
