@@ -485,7 +485,7 @@ async fn escaped_diagnostics_fit_the_remaining_page_and_retain_the_call_log() ->
     ] {
         let code = format!("await tools['example.echo']({{value:42}}); throw {expression}");
         let (mut executor, model, echo) = executor(&code, allowed()?, true)?;
-        executor.limits.render_bytes = 4096;
+        executor.limits.render_bytes = Some(4096);
         executor.execute(input(), &Journal::default()).await?;
         let value = result(&model);
         let error = value["error"].as_str().unwrap();
