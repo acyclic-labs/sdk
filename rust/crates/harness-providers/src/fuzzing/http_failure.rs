@@ -35,8 +35,8 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         futures::executor::block_on(crate::http_failure(response, bytes.len().max(1), None));
     let polls = polls.load(Ordering::Relaxed);
     assert!(polls <= bytes.len().div_ceil(width) + 1);
-    if matches!(status, 401 | 403) {
-        assert_eq!(polls, 0, "authentication refusal read its body");
+    if !matches!(status, 400 | 408 | 413 | 429 | 500..=599) {
+        assert_eq!(polls, 0, "status-only refusal read its discarded body");
     } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
@@ -132,6 +132,11 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
     // changed. Native parsing must fund scratch, retire it, and retain refusal
     // of an exhausted or cancelled original invocation.
     let captured = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context");
+    for status in [401u16, 403, 404, 409, 422] {
+        let mut input = captured.to_vec();
+        input[..2].copy_from_slice(&status.to_le_bytes());
+        assert_http_failure_invariants(&input);
+    }
     let value: serde_json::Value = serde_json::from_slice(&captured[2..]).unwrap();
     let mut control = value.clone();
     control["ignored"] = serde_json::Value::String("\u{000b}\\u000b".into());
