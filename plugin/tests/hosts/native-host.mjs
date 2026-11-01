@@ -13,7 +13,22 @@ const packages=Object.freeze({
 
 // Require the fixture's provider contract from the same admitted package/bin.
 // An unsupported provider must never acquire an installed workspace owner.
-export function nativeProvider(native) {
+export function nativeProvider(native,live) {
+ if(live!==undefined) {
+  assert.ok(live&&typeof live==='object'&&!Array.isArray(live),
+   'step=admit live native configuration; recovery=supply model, profile and provider');
+  assert.deepEqual(Object.keys(live).sort(),['model','profile','provider'],
+   'step=admit live native configuration; recovery=supply only model, profile and provider, never credentials');
+  const provider={'@openai/codex':'openai','@anthropic-ai/claude-code':'anthropic',
+   '@earendil-works/pi-coding-agent':'openai-codex'}[native.package.name];
+  assert.equal(live.provider,provider,'step=admit live native provider; recovery=select the pinned host native login provider');
+  assert.ok(typeof live.model==='string'&&/^[a-z0-9][a-z0-9.-]*$/.test(live.model),
+   'step=admit live native model; recovery=supply the explicitly approved exact model ID');
+  assert.ok(isAbsolute(live.profile??''),'step=admit live native login; recovery=supply an existing dedicated native login profile by absolute path');
+  if(native.package.name==='@anthropic-ai/claude-code')assert.equal(process.platform,'win32',
+   'step=admit live Claude platform; recovery=run Claude Code live on Windows');
+  return provider;
+ }
  if(native.provider!==null)return native.provider;
  const error=new Error(`step=admit native provider: ${native.package.name}@${native.package.version} has no supported keyless Responses interface; recovery=select a native Pi release with a supported keyless Responses provider before running installed-pi-recursive`);
  error.code='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER';

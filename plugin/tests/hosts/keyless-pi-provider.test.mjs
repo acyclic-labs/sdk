@@ -44,6 +44,18 @@ test('pinned Pi retains native keyless refusal without a credential or HTTP requ
    error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER'&&error.message.includes(`${native.package.name}@${native.package.version}`));
   assert.deepEqual(await readdir(root),before,'unsupported provider must not stage a package, state, approval file or Git root');
   assert.deepEqual(effects,[],'unsupported provider must not install, start an owner or execute a native session');
+  // Admission must also fence malformed live selections before touching any
+  // package/owner state; a native login never turns the mock into keyless auth.
+  for(const live of [
+   {provider:'fixture',model:'gpt-6-luna',profile:root},
+   {provider:'openai-codex',model:'gpt-6-luna',profile:'relative'},
+   {provider:'openai-codex',model:'gpt-6-luna',profile:root},
+  ])await assert.rejects(installedHost({host:'pi',processes:scope,
+   fixture:{env:{...env,E2E_PLUGIN_BINARY:native.entry},workspace,live},
+   tools:[],capture:record=>effects.push(record),execute:()=>effects.push('execute')}),
+   /step=admit live native/);
+  assert.deepEqual(await readdir(root),before,'rejected live admission must leave the original fixture unchanged');
+  assert.deepEqual(effects,[],'rejected live admission must have zero installed workflow effects');
   const launch=await launchNativeHost('pi',{url:process.env.ACYCLIC_E2E_MODEL_URL,env,prompt:'keyless admission'});
   const completed=await scope.runOwned(native.program,[...native.args,...launch.args],{cwd:root,env});
   t.diagnostic(JSON.stringify({native_entry:native.entry,...completed}));

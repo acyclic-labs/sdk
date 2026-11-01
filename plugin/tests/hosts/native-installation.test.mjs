@@ -2,16 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, delimiter, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { environment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
 import { withOwnedCase } from "../../../scripts/graphcoder-e2e/suite.mjs";
-import { stagePlugin } from "./package.mjs";
+import { nativePackage } from "./native-model.mjs";
 
 const recovery = "ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_CODEX=/absolute/codex node --test --test-concurrency=1 plugin/tests/hosts/native-installation.test.mjs";
-const source = fileURLToPath(new URL("../../", import.meta.url));
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
 test("actual Codex installs and removes the exact native plugin in its fixture profile", async t => {
@@ -26,7 +24,8 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
     env.PATH = dirname(codex) + delimiter + env.PATH;
     const packageRoot = join(root, "package");
     step = "stage production plugin package and admitted binary";
-    const executable = await stagePlugin(source, binary, packageRoot);
+    const packageStage = nativePackage(binary, packageRoot);
+    const { executable } = await packageStage();
     const run = async (program, args) => {
       const result = await processes.runOwned(program, args, { cwd: root, env, scopeMountRoot: root });
       t.diagnostic(JSON.stringify({ program, args, ...result }));
@@ -61,7 +60,12 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       assert.equal(registered[0].marketplaceSource.sourceType, "local");
       assert.equal(registered[0].marketplaceSource.source, packageRoot);
       const originalConfig = await readFile(join(env.CODEX_HOME, "config.toml"));
-      assert.equal((await run(executable, ["install", "codex", "--plugin-root", packageRoot])).code, 0);
+      // Subsequent pair and workflow scopes share this original stage. A
+      // second copy would fail; a different root must hit the source fence.
+      for (let scope = 0; scope < 2; scope++) {
+        const staged = await packageStage();
+        assert.equal((await run(staged.executable, ["install", "codex", "--plugin-root", staged.packageRoot])).code, 0);
+      }
       assert.deepEqual(await readFile(join(env.CODEX_HOME, "config.toml")), originalConfig);
       assert.deepEqual(await list(), installed);
       step = "refuse a foreign source before changing the admitted registration";
