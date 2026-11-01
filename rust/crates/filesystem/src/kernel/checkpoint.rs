@@ -155,8 +155,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 )
                 .map_err(checkpoint_storage_error)?;
                 let hashed =
-                    crate::async_storage::prepare_object(store, hashed, accounting, cancellation)
-                        .await?;
+                    crate::async_storage::prepare_object(store, hashed, accounting).await?;
                 let object = hashed.object_id();
                 {
                     let mut work = crate::AuthorityWork::native(original, cancellation);
@@ -175,9 +174,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 std::mem::take(&mut encoded.value).into(),
             );
             accounting.record_completed(hashing)?;
-            let hashed =
-                crate::async_storage::prepare_object(store, hashed, accounting, cancellation)
-                    .await?;
+            let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
             let object = hashed.object_id();
             let receipt = {
                 let mut object_work =

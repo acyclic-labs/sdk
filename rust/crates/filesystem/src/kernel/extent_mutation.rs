@@ -702,8 +702,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
             original,
             cancellation,
         )?;
-        let hashed =
-            crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
+        let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
         let object = hashed.object_id();
         accounting.charge(WorkCounters {
             page_writes: u64::from(kind != ObjectKind::BlobChunk),
@@ -732,8 +731,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         page_writes: u64::from(kind != ObjectKind::BlobChunk),
         ..WorkCounters::UNCHARGED
     })?;
-    let hashed =
-        crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
+    let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
     let object = hashed.object_id();
     let receipt = {
         let mut object_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);

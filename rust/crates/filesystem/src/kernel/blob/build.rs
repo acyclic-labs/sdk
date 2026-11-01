@@ -397,9 +397,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let object =
-            crate::async_storage::prepare_object(self.inner, object, accounting, cancellation)
-                .await?;
+        let object = crate::async_storage::prepare_object(self.inner, object, accounting).await?;
         let id = object.object_id();
         self.bytes = self
             .bytes
