@@ -1,5 +1,17 @@
 # Polling and timed-wait inventory
 
+Package completion sites at `134933adbb`:
+
+| Source | Removed wait | Original completion and negative control |
+| --- | --- | --- |
+| `scripts/check-filesystem-package.sh:36` | Implicit 30-second consumer deadline | Await the same installed consumer's OS exit and original output. Its finite memory/workspace operations retain their stream and commit events. |
+| `scripts/check-filesystem-package.sh:39` | Implicit 30-second missing-artifact deadline | Await the same consumer's failure after withholding its original WASM artifact; still require the original ENOENT output. |
+| `scripts/check-machines-package.test.mjs:66` | Implicit 60-second shell-fixture deadline | Await the same finite shell child's exit. Keep original checkout identity, command log and changed-source refusal in both fixture cases. |
+
+These delete three deadline configurations without adding a process, channel,
+allocation, copy, syscall or durability barrier. Qualification of these latest
+deletions is pending; no isolated filesystem package execution is claimed.
+
 Installer source closure: the published deletion `138ca708d0` is composed at
 `fa976a4cac`. At predecessor `13faa3a5cb`, `plugin/bin/install.js:22` defined
 `warmUp`, `:26` imposed a 30-second execution timeout, and `:48` launched it

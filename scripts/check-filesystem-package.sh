@@ -33,10 +33,10 @@ cd "$work/package"
 # workspace's node_modules is intentionally outside this extracted package.
 bun -e 'const fs = require("node:fs"); const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")); manifest.overrides = { ...manifest.overrides, "@acyclic-labs/actors": "file:../acyclic-observe.tgz" }; fs.writeFileSync("package.json", JSON.stringify(manifest));'
 bun install --ignore-scripts --no-save --no-progress
-timeout 30s bun test/node-memory.mjs
+bun test/node-memory.mjs
 # Prove that the isolated consumer used the archived WASM, not a workspace fallback.
 mv generated/wasm/acyclic_fs_wasm_bg.wasm "$work/withheld.wasm"
-if timeout 30s bun test/node-memory.mjs >"$work/missing-wasm.log" 2>&1; then
+if bun test/node-memory.mjs >"$work/missing-wasm.log" 2>&1; then
   echo 'packaged consumer unexpectedly ran without its WASM' >&2
   exit 1
 fi

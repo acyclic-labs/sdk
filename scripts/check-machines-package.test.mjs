@@ -63,7 +63,7 @@ cargo() {
 ${commands}
 echo packaged-verified-source
 `], {
-        encoding: "utf8", timeout: 60000,
+        encoding: "utf8",
         env: { ...process.env, SDK_FIXTURE: directory.replaceAll("\\", "/"), SDK_MUTATE_SOURCE: String(mutate) },
       });
       assert.equal(result.error, undefined);
