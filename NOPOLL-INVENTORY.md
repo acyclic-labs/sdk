@@ -1,5 +1,11 @@
 # Polling and timed-wait inventory
 
+This milestone ships the completed producer-event conversions, typed publication
+conflicts and source-analyzer coverage below. Remaining backend, compiler-fixture
+and terminal readiness conversions are follow-up work; this inventory does not
+claim that every historical candidate has been removed or approved. Native
+pending-I/O physical retirement remains a separate original-owner obligation.
+
 Current-source census at `b2f62601dd`: 6,083 source files and 91,331
 conservative candidates. This includes finite loops, dependency references and
 deliberately defective source controls; these counts are not a list of approved
