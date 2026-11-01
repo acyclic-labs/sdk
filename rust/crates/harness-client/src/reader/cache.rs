@@ -947,8 +947,7 @@ impl RecordCache {
         parent: &StreamPath,
         index: u32,
         mut listing: Listing,
-        projection: ListingProjection,
-        witnessed: Option<u64>,
+        observations: impl IntoIterator<Item = (ListingProjection, Option<u64>)>,
         protect: Option<u64>,
     ) {
         listing.projections = self
@@ -961,7 +960,9 @@ impl RecordCache {
                     && old.next == listing.next
             })
             .map_or_else(ListingProjections::default, |old| old.projections);
-        listing.projections.observe(projection, witnessed);
+        for (projection, witnessed) in observations {
+            listing.projections.observe(projection, witnessed);
+        }
         self.store_listing(parent, index, listing, protect);
     }
 

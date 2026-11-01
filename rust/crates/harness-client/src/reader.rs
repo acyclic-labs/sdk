@@ -332,7 +332,7 @@ pub enum Connectivity {
 enum OpKey {
     Read(StreamPath, u64),
     Head(StreamPath),
-    Children(StreamPath, u64, ListingProjection),
+    Children(StreamPath, u64, Option<StreamPath>),
 }
 
 #[cfg(test)]
@@ -349,18 +349,14 @@ impl OpKey {
         }
     }
 
-    fn children(path: &StreamPath, index: u32, projection: ListingProjection) -> Self {
-        Self::Children(path.clone(), u64::from(index), projection)
+    fn children(path: &StreamPath, index: u32, tail: Option<StreamPath>) -> Self {
+        Self::Children(path.clone(), u64::from(index), tail)
     }
 
     // Page indexes are u32. The exclusive index boundary includes every
     // projection of the final page without inventing a greatest stream path.
     fn children_end(path: &StreamPath) -> Self {
-        Self::Children(
-            path.clone(),
-            u64::from(u32::MAX) + 1,
-            ListingProjection::default(),
-        )
+        Self::Children(path.clone(), u64::from(u32::MAX) + 1, None)
     }
 
     fn path_ranges(path: &StreamPath) -> [(std::ops::Bound<Self>, std::ops::Bound<Self>); 3] {
@@ -375,7 +371,7 @@ impl OpKey {
                 Included(Self::Head(path.clone())),
             ),
             (
-                Included(Self::children(path, 0, ListingProjection::default())),
+                Included(Self::children(path, 0, None)),
                 Excluded(Self::children_end(path)),
             ),
         ]
@@ -386,8 +382,10 @@ impl OpKey {
 #[derive(Clone, Debug, Default)]
 struct Paging {
     after: Option<StreamPath>,
-    /// The witness stream's tail when the page was planned.
-    witnessed: Option<u64>,
+    /// Original witness paths and positions admitted before this request.
+    /// Wants for the same projection share the original request, never a
+    /// later witness observation attached to an already running operation.
+    witnesses: BTreeMap<Option<StreamPath>, Option<u64>>,
 }
 
 struct InFlight {
@@ -911,8 +909,11 @@ impl Reader {
                     (index, after)
                 };
                 Some((
-                    OpKey::children(parent, index, projection),
-                    Paging { after, witnessed },
+                    OpKey::children(parent, index, tail.clone()),
+                    Paging {
+                        after,
+                        witnesses: BTreeMap::from([(witness.clone(), witnessed)]),
+                    },
                 ))
             }
         }
@@ -991,13 +992,13 @@ impl Reader {
                     id,
                     stream: stream.clone(),
                 },
-                OpKey::Children(parent, index, projection) => Op::Children {
+                OpKey::Children(parent, index, tail) => Op::Children {
                     id,
                     parent: parent.clone(),
                     index: *index as u32,
                     after: paging.after.clone(),
                     limit: self.policy.listing_limit,
-                    tail: projection.tail.clone(),
+                    tail: tail.clone(),
                     version: paging.after.as_ref().and(self.hierarchy),
                 },
             };
@@ -1105,7 +1106,7 @@ impl Reader {
                 self.observed_head(stream, head, flight.observed) != HeadObservation::Invalid
             }
             (
-                OpKey::Children(parent, index, projection),
+                OpKey::Children(parent, index, tail),
                 Outcome::Children {
                     children,
                     next,
@@ -1127,7 +1128,7 @@ impl Reader {
                     self.listed(
                         parent,
                         *index as u32,
-                        (&flight.paging, projection),
+                        (flight.paging, tail),
                         children,
                         next,
                         protect,
@@ -1151,7 +1152,7 @@ impl Reader {
         &mut self,
         parent: &StreamPath,
         index: u32,
-        (paging, projection): (&Paging, &ListingProjection),
+        (paging, tail): (Paging, &Option<StreamPath>),
         children: Vec<ListedChild>,
         next: Option<StreamPath>,
         protect: Option<u64>,
@@ -1159,7 +1160,7 @@ impl Reader {
         let mut paths = Vec::with_capacity(children.len());
         for child in children {
             self.learn_origin(&child.path, child.origin);
-            if let Some(relative) = &projection.tail
+            if let Some(relative) = tail
                 && let Ok(stream) =
                     StreamPath::new(format!("{}/{}", child.path.as_str(), relative.as_str()))
             {
@@ -1186,8 +1187,7 @@ impl Reader {
             self.cache.drop_listings_after(parent, index);
             if let Some(first) = index.checked_add(1) {
                 self.cancel_range(
-                    OpKey::children(parent, first, ListingProjection::default())
-                        ..OpKey::children_end(parent),
+                    OpKey::children(parent, first, None)..OpKey::children_end(parent),
                 );
             }
             // The asynchronous driver can poll again before the next UI frame
@@ -1209,15 +1209,22 @@ impl Reader {
             parent,
             index,
             Listing {
-                after: paging.after.clone(),
+                after: paging.after,
                 children: paths,
                 next,
                 fresh: true,
                 projections: ListingProjections::default(),
                 version: self.hierarchy,
             },
-            projection.clone(),
-            paging.witnessed,
+            paging.witnesses.into_iter().map(|(witness, witnessed)| {
+                (
+                    ListingProjection {
+                        tail: tail.clone(),
+                        witness,
+                    },
+                    witnessed,
+                )
+            }),
             protect,
         );
     }
@@ -2087,10 +2094,10 @@ mod reader_tests {
             },
             None,
         );
-        let key = OpKey::children(&parent, 1, ListingProjection::default());
+        let key = OpKey::children(&parent, 1, None);
         let paging = Paging {
             after: Some(old.clone()),
-            witnessed: None,
+            witnesses: BTreeMap::new(),
         };
         reader.inflight.insert(
             7,
@@ -2115,7 +2122,7 @@ mod reader_tests {
         reader.listed(
             &parent,
             0,
-            (&Paging::default(), &ListingProjection::default()),
+            (Paging::default(), &None),
             Vec::new(),
             Some(new),
             None,
@@ -2199,12 +2206,12 @@ mod reader_tests {
         let ticket = reader.demand.get(&unrelated).unwrap().ticket;
         for key in [
             OpKey::Head(stream.clone()),
-            OpKey::children(&stream, u32::MAX, ListingProjection::default()),
+            OpKey::children(&stream, u32::MAX, None),
             OpKey::Read(child.clone(), 0),
             OpKey::Read(child.clone(), u64::MAX),
             OpKey::Head(child.clone()),
-            OpKey::children(&child, 0, ListingProjection::default()),
-            OpKey::children(&child, u32::MAX, ListingProjection::default()),
+            OpKey::children(&child, 0, None),
+            OpKey::children(&child, u32::MAX, None),
             OpKey::Read(grandchild.clone(), 0),
         ] {
             want(&mut reader, key);
@@ -2241,7 +2248,7 @@ mod reader_tests {
         reader.listed(
             &parent,
             0,
-            (&Paging::default(), &ListingProjection::default()),
+            (Paging::default(), &None),
             Vec::new(),
             None,
             None,
@@ -2249,9 +2256,9 @@ mod reader_tests {
         for key in [
             OpKey::Read(parent.clone(), u64::MAX),
             OpKey::Head(parent.clone()),
-            OpKey::children(&parent, 0, ListingProjection::default()),
-            OpKey::children(&parent, 1, ListingProjection::default()),
-            OpKey::children(&parent, u32::MAX, ListingProjection::default()),
+            OpKey::children(&parent, 0, None),
+            OpKey::children(&parent, 1, None),
+            OpKey::children(&parent, u32::MAX, None),
         ] {
             want(&mut reader, key);
         }
@@ -2260,7 +2267,7 @@ mod reader_tests {
         reader.listed(
             &parent,
             0,
-            (&Paging::default(), &ListingProjection::default()),
+            (Paging::default(), &None),
             Vec::new(),
             Some(next),
             None,
@@ -2271,11 +2278,11 @@ mod reader_tests {
             "page invalidation visited unrelated demand"
         );
         assert_eq!(reader.demand.len(), 100_003);
-        assert!(reader.demand.contains_key(&OpKey::children(
-            &parent,
-            0,
-            ListingProjection::default()
-        )));
+        assert!(
+            reader
+                .demand
+                .contains_key(&OpKey::children(&parent, 0, None))
+        );
         assert_eq!(
             reader.anchors[&parent]
                 .at
@@ -2302,8 +2309,8 @@ mod reader_tests {
             OpKey::Read(stream.clone(), 0),
             OpKey::Read(stream.clone(), u64::MAX),
             OpKey::Head(stream.clone()),
-            OpKey::children(&stream, 0, ListingProjection::default()),
-            OpKey::children(&stream, u32::MAX, ListingProjection::default()),
+            OpKey::children(&stream, 0, None),
+            OpKey::children(&stream, u32::MAX, None),
         ];
         reader.refused.extend(refused.iter().cloned());
         for index in 0..100_000 {
@@ -2314,7 +2321,7 @@ mod reader_tests {
         let neighboring = [
             OpKey::Read(child.clone(), u64::MAX),
             OpKey::Head(grandchild.clone()),
-            OpKey::children(&parent, u32::MAX, ListingProjection::default()),
+            OpKey::children(&parent, u32::MAX, None),
         ];
         reader.refused.extend(neighboring.iter().cloned());
         OP_PATH_PROJECTIONS.with(|visits| visits.set(0));

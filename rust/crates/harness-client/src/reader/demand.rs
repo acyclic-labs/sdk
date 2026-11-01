@@ -67,6 +67,7 @@ impl Demands {
     ) {
         if let Some(entry) = self.entries.get_mut(&key) {
             let priority = if entry.mark == self.mark {
+                entry.demand.paging.witnesses.extend(paging.witnesses);
                 entry.demand.priority.min(priority)
             } else {
                 entry.demand.paging = paging;
@@ -134,10 +135,7 @@ impl Demands {
 
     pub(super) fn remove_children_after(&mut self, path: &super::StreamPath, index: u32) {
         if let Some(first) = index.checked_add(1) {
-            self.remove_range(
-                OpKey::children(path, first, super::ListingProjection::default())
-                    ..OpKey::children_end(path),
-            );
+            self.remove_range(OpKey::children(path, first, None)..OpKey::children_end(path));
         }
     }
 

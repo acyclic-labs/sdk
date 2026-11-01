@@ -583,16 +583,12 @@ mod tests {
                 )
             };
             reader.begin_frame(0);
-            reader.plan([want(&projections[0])]);
-            let [op]: [Op; 1] = reader.poll(0).try_into().unwrap();
-            let id = op.id();
-            reader.complete(id, execute(&provider, op).await, 0);
             reader.plan(projections.iter().map(want));
             let ops = reader.poll(0);
             assert_eq!(
                 ops.len(),
                 2,
-                "a different projection or equal position on another witness was treated as satisfied"
+                "one original fetch per tail projection must serve every admitted witness"
             );
             for op in ops.into_iter().rev() {
                 let id = op.id();
@@ -654,11 +650,13 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            let observed = reader.cache.observation(&witnesses[1]);
             reader.observed_head(
                 &witnesses[1],
                 provider.head(witnesses[1].clone()).await.unwrap(),
-                None,
+                observed,
             );
+            assert_eq!(reader.cache.tail(&witnesses[1]), Some(2));
             reader.plan(projections.iter().map(want));
             let [op]: [Op; 1] = reader.poll(1).try_into().unwrap();
             assert!(matches!(&op, Op::Children { tail: Some(tail), .. } if tail == &alpha));
@@ -685,7 +683,7 @@ mod tests {
             let ops = reader.poll(1);
             assert_eq!(
                 ops.len(),
-                3,
+                2,
                 "persistence fabricated fresh projection observations"
             );
             // Original indexed parent invalidation covers every projection,
@@ -693,7 +691,7 @@ mod tests {
             let late_id = ops[0].id();
             let late = execute(&provider, ops[0].clone()).await;
             reader.denied(&parent);
-            assert_eq!(reader.take_cancelled().len(), 3);
+            assert_eq!(reader.take_cancelled().len(), 2);
             reader.complete(late_id, late, 2);
             assert!(reader.cache().listing(&parent, 0).is_none());
             assert!(reader.poll(2).is_empty());
