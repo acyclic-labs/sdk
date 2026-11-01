@@ -118,8 +118,20 @@ impl<'a> Case<'a> {
     async fn mutate(&self, medium: &LocalMedium, key: &str) -> Result<bool, MediumError> {
         match self.mutation {
             Mutation::Create => medium.create(key, self.value(1)).await,
-            Mutation::Replace => medium.replace(key, &self.value(0), self.value(1)).await,
-            Mutation::Remove => medium.remove_if(key, &self.value(0)).await,
+            Mutation::Replace | Mutation::Remove => {
+                let Some(observed) = medium.observe(key.to_owned()).await? else {
+                    return Ok(false);
+                };
+                assert_eq!(observed.bytes, self.value(0), "mutate original value");
+                if matches!(self.mutation, Mutation::Replace) {
+                    Ok(medium
+                        .replace(observed.observation, self.value(1))
+                        .await?
+                        .is_some())
+                } else {
+                    medium.remove_if(observed.observation).await
+                }
+            }
         }
     }
 
