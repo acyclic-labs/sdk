@@ -3,12 +3,27 @@ impl Namespace {
         &self,
         path: &StreamPath,
     ) -> Result<Option<crate::Provenance<crate::StreamPath, crate::ForkCut>>, StreamError> {
+        self.origin_with(
+            path,
+            || Ok(()),
+            |source, relative| StreamPath::new(format!("{}{relative}", source.as_str())),
+        )
+    }
+
+    fn origin_with(
+        &self,
+        path: &StreamPath,
+        mut examine: impl FnMut() -> Result<(), StreamError>,
+        extend: impl FnOnce(&StreamPath, &str) -> Result<StreamPath, StreamError>,
+    ) -> Result<Option<crate::Provenance<crate::StreamPath, crate::ForkCut>>, StreamError> {
         let mut parts = path.as_str().split('/');
         let first = parts.next().ok_or(StreamError::InvalidPath)?;
+        examine()?;
         let mut node = lookup(&self.roots, first).ok_or(StreamError::NotFound)?;
         let mut end = first.len();
         let mut selected = node.origin.as_ref().map(|origin| (origin, end));
         for part in parts {
+            examine()?;
             node = lookup(&node.children, part).ok_or(StreamError::NotFound)?;
             end += 1 + part.len();
             if let Some(origin) = &node.origin
@@ -24,6 +39,7 @@ impl Namespace {
         let mut source = &origin.snapshot;
         if let Some(relative) = relative.strip_prefix('/') {
             for part in relative.split('/') {
+                examine()?;
                 let Some(child) = lookup(&source.children, part) else {
                     // Created after the fork, including a formerly excluded path.
                     return Ok(None);
@@ -35,7 +51,7 @@ impl Namespace {
             source: if relative.is_empty() {
                 origin.source.clone()
             } else {
-                StreamPath::new(format!("{}{relative}", origin.source.as_str()))?
+                extend(&origin.source, relative)?
             },
             inherited: crate::ForkCut {
                 forked_at: if relative.is_empty() {
