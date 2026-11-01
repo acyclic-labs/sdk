@@ -203,7 +203,7 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
         .map_err(|error| format!("step=start Codex native command: {error}; {recovery}"))?;
     let output = child
         .wait_with_output(
-            CaptureSchedule::unbounded(),
+            CaptureSchedule::Unbounded,
             usize::MAX,
             None,
             || Ok(()),
@@ -321,7 +321,7 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
     // events. A final acknowledgement ends containment; stdin EOF is not an
     // obligation for an external service to honour before we can reap it.
     let outcome = server.wait_with_output(
-        CaptureSchedule::unbounded(), usize::MAX,
+        CaptureSchedule::Unbounded, usize::MAX,
         Some(CaptureInput::Exchange {initial: &initial, maximum: usize::MAX}),
         || Ok(()),
         |output| {
