@@ -446,7 +446,9 @@ where
             // to a possibly saturated usize allowance (notably on wasm32).
             let remaining = maximum
                 .map(|maximum| {
-                    maximum.checked_sub(entries.values.len() - before).ok_or_else(|| invalid(io))
+                    maximum
+                        .checked_sub(entries.values.len() - before)
+                        .ok_or_else(|| invalid(io))
                 })
                 .transpose()?;
             summary.pending_steps.collect(

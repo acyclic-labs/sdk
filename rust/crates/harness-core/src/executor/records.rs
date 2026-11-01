@@ -7,7 +7,11 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
     ) -> Result<Vec<ExecutionRecord>> {
-        let maximum = self.stock.limits.model_events_per_step.map(|events| events.get().saturating_add(4));
+        let maximum = self
+            .stock
+            .limits
+            .model_events_per_step
+            .map(|events| events.get().saturating_add(4));
         let (_, records) = self
             .step_records(
                 journal,
