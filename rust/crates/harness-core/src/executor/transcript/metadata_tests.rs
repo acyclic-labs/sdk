@@ -341,6 +341,17 @@ async fn contexts_retain_values_and_sparse_nodes_without_decoder_scratch() -> Re
         };
         check_decode(&context, 16 * 1024 * 1024, true)?;
         check_scratch_control(&context)?;
+        let segment = MessageSegment {
+            parent: Some(MessagePrefix {
+                reference: reference.clone(),
+                count: 1,
+                content_digest: [1; 32],
+                chain_digest: [2; 32],
+            }),
+            suffix: context.messages,
+        };
+        check_decode(&segment, 16 * 1024 * 1024, true)?;
+        check_scratch_control(&segment)?;
     }
     Ok(())
 }
@@ -391,6 +402,43 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
         // original native custody, and resident-Value decoding through one codec.
         check_decode(&projection, 16 * 1024 * 1024, true)?;
         check_scratch_control(&projection)?;
+        let journal = storage.journal();
+        let saved = stage_json(
+            journal.as_ref(),
+            OperationId::new(),
+            "metadata-working",
+            &projection,
+            None,
+        )
+        .await?;
+        for native in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = if native {
+                PreparationIo::from_native_work(&work)?
+            } else {
+                PreparationIo::from_budget(budget, &cancellation)?
+            };
+            let working = working_reference(journal.as_ref(), &saved, Some(&io)).await?;
+            assert_eq!(working, projection.working);
+            let retained = working
+                .as_ref()
+                .map_or(Ok(0), FileRef::logical_owned_bytes)?;
+            assert_eq!(io.owned_bytes()?, retained);
+            let hold = io.guard_owned(retained)?;
+            drop(working);
+            drop(hold);
+            assert_eq!(io.owned_bytes()?, 0);
+            cancellation.cancel();
+            assert!(
+                working_reference(journal.as_ref(), &saved, Some(&io))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(io.owned_bytes()?, 0);
+        }
     }
     Ok(())
 }
