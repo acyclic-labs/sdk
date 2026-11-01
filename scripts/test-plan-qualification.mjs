@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import YAML from "./vendor/yaml.cjs";
 import { compatibilityArtifacts, packagedSourceCopies } from "./generated-bindings.mjs";
 import { languageGeneratorBackends, parseGeneratorBackends } from "./plan-qualification.mjs";
+import { runShellFixture } from "./shell-fixture.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
@@ -449,7 +450,7 @@ test("Linux package qualification uses sixteen workers without changing publicat
   assert.ok(readFileSync(".github/actionlint.yaml", "utf8").includes(linux.runner));
 });
 
-test("Linux filesystem packaging overlaps Harness conformance and joins both failures", () => {
+test("Linux filesystem packaging overlaps Harness conformance and joins both failures", async () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    background harness-conformance bun");
   const end = source.indexOf("    bun run licenses", start);
@@ -458,7 +459,7 @@ test("Linux filesystem packaging overlaps Harness conformance and joins both fai
   const commands = source.slice(start, end);
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
   assert.ok(helpers.includes("finish() {"));
-  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  touch "$fixture/finish-entered"');
+  const controlledHelpers = helpers.replace("finish() {", 'finish() {\n  printf "fixture:finish-entered\\n" >&5');
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/linux-packages-").replaceAll("\\", "/");
   assert.match(root, /^\.tools\/linux-packages-[A-Za-z0-9]+$/);
@@ -474,7 +475,9 @@ test("Linux filesystem packaging overlaps Harness conformance and joins both fai
       mkdirSync(fixture);
       const body = scenario.early ? commands.replace(" || filesystem_status=$?", "") : commands;
       if (scenario.early) assert.notEqual(body, commands);
-      const result = spawnSync(bash, ["-c", `set -euo pipefail
+      let filesystem = false, finishing = false, released = false;
+      const result = await runShellFixture(bash, `set -euo pipefail
+exec 5>&1
 fixture='${fixture}'
 SDK_TEMP_DIR="$fixture"
 SDK_ARTIFACT_DIR="$fixture/artifacts"
@@ -486,7 +489,6 @@ on_exit() {
   for child in filesystem harness; do
     if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
   done
-  touch "$fixture/finish-entered"
 }
 trap on_exit EXIT
 bun() {
@@ -494,24 +496,35 @@ bun() {
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
   [[ "$3" == "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" ]]
   [[ "$4" == "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json" ]]
-  touch "$fixture/harness-started"
-  while [[ ! -f "$fixture/filesystem-started" || ! -f "$fixture/finish-entered" ]]; do sleep 0.01; done
+  printf 'fixture:harness-started\\n' >&5
+  IFS= read -r event <&3 && [[ "$event" == filesystem-and-finish ]] || { echo 'step=await original filesystem/finish event: producer closed or invalid record; recovery command: node --test scripts/test-plan-qualification.mjs' >&2; return 98; }
   touch "$fixture/harness.done"
   return "$fail_harness"
 }
 bash() {
   [[ "$#" == 2 && "$1" == scripts/check-filesystem-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
-  touch "$fixture/filesystem-started"
-  while [[ ! -f "$fixture/harness-started" ]]; do sleep 0.01; done
+  printf 'fixture:filesystem-started\\n' >&5
+  IFS= read -r event <&4 && [[ "$event" == harness-started ]] || { echo 'step=await original harness start: producer closed or invalid record; recovery command: node --test scripts/test-plan-qualification.mjs' >&2; return 98; }
   touch "$fixture/filesystem.done"
   return "$fail_fs"
 }
 ${controlledHelpers}
 ${body}
 printf 'joined\\n'
-`], { encoding: "utf8", timeout: 10000 });
-      assert.equal(result.error, undefined);
+`, {
+        gates: 2, env: process.env, recovery: "node --test scripts/test-plan-qualification.mjs",
+        event(line, release) {
+          if (line === "fixture:harness-started") release(1, "harness-started");
+          if (line === "fixture:filesystem-started") filesystem = true;
+          if (line === "fixture:finish-entered") finishing = true;
+          if (filesystem && finishing && !released) {
+            released = true;
+            release(0, "filesystem-and-finish");
+          }
+        },
+      });
+      assert.equal(released, !scenario.early, result.stderr);
       assert.equal(result.status, scenario.early ? scenario.fs : scenario.harness || scenario.fs, result.stderr);
       if (scenario.early) assert.match(result.stdout, /unfinished-at-exit:harness/);
       else assert.doesNotMatch(result.stdout, /unfinished-at-exit:/);
@@ -556,7 +569,7 @@ test("browser profile cleanup is bounded without changing qualification results"
   }
 });
 
-test("web browser commands overlap, finish before shell exit and retain named timings", () => {
+test("web browser commands overlap, finish before shell exit and retain named timings", async () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    browser_qualification() {");
   const end = source.indexOf("    ;;", start);
@@ -579,44 +592,61 @@ test("web browser commands overlap, finish before shell exit and retain named ti
       mkdirSync(fixture);
       const body = earlyExit ? commands.replace(
         'if wait "$browser_pid"; then :; else browser_status=1; fi', 'wait "$browser_pid" || exit 1') : commands;
-      const controlledBody = body.replace("    browser_status=0", '    touch "$fixture/all-launched"\n    browser_status=0');
+      const controlledBody = body.replace("    browser_status=0", '    printf "fixture:all-launched\\n" >&7\n    browser_status=0');
       assert.notEqual(controlledBody, body);
-      const result = spawnSync(bash, ["-c", `set -euo pipefail
+      const ids = ["fs", "compaction", "mcp", "client"];
+      const started = new Set();
+      let launched = false, released = false;
+      const result = await runShellFixture(bash, `set -euo pipefail
+exec 7>&1
 fixture='${fixture}'
 observability="$fixture"
 fail_id='${failure}'
-mutated='${earlyExit ? 1 : 0}'
 parent_pid="$BASHPID"
 on_exit() {
   if [[ "$BASHPID" != "$parent_pid" ]]; then return; fi
   for child in fs compaction mcp client; do
     if [[ ! -f "$fixture/$child.done" ]]; then printf 'unfinished-at-exit:%s\\n' "$child"; fi
   done
-  touch "$fixture/all-launched" "$fixture/release-cleanup"
 }
 trap on_exit EXIT
 bun() {
   case "$*" in
-    *"@acyclic-labs/fs"*) id=fs ;;
-    *"browser-compaction.html"*) id=compaction ;;
-    *"test:browser:mcp"*) id=mcp ;;
-    *"test:client:browser"*) id=client ;;
+    *"@acyclic-labs/fs"*) id=fs; gate=3 ;;
+    *"browser-compaction.html"*) id=compaction; gate=4 ;;
+    *"test:browser:mcp"*) id=mcp; gate=5 ;;
+    *"test:client:browser"*) id=client; gate=6 ;;
     *) return 98 ;;
   esac
   printf 'started:%s\\n' "$id"
-  touch "$fixture/$id"
-  while [[ ! -f "$fixture/all-launched" ]]; do sleep 0.01; done
-  if [[ "$mutated" == 1 && "$id" != "$fail_id" ]]; then
-    while [[ ! -f "$fixture/release-cleanup" ]]; do sleep 0.01; done
+  status=0
+  if IFS= read -r event <&"$gate" && [[ "$event" == run ]]; then
+    :
+  else
+    echo 'step=await original browser release: producer closed or invalid record; recovery command: node --test scripts/test-plan-qualification.mjs' >&2
+    status=98
   fi
   touch "$fixture/$id.done"
   printf 'completed:%s\\n' "$id"
+  if (( status != 0 )); then return "$status"; fi
   [[ "$id" != "$fail_id" ]]
 }
 ${controlledBody}
 printf 'joined\\n'
-`], { encoding: "utf8", timeout: 10000 });
-      assert.equal(result.error, undefined);
+`, {
+        gates: 4, env: process.env, recovery: "node --test scripts/test-plan-qualification.mjs",
+        event(line, release) {
+          if (line.startsWith("started:")) started.add(line.slice("started:".length));
+          if (line === "fixture:all-launched") launched = true;
+          if (launched && ids.every(id => started.has(id)) && !released) {
+            released = true;
+            for (const [index, id] of ids.entries()) {
+              if (!earlyExit || id === failure) release(index, "run");
+            }
+          }
+        },
+      });
+      assert.equal(released, true, result.stderr);
       assert.equal(result.status, failure === "none" ? 0 : 1, result.stderr);
       const events = result.stdout.trim().split("\n");
       assert.deepEqual(events.filter(event => event.startsWith("started:")).sort(),
