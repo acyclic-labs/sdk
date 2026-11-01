@@ -4,7 +4,7 @@ import ts from 'typescript-parser';
 // This is a conservative source rule, not a liveness proof. Loops require an
 // exact finite-work or producer-event disposition. In particular, changing a
 // helper's spelling does not exempt the loop or its underlying timer reference.
-const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
+const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|Sleep(?:Ex)?|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/;
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b');
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
@@ -169,11 +169,17 @@ function nativeTokens(source, file) {
 export function pollingUnit(file, source) {
  const parsed = /\.(?:[cm]?[jt]s|[jt]sx)$/.test(file) ? scriptTokens(file, source) : undefined;
  const stream = parsed?.stream ?? nativeTokens(source, file);
+ // A direct Rust Future::poll advances one state machine. Other poll/select
+ // spellings remain conservative candidates, including native imports/aliases.
+ const rust = file.endsWith('.rs');
+ const futurePoll = i => rust && stream[i]?.value === 'poll'
+  && stream[i - 1]?.value === ':' && stream[i - 2]?.value === ':'
+  && stream[i - 3]?.value === 'Future';
  // A changed producer/condition elsewhere in the source unit must reopen the
  // disposition; a short context hash could preserve approval of a changed loop.
  const unit = createHash('sha256').update(JSON.stringify(stream.map(t => [t.kind, t.value]))).digest('hex');
  const aliases = new Map();
- const forbidden = new Set(stream.filter(t => t.kind === 'word' && (temporal.test(t.value) || policyName.test(t.value))).map(t => t.value));
+ const forbidden = new Set(stream.filter((t, i) => t.kind === 'word' && !futurePoll(i) && (temporal.test(t.value) || policyName.test(t.value))).map(t => t.value));
  const edge = (from, to) => {
   if (!from || !to) return;
   if (!aliases.has(from)) aliases.set(from, new Set());
@@ -192,7 +198,7 @@ export function pollingUnit(file, source) {
    bindings.pop();
   }
   if (t.kind === 'word') {
-   if (bindings.length) edge(t.value, bindings[bindings.length - 1].name);
+   if (bindings.length && !futurePoll(i)) edge(t.value, bindings[bindings.length - 1].name);
    if (stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
    if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') edge(t.value, stream[i + 2].value);
    if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, line: t.line});
@@ -212,7 +218,7 @@ export function pollingUnit(file, source) {
   const spelling = t.kind === 'literal' ? escapedSpelling(t.value) : t.value;
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
-   : t.kind === 'word' && forbidden.has(t.value) ? 'timer-or-readiness'
+   : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
    : t.kind === 'literal' && (embeddedTemporal.test(spelling) || policyName.test(spelling)) ? 'embedded-timer-or-retry'
    : undefined;
   if (!kind) continue;

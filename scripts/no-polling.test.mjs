@@ -45,6 +45,9 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'fn wait() { std::thread::park_timeout_ms(25); }',
   'fn wait() { unsafe { libc::pthread_cond_timedwait(condition, mutex, deadline); } }',
   'fn wait() { unsafe { libc::epoll_wait(queue, events, count, 25); } }',
+  'fn wait() { unsafe { libc::poll(descriptors, count, 25); } }',
+  'use libc::{c_int, poll as probe}; fn wait() { unsafe { probe(descriptors, count, 25); } }',
+  'fn wait() { let probe = libc::select; unsafe { probe(count, reads, writes, errors, deadline); } }',
   'use libc::epoll_pwait2 as probe; fn wait() { unsafe { probe(queue, events, count, deadline, mask); } }',
   'fn wait() { let probe = libc::ppoll; unsafe { probe(descriptors, count, deadline, mask); } }',
   'fn wait() { unsafe { libc::pselect(count, reads, writes, errors, deadline, mask); } }',
@@ -294,6 +297,15 @@ test('legitimate deadline and transport sites require exact typed dispositions',
  assert.deepEqual(newPollingSites(rust, '', event, native), []);
  assert.ok(newPollingSites(rust, '', event.replace('-1', '25'), native).length);
  assert.deepEqual(pollingSites(rust, 'fn drive(future: Pin<&mut F>, cx: &mut Context) { Future::poll(future, cx); }'), []);
+ assert.deepEqual(pollingSites(rust, 'fn drive(future: Pin<&mut F>, cx: &mut Context) { let advance = std::future::Future::poll; advance(future, cx); }'), []);
+ const mixed = 'fn receive(future: Pin<&mut F>, cx: &mut Context) { let advance = Future::poll; advance(future, cx); unsafe { libc::poll(descriptors, count, -1); } }';
+ const mixedSites = pollingSites(rust, mixed);
+ assert.equal(mixedSites.length, 1);
+ const mixedDisposition = mixedSites.map(site => disposition(site, 'event-wait',
+  'original descriptor event', 'native poll error or original descriptor cancellation',
+  'invalidate the original descriptor and require its native error'));
+ assert.deepEqual(newPollingSites(rust, '', mixed, mixedDisposition), []);
+ assert.ok(newPollingSites(rust, '', mixed.replace('-1', '25'), mixedDisposition).length);
 });
 
 test('event and finite-work loops have no file or helper exemption', () => {
