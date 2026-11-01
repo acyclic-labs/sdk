@@ -206,6 +206,12 @@ identity, removing one repeated metadata syscall per declared root.
 Exact-root attenuation compares the two pinned identities before opening the
 ceiling root, then verifies that open once. It needs one identity query instead
 of two; cloning a stale grant still cannot skip the path replacement check.
+The controlled attenuation entry borrows the caller's original native meter
+for each root open, identity query and rooted descendant open. Descendant path
+storage uses that same meter and releases capacity after its buffer is freed.
+Operation or allocation refusal stops the proof without an unmetered retry;
+cancellation remains interrupted. This entry checks already constructed grants;
+grant construction and implicit descriptor closes are outside its accounting.
 Missing native facilities return a typed unsupported refusal before execution.
 The public preparation and consuming launch entries use the same refusal
 mapper, including failures in preparation or its invocation meter. Cancellation

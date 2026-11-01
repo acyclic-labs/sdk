@@ -375,6 +375,102 @@ fn native_preparation_preserves_original_operation_admission_and_late_failures()
 
 #[cfg(target_os = "linux")]
 #[test]
+fn bound_grant_proofs_use_original_operation_and_allocation_credits() {
+    use std::sync::atomic::Ordering;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let nested = workspace.join("nested");
+    let read = root.path().join("source");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(&read, "read-only root").unwrap();
+    let ceiling = ExecutionGrant::new(
+        &workspace,
+        ExecutionAccess::WorkspaceWrite,
+        [read.clone()],
+        ExecutionNetwork::On,
+    )
+    .unwrap();
+    for (path, operations) in [(&workspace, 4), (&nested, 6)] {
+        let requested = ExecutionGrant::new(
+            path,
+            ExecutionAccess::ReadOnly,
+            [read.clone()],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        // The identical real-object proof without a credit ceiling is the
+        // admitted control; no process or Landlock facility is required.
+        match ceiling.check_attenuation(&requested) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+                return;
+            }
+            Err(error) => panic!("bound-object control failed: {error}"),
+        }
+        let admission = (0..=operations).map(|limit| (limit, None));
+        let recording = (1..=operations).map(|failure| (u64::MAX, Some(failure)));
+        for (limit, failure) in admission.chain(recording) {
+            let mut meter = crate::tests::ReadBudgetMeter::new(limit, u64::MAX);
+            meter.fail_recorded_operation = failure;
+            let result = ceiling.check_attenuation_controlled(&requested, Some(&meter));
+            if limit == operations && failure.is_none() {
+                result.unwrap();
+                assert_eq!(
+                    meter.used_allocations.load(Ordering::Acquire),
+                    u64::from(path == &nested),
+                );
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            }
+            assert_eq!(
+                meter.used_operations.load(Ordering::Acquire),
+                failure.unwrap_or(limit),
+            );
+            assert_eq!(
+                meter.read_attempts.load(Ordering::Acquire),
+                failure.unwrap_or(limit),
+            );
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        }
+        for already_cancelled in [true, false] {
+            let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            meter.cancelled.store(already_cancelled, Ordering::Release);
+            meter.cancel_after_operation = !already_cancelled;
+            let error = ceiling
+                .check_attenuation_controlled(&requested, Some(&meter))
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert_eq!(
+                meter.read_attempts.load(Ordering::Acquire),
+                u64::from(!already_cancelled),
+            );
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        }
+        let denied = crate::tests::ReadBudgetMeter::new(0, 0);
+        let error = requested
+            .check_attenuation_controlled(&ceiling, Some(&denied))
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds its authority ceiling"));
+        assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+        if path == &nested {
+            let denied = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            denied.deny_allocations.store(true, Ordering::Release);
+            let error = ceiling
+                .check_attenuation_controlled(&requested, Some(&denied))
+                .unwrap_err();
+            assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
+            assert_eq!(denied.used_operations.load(Ordering::Acquire), 2);
+            assert_eq!(denied.read_attempts.load(Ordering::Acquire), 2);
+            assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn replaced_grant_root_refuses_before_guest_execution() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -460,10 +556,13 @@ fn native_attenuation_resolution_cannot_follow_a_replaced_ancestor() {
     let nested = original.path().join("nested");
     std::fs::create_dir(&nested).unwrap();
     std::fs::write(external.path().join("secret"), "outside").unwrap();
-    let parent = BoundPath::new(original.path()).unwrap().bind().unwrap();
+    let parent = BoundPath::new(original.path())
+        .unwrap()
+        .bind_controlled(None)
+        .unwrap();
     std::fs::rename(&nested, original.path().join("previous")).unwrap();
     std::os::unix::fs::symlink(external.path(), &nested).unwrap();
-    let error = linux::open_beneath(&parent, Path::new("nested/secret")).unwrap_err();
+    let error = linux::open_beneath(&parent, Path::new("nested/secret"), None).unwrap_err();
     assert!(error.get_ref().unwrap().is::<ExecutionRefusal>());
     // Negative control: ordinary path resolution follows the same link.
     assert_eq!(

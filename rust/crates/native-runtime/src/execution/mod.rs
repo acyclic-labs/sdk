@@ -132,11 +132,6 @@ impl BoundPath {
     }
 
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-    fn bind(&self) -> io::Result<std::fs::File> {
-        self.bind_controlled(None)
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     fn bind_controlled(
         &self,
         meter: Option<&dyn crate::NativeReadMeter>,
@@ -155,7 +150,11 @@ impl BoundPath {
         Ok(())
     }
 
-    fn contains(&self, requested: &Self) -> io::Result<bool> {
+    fn contains(
+        &self,
+        requested: &Self,
+        _meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<bool> {
         let Ok(relative) = requested.path.strip_prefix(&self.path) else {
             return Ok(false);
         };
@@ -167,16 +166,20 @@ impl BoundPath {
             if exact && self.identity != requested.identity {
                 return Err(refused("execution grant root was replaced"));
             }
-            let root = self.bind()?;
+            let root = self.bind_controlled(_meter)?;
             if exact {
                 drop(root);
                 return Ok(true);
             }
             #[cfg(target_os = "linux")]
-            let child = linux::open_beneath(&root, relative)?;
+            let child = linux::open_beneath(&root, relative, _meter)?;
             #[cfg(target_os = "linux")]
             {
-                requested.verify(&child)?;
+                crate::meter::native_control_attempt(
+                    _meter,
+                    crate::NativeOperationKind::Read,
+                    || requested.verify(&child),
+                )?;
                 return Ok(true);
             }
         }
@@ -248,15 +251,27 @@ impl ExecutionGrant {
     ) -> io::Result<Self> {
         self.check_authority(access, &network)?;
         let requested = Self::new(workspace, access, read, network)?;
-        self.check_roots(&requested)?;
+        self.check_roots(&requested, None)?;
         Ok(requested)
     }
 
     /// Verifies an already bound grant against this host ceiling, without
     /// rebuilding either grant or weakening root object identity checks.
     pub fn check_attenuation(&self, requested: &Self) -> io::Result<()> {
+        self.check_attenuation_controlled(requested, None)
+    }
+
+    /// Checks the same bound objects on the caller's original native ledger.
+    /// Each open and identity query reserves its operation before the syscall;
+    /// rooted path storage borrows this meter until physical destruction.
+    /// This does not charge grant construction or implicit descriptor closes.
+    pub fn check_attenuation_controlled(
+        &self,
+        requested: &Self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
         self.check_authority(requested.0.access, &requested.0.network)?;
-        self.check_roots(requested)
+        self.check_roots(requested, meter).map_err(failure)
     }
 
     fn check_authority(
@@ -272,8 +287,12 @@ impl ExecutionGrant {
         Ok(())
     }
 
-    fn check_roots(&self, requested: &Self) -> io::Result<()> {
-        if !self.0.workspace.contains(&requested.0.workspace)? {
+    fn check_roots(
+        &self,
+        requested: &Self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
+        if !self.0.workspace.contains(&requested.0.workspace, meter)? {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
         for path in &requested.0.read {
@@ -284,16 +303,16 @@ impl ExecutionGrant {
                 .read
                 .binary_search_by(|root| root.path.cmp(&path.path))
             {
-                if self.0.read[index].contains(path)? {
+                if self.0.read[index].contains(path, meter)? {
                     continue;
                 }
             }
-            if self.0.workspace.contains(path)? {
+            if self.0.workspace.contains(path, meter)? {
                 continue;
             }
             let mut permitted = false;
             for root in &self.0.read {
-                if root.contains(path)? {
+                if root.contains(path, meter)? {
                     permitted = true;
                     break;
                 }

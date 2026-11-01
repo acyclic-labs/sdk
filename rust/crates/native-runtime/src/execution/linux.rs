@@ -46,8 +46,12 @@ const WRITE: u64 = (1 << 1)
 const FILE: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 14);
 const CONNECT_TCP: u64 = 1 << 1;
 
-pub(super) fn open_beneath(root: &File, relative: &Path) -> io::Result<File> {
-    open_beneath_with_flags(root, relative, 0, None)
+pub(super) fn open_beneath(
+    root: &File,
+    relative: &Path,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<File> {
+    open_beneath_with_flags(root, relative, 0, meter)
 }
 
 fn open_beneath_with_flags(
