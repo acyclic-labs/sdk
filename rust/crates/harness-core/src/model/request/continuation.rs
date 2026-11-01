@@ -49,6 +49,9 @@ impl RequestContinuation {
                 &self.prepared.request.tools,
                 limits,
                 io,
+                // Only the suffix is mutable; these declarations belong to the
+                // original request admitted under the same limits.
+                |_| Ok(()),
             )?;
             Ok(Some(remaining))
         } else {
@@ -102,6 +105,7 @@ impl RequestContinuation {
             return Ok(self.prepared);
         }
         let old_count = self.prepared.request.messages.len();
+        let mut projection_nodes = self.prepared.projection_nodes.load(Ordering::Relaxed);
         #[cfg(feature = "filesystem")]
         let old_inventory = (
             self.prepared.resident_payload,
@@ -135,12 +139,19 @@ impl RequestContinuation {
             }
             (None, _) => request.retained_payload_bytes()?,
         });
-        let (bytes, request_digest, encoding) =
-            encoding::EncodingPrefix::append(bytes, encoding, old_count, &request, io)?;
+        let (bytes, request_digest, encoding) = encoding::EncodingPrefix::append(
+            bytes,
+            encoding,
+            old_count,
+            &request,
+            io,
+            &mut projection_nodes,
+        )?;
         Ok(PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            projection_nodes: AtomicUsize::new(projection_nodes),
             admitted_limits: limits,
             instruction_remaining: remaining,
             encoding,

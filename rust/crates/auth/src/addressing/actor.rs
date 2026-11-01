@@ -4,8 +4,8 @@ use super::{AccountId, IdentityError, field};
 /// Reserved projection of existing account/id actors, without rewriting IDs.
 pub const DEFAULT_ACTOR_NAMESPACE: &str = "__default";
 
-// A pair cannot start with this header: its account would be empty. The tag
-// identifies this grammar and the byte version permits rejecting future forms.
+// Actor and resource domains are disjoint. The tag identifies this grammar
+// and the byte version permits rejecting future forms.
 const HEADER: &[u8] = b"\0\0\0\0\0\0\0\0acyclic.actor\x01";
 
 fn valid_name(bytes: &[u8]) -> bool {
@@ -125,7 +125,13 @@ impl ActorReference {
     }
     /// Decode exactly one canonical reference, rejecting unknown versions.
     pub fn decode(bytes: &[u8]) -> Result<Self, IdentityError> {
-        let mut bytes = bytes.strip_prefix(HEADER).ok_or(IdentityError::Malformed)?;
+        let mut bytes = crate::format::header(
+            bytes,
+            b"\0\0\0\0\0\0\0\0acyclic.actor",
+            b"\x01",
+            || IdentityError::Malformed,
+            || IdentityError::UnsupportedVersion,
+        )?;
         let account = field(&mut bytes)?;
         let namespace = field(&mut bytes)?;
         let id = field(&mut bytes)?;
@@ -145,5 +151,25 @@ pub fn validate_location_hint(value: &str) -> Result<(), IdentityError> {
         Ok(())
     } else {
         Err(IdentityError::InvalidLocationHint)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_refusal_precedes_identity_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let encoded = ActorReference::new(b"account", b"namespace", b"actor")?.encode();
+        for version in [0, 2, u8::MAX] {
+            let mut bytes = encoded.get(..HEADER.len()).ok_or("header")?.to_vec();
+            *bytes.last_mut().ok_or("version")? = version;
+            assert_eq!(
+                ActorReference::decode(&bytes),
+                Err(IdentityError::UnsupportedVersion)
+            );
+        }
+        assert_eq!(ActorReference::decode(&encoded)?.encode(), encoded);
+        Ok(())
     }
 }

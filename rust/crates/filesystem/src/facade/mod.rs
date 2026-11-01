@@ -154,7 +154,6 @@ pub use composition::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
 mod fork;
 mod fs;
 mod generation;
-mod generation_cache;
 mod generation_position;
 mod join_publication;
 mod join_request;
@@ -306,10 +305,10 @@ use volume_creation::merge_creation_backend_work;
 pub use work::FsResult;
 pub use work::FsWork;
 use work::add;
+use work::finish_authority_work;
 pub(crate) use work::measured;
 use work::merge_simultaneous_work;
 use work::remaining;
-use work::{authority_work, record_authority_work};
 use workspace_creation::decode_first_creation_record;
 
 #[cfg(test)]

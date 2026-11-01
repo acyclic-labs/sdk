@@ -75,30 +75,33 @@ pub(crate) async fn read_blob_range_with_accounting<S: AsyncObjectStore>(
             if let Some(original) = accounting.native_work() {
                 original.remaining()?;
             }
-            let cached = store.decoded_cache_get(key);
-            if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
-                let page = cached
-                    .value
-                    .downcast_ref::<BlobPage>()
-                    .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
-                machine.accept_decoded_page(
-                    page,
-                    expected_first,
-                    expected_end,
-                    height,
-                    accounting,
-                )?;
+            let cached = store.decoded_cache_lookup(key);
+            let miss = match cached.map_err(crate::kernel::file_read::read_store_error)? {
+                crate::async_storage::DecodedCacheLookup::Miss(miss) => miss,
+                crate::async_storage::DecodedCacheLookup::Hit(cached) => {
+                    let page = cached
+                        .value
+                        .downcast_ref::<BlobPage>()
+                        .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
+                    machine.accept_decoded_page(
+                        page,
+                        expected_first,
+                        expected_end,
+                        height,
+                        accounting,
+                    )?;
 
-                drop(cached);
-                continue;
-            }
+                    drop(cached);
+                    continue;
+                }
+            };
             let (read, retained) =
                 read_object_with_accounting(store, object, maximum, accounting, cancellation)
                     .await?;
             let decoded =
                 ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, accounting)?);
             let (cached, allocated) =
-                crate::kernel::file_read::cache_decoded_read(store, key, decoded, accounting)?;
+                crate::kernel::file_read::cache_decoded_read(miss, decoded, accounting)?;
             let page = cached
                 .value
                 .downcast_ref::<BlobPage>()

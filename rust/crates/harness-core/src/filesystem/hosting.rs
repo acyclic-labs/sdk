@@ -322,7 +322,12 @@ where
             provider,
             within,
         } = placement;
-        let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
+        let ancestry = acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(
+            filesystem.stream_provider(),
+        ));
+        let volumes = FilesystemHost::new(filesystem, &provider, None)
+            .and_then(|host| host.with_project_families(ancestry))
+            .map_err(turn)?;
         Self::on(
             issuer,
             admission,
@@ -345,7 +350,7 @@ where
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
-        let turner = Arc::new(configure(FilesystemTurnHost::new(
+        let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
             issuer.clone(),
@@ -353,7 +358,9 @@ where
             turns.executors,
             turns.limits,
             turns.approval_policy,
-        )));
+        )
+        .with_filesystem_tools();
+        let turner = Arc::new(configure(turner));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.

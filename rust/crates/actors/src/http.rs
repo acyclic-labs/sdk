@@ -62,7 +62,7 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     if !crate::valid_token(token) {
         return Err(Error::InvalidArgument);
     }
-    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+    let mut value = HeaderValue::from_maybe_shared(acyclic_auth::credential::bearer_bytes(token))
         .map_err(|_| Error::InvalidArgument)?;
     value.set_sensitive(true);
     Ok(value)

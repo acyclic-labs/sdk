@@ -56,6 +56,7 @@ async fn run_cut(native: bool, cutoff: u64) -> Result<(bool, u64)> {
                 step: 0,
                 call_id: "call".into(),
                 invocation,
+                publication: None,
             };
             let outcome = match journal.append(operation, "tool", &event, Some(&io)) {
                 Ok(future) => future.await,

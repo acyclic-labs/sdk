@@ -85,8 +85,9 @@ pub(super) fn stock_json_bound<T: Serialize>(
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.check_cancellation()?;
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
@@ -94,17 +95,12 @@ pub(super) fn stock_json_bound<T: Serialize>(
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            Some(crate::wire::ErrorCode::Invalid),
+            io.original_native_work()
+                .is_some()
+                .then_some(crate::wire::ErrorCode::Invalid),
             &mut |next| io.codec_charge(next, false),
         )
         .map(|_| ());
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let _bytes_hold;
-        let bytes = io.encode(value, maximum, false)?;
-        _bytes_hold = io.guard_bytes(&bytes)?;
-        return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;

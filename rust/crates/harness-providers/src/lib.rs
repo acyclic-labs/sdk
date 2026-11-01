@@ -146,31 +146,64 @@ async fn http_failure(
     maximum: usize,
     work: acyclic_harness_core::NativeWork<'_>,
 ) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut custody = match work
+        .map(|work| {
+            work.claim(
+                4 * EXCERPT_BYTES as u64 + 64,
+                4,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )
+        })
+        .transpose()
+    {
+        Ok(custody) => custody,
+        Err(cause) => return cause.into(),
+    };
+    let error = read_http_failure(response, maximum, work).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(custody) = custody.as_mut() {
+        return native::diagnostic_error(diagnostic::rejection(error), custody);
+    }
+    error
+}
+
+async fn read_http_failure(
+    response: HttpResponse,
+    maximum: usize,
+    work: acyclic_harness_core::NativeWork<'_>,
+) -> Error {
     use futures::StreamExt as _;
     let HttpResponse {
         status, mut body, ..
     } = response;
-    if matches!(status, 401 | 403) {
+    // Only context classification and retryable diagnostics consume a body.
+    if !matches!(status, 400 | 408 | 413 | 429 | 500..=599) {
         return http_error(status);
     }
     if matches!(status, 400 | 413) {
         return match http::bounded::read(body, maximum, work).await {
-            Ok(body) if stream::context_overflow_bytes(&body.bytes) => Error::ModelContextOverflow,
-            Ok(_) => http_error(status),
+            Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
+                Ok(true) => Error::ModelContextOverflow,
+                Ok(false) => http_error(status),
+                Err(error) => error,
+            },
             Err(error) => error,
         };
     }
-    let mut prefix = Vec::new();
-    while prefix.len() < EXCERPT_BYTES {
+    let mut prefix = [0; EXCERPT_BYTES];
+    let mut length = 0;
+    while length < prefix.len() {
         let chunk = match body.next().await {
             Some(Ok(chunk)) => chunk,
             Some(Err(error)) => return error,
             None => break,
         };
-        let room = EXCERPT_BYTES - prefix.len();
-        prefix.extend_from_slice(chunk.get(..room).unwrap_or(&chunk));
+        let end = length + chunk.len().min(prefix.len() - length);
+        prefix[length..end].copy_from_slice(&chunk[..end - length]);
+        length = end;
     }
-    unavailable(status, &prefix).unwrap_or_else(|| http_error(status))
+    unavailable(status, &prefix[..length]).unwrap_or_else(|| http_error(status))
 }
 
 /// Lossy UTF-8 with control characters as spaces, bounded on a character boundary; a character
@@ -187,18 +220,7 @@ fn excerpt(body: &[u8]) -> String {
         ),
         Err(_) => String::from_utf8_lossy(bounded),
     };
-    let mut excerpt = String::new();
-    for character in text.chars() {
-        if excerpt.len() + character.len_utf8() > EXCERPT_BYTES {
-            break;
-        }
-        excerpt.push(if character.is_control() {
-            ' '
-        } else {
-            character
-        });
-    }
-    excerpt.trim().to_owned()
+    diagnostic::excerpt(text)
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {

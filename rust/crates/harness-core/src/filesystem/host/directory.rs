@@ -136,7 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let generation = match request.generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            None => self.current_generation(&workspace, io).await?,
         };
         guard().await?;
         let scope = request.grant.policy_scope();
@@ -155,10 +155,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         .await?;
         guard().await?;
         super::super::access::require(&view.0, Action::List, request.path, io)?;
+        let data_access = super::super::access::selected_data_access(
+            &workspace,
+            &generation,
+            scope,
+            request.ceiling,
+            io,
+        )
+        .await?;
+        if let Some((_, view)) = &data_access {
+            super::super::access::require(&view.0, Action::List, request.path, io)?;
+        }
         Ok(DirectorySelection {
             workspace,
             generation,
             view,
+            data_access,
         })
     }
 
@@ -176,10 +188,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             workspace,
             generation,
             view,
+            data_access,
         } = self.select_directory(&request, io, guard).await?;
         let parent = view
             .0
             .prepare(request.path)
+            .map_err(|_| io.invalid("invalid directory access path"))?;
+        let data_parent = data_access
+            .as_ref()
+            .map(|(_, view)| view.0.prepare(request.path))
+            .transpose()
             .map_err(|_| io.invalid("invalid directory access path"))?;
         bounded_io::retain(&generation, Some(io)).await?;
         guard().await?;
@@ -227,7 +245,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
-            let (removed, successor) = filter_page(&mut page, parent, request.path.is_empty(), now);
+            let (removed, successor) =
+                filter_page(&mut page, parent, data_parent, request.path.is_empty(), now);
             page_hold.substitute(page_bytes - removed)?;
             if page.entries.is_empty() && page.has_more {
                 let name = successor
@@ -248,6 +267,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
             super::super::access::require_current(&workspace, &view.0, io).await?;
+            if let Some((workspace, view)) = &data_access {
+                super::super::access::require_current(workspace, &view.0, io).await?;
+            }
             request.grant.recheck(Some(io))?;
             return Ok(((reference, page), page_hold));
         }
@@ -260,6 +282,7 @@ mod tests;
 fn filter_page(
     page: &mut DirectoryPage,
     parent: PreparedPath<'_>,
+    data_parent: Option<PreparedPath<'_>>,
     root: bool,
     now: u64,
 ) -> (u64, Option<LogicalName>) {
@@ -267,7 +290,8 @@ fn filter_page(
     let last = page.entries.pop();
     let mut removed = 0;
     page.entries.retain(|entry| {
-        let keep = visible(parent, &entry.name, root, now);
+        let keep = visible(parent, &entry.name, root, now)
+            && data_parent.is_none_or(|parent| visible(parent, &entry.name, root, now));
         if !keep {
             removed += entry.name.logical_owned_bytes();
         }
@@ -275,7 +299,9 @@ fn filter_page(
     });
     let mut successor = None;
     if let Some(last) = last {
-        if visible(parent, &last.name, root, now) {
+        if visible(parent, &last.name, root, now)
+            && data_parent.is_none_or(|parent| visible(parent, &last.name, root, now))
+        {
             page.entries.push(last);
         } else if page.entries.is_empty() && page.has_more {
             successor = Some(last.name);
@@ -290,4 +316,5 @@ struct DirectorySelection<'io, A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,
+    data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
 }

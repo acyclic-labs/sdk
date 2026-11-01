@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import { SessionFrameSchema, SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/v1/session_pb.js";
+import { create } from "@bufbuild/protobuf";
+import { SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/v1/session_pb.js";
 import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
 import { SessionFilterSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -160,12 +160,12 @@ test("public browser follows use one authenticated binary WebSocket without fetc
       async open(socket) {
         connections += 1;
         const transport = await socket.data.transport;
-        try { for await (const value of transport.incoming) socket.send(toBinary(SessionFrameSchema, value)); }
+        try { for await (const value of transport.incoming) socket.send(value); }
         catch { socket.close(); }
       },
       async message(socket, input) {
         if (typeof input === "string") throw new Error("session messages must be binary");
-        await (await socket.data.transport).send(fromBinary(SessionFrameSchema, input));
+        await (await socket.data.transport).send(new Uint8Array(input));
       },
       async close(socket) { (await socket.data.transport).close(); },
     },

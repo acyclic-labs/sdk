@@ -1,6 +1,6 @@
 //! Owned Windows events and their original metered cleanup custody.
 use super::*;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::CreateEventW;
 
@@ -72,6 +72,12 @@ impl<'a> Event<'a> {
         };
         recorded?;
         Ok(event)
+    }
+}
+
+impl AsHandle for Event<'_> {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
     }
 }
 

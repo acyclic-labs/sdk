@@ -23,6 +23,9 @@ use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The actor socket suite, over the same store surface.
+pub mod sockets;
+
 /// Upper bound for one observation; an event-driven wait ends earlier.
 const BUDGET_MS: u64 = 5_000;
 /// Alarm lead time; long enough to clear or restart before it fires.
@@ -408,7 +411,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     Some(Err(error)) => return Err(Error::from(error).into()),
                     None => return Err(Error::from(StreamError::Unavailable).into()),
                 },
-                () = (&mut deadline).fuse() => return Ok(records),
+                result = (&mut deadline).fuse() => {
+                    result.map_err(Error::from)?;
+                    return Ok(records);
+                },
             }
         };
         while records.len() < count {
@@ -418,7 +424,10 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     Some(Err(error)) => return Err(Error::from(error).into()),
                     None => break,
                 },
-                () = (&mut deadline).fuse() => break,
+                result = (&mut deadline).fuse() => {
+                    result.map_err(Error::from)?;
+                    break;
+                },
             }
         }
         Ok(records)
@@ -1087,7 +1096,11 @@ async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failu
     target.pause(&fixture.actor, true).await?;
     target.restart().await?;
     // A paused owner retains its due cleanup, including across physical reopen.
-    target.clock().sleep_until(deadline).await;
+    target
+        .clock()
+        .sleep_until(deadline)
+        .await
+        .map_err(Error::from)?;
     wait_pool_used(&fixture, 2).await?;
     target.pause(&fixture.actor, false).await?;
     wait_pool_used(&fixture, 0).await?;

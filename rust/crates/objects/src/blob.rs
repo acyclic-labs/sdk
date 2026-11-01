@@ -1,4 +1,4 @@
-//! Content addresses, logical ranges, manifests and the v1 envelope encoding.
+//! Content addresses, logical ranges, manifests and the v2 envelope encoding.
 use crate::{Error, wire::ErrorCode};
 
 /// BLAKE3-256 of a blob's stored bytes.
@@ -125,7 +125,10 @@ pub struct Manifest {
 }
 
 const MANIFEST_MAGIC: &[u8; 20] = b"acyclic-manifest-v1\0";
-const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v1\0";
+const ENVELOPE_MAGIC: &[u8; 16] = b"acyclic-blob-v2\0";
+const BATCH_MAGIC: &[u8] = b"acyclic-retained-v1\0";
+const INCARNATION_MAGIC: &[u8] = b"acyclic-incarnation-v1\0";
+const EPOCH_MAGIC: &[u8] = b"acyclic-epoch-v1\0";
 
 impl Manifest {
     /// Total logical length of the parts.
@@ -159,9 +162,7 @@ impl Manifest {
     /// Decodes exactly one canonical encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut reader = Reader(bytes);
-        if reader.take(MANIFEST_MAGIC.len())? != MANIFEST_MAGIC {
-            return Err(corrupt());
-        }
+        reader.header(MANIFEST_MAGIC)?;
         let parts = (0..reader.u32()?)
             .map(|_| {
                 Ok(Part {
@@ -236,9 +237,7 @@ impl Envelope {
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let mut reader = Reader(bytes);
-        if reader.take(ENVELOPE_MAGIC.len())? != ENVELOPE_MAGIC {
-            return Err(corrupt());
-        }
+        reader.header(ENVELOPE_MAGIC)?;
         let kind = match reader.take(1)? {
             [1] => Kind::Blob,
             [2] => Kind::Manifest,
@@ -254,19 +253,11 @@ impl Envelope {
         };
         let version = nonce(&mut reader)?;
         let dying = match reader.take(1)? {
-            // A pending envelope of the earlier put protocol: its payload,
-            // if any, is this version's like any other.
-            [2] => None,
             [0] if nonce(&mut reader)? == [0; 16] => None,
             [1] => Some(nonce(&mut reader)?),
             _ => return Err(corrupt()),
         };
-        // Envelopes from before stamps were recorded are unstamped.
-        let condemned = if reader.0.is_empty() {
-            0
-        } else {
-            reader.u64()?
-        };
+        let condemned = reader.u64()?;
         reader.finish()?;
         Ok(Self {
             kind,
@@ -282,7 +273,8 @@ impl Envelope {
 
 /// Encodes one exact retained reference batch.
 pub(crate) fn encode_batch(references: &[Digest]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(references.len() * 32);
+    let mut bytes = Vec::with_capacity(BATCH_MAGIC.len() + references.len() * 32);
+    bytes.extend_from_slice(BATCH_MAGIC);
     for reference in references {
         bytes.extend_from_slice(reference.as_bytes());
     }
@@ -290,15 +282,61 @@ pub(crate) fn encode_batch(references: &[Digest]) -> Vec<u8> {
 }
 
 pub(crate) fn decode_batch(bytes: &[u8]) -> Result<Vec<Digest>, Error> {
+    let mut reader = Reader(bytes);
+    reader.header(BATCH_MAGIC)?;
+    let bytes = reader.0;
     if bytes.len() % 32 != 0 {
         return Err(corrupt());
     }
     bytes.chunks_exact(32).map(Digest::from_slice).collect()
 }
 
+pub(crate) fn encode_incarnation(incarnation: u128, run: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(INCARNATION_MAGIC.len() + 24);
+    bytes.extend_from_slice(INCARNATION_MAGIC);
+    bytes.extend_from_slice(&incarnation.to_be_bytes());
+    bytes.extend_from_slice(&run.to_be_bytes());
+    bytes
+}
+
+pub(crate) fn decode_incarnation(bytes: &[u8]) -> Result<(u128, u64), Error> {
+    let mut reader = Reader(bytes);
+    reader.header(INCARNATION_MAGIC)?;
+    let incarnation = u128::from_be_bytes(reader.take(16)?.try_into().map_err(|_| corrupt())?);
+    let run = u64::from_be_bytes(reader.take(8)?.try_into().map_err(|_| corrupt())?);
+    reader.finish()?;
+    Ok((incarnation, run))
+}
+
+pub(crate) fn encode_epoch(epoch: u64) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(EPOCH_MAGIC.len() + 8);
+    bytes.extend_from_slice(EPOCH_MAGIC);
+    bytes.extend_from_slice(&epoch.to_be_bytes());
+    bytes
+}
+
+pub(crate) fn decode_epoch(bytes: &[u8]) -> Result<u64, Error> {
+    let mut reader = Reader(bytes);
+    reader.header(EPOCH_MAGIC)?;
+    let epoch = u64::from_be_bytes(reader.take(8)?.try_into().map_err(|_| corrupt())?);
+    reader.finish()?;
+    Ok(epoch)
+}
+
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    // Domain first, then version, before any counts, allocations or body fields.
+    fn header(&mut self, expected: &[u8]) -> Result<(), Error> {
+        let domain_length = expected.len() - 2;
+        self.0 = acyclic_stream::persistence::header(
+            self.0,
+            &expected[..domain_length],
+            &expected[domain_length..],
+        )
+        .map_err(|_| Error::from(ErrorCode::Unsupported))?;
+        Ok(())
+    }
     fn take(&mut self, count: usize) -> Result<&'a [u8], Error> {
         if self.0.len() < count {
             return Err(corrupt());
@@ -336,3 +374,6 @@ pub(crate) fn invalid() -> Error {
 pub(crate) fn corrupt() -> Error {
     ErrorCode::Corrupt.into()
 }
+
+#[cfg(test)]
+mod tests;

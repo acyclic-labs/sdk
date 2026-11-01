@@ -278,14 +278,14 @@ macro_rules! policy_revision {
                 )
                 .await?
             };
-            let mut authority = authority_work($accounting, $cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow($accounting)?;
             let current = volume
                 .fs
                 .inner
                 .authority
                 .head(volume_authority_id(volume.id), &mut authority)
                 .await;
-            record_authority_work($accounting, &authority)?;
+            finish_authority_work(authority)?;
             Ok(
                 crate::facade::policy_head_is_current(observed, current?).then_some((
                     GenerationId::from_root(generation),

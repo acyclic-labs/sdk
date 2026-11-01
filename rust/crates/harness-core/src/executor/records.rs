@@ -7,12 +7,7 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
     ) -> Result<Vec<ExecutionRecord>> {
-        let maximum = self
-            .stock
-            .limits
-            .model_events_per_step
-            .saturating_add(self.stock.limits.tool_calls_per_step.saturating_mul(3))
-            .saturating_add(4);
+        let maximum = self.stock.limits.model_events_per_step.saturating_add(4);
         let (_, records) = self
             .step_records(
                 journal,
@@ -41,12 +36,12 @@ impl StockExecution<'_> {
                         step: recorded,
                         purpose: ModelPurpose::Response,
                     }
-                    | ExecutionEvent::ToolStarted { step: recorded, .. }
-                    | ExecutionEvent::ToolCompleted { step: recorded, .. }
-                    | ExecutionEvent::ToolFailed { step: recorded, .. }
                     | ExecutionEvent::ContextPrepared { step: recorded, .. }
                     | ExecutionEvent::ContextCompacted { step: recorded, .. } => *recorded == step,
                     ExecutionEvent::ConversationItem { .. }
+                    | ExecutionEvent::ToolStarted { .. }
+                    | ExecutionEvent::ToolCompleted { .. }
+                    | ExecutionEvent::ToolFailed { .. }
                     | ExecutionEvent::ModelStarted { .. }
                     | ExecutionEvent::Model { .. }
                     | ExecutionEvent::ModelInline { .. }
@@ -92,13 +87,21 @@ impl StockExecution<'_> {
         step: u32,
         call_id: &str,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
-        self.step_records(journal, operation_id, step, false, 3, |event| {
-            matches!(event,
+        self.selected_records(
+            journal,
+            operation_id,
+            step,
+            Some(call_id),
+            false,
+            3,
+            |event| {
+                matches!(event,
             ExecutionEvent::ToolStarted { step: event_step, call_id: existing, .. }
             | ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
             | ExecutionEvent::ToolFailed { step: event_step, call_id: existing, .. }
             if *event_step == step && existing == call_id)
-        })
+            },
+        )
         .await
     }
 }

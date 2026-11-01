@@ -5,6 +5,7 @@
 //! action and the canonical `secrets:/<scope>[/<name>]` resource.
 use crate::contract::*;
 use crate::credential::CredentialProvider;
+use crate::operation::ProtectedBytes;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
@@ -326,6 +327,25 @@ pub struct Response {
     pub body: Zeroizing<Vec<u8>>,
 }
 
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+impl Response {
+    /// Consumes the native response, protecting successful body storage and
+    /// suppressing failed bodies before collection. Transferable backing moves
+    /// without copying; other backing requires an isolated protected copy.
+    /// Transport failures expose neither response bytes nor their source chain.
+    pub async fn from_http(response: reqwest::Response) -> Result<Self, Error> {
+        let status = response.status().as_u16();
+        // Never consume an error body: even a malicious provider cannot
+        // attach a planted value to a propagated error or source chain.
+        let body = if (200..300).contains(&status) {
+            crate::operation::protect_bytes(response.bytes().await.map_err(|_| Error::Transport)?)
+        } else {
+            Zeroizing::new(Vec::new())
+        };
+        Ok(Self { status, body })
+    }
+}
+
 /// Native request future; cancellation drops the transport request.
 #[cfg(not(target_arch = "wasm32"))]
 pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + 'a>>;
@@ -337,12 +357,13 @@ pub type TransportFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, Erro
 /// credentials only as a sensitive header, reject redirects and suppress body
 /// diagnostics. No retries, interpretation or authority logic lives here.
 pub trait Transport {
-    /// Send exactly one POST. Borrowed inputs remain owned until completion.
+    /// Send exactly one POST, taking the original protected body allocation.
+    /// The borrowed credential remains owned until completion.
     fn post<'a>(
         &'a self,
         path: &'static str,
         bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a>;
 }
 
@@ -366,7 +387,7 @@ impl<T: Transport> Client<T> {
         path: &'static str,
         body: &impl Serialize,
     ) -> Result<R, Error> {
-        let body = Zeroizing::new(serde_json::to_vec(body).map_err(|_| Error::InvalidRequest)?);
+        let body = ProtectedBytes::from_json(body).map_err(|_| Error::InvalidRequest)?;
         let changed = self
             .credentials
             .watch()
@@ -379,7 +400,7 @@ impl<T: Transport> Client<T> {
                 .await
                 .map_err(|_| Error::Credential)?;
             bearer.check().await.map_err(|_| Error::Credential)?;
-            let response = self.transport.post(path, &bearer, &body).await?;
+            let response = self.transport.post(path, &bearer, body).await?;
             match response.status {
                 200..=299 => {
                     bearer.check().await.map_err(|_| Error::Credential)?;
@@ -533,12 +554,13 @@ impl Transport for HttpTransport {
         &'a self,
         path: &'static str,
         bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
-            let mut authorization =
-                reqwest::header::HeaderValue::from_bytes(&crate::credential::bearer_bytes(bearer))
-                    .map_err(|_| Error::Credential)?;
+            let mut authorization = reqwest::header::HeaderValue::from_maybe_shared(
+                crate::credential::bearer_bytes(bearer),
+            )
+            .map_err(|_| Error::Credential)?;
             authorization.set_sensitive(true);
             let response = self
                 .client
@@ -549,26 +571,11 @@ impl Transport for HttpTransport {
                 )
                 .header(reqwest::header::AUTHORIZATION, authorization)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(body.to_vec())
+                .body(body.into_bytes())
                 .send()
                 .await
                 .map_err(|_| Error::Transport)?;
-            let status = response.status().as_u16();
-            // Never consume an error body: even a malicious provider cannot
-            // attach a planted value to a propagated error or source chain.
-            let body = if (200..300).contains(&status) {
-                response
-                    .bytes()
-                    .await
-                    .map_err(|_| Error::Transport)?
-                    .to_vec()
-            } else {
-                Vec::new()
-            };
-            Ok(Response {
-                status,
-                body: Zeroizing::new(body),
-            })
+            Response::from_http(response).await
         })
     }
 }

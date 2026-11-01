@@ -92,7 +92,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         if index.resident_bytes.saturating_add(length) <= MAXIMUM_RESIDENT_BYTES
             && matches!(index.objects.get(&object_id), Some(&Staged::Spilled { offset: current, .. }) if current == offset)
         {
-            index.insert_resident(object_id, bytes.clone());
+            index.insert_resident(object_id, bytes.clone())?;
         }
         Ok(ObjectRead {
             bytes,

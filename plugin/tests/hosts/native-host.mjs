@@ -4,17 +4,28 @@ import {basename,dirname,extname,isAbsolute,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const packages=Object.freeze({
- codex:['codex','@openai/codex'],
- 'claude-code':['claude','@anthropic-ai/claude-code'],
- pi:['pi','@earendil-works/pi-coding-agent'],
+ codex:['codex','@openai/codex','keyless-responses'],
+ 'claude-code':['claude','@anthropic-ai/claude-code','keyless-foundry'],
+ // The pinned Pi Responses interface rejects empty auth before HTTP. Its real
+ // provider/CLI control qualifies this refusal, not a substitute credential.
+ pi:['pi','@earendil-works/pi-coding-agent',null],
 });
+
+// Require the fixture's provider contract from the same admitted package/bin.
+// An unsupported provider must never acquire an installed workspace owner.
+export function nativeProvider(native) {
+ if(native.provider!==null)return native.provider;
+ const error=new Error(`step=admit native provider: ${native.package.name}@${native.package.version} has no supported keyless Responses interface; recovery=select a native Pi release with a supported keyless Responses provider before running installed-pi-recursive`);
+ error.code='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER';
+ throw error;
+}
 
 // Resolve the actual package entry, never an npm shell/cmd shim. Both launch
 // and acceptance provenance use this same admission result.
 export async function nativeHost(host,env,root=fileURLToPath(new URL('.',import.meta.url))) {
  const definition=packages[host];
  assert.ok(definition,'step=admit native host; recovery=select codex|claude-code|pi');
- const [name,pkg]=definition,key='E2E_'+name.toUpperCase();
+ const [name,pkg,provider]=definition,key='E2E_'+name.toUpperCase();
  try {
   const modules=join(root,'node_modules');
   const pinned=JSON.parse(await readFile(join(root,'package.json'),'utf8')).dependencies[pkg];
@@ -51,7 +62,7 @@ export async function nativeHost(host,env,root=fileURLToPath(new URL('.',import.
   assert.ok(closure,'host package must retain its node_modules dependency tree');
   const javascript=['.js','.mjs','.cjs'].includes(extname(entry));
   return {program:javascript?process.execPath:entry,args:javascript?[entry]:[],entry,
-   path:join(closure,'.bin'),closure};
+   path:join(closure,'.bin'),closure,provider,package:{name:pkg,version:pinned}};
  } catch(cause) {
   throw new Error(`step=admit ${key}: ${cause.message}; recovery=npm ci --prefix plugin/tests/hosts and unset ${key}, or set ${key} to that pinned package's declared bin with its installed node_modules tree`,{cause});
  }

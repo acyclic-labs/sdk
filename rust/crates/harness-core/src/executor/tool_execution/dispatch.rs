@@ -14,7 +14,34 @@ impl StockExecution<'_> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let completion = crate::executor::phase::PreparedPhase::new(journal, self.io)?;
-        let claim = self.claim_tool_invocation(journal, (operation_id, step), &record, started);
+        // A remote target's run is queued in the claim's own commit.
+        // A target that went away since resolution refuses it unstarted.
+        let dispatch = if started {
+            None
+        } else {
+            match tool.executor.dispatch(invocation, context.as_ref()) {
+                Ok(dispatch) => dispatch,
+                Err(refusal @ Error::Target(_)) => {
+                    return self
+                        .settle_tool_refusal(
+                            journal,
+                            operation_id,
+                            step,
+                            invocation,
+                            ToolCallRejection::Failed(refusal),
+                        )
+                        .await
+                        .map(ToolInvocationOutcome::Settled);
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let claim = self.claim_tool_invocation(
+            journal,
+            (operation_id, step),
+            (&record, dispatch.as_ref()),
+            started,
+        );
         let claimed = if started {
             // Reconciliation consumes the original intent; it publishes none.
             crate::executor::phase::claim(claim).await?
@@ -26,15 +53,62 @@ impl StockExecution<'_> {
             ))
             .await?
         };
-        let execution = self
-            .observe_tool_cancellation(
+        #[cfg(not(target_arch = "wasm32"))]
+        let composed = if tool.executor.is_code_mode() {
+            match self
+                .run_js(journal, identity, invocation, _hook_context)
+                .await
+            {
+                Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),
+                Ok(ExecutionProgress::Pending(operation)) => {
+                    return Ok(ToolInvocationOutcome::Pending(operation));
+                }
+                Ok(ExecutionProgress::Failed(reason)) => {
+                    self.reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        reason,
+                        Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                    )
+                    .await?;
+                    return Ok(ToolInvocationOutcome::Interrupted);
+                }
+                Ok(ExecutionProgress::PreDispatchFailed(failure)) => {
+                    return Err(failure.into_error());
+                }
+                Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                    self.reject_tool_call(
+                        journal,
+                        operation_id,
+                        step,
+                        &invocation.call_id,
+                        ToolFailureKind::Interrupted,
+                        error,
+                    )
+                    .await?;
+                    return Ok(ToolInvocationOutcome::Interrupted);
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        #[cfg(target_arch = "wasm32")]
+        let composed: Option<Result<Option<ToolResult>>> = None;
+        let execution = if let Some(result) = composed {
+            result
+        } else {
+            self.observe_tool_cancellation(
                 journal,
                 identity,
                 &invocation.call_id,
                 tool.executor.cancellable_on_drop(),
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
-            .await?;
+            .await?
+        };
         #[cfg(feature = "test-support")]
         tracing::trace!(
             target: "acyclic_harness::tool_return",
@@ -256,7 +330,10 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         identity: (OperationId, u32),
-        record: &crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
+        (record, dispatch): (
+            &crate::tool::RecordedInvocation<&ToolInvocation, &Value>,
+            Option<&crate::tool::Dispatch>,
+        ),
         started: bool,
     ) -> Result<bool> {
         let (operation_id, step) = identity;
@@ -294,15 +371,24 @@ impl StockExecution<'_> {
                     work,
                 )
             })?;
-            let event = ExecutionEvent::ToolStarted {
+            let mut event = ExecutionEvent::ToolStarted {
                 step,
                 call_id: stock_string_copy(&invocation.call_id, self.io)?,
                 invocation: reference,
+                publication: None,
             };
-            match journal
-                .append_if_tail(operation_id, tail, &key, &event, self.io)?
-                .await
-            {
+            let appended = match dispatch {
+                Some(dispatch) => journal.dispatch_if_tail(
+                    operation_id,
+                    tail,
+                    &key,
+                    &mut event,
+                    dispatch,
+                    self.io,
+                )?,
+                None => journal.append_if_tail(operation_id, tail, &key, &event, self.io)?,
+            };
+            match appended.await {
                 Ok(true) => true,
                 Err(error) => return Err(error),
                 Ok(false) => {
@@ -484,6 +570,10 @@ impl StockExecution<'_> {
         let content =
             tool.definition
                 .validate_projection(&projection.0, self.stock.limits, self.io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if tool.executor.is_code_mode() {
+            self.restore_js_context(&result.0.value, _hook_context)?;
+        }
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let feedback = self

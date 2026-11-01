@@ -142,6 +142,7 @@ mod policy;
 #[cfg(test)]
 #[cfg(all(loom, not(loom)))]
 compile_error!("head-payload models require RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh");
+mod generation_seek;
 #[cfg(test)]
 #[cfg(all(loom, loom))]
 mod head_payload_loom_tests;

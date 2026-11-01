@@ -453,7 +453,6 @@ fn workload_scopes_verify_ed25519_ancestry_and_reject_forgery_expiry_and_wrong_a
 fn a_holder_delegates_to_another_agent_and_only_its_key_extends_the_chain() -> Result<()> {
     use acyclic_auth::contract::{CapabilityProto, SignedBlock, TipProof};
     use ed25519_dalek::Signer as _;
-    use prost::Message as _;
     let issuer = fixture();
     let audience = issuer.audience.clone();
     let trust = issuer.public_workload_trust()?;
@@ -534,7 +533,13 @@ fn a_holder_delegates_to_another_agent_and_only_its_key_extends_the_chain() -> R
         .to_bytes()
         .to_vec();
     let mut resigned = delegated.clone();
-    resigned.workload = CapabilityProto::from(capability.clone()).encode_to_vec();
+    resigned.workload = CapabilityProto::from(capability.clone())
+        .encode_canonical()
+        .to_vec();
+    assert!(matches!(
+        verify::verify(&resigned.workload, &trust, now()),
+        Err(verify::VerifyError::Signature)
+    ));
     assert!(
         resigned
             .verify_workload(&trust, &audience, now(), &mut None)
@@ -546,7 +551,13 @@ fn a_holder_delegates_to_another_agent_and_only_its_key_extends_the_chain() -> R
     assert!(matches!(capability.proof, TipProof::Secret(_)));
     capability.proof = TipProof::Secret(vec![43; 32]);
     let mut keyless = delegated.clone();
-    keyless.workload = CapabilityProto::from(capability).encode_to_vec();
+    keyless.workload = CapabilityProto::from(capability)
+        .encode_canonical()
+        .to_vec();
+    assert!(matches!(
+        verify::verify(&keyless.workload, &trust, now()),
+        Err(verify::VerifyError::Signature)
+    ));
     assert!(
         keyless
             .verify_workload(&trust, &audience, now(), &mut None)

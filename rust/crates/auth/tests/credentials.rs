@@ -34,6 +34,34 @@ proptest! {
         for value in &expected {
             let resolved = block_on(clone.resolve()).unwrap();
             prop_assert_eq!(resolved.as_str(), value.as_str());
+            let pointer = resolved.as_str().as_ptr();
+            let mut retained = None;
+            let cost = acyclic_test_support::measure(|| retained = Some(resolved.clone()));
+            prop_assert_eq!(cost.count_total, 0, "cloning exact custody allocated token storage");
+            let retained = retained.unwrap();
+            prop_assert_eq!(retained.as_str().as_ptr(), pointer);
+            // The old owned-string clone is the full-copy negative control.
+            let copied = acyclic_test_support::measure(|| {
+                std::hint::black_box(resolved.as_str().to_owned());
+            });
+            prop_assert!(copied.bytes_total >= value.len() as u64);
+            #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+            {
+                // Exercise the original transport's actual retained request,
+                // including Tonic's clone of its request extension custody.
+                let request = acyclic_auth::channel::retained_request((), &resolved).unwrap();
+                let extensions = request.extensions().clone();
+                drop(request);
+                let held = extensions.get::<ResolvedCredential>().unwrap();
+                prop_assert_eq!(held.as_str().as_ptr(), pointer);
+                prop_assert_eq!(held.as_str(), value.as_str());
+            }
+            drop(resolved);
+            prop_assert_eq!(retained.as_str(), value.as_str());
+            prop_assert!(retained.binding().is_none());
+            prop_assert!(retained.retained_access().is_none());
+            prop_assert!(block_on(retained.check()).is_ok());
+            prop_assert!(!block_on(retained.reject()).unwrap());
         }
         prop_assert_eq!(index.load(Ordering::Relaxed), expected.len());
         prop_assert!(block_on(provider.resolve()).is_err());

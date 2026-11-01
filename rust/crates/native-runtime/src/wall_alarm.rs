@@ -698,37 +698,72 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn alarm_producer_loss_retains_native_failure_and_refuses_late_registration() {
-        let index = Mutex::new(Index::default());
-        let (sender, received) = mpsc::channel();
-        let sender = Mutex::new(sender);
-        let fire: AlarmCallback = Arc::new(move |outcome| {
-            locked_sender(&sender).send(outcome).unwrap();
-        });
-        for deadline in [1, u64::MAX] {
-            locked(&index).insert(deadline, Arc::clone(&fire)).unwrap();
+        for (now, detach) in [0, 1]
+            .into_iter()
+            .flat_map(|now| [false, true].map(|detach| (now, detach)))
+        {
+            let index = Mutex::new(Index::default());
+            let (sender, received) = mpsc::channel();
+            let sender = Mutex::new(sender);
+            let fire: AlarmCallback = Arc::new(move |outcome| {
+                locked_sender(&sender).send(outcome).unwrap();
+            });
+            for deadline in [1, u64::MAX] {
+                locked(&index).insert(deadline, Arc::clone(&fire)).unwrap();
+            }
+            let (sender, observer) = mpsc::channel();
+            let sender = Mutex::new(sender);
+            locked(&index)
+                .insert(
+                    2,
+                    Arc::new(move |outcome| {
+                        // Losing this subscriber cannot withdraw another
+                        // owner's later original failure notification.
+                        let _ = locked_sender(&sender).send(outcome);
+                    }),
+                )
+                .unwrap();
+            let observer = if detach {
+                drop(observer);
+                None
+            } else {
+                Some(observer)
+            };
+            let waiter = platform::Waiter::refused_timer().unwrap();
+            let original = waiter.wait(None).unwrap_err();
+            drive(&index, &waiter, || now);
+            let first = received.try_recv().unwrap();
+            let second = received.try_recv().unwrap().unwrap_err();
+            assert_eq!(second.kind(), original.kind());
+            assert_eq!(second.raw_os_error(), original.raw_os_error());
+            if now == 0 {
+                assert!(Arc::ptr_eq(&first.unwrap_err(), &second));
+            } else {
+                // A deadline already delivered by the same driver stays
+                // successful; pending owners receive the native failure.
+                first.unwrap();
+            }
+            if let Some(observer) = observer {
+                assert!(Arc::ptr_eq(
+                    &second,
+                    &observer.try_recv().unwrap().unwrap_err()
+                ));
+            }
+            let late = locked(&index).insert(1, fire).unwrap_err();
+            assert!(Arc::ptr_eq(
+                &second,
+                late.get_ref()
+                    .unwrap()
+                    .downcast_ref::<Arc<io::Error>>()
+                    .unwrap()
+            ));
+            let retained = fail(
+                &index,
+                io::Error::new(io::ErrorKind::BrokenPipe, "later producer loss"),
+            );
+            assert!(Arc::ptr_eq(&second, &retained));
+            assert!(locked(&index).entries.is_empty());
         }
-        let waiter = platform::Waiter::refused_timer().unwrap();
-        let original = waiter.wait(None).unwrap_err();
-        drive(&index, &waiter, || 0);
-        let first = received.try_recv().unwrap().unwrap_err();
-        assert_eq!(first.kind(), original.kind());
-        assert_eq!(first.raw_os_error(), original.raw_os_error());
-        let second = received.try_recv().unwrap().unwrap_err();
-        assert!(Arc::ptr_eq(&first, &second));
-        let late = locked(&index).insert(1, fire).unwrap_err();
-        assert!(Arc::ptr_eq(
-            &first,
-            late.get_ref()
-                .unwrap()
-                .downcast_ref::<Arc<io::Error>>()
-                .unwrap()
-        ));
-        let retained = fail(
-            &index,
-            io::Error::new(io::ErrorKind::BrokenPipe, "later producer loss"),
-        );
-        assert!(Arc::ptr_eq(&first, &retained));
-        assert!(locked(&index).entries.is_empty());
 
         struct Lost;
         impl Wait for Lost {

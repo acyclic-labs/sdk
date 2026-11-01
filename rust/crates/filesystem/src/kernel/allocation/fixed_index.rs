@@ -1,6 +1,8 @@
 //! Filesystem custody for the shared fixed-width index.
 mod recent;
 pub(crate) use recent::RecentIndex;
+mod persistent;
+pub(crate) use persistent::PersistentIndex;
 
 use crate::FsError;
 use crate::kernel::KernelAccounting;
@@ -35,6 +37,21 @@ impl acyclic_collections::IndexWork for IndexAccounting<'_, '_> {
 }
 
 impl<V, const N: usize> FixedIndex<V, N> {
+    pub(crate) fn first(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(&[u8; N], &V)>, FsError> {
+        self.0.first(&mut IndexAccounting(accounting))
+    }
+
+    pub(crate) fn seek_after(
+        &self,
+        after: [u8; N],
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(&[u8; N], &V)>, FsError> {
+        self.0.seek_after(after, &mut IndexAccounting(accounting))
+    }
+
     pub(crate) fn get(
         &self,
         key: [u8; N],

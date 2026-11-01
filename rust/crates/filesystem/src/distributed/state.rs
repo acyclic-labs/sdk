@@ -85,8 +85,8 @@ pub struct ObservedRecord {
 
 impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     /// Reads state and its exact publication fence on the caller's work owner.
-    /// Portable dispatch uses one coherent head; native dispatch retains its
-    /// original-funded tail/read until its provider supports funded heads.
+    /// Both dispatches use one coherent head; native dispatch retains the
+    /// original provider allocation on the caller's work owner.
     /// This does not establish a coherent multi-path snapshot.
     pub async fn observe_record(
         &self,
@@ -97,12 +97,37 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         let observed = async {
             #[cfg(not(target_arch = "wasm32"))]
             if work.is_native() {
-                let tail = self.tail(path.clone(), work).await?;
-                if tail == 0 {
-                    return Err(authority_corrupt("filesystem state stream is empty", work));
-                }
-                let (record, allocation) = self.record(path.clone(), tail - 1, work).await?;
-                return Ok((tail, record, allocation));
+                work.admit(WorkCounters {
+                    authority_records_read: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                let request = acyclic_stream::HeadsRequest {
+                    retained: Default::default(),
+                    durable_through: None,
+                    projection: acyclic_stream::HeadProjection::History,
+                    paths: std::iter::once(path.clone()).collect(),
+                    children: None,
+                    limit: 1,
+                    at_least: Default::default(),
+                };
+                let meter = work.native_meter()?;
+                let result = self.provider.native_heads(request.clone(), meter).await;
+                work.check()?;
+                let (mut heads, allocation) = work.result(result)?;
+                heads.validate_for(&request).map_err(map_stream_error)?;
+                let head = heads
+                    .heads
+                    .pop()
+                    .flatten()
+                    .ok_or(AuthorityStoreError::Missing)?;
+                let record = head
+                    .last
+                    .ok_or_else(|| authority_corrupt("filesystem state stream is empty", work))?;
+                work.charge(WorkCounters {
+                    authority_records_read: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                return Ok((head.tail, record, allocation));
             }
             work.admit(WorkCounters {
                 backend_read_operations: 1,

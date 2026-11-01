@@ -266,6 +266,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             step: 1,
             call_id: "a".into(),
             invocation: file.clone(),
+            publication: None,
         },
         ToolCompleted {
             step: 1,
@@ -324,7 +325,9 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
                             } | ModelStopped {
                                 purpose: ModelPurpose::Summary,
                                 ..
-                            }
+                            } | ToolStarted { .. }
+                                | ToolCompleted { .. }
+                                | ToolFailed { .. }
                         )
             })
             .cloned()
@@ -394,8 +397,11 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
             ..StockExecution::ordinary(&executor)
         };
         for _ in 0..2 {
-            let records = execution.prefix_records(journal, operation, 0).await?;
-            assert_eq!(records.len(), 2);
+            let records = execution
+                .tool_records(journal, operation, 0, "failed-call")
+                .await?
+                .1;
+            assert_eq!(records.len(), 1);
             let output = io.guard_owned(io.owned_bytes()?)?;
             drop(records);
             drop(output);
@@ -427,7 +433,7 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
         cancellation.cancel();
         assert!(
             execution
-                .prefix_records(journal, operation, 0)
+                .tool_records(journal, operation, 0, "failed-call")
                 .await
                 .is_err()
         );

@@ -11,7 +11,8 @@ use acyclic_harness_core::{
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_machines::{
-    Capability, ExecCommand, MachineObservation, MachineState, SimulatedMachines,
+    Capability, ExecCommand, MachineObservation, MachineState, MachinesProvider as _,
+    SimulatedMachines,
 };
 use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use std::sync::{
@@ -135,7 +136,8 @@ fn shell() -> ToolInvocation {
 #[tokio::test]
 async fn first_exec_creates_the_agents_own_machine_once() -> Result {
     let stream = Arc::new(MemoryStream::default());
-    let machines = machines(&stream, SimulatedMachines::default())?;
+    let provider = SimulatedMachines::default();
+    let machines = machines(&stream, provider.clone())?;
     let executors = Arc::new(Executors::default());
     let (one, two) = (AgentPath::root(&id(1)), AgentPath::root(&id(2)));
     let executor = machines.executor(one.clone(), CLOUD, executors.clone())?;
@@ -144,12 +146,31 @@ async fn first_exec_creates_the_agents_own_machine_once() -> Result {
     assert_eq!(machines.binding(&one, CLOUD).await?, None);
     assert_eq!(executors.bound.load(Ordering::SeqCst), 0);
 
+    // Observing a lost command before a binding exists must not provision
+    // anything. The former lazy-creation path fails this control.
+    let invocation = shell();
+    let operation = invocation.operation_id;
+    assert!(matches!(
+        executor.reconcile(invocation, None).await,
+        Err(acyclic_harness_core::Error::Indeterminate(actual)) if actual == operation
+    ));
+    assert_eq!(machines.binding(&one, CLOUD).await?, None);
+    assert!(provider.list_machines(None, 1).await?.machines.is_empty());
+    assert_eq!(executors.bound.load(Ordering::SeqCst), 0);
+
     executor.execute(shell(), None).await?;
     let bound = machines.binding(&one, CLOUD).await?.ok_or("no binding")?;
     assert_eq!(bound.forked_from, None);
     executor.execute(shell(), None).await?;
     assert_eq!(executors.bound.load(Ordering::SeqCst), 1);
     assert_eq!(machines.binding(&one, CLOUD).await?, Some(bound.clone()));
+
+    // A fresh executor reopens the same persisted Machine for observation.
+    let reopened = machines.executor(one.clone(), CLOUD, executors.clone())?;
+    assert!(reopened.reconcile(shell(), None).await?.is_none());
+    assert_eq!(machines.binding(&one, CLOUD).await?, Some(bound.clone()));
+    assert_eq!(provider.list_machines(None, 2).await?.machines.len(), 1);
+    assert_eq!(executors.bound.load(Ordering::SeqCst), 2);
 
     // A retried first use (a lost binding commit) names the same Machine.
     let target = cloud(&machines)?;

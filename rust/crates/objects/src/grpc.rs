@@ -377,17 +377,18 @@ impl Blobs for GrpcObjects {
         crate::operation::admit(self.context.as_ref(), async {
             let digest = Digest::sealed(&body);
             let body = body.into_bytes();
+            let length = body.len() as u64;
             let reply = call!(
                 self,
                 put_blob,
                 wire::PutBlobRequest {
                     digest: Some(digest.into()),
-                    body: bytes::Bytes::from_owner(body.clone()),
+                    body: bytes::Bytes::from_owner(body),
                     references: convert::wire_digests(&references),
                 },
                 self.transfer_timeout
             )?;
-            Ok(convert::verified_put(&reply.0, digest, body.len() as u64)?.committed_at(reply.1))
+            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
         })
         .await
     }

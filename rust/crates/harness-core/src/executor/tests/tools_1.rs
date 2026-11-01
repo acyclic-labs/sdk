@@ -433,6 +433,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         AtomicUsize::new(0),
         None,
         ExecutionJournalCacheId::default(),
+        Default::default(),
     );
     assert_eq!(
         executor
@@ -463,6 +464,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             AtomicUsize::new(0),
             None,
             ExecutionJournalCacheId::default(),
+            Default::default(),
         );
         assert_eq!(
             executor
@@ -503,6 +505,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         AtomicUsize::new(0),
         None,
         ExecutionJournalCacheId::default(),
+        Default::default(),
     );
     assert!(
         executor
@@ -620,6 +623,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         None,
         ExecutionJournalCacheId::default(),
+        Default::default(),
     );
     assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
     let incomplete = Journal(
@@ -642,6 +646,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         None,
         ExecutionJournalCacheId::default(),
+        Default::default(),
     );
     assert!(matches!(
         executor
@@ -669,6 +674,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         AtomicUsize::new(0),
         None,
         ExecutionJournalCacheId::default(),
+        Default::default(),
     );
     assert!(matches!(
         executor
@@ -991,6 +997,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 invocation: &invocation,
                 metadata: &Value::Null,
                 target: None,
+                filesystem: None,
             },
             None,
         )
@@ -1012,6 +1019,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     invocation: invocation_ref,
+                    publication: None,
                 },
                 None,
             )?
@@ -1038,6 +1046,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                 invocation: &invocation,
                 metadata: &Value::Null,
                 target: None,
+                filesystem: None,
             },
             std::slice::from_ref(&definition),
             Limits::default(),

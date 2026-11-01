@@ -5,10 +5,16 @@ mod read;
 mod reservation;
 mod store;
 
+type GenerationIndex = crate::kernel::allocation::fixed_index::PersistentIndex<
+    Sequence,
+    { crate::ObjectId::ENCODED_LEN },
+>;
+
 struct AuthorityState {
     epoch: Epoch,
     commits: Vec<DurableCommit>,
     operations: HashMap<OperationId, (usize, KernelOwnedAllocation)>,
+    generations: GenerationIndex,
     publication_gate_tail: u64,
     publication_reservation: Option<crate::PublicationReservation>,
     publication_proofs: HashMap<u64, (crate::PublicationReservation, KernelOwnedAllocation)>,
@@ -22,6 +28,7 @@ impl Default for AuthorityState {
             epoch: Epoch::GENESIS,
             commits: Vec::new(),
             operations: HashMap::new(),
+            generations: GenerationIndex::default(),
             publication_gate_tail: 0,
             publication_reservation: None,
             publication_proofs: HashMap::new(),
@@ -74,6 +81,7 @@ enum AppendPlan {
         durable: DurableCommit,
         commits: Option<(Vec<DurableCommit>, KernelOwnedAllocation)>,
         operation: KernelOwnedAllocation,
+        generation: Option<GenerationIndex>,
     },
 }
 

@@ -116,6 +116,15 @@ fn public_certificate_fuzz_seeds_are_admitted() {
         include_bytes!("../fuzz/corpus/capability/public-certificates").as_slice(),
         include_bytes!("../fuzz/corpus/capability/lineage-chain").as_slice(),
     ] {
+        assert!(matches!(
+            acyclic_auth::authority::decode_capability(seed),
+            Err(acyclic_auth::Error::UnsupportedVersion(0))
+        ));
+    }
+    for seed in [
+        include_bytes!("../fuzz/corpus/capability/v2-signed-capability").as_slice(),
+        include_bytes!("../fuzz/corpus/capability/v2-attenuated-capability").as_slice(),
+    ] {
         assert!(acyclic_auth::authority::decode_capability(seed).is_ok());
     }
 }

@@ -110,26 +110,60 @@ impl StreamPath {
         if let Err(error) = Self::validate(path) {
             return Ok(Err(error));
         }
-        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, path.len())?;
+        Self::native_parts(&[path], meter).map(Ok)
+    }
+
+    /// Concatenates an admitted source with its canonical slash-prefixed suffix.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_native_suffix(
+        &self,
+        suffix: &str,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if !suffix.starts_with('/') {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        if let Err(error) = Self::validate(&suffix[1..]) {
+            return Ok(Err(error));
+        }
+        let length = self.as_str().len().checked_add(suffix.len());
+        if length.is_none_or(|length| length > MAX_PATH_BYTES) {
+            return Ok(Err(StreamError::InvalidPath));
+        }
+        if self.as_str().split('/').count() + suffix[1..].split('/').count() > MAX_ITEMS {
+            return Ok(Err(StreamError::LimitExceeded));
+        }
+        Self::native_parts(&[self.as_str(), suffix], meter).map(Ok)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_parts(
+        parts: &[&str],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        let length = parts.iter().map(|part| part.len()).sum();
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, length)?;
         let mut data = String::new();
-        data.try_reserve_exact(path.len())
+        data.try_reserve_exact(length)
             .map_err(|error| meter.allocation_failed(error))?;
         allocation.reconcile_capacity(data.capacity())?;
-        meter.admit_codec(0, path.len() as u64, 0)?;
-        data.push_str(path);
-        meter.record_codec(0, path.len() as u64, 0)?;
+        meter.admit_codec(0, length as u64, 0)?;
+        for part in parts {
+            data.push_str(part);
+        }
+        meter.record_codec(0, length as u64, 0)?;
         let metadata = acyclic_native_runtime::ReadAllocation::new(
             meter,
             acyclic_native_runtime::arc_allocation_bytes::<NativePathText>(),
         )?;
-        Ok(Ok(Self {
+        Ok(Self {
             text: PathText::Native(Arc::new(NativePathText {
                 text: data,
                 _metadata: metadata,
                 _payload: allocation,
             })),
-            length: path.len(),
-        }))
+            length,
+        })
     }
 
     /// Canonical path text.

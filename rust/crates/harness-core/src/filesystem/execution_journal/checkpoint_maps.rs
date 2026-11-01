@@ -5,9 +5,46 @@ use acyclic_stream::StreamProviderExt as _;
 use persistent_index::{NodeRef, Reader, Writer};
 use summary_map::{SummaryKey, SummaryMap};
 
-mod model_cell;
+pub(super) mod model_cell;
 
-trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
+#[cfg(feature = "test-support")]
+pub(super) mod codec_fuzz {
+    use super::*;
+
+    pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        model_cell::codec_fuzz::check(bytes);
+        if let Ok(value) = bool::decode(bytes, None) {
+            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
+        }
+        if let Ok(value) = <(u64, [u8; 32])>::decode(bytes, None) {
+            assert_eq!(value.encode(None).unwrap().as_ref(), bytes);
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
+    {
+        let mut seeds = model_cell::codec_fuzz::seeds()?;
+        for (name, value) in [
+            ("execution-summary-false", false),
+            ("execution-summary-true", true),
+        ] {
+            let bytes = value.encode(None)?;
+            check(&bytes);
+            seeds.push((name, bytes.to_vec()));
+        }
+        for (name, value) in [
+            ("execution-summary-position-zero", (0, [0; 32])),
+            ("execution-summary-position-maximum", (u64::MAX, [255; 32])),
+        ] {
+            let bytes = value.encode(None)?;
+            check(&bytes);
+            seeds.push((name, bytes.to_vec()));
+        }
+        Ok(seeds)
+    }
+}
+
+pub(super) trait Entry: serde::de::DeserializeOwned + Serialize + crate::HeapLayout {
     #[cfg(test)]
     fn heap_bytes(&self) -> Result<u64> {
         Ok(0)
@@ -318,7 +355,12 @@ pub(super) async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(
     let Some(read) = reader.get(state.roots[0], &retry).await? else {
         return Ok(None);
     };
-    let persistent_index::node::Node::Leaf { value, .. } = read.node(io)? else {
+    let persistent_index::node::Node::Leaf {
+        value,
+        segmented: false,
+        ..
+    } = read.node(io)?
+    else {
         return Err(corrupt(io));
     };
     let entry = <(u64, [u8; 32])>::decode(value, io)?;

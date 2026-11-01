@@ -1,5 +1,6 @@
 //! Original-funded packet storage and one shared write-size admission policy.
 
+use super::packet::{OUTPUT_HEADER, PacketRequest};
 use super::*;
 use crate::NativeMaterializationWork;
 
@@ -13,15 +14,58 @@ impl PacketBuffers {
         capacity: usize,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let buffer = || -> Result<FuseOwned<Vec<u8>>, NativeMountError> {
-            let mut bytes = fuse_vec(capacity, work)?;
-            bytes.resize(capacity, 0);
-            Ok(bytes)
+        let input = fuse_vec(capacity, work)?;
+        let mut output = fuse_vec(capacity, work)?;
+        output.resize(capacity.min(OUTPUT_HEADER), 0);
+        Ok(Self { input, output })
+    }
+
+    /// Host receives require the full envelope; descriptors name an exact prefix.
+    pub(super) fn input_for<'a>(
+        input: &'a mut FuseOwned<Vec<u8>>,
+        length: usize,
+        maximum: usize,
+    ) -> Result<&'a mut [u8], NativeMountError> {
+        if length > maximum {
+            return Err(libc::EMSGSIZE.into());
+        }
+        Self::initialized_prefix(input, length)
+    }
+
+    /// Initializes only the current reply's prefix of already-funded storage.
+    /// This never allocates or re-enters work admission after cancellation.
+    pub(super) fn output_for<'a>(
+        output: &'a mut FuseOwned<Vec<u8>>,
+        request: &PacketRequest<'_>,
+        capacity: usize,
+    ) -> Result<&'a mut [u8], NativeMountError> {
+        if capacity > output.capacity() {
+            return Err(libc::ENOBUFS.into());
+        }
+        // READLINK has no caller-supplied length; retain the negotiated envelope.
+        // Malformed sizes still reach the original typed dispatch refusal.
+        let required = if request.opcode == 5 {
+            capacity
+        } else {
+            OUTPUT_HEADER
+                .checked_add(request.minimum_payload.unwrap_or(0))
+                .unwrap_or(capacity)
+                .min(capacity)
         };
-        Ok(Self {
-            input: buffer()?,
-            output: buffer()?,
-        })
+        Self::initialized_prefix(output, required)
+    }
+
+    fn initialized_prefix(
+        buffer: &mut FuseOwned<Vec<u8>>,
+        length: usize,
+    ) -> Result<&mut [u8], NativeMountError> {
+        if length > buffer.capacity() {
+            return Err(libc::ENOBUFS.into());
+        }
+        if buffer.len() < length {
+            buffer.resize(length, 0);
+        }
+        Ok(&mut buffer[..length])
     }
 }
 

@@ -87,7 +87,7 @@ impl Journal {
                 .file()
                 .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
-            Some(decode_header(&header, limits))
+            Some(decode_header(&header, limits)?)
         };
         match found {
             // Every frame follows a whole header, so a journal holding less
@@ -107,10 +107,10 @@ impl Journal {
                 sync_directory(&path, LocalDurability::FullFlush)?;
                 return Ok(journal);
             }
-            Some(Some(found)) if found == epoch => {}
+            Some(found) if found == epoch => {}
             // The snapshot for the next epoch landed before the journal
             // restarted, so it already holds every frame here.
-            Some(Some(found)) if found.checked_add(1) == Some(epoch) => {
+            Some(found) if found.checked_add(1) == Some(epoch) => {
                 if !validate_recovery(recovered)? {
                     return Ok(journal);
                 }
@@ -137,11 +137,12 @@ impl Journal {
     ) -> Result<(), LocalStreamError> {
         let durability = self.limits.durability;
         if let Some(frame_start) = self.torn_tail {
+            let maximum_frame_bytes = maximum_frame_bytes()?;
             match lease.write(|file| {
                 acyclic_native_runtime::recover_log_tail(
                     file,
                     frame_start,
-                    maximum_frame_bytes(),
+                    maximum_frame_bytes,
                     native_durability(durability),
                     frame_is_valid,
                 )
@@ -205,7 +206,7 @@ impl Journal {
             )
             .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
-                .checked_add(frame_bytes(&frame.length))
+                .checked_add(frame_bytes(&frame.length)?)
                 .ok_or(LocalStreamError::Corrupt)?;
         }
         span.record("frames", operations);

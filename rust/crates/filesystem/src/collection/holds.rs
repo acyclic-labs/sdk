@@ -163,7 +163,46 @@ pub(crate) struct Hold {
     _slot_quota: crate::kernel::allocation::retained::RetainedAllocation,
 }
 
+/// The original checkout seals this identity before transferring its registration.
+pub(crate) struct GenerationHold {
+    original: crate::kernel::allocation::retained::RetainedArc<Hold>,
+    generation: crate::GenerationId,
+    config: crate::VolumeConfig,
+}
+
+impl GenerationHold {
+    pub(super) fn new(
+        hold: Hold,
+        root: ObjectId,
+        config: crate::VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        Ok(Self {
+            original: crate::kernel::allocation::retained::RetainedArc::new(hold, accounting)?,
+            generation: crate::GenerationId::from_root(root),
+            config,
+        })
+    }
+
+    pub(crate) fn matches(
+        &self,
+        generation: crate::GenerationId,
+        config: crate::VolumeConfig,
+        epochs: Option<&Epochs>,
+    ) -> bool {
+        self.original.belongs_to(epochs) && self.generation == generation && self.config == config
+    }
+
+    pub(crate) fn into_original(self) -> crate::kernel::allocation::retained::RetainedArc<Hold> {
+        self.original
+    }
+}
+
 impl Hold {
+    pub(crate) fn belongs_to(&self, epochs: Option<&Epochs>) -> bool {
+        epochs.is_some_and(|epochs| std::ptr::eq(epochs, self.collection.epochs()))
+    }
+
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         let holds = self.collection.holds();
         let Slot::Occupied(held) = &holds.slots[self.id] else {

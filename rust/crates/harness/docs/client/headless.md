@@ -76,9 +76,13 @@ original prompt identity.
 
 `--event-cursor PATH` loads exclusive provider cursors and one selected execution
 position. After a complete acknowledgement, it replaces the cursor file through
-a temporary sibling. Output flush happens before replacement, so interruption
+a temporary sibling. The original owned output write completes before replacement, so interruption
 can repeat output but cannot acknowledge an unwritten observation. Replacement
-provides atomic file visibility, without a power-loss durability guarantee.
+provides atomic file visibility, without a power-loss durability guarantee. The
+native writer is unbuffered: the original descriptor and frame stay with its
+producer through completion, and acknowledgement adds no flush or durability
+operation. Losing the observer consumes that writer; it cannot reopen a second
+writer and advance the cursor for an uncertain line.
 Provider cursor bytes are opaque and must be returned unchanged.
 
 Payloads are authenticated through their original publication and read in bounded

@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { readFile } from "node:fs/promises";
+import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { CapabilitySchema, SignedBlockSchema } from "../generated/proto/auth/v1/auth_pb.js";
 import { Capability, TrustSnapshot, type TrustState } from "../src/holder.js";
+import { encodeCapability } from "../src/wasm.js";
 
-const root = new Uint8Array(await readFile(new URL("../../../../rust/crates/auth/fuzz/corpus/verifier/root", import.meta.url)));
+const root = new Uint8Array(await readFile(new URL("../../../../rust/codec-fuzz/corpus/auth/v2-signed-capability", import.meta.url)));
+const previous = new Uint8Array(await readFile(new URL("../../../../rust/crates/auth/fuzz/corpus/verifier/root", import.meta.url)));
 const hex = (value: string) => Uint8Array.from(Buffer.from(value, "hex"));
 const state = (): TrustState => ({
   environment: "test", account: "account", minimumKeyEpoch: 1n,
@@ -13,8 +17,24 @@ const state = (): TrustState => ({
 });
 
 test("WASM holders preserve signatures, lineage, effective limits and revocation", async () => {
+  const input = root.slice();
+  let encoded: Uint8Array | undefined;
+  try {
+    const token = fromBinary(CapabilitySchema, input);
+    if (token.proof.case !== "secret") throw new Error("signed writer capture lacks its secret proof; recovery: bun test test/holder.test.ts");
+    const blocks = token.blocks.map(block => toBinary(SignedBlockSchema, block));
+    encoded = encodeCapability(blocks, token.proof.value, false);
+    expect(encoded).toEqual(root);
+    expect(input).toEqual(root);
+    for (const length of [0, 31, 33]) {
+      const proof = new Uint8Array(length);
+      try { expect(() => encodeCapability(blocks, proof, false)).toThrow(); }
+      finally { proof.fill(0); }
+    }
+  } finally { encoded?.fill(0); input.fill(0); }
   await fc.assert(fc.asyncProperty(fc.array(fc.stringMatching(/^[a-z]{1,8}$/), { minLength: 1, maxLength: 4 }), fc.bigInt({ min: 0n, max: 999n }), async (ids, maximum) => {
     const trust = new TrustSnapshot(state());
+    expect(() => Capability.verify(previous, trust, 100n)).toThrow();
     let holder = Capability.verify(root, trust, 100n);
     try {
       for (const id of ids) {
@@ -31,7 +51,7 @@ test("WASM holders preserve signatures, lineage, effective limits and revocation
       expect(holder.grants().length).toBeGreaterThan(0);
       expect(holder.filters().map(clause => clause.subjectId)).toEqual(ids);
       expect(holder.filters().map(clause => clause.declaringBlock)).toEqual(ids.map((_, i) => i + 1));
-      expect(holder.expiresAtUnixSeconds()).toBe(1000n);
+      expect(holder.expiresAtUnixSeconds()).toBe(500n);
       expect(holder.notBeforeUnixSeconds()).toBe(1n);
       const encoded = holder.encode();
       const admitted = Capability.verify(encoded, trust, 100n);

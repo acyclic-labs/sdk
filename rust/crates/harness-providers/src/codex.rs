@@ -1,7 +1,6 @@
 use crate::{HttpRequest, HttpTransport, invalid};
 use acyclic_harness_core::Result;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -327,38 +326,13 @@ impl CodexLogin {
 }
 
 async fn refresh_document(
-    mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
+    body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
     io: &mut CredentialIo,
 ) -> Result<Value> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk?;
-        if chunk.len() as u64 > MAX_AUTH_BYTES.saturating_sub(bytes.len() as u64) {
-            return Err(invalid("Codex refresh response exceeds limit"));
-        }
-        if bytes.len() + chunk.len() > bytes.capacity() {
-            let capacity = (bytes.len() + chunk.len())
-                .max(bytes.capacity() * 2)
-                .min(MAX_AUTH_BYTES as usize);
-            io.claim(
-                capacity as u64,
-                1,
-                WorkCounters {
-                    bytes_copied: bytes.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                },
-            )?;
-            bytes
-                .try_reserve_exact(capacity - bytes.len())
-                .map_err(|_| invalid("cannot allocate Codex refresh response"))?;
-        }
-        io.charge(WorkCounters {
-            bytes_copied: chunk.len() as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        bytes.extend_from_slice(&chunk);
-    }
-    let updated = io.json(&bytes)?;
+    let body = crate::http::bounded::read(body, MAX_AUTH_BYTES as usize, io.work()).await?;
+    // Encoded body custody retires with that buffer. Only the decoded document
+    // joins the original credential operation and its publication owner.
+    let updated = io.json(&body.bytes)?;
     if !["access_token", "refresh_token", "id_token"]
         .iter()
         .any(|field| updated.get(field).is_some())

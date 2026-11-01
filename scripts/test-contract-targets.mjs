@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { buildContractTargets, runContractTarget } from "./contract-targets.mjs";
+import { buildContractTargets, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
 
 test("contract selection refuses every unknown family before Cargo or publication", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-selection-"));
@@ -93,6 +93,36 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.throws(build, /Rust contract command failed/);
     put("alpha/src/main.rs", goodSource);
     assert.deepEqual(run(build()), ["changed:false:false", "beta:true:false"]);
+
+    // Capture output from the original Cargo-selected binaries. Count actual
+    // starts and decodes independently of the generator's cache implementation.
+    const bundle = '{"left":"exact\\nbytes","right":"other","invalid":7}\n';
+    put("alpha/src/main.rs", `use std::io::Write; fn main() {
+      std::fs::OpenOptions::new().create(true).append(true).open("starts").unwrap().write_all(b"x").unwrap();
+      print!("{}", r#"${bundle}"#);
+    }\n`);
+    put("beta/src/main.rs", 'fn main() { println!("{{not JSON"); }\n');
+    const outputFor = contractTargetOutputs(root, build(), new Set([0]));
+    const parse = JSON.parse;
+    let decodes = 0;
+    JSON.parse = (text, ...args) => {
+      if (text === bundle) decodes += 1;
+      return parse(text, ...args);
+    };
+    try {
+      assert.equal(outputFor(0, "left"), "exact\nbytes");
+      assert.equal(outputFor(0, "right"), "other");
+      assert.equal(outputFor(0, "left"), "exact\nbytes");
+      assert.equal(outputFor(0), bundle);
+      assert.throws(() => outputFor(0, "absent"), /STEP_FAILED contract-payload: missing absent; recovery:/);
+      assert.throws(() => outputFor(0, "toString"), /STEP_FAILED contract-payload: missing toString; recovery:/);
+      assert.throws(() => outputFor(0, "invalid"), /STEP_FAILED contract-payload: missing invalid; recovery:/);
+      assert.throws(() => outputFor(1, "left"), /STEP_FAILED contract-payload: malformed bundle.*recovery:/);
+      assert.equal(decodes, 1);
+      assert.equal(readFileSync(join(root, "starts"), "utf8"), "x");
+    } finally {
+      JSON.parse = parse;
+    }
     assert.throws(() => buildContractTargets(root, [...targets, targets[0]], cargo), /duplicate Rust contract target/);
     assert.throws(() => buildContractTargets(root, [["alpha", "bin", "absent"]], cargo), /unknown Rust contract target/);
     assert.throws(() => buildContractTargets(root, [["alpha", "lib", "alpha"]], cargo), /unknown Rust contract target/);

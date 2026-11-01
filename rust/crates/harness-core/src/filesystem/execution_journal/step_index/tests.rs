@@ -15,7 +15,7 @@ fn refusal(step: u32) -> ExecutionEvent {
 }
 
 #[tokio::test]
-async fn fresh_step_selection_avoids_historical_replay_and_releases_custody() -> Result<()> {
+async fn fresh_call_selection_avoids_unrelated_calls_and_releases_custody() -> Result<()> {
     for native in [false, true] {
         check_selection(native).await?;
     }
@@ -45,9 +45,13 @@ async fn check_selection(native: bool) -> Result<()> {
     } else {
         PreparationIo::from_budget(budget, &cancellation)?
     };
-    for step in 0..1_000 {
+    for step in 0_u32..1_000 {
+        let mut event = refusal(0);
+        if let ExecutionEvent::ToolFailed { call_id, .. } = &mut event {
+            *call_id = format!("call:{step}");
+        }
         journal
-            .append(operation, &format!("call:{step}"), &refusal(step), None)?
+            .append(operation, &format!("call:{step}"), &event, None)?
             .await?;
         if ![0, 99, 999].contains(&step) {
             continue;
@@ -70,7 +74,8 @@ async fn check_selection(native: bool) -> Result<()> {
             .indexed_records(
                 crate::executor::ExecutionRecordQuery {
                     operation,
-                    step,
+                    step: 0,
+                    call_id: Some("call:0"),
                     include_started: true,
                     maximum_step_records: 1,
                     maximum: 2,
@@ -84,18 +89,15 @@ async fn check_selection(native: bool) -> Result<()> {
         let hold = io.guard_owned(io.owned_since(owned)?)?;
         let reads = io.receipt().authority_records_read - before.authority_records_read;
         eprintln!(
-            "fresh step native={native} steps={} reads={reads} elapsed_us={}",
+            "fresh call native={native} calls={} reads={reads} elapsed_us={}",
             step + 1,
             start.elapsed().as_micros()
         );
-        assert!(reads < 128, "step selection replayed history");
+        assert!(reads < 128, "call selection replayed unrelated calls");
         assert_eq!(result.0, u64::from(step) + 2);
         assert_eq!(result.1.len(), 2);
         assert_eq!(result.1.first().map(|record| record.sequence), Some(1));
-        assert_eq!(
-            result.1.last().map(|record| record.sequence),
-            Some(u64::from(step) + 2)
-        );
+        assert_eq!(result.1.last().map(|record| record.sequence), Some(2));
         drop(result);
         drop(hold);
         drop(reopened);
@@ -112,7 +114,7 @@ async fn check_selection(native: bool) -> Result<()> {
         &journal,
         operation,
         2,
-        |event| event.step().is_none() || event.step() == Some(999),
+        |event| event.step().is_none() || matches!(event, ExecutionEvent::ToolFailed { call_id, .. } if call_id == "call:0"),
         Some(&io),
     )
     .await?;
@@ -208,6 +210,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
             step: 7,
             call_id: "call".into(),
             invocation: payload.clone(),
+            publication: None,
         };
         journal.append(operation, "tool", &started, None)?.await?;
         *journal.verified.lock().await = SummaryCache::default();
@@ -327,6 +330,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
             ExecutionRecordQuery {
                 operation,
                 step: 0,
+                call_id: Some("call"),
                 include_started: true,
                 maximum_step_records: 1,
                 maximum: 2,
@@ -383,6 +387,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
                     ExecutionRecordQuery {
                         operation,
                         step: 0,
+                        call_id: Some("call"),
                         include_started: true,
                         maximum_step_records: 2,
                         maximum: 3,
@@ -434,6 +439,7 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
             let query = ExecutionRecordQuery {
                 operation,
                 step: 0,
+                call_id: Some("call"),
                 include_started: true,
                 maximum_step_records: 1,
                 maximum: 1,

@@ -30,7 +30,7 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
             }
             let mut selected = Funded::new(Some(&io))?;
             let before = io.receipt();
-            pending.collect(Some(0), 1, &mut selected, Some(&io))?;
+            pending.collect(Some(0), None, 1, &mut selected, Some(&io))?;
             let examined = io.receipt().items_examined - before.items_examined;
             assert_eq!(selected.values.len(), 1);
             assert_eq!(selected.values[0].sequence, 1);
@@ -66,12 +66,12 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         let mut selected = Funded::new(Some(&io))?;
         assert!(
             pending
-                .collect(Some(0), 1, &mut selected, Some(&io))
+                .collect(Some(0), None, 1, &mut selected, Some(&io))
                 .is_err()
         );
         drop(selected);
         let mut selected = Funded::new(Some(&io))?;
-        pending.collect(Some(0), 2, &mut selected, Some(&io))?;
+        pending.collect(Some(0), None, 2, &mut selected, Some(&io))?;
         assert_eq!(
             selected
                 .values
@@ -84,12 +84,12 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         pending.clear();
         pending.push(1_002, [5; 32], [6; 32], None, None, scope.io())?;
         let mut selected = Funded::new(Some(&io))?;
-        pending.collect(Some(0), 1, &mut selected, Some(&io))?;
+        pending.collect(Some(0), None, 1, &mut selected, Some(&io))?;
         assert!(
             selected.values.is_empty(),
             "cleared tail retained an old head"
         );
-        pending.collect(None, 1, &mut selected, Some(&io))?;
+        pending.collect(None, None, 1, &mut selected, Some(&io))?;
         assert_eq!(selected.values.len(), 1);
         assert_eq!(selected.values[0].sequence, 1_002);
         drop(selected);

@@ -65,7 +65,11 @@ fn history(entries: u32, bytes: u64, ops: &[(u8, u8)], fault: Fault) -> TestCase
             0 => {
                 if matches!(fault, Fault::OmitEviction) {
                     store
-                        .decoded_admit_bounded::<false>(key(*id), value(*id))
+                        .decoded_admit_bounded::<false>(
+                            key(*id),
+                            store.shared.fill_epoch(),
+                            value(*id),
+                        )
                         .unwrap();
                 } else {
                     store.decoded_admit(key(*id), value(*id)).unwrap();

@@ -172,6 +172,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             + self.root.logical_owned_bytes()
     }
 
+    /// Only bytes whose retirement still belongs to the caller's scratch ledger.
+    pub(crate) fn scratch_owned_bytes(&self) -> u64 {
+        self.logical_owned_bytes() - self.root.retained_slot_bytes()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {

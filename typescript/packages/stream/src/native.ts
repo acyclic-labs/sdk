@@ -8,7 +8,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
@@ -170,8 +170,8 @@ export class NativeStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = options === undefined ? undefined : structuredClone(options);
-    await validateAppend(path, records, authored);
-    const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(wireAppendRequest(path, records, authored)))));
+    const input = await validateAppend(path, records, authored);
+    const value = await this.operation("append", this.request(client => client.appendResult(Buffer.from(input))));
     return this.project("append", value) as AppendResult;
   }
 

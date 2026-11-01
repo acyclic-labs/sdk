@@ -236,13 +236,13 @@ where
             )
             .await?;
         accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .contribute_fork(commit, &prepared.fork, &mut authority)
             .await;
-        let recorded = record_authority_work(accounting, &authority);
+        let recorded = finish_authority_work(authority);
         Self::retire_fork_commit(prepared.changes, prepared.payload_bytes, accounting)?;
         recorded?;
         commit.hold(prepared.hold.with_proof(pending));
@@ -337,7 +337,7 @@ where
         proof.retire(accounting)?;
         let prepared = prepared?;
         accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
@@ -348,7 +348,7 @@ where
                 &mut authority,
             )
             .await;
-        let recorded = record_authority_work(accounting, &authority);
+        let recorded = finish_authority_work(authority);
         Self::retire_creation_commit(prepared.changes, prepared.capacity, accounting)?;
         recorded?;
         commit.hold(prepared.hold);
@@ -372,7 +372,7 @@ where
             if !self.same_deployment(&source.workspace.volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let result = self
                 .inner
                 .authority
@@ -383,7 +383,7 @@ where
                     &mut authority,
                 )
                 .await;
-            record_authority_work(&mut accounting, &authority)?;
+            finish_authority_work(authority)?;
             result.map_err(|error| WorkspaceError::from(FsError::from(error)))
         }
         .await;
@@ -401,9 +401,9 @@ where
     ) -> FsResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = (|| {
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let result = self.inner.authority.seal(commit, &mut authority);
-            record_authority_work(&mut accounting, &authority)?;
+            finish_authority_work(authority)?;
             result.map_err(FsError::from)
         })();
         measured(result, &accounting)
@@ -419,7 +419,8 @@ where
     ) -> FsResult<FilesystemCommitOutcome> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
-            let mut authority = match authority_work(&accounting, cancellation) {
+            let mut authority = match crate::async_storage::AuthorityFrame::borrow(&mut accounting)
+            {
                 Ok(authority) => authority,
                 Err(error) => {
                     return Ok(FilesystemCommitOutcome::Unknown {
@@ -431,7 +432,7 @@ where
             let result = self.inner.authority.submit(commit, &mut authority).await;
             // Completion accounting cannot discard an unresolved owner or
             // replace a decided result after the provider has returned it.
-            drop(record_authority_work(&mut accounting, &authority));
+            drop(finish_authority_work(authority));
             result.map_err(FsError::from)
         }
         .await;

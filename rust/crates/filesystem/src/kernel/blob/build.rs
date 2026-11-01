@@ -352,18 +352,18 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
     pub(super) async fn flush(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         if self.writes.value.is_empty() {
             return Ok(());
         }
-        accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
+            accounting.check()?;
             self.inner
                 .put_many_hashed(
                     &self.writes.value,
-                    &mut crate::AuthorityWork::native(original, cancellation),
+                    &mut crate::AuthorityWork::native(original, _cancellation),
                 )
                 .await?;
             self.writes.value.clear();
@@ -371,20 +371,15 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             return Ok(());
         }
         let result = {
-            let __object_args = (&self.writes.value, accounting.remaining()?, cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = self
+            let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+            let result = self
                 .inner
-                .put_many_hashed(__object_args.0, &mut __object_work)
+                .put_many_hashed(&self.writes.value, &mut work)
                 .await;
-            __object_work.receipt(__object_result)
+            work.spent().verify(work.budget)?;
+            result
         };
-        let measured = match &result {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        completed_blob_backend(measured, accounting)?;
-        result.map_err(|failure| FsError::from(failure.error))?;
+        result?;
         self.writes.value.clear();
         let bytes = std::mem::take(&mut self.bytes);
         release_blob_bytes(bytes, accounting)
@@ -397,9 +392,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let object =
-            crate::async_storage::prepare_object(self.inner, object, accounting, cancellation)
-                .await?;
+        let object = crate::async_storage::prepare_object(self.inner, object, accounting).await?;
         let id = object.object_id();
         self.bytes = self
             .bytes

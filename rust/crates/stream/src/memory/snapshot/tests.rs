@@ -580,9 +580,11 @@ fn corrupt_retained(
             None
         };
         let mut envelope = if flags & RETAINS_COMMIT != 0 {
-            Some(crate::persistence::decode_envelope(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
+            Some(crate::persistence::envelope_from_wire(
+                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
+                    input.bytes().ok_or_else(invalid)?,
+                    retained_fact_bound().ok_or_else(invalid)?,
+                )?,
             )?)
         } else {
             None

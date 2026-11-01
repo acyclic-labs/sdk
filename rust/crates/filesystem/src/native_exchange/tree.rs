@@ -106,15 +106,7 @@ pub fn recover_native_exchange(
 }
 
 pub(super) fn read_journal(path: &Path) -> Result<NativeExchangeJournal, NativeExchangeError> {
-    let journal: NativeExchangeJournal =
-        serde_json::from_slice(&std::fs::read(path)?).map_err(std::io::Error::other)?;
-    match journal.version {
-        NATIVE_EXCHANGE_JOURNAL_VERSION => {
-            validate_carried_paths(&journal.carried)?;
-            Ok(journal)
-        }
-        version => Err(NativeExchangeError::UnsupportedJournalVersion(version)),
-    }
+    codec::decode(&std::fs::read(path)?)
 }
 
 pub(super) fn validate_layout(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
@@ -196,7 +188,7 @@ pub(super) fn write_journal(
     use std::io::Write;
     let temporary = path.with_extension("next");
     let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(&serde_json::to_vec(journal).map_err(std::io::Error::other)?)?;
+    file.write_all(&codec::encode(journal)?)?;
     file.sync_all()?;
     drop(file);
     durable_rename(&temporary, path, Replace, None)?;

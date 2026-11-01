@@ -92,3 +92,23 @@ export function runContractTarget(root, executable) {
   if (result.status !== 0) throw new Error(`Rust contract target ${executable} failed with status ${result.status ?? "unknown"}`);
   return result.stdout;
 }
+
+// Slots identify executables admitted by the same Cargo build. Keep exact raw
+// output only for declared raw consumers; bundle consumers share one decode.
+export function contractTargetOutputs(root, executables, rawTargets) {
+  const executed = new Map();
+  return (slot, payload) => {
+    if (!executed.has(slot)) executed.set(slot, { stdout: runContractTarget(root, executables[slot]) });
+    const output = executed.get(slot);
+    if (payload === undefined) return output.stdout;
+    if (!Object.hasOwn(output, "payloads")) {
+      try { output.payloads = JSON.parse(output.stdout); }
+      catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle from ${executables[slot]}; recovery: bun scripts/generate-contracts.mjs check`); }
+      if (!rawTargets.has(slot)) delete output.stdout;
+    }
+    if (!output.payloads || !Object.hasOwn(output.payloads, payload) || typeof output.payloads[payload] !== "string") {
+      throw new Error(`STEP_FAILED contract-payload: missing ${payload}; recovery: bun scripts/generate-contracts.mjs check`);
+    }
+    return output.payloads[payload];
+  };
+}

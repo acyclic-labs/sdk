@@ -1,23 +1,26 @@
 //! Read a registered agent's published view through the repository binding.
 use super::*;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     pub(super) async fn diff_agent(
         &self,
         branch: &str,
         current: GitTreeRef,
-    ) -> crate::Result<super::Output> {
+    ) -> crate::Result<super::Output<P, O>> {
         let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
         // The normal repository entry point validates both the current view
         // identity and the operation lease before exposing its branch catalog.
         let catalog = repository
             .run(GitCommand::Branch { create: None }, current, self)
             .await
-            .map_err(super::errors::run_error)?;
+            .map_err(super::errors::run_error::<S>)?;
         let GitCommandOutput::Branches { branches, .. } = catalog else {
             return Err(Error::Conflict(
                 "agent branch catalog is unavailable".into(),
@@ -72,7 +75,7 @@ where
         let tracked_paths = repository
             .tracked_paths()
             .await
-            .map_err(super::errors::compat_error)?
+            .map_err(super::errors::compat_error::<S>)?
             .union(&target.tracked_paths)
             .cloned()
             .collect();

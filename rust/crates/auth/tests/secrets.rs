@@ -5,6 +5,7 @@ use acyclic_auth::{
     authority::{PolicyDecision, Scope, Target as AuthorityTarget},
     contract::*,
     credential::CredentialProvider,
+    operation::ProtectedBytes,
     secrets::{self, Client, Error, Response, Transport, TransportFuture},
     verify::{VerifiedCapability, verify},
 };
@@ -226,9 +227,9 @@ impl Transport for Provider {
         &'a self,
         path: &'static str,
         _bearer: &'a str,
-        body: &'a [u8],
+        body: ProtectedBytes,
     ) -> TransportFuture<'a> {
-        Box::pin(async move { self.call(path, body) })
+        Box::pin(async move { self.call(path, body.as_ref()) })
     }
 }
 fn client(
@@ -512,7 +513,7 @@ impl Transport for Fault {
         &'a self,
         _path: &'static str,
         _bearer: &'a str,
-        _body: &'a [u8],
+        _body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
             Ok(Response {
@@ -697,6 +698,181 @@ mod http {
     #[tokio::test]
     async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
     -> TestResult {
+        use futures::FutureExt;
+
+        // Exercise the native response constructor used by HttpTransport::post,
+        // including reqwest body collection. The complete in-memory native body
+        // must finish on its first poll; an unexpected wait fails immediately.
+        // Sharing backing requires a copy that leaves the other owner intact.
+        let mut collection_control = None;
+        for length in [1024, 1024 * 1024] {
+            let response =
+                reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
+            let mut collected = None;
+            let collection = acyclic_test_support::measure(|| {
+                collected = response.bytes().now_or_never();
+            });
+            assert_eq!(
+                collected
+                    .ok_or("complete native collection did not finish")??
+                    .len(),
+                length
+            );
+            let native_cost = (collection.count_total, collection.bytes_total);
+            if let Some(previous) = collection_control {
+                assert_eq!(native_cost, previous, "collection control copied payload");
+            }
+            collection_control = Some(native_cost);
+
+            let original = Bytes::from(vec![7; length]);
+            let pointer = original.as_ptr();
+            let response = reqwest::Response::from(axum::http::Response::new(original));
+            let receive = Response::from_http(response);
+            let mut protected = None;
+            let transfer = acyclic_test_support::measure(|| {
+                protected = receive.now_or_never();
+            });
+            let protected = protected.ok_or("complete native response did not finish")??;
+            assert_eq!(protected.status, 200);
+            assert_eq!(protected.body.as_ptr(), pointer);
+            assert_eq!(protected.body.len(), length);
+            assert_eq!(
+                (transfer.count_total, transfer.bytes_total),
+                native_cost,
+                "protected native response adds work beyond reqwest collection"
+            );
+            drop(protected);
+
+            // The former response handoff, on the same native response type,
+            // must fail the no-extra-allocation oracle with unique backing.
+            let response =
+                reqwest::Response::from(axum::http::Response::new(Bytes::from(vec![7; length])));
+            let mut copied = None;
+            let legacy = acyclic_test_support::measure(|| {
+                copied = response
+                    .bytes()
+                    .now_or_never()
+                    .map(|result| result.map(|bytes| Zeroizing::new(bytes.to_vec())));
+            });
+            assert_eq!(
+                copied
+                    .ok_or("complete native copy control did not finish")??
+                    .len(),
+                length
+            );
+            assert!(legacy.bytes_total >= collection.bytes_total + length as u64);
+
+            let original = Bytes::from(vec![7; length]);
+            let shared = original.clone();
+            let response = reqwest::Response::from(axum::http::Response::new(shared));
+            let receive = Response::from_http(response);
+            let mut protected = None;
+            let copy = acyclic_test_support::measure(|| {
+                protected = receive.now_or_never();
+            });
+            let protected = protected.ok_or("shared native response did not finish")??;
+            assert_ne!(protected.body.as_ptr(), original.as_ptr());
+            assert_eq!(protected.body.as_slice(), original.as_ref());
+            assert!(copy.bytes_total >= collection.bytes_total + length as u64);
+            drop(protected);
+            assert!(original.iter().all(|byte| *byte == 7));
+        }
+
+        // The original bearer allocation survives the actual HTTP and gRPC
+        // metadata constructors and clones. The old Vec route is a full-copy
+        // negative control, measured independently of encoding the credential.
+        for length in [1024, acyclic_auth::credential::MAX_CREDENTIAL_BYTES] {
+            let token = "a".repeat(length);
+            let encoded = acyclic_auth::credential::bearer_bytes(&token);
+            let pointer = encoded.as_ptr();
+            let mut header = None;
+            let transfer = acyclic_test_support::measure(|| {
+                header = Some(reqwest::header::HeaderValue::from_maybe_shared(
+                    encoded.clone(),
+                ));
+            });
+            let mut header = header.ok_or("header transfer missing")??;
+            header.set_sensitive(true);
+            assert_eq!(header.as_bytes().as_ptr(), pointer);
+            let retained = header.clone();
+            drop(header);
+            assert!(retained.is_sensitive());
+            assert_eq!(retained.as_bytes().as_ptr(), pointer);
+            assert_eq!(transfer.count_total, 0, "HTTP bearer handoff allocated");
+            let copy = acyclic_test_support::measure(|| {
+                let _ = std::hint::black_box(reqwest::header::HeaderValue::from_bytes(
+                    retained.as_bytes(),
+                ));
+            });
+            assert!(copy.bytes_total >= encoded.len() as u64);
+            #[cfg(feature = "grpc")]
+            {
+                let mut metadata = None;
+                let transfer = acyclic_test_support::measure(|| {
+                    metadata = Some(
+                        tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(
+                            encoded.clone(),
+                        ),
+                    );
+                });
+                let mut metadata = metadata.ok_or("metadata transfer missing")??;
+                metadata.set_sensitive(true);
+                let retained = metadata.clone();
+                drop(metadata);
+                assert!(retained.is_sensitive());
+                assert_eq!(retained.as_encoded_bytes().as_ptr(), pointer);
+                assert_eq!(transfer.count_total, 0, "gRPC bearer handoff allocated");
+                let copied = retained.as_encoded_bytes().to_vec();
+                let copy = acyclic_test_support::measure(|| {
+                    let _ = std::hint::black_box(tonic::metadata::MetadataValue::<
+                        tonic::metadata::Ascii,
+                    >::try_from(copied));
+                });
+                assert!(copy.bytes_total >= encoded.len() as u64);
+            }
+            drop(encoded);
+            assert_eq!(retained.as_bytes().as_ptr(), pointer);
+            assert_eq!(retained.as_bytes().len(), length + b"Bearer ".len());
+        }
+        // The shared native body must retain the encoded allocation through
+        // transport clones and slices. Its control cost is independent of the
+        // payload; an ordinary full copy is the allocation negative control.
+        let mut controls = None;
+        for length in [1024, 1024 * 1024] {
+            let encoded = Zeroizing::new(vec![7; length]);
+            let pointer = encoded.as_ptr();
+            let mut owned = None;
+            let cost = acyclic_test_support::measure(|| {
+                owned = Some(ProtectedBytes::new(encoded).into_bytes());
+            });
+            let original = owned.ok_or("native body missing")?;
+            assert_eq!(original.as_ptr(), pointer);
+            let retained = original.slice(1..);
+            drop(original);
+            let request = reqwest::Body::from(retained);
+            assert_eq!(
+                request
+                    .as_bytes()
+                    .ok_or("native body is not owned")?
+                    .as_ptr(),
+                pointer.wrapping_add(1),
+            );
+            assert_eq!(request.as_bytes().map(<[u8]>::len), Some(length - 1));
+            let current = (cost.count_total, cost.bytes_total);
+            if let Some(controls) = controls {
+                assert_eq!(current, controls, "body transfer copied payload bytes");
+            }
+            controls = Some(current);
+            let copied = acyclic_test_support::measure(|| {
+                std::hint::black_box(request.as_bytes().unwrap().to_vec());
+            });
+            assert!(copied.bytes_total >= (length - 1) as u64);
+            assert!(cost.bytes_total < copied.bytes_total);
+            eprintln!(
+                "native body payload={length} transfer_allocations={} transfer_bytes={} copy_allocations={} copy_bytes={}",
+                cost.count_total, cost.bytes_total, copied.count_total, copied.bytes_total,
+            );
+        }
         let logs = Arc::new(Mutex::new(Vec::new()));
         let capture = logs.clone();
         let subscriber = tracing_subscriber::fmt()

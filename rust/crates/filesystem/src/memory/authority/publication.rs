@@ -115,6 +115,9 @@ impl MemoryAuthorityStore {
         let mut operations = HashMap::new();
         reserve(&mut operations, accounting)?;
         let durable = self.durable(authority, expected, commit.clone(), accounting)?;
+        let generations =
+            prepare_generation(&GenerationIndex::default(), authority, &durable, accounting)?
+                .unwrap_or_default();
         operations.insert(durable.operation_id, (0, operation));
         accounting.charge(copy_work(1, size_of::<DurableCommit>())?)?;
         commits.0.push(durable);
@@ -122,6 +125,7 @@ impl MemoryAuthorityStore {
             epoch: expected.epoch,
             commits: commits.0,
             operations,
+            generations,
             commits_custody: commits.1,
             _entry_envelope: envelope,
             ..AuthorityState::default()
@@ -274,10 +278,17 @@ impl MemoryAuthorityStore {
             request.commit.clone(),
             accounting,
         )?;
+        let generation = prepare_generation(
+            &state.generations,
+            request.authority_id,
+            &durable,
+            accounting,
+        )?;
         Ok(AppendPlan::Publish {
             durable,
             commits: replacement,
             operation,
+            generation,
         })
     }
 
@@ -288,13 +299,14 @@ impl MemoryAuthorityStore {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<AppendOutcome, FsError> {
         accounting.check()?;
-        let (durable, commits, operation) = match plan {
+        let (durable, commits, operation, generation) = match plan {
             AppendPlan::Resolved(outcome) => return Ok(outcome),
             AppendPlan::Publish {
                 durable,
                 commits,
                 operation,
-            } => (durable, commits, operation),
+                generation,
+            } => (durable, commits, operation, generation),
         };
         let mut authorities = self
             .authorities
@@ -338,8 +350,35 @@ impl MemoryAuthorityStore {
         state
             .operations
             .insert(durable.operation_id, (index, operation));
+        if let Some(generation) = generation {
+            state.generations = generation;
+        }
         state.commits.push(durable.clone());
         accounting.record_completed(copied)?;
         Ok(AppendOutcome::Committed(durable))
     }
+}
+
+fn prepare_generation(
+    generations: &GenerationIndex,
+    authority: AuthorityId,
+    durable: &DurableCommit,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<GenerationIndex>, FsError> {
+    let Some(generation) = crate::async_storage::generation_fact(
+        authority,
+        durable.sequence,
+        &durable.payload,
+        accounting,
+    )?
+    else {
+        return Ok(None);
+    };
+    let key = generation.object_id().index_key();
+    if generations.get(key, accounting)?.is_some() {
+        return Ok(None);
+    }
+    generations
+        .insert(key, durable.sequence, accounting)
+        .map(Some)
 }

@@ -126,6 +126,66 @@ mod digest_properties {
             exhausted_serialization(&Envelope::Record(Record { borrowed: &value, raw: &raw, ratio: 0.25 }), extra_slack);
         }
 
+        #[test]
+        fn stock_bounds_count_once_without_an_encoded_copy(value in values()) {
+            let length = serde_json::to_vec(&value).unwrap().len() as u64;
+            for native in [false, true] {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+                let work = native.then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap());
+                let baseline = work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
+                let io = match &work {
+                    Some(work) => crate::filesystem::PreparationIo::from_native_work(work),
+                    None => crate::filesystem::PreparationIo::from_budget(budget, &cancellation),
+                }.unwrap();
+                let before = io.receipt();
+                let owned = io.owned_bytes().unwrap();
+                let measured = acyclic_test_support::measure(|| {
+                    crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap();
+                });
+                prop_assert_eq!(measured.count_total, 0);
+                prop_assert_eq!(io.owned_bytes().unwrap(), owned);
+                let after = io.receipt();
+                prop_assert_eq!(after.source_bytes_read - before.source_bytes_read, length);
+                prop_assert_eq!(after.bytes_encoded, before.bytes_encoded);
+                prop_assert_eq!(after.bytes_copied, before.bytes_copied);
+                prop_assert_eq!(after.allocation_operations, before.allocation_operations);
+                prop_assert_eq!(after.items_examined - before.items_examined, items(&value).0);
+                let failure = crate::executor::stock_json_bound(&value, length - 1, Some(&io)).unwrap_err();
+                prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Invalid);
+                drop(failure);
+                // The original finite path serializes twice and retains a full
+                // encoded buffer even though its caller only needs the bound.
+                if !native {
+                    let mut encoded = None;
+                    let legacy = acyclic_test_support::measure(|| {
+                        encoded = Some(io.encode(&value, length, false).unwrap());
+                    });
+                    prop_assert!(legacy.count_total > measured.count_total);
+                    prop_assert!(legacy.bytes_current >= length as i64);
+                    prop_assert!(io.receipt().bytes_encoded > after.bytes_encoded);
+                    drop(encoded);
+                }
+                cancellation.cancel();
+                let failure = crate::executor::stock_json_bound(&value, length, Some(&io)).unwrap_err();
+                prop_assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
+                drop(failure);
+                drop(io);
+                prop_assert_eq!(work.as_ref().map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes), baseline);
+            }
+            for exhausted_items in [false, true] {
+                let mut budget = acyclic_fs::performance::work_budget(1_000_000, 64_000_000);
+                if exhausted_items {
+                    budget.items_examined = 0;
+                } else {
+                    budget.source_bytes_read = length - 1;
+                }
+                let io = crate::filesystem::PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new()).unwrap();
+                prop_assert!(crate::executor::stock_json_bound(&value, length, Some(&io)).is_err());
+                prop_assert_eq!(io.owned_bytes().unwrap(), 0);
+            }
+        }
+
         // Property: canonical identity and hash charges stay exact, while the
         // final encoded buffer is absent and all temporary custody is released.
         #[test]

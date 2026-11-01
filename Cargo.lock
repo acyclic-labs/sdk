@@ -70,7 +70,6 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "prost",
  "serde",
  "serde_json",
  "tokio",
@@ -134,6 +133,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "ed25519-dalek 3.0.0",
  "futures",
  "js-sys",
@@ -619,6 +619,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-collections",
  "acyclic-contract-derive",
  "acyclic-differential",
  "acyclic-fs",
@@ -660,6 +661,7 @@ dependencies = [
  "regex-lite",
  "reqwest 0.12.28",
  "rmcp",
+ "rquickjs",
  "rustls",
  "same-file",
  "schemars",
@@ -759,6 +761,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+ "zeroize",
 ]
 
 [[package]]
@@ -1050,6 +1053,7 @@ dependencies = [
  "dirs",
  "futures-core",
  "getrandom 0.3.4",
+ "indexmap",
  "keyring",
  "libc",
  "linux-keyutils",
@@ -3589,6 +3593,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-stream",
  "acyclic-test-support",
  "axum",
@@ -6360,6 +6365,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "relative-path"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38540a682c6e9bca04a8bca9e5ec5a6ba168dfbb04c9998fe517a9befb92eb68"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6487,6 +6501,36 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "rquickjs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a22bf72f515cc4189dd7c63d016f6de92a11eee98ddf7dd64794198f6eb34e"
+dependencies = [
+ "rquickjs-core",
+]
+
+[[package]]
+name = "rquickjs-core"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6657979a24d543e5fc66f32cef2f47ca82ce8eb55cec5f7d59a12b7b570bbf24"
+dependencies = [
+ "async-lock",
+ "hashbrown 0.17.1",
+ "relative-path",
+ "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

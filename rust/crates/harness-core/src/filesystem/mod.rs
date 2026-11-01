@@ -33,6 +33,8 @@ mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+#[cfg(feature = "test-support")]
+pub use execution_journal::codec_fuzz as execution_codec_fuzz;
 #[cfg(not(target_arch = "wasm32"))]
 pub use execution_journal::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
@@ -47,6 +49,8 @@ pub use history::read as history_checkpoint;
 pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};
+mod fs_tools;
+pub use fs_tools::FilesystemTools;
 mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_turns;
@@ -82,6 +86,10 @@ mod native_access;
 pub mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::NativeProcessObserver;
+mod workspace_access;
+pub use workspace_access::{
+    WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
+};
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(
@@ -91,10 +99,7 @@ mod native_contract;
 ))]
 mod native_directory;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_access::{
-    NativeMountAuthority, WorkspaceAccess, require_unrestricted_volume_access,
-    require_unrestricted_workspace_read,
-};
+pub use native_access::NativeMountAuthority;
 #[cfg(all(
     feature = "native-execution",
     feature = "filesystem-local",
@@ -230,6 +235,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let unmeasured;
+            let active_io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            };
+            let io = Some(active_io);
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
@@ -267,23 +280,63 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &(&provisional, expected_generation),
                 )?),
             };
-            let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
-                let owned;
-                let io = if let Some(io) = io {
-                    io
-                } else {
-                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &owned
-                };
-                let opened = self.open(&workspace, Some(io)).await?;
-                let prior = io.sdk(
-                    opened
-                        .operation_generation(operation, io, io.cancellation())
-                        .await,
-                )?;
-                Ok::<_, Error>((opened, prior))
-            })?
-            .await?;
+            let root = self.open(&workspace, io).await?;
+            // Host records stay with the same volume owner as their readers
+            // and journal. User content follows the selected project branch.
+            let binding = self
+                .content_operation_workspace(&root, operation, internal_class.is_some(), active_io)
+                .await?;
+            let needs_binding = binding.is_none();
+            let (opened, binding) = match binding {
+                Some(binding) => binding,
+                None => (self.select_current_workspace(&root, active_io).await?, None),
+            };
+            if needs_binding {
+                let (generation, fence) = self
+                    .authorize_content_write(&root, grant, provisional.path(), true, ceiling, io)?
+                    .await?;
+                let _hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
+                self.bind_content_operation(
+                    &root,
+                    opened.id(),
+                    operation,
+                    (fence, grant),
+                    active_io,
+                )?
+                .await?;
+            }
+            let prior = active_io.sdk(
+                opened
+                    .operation_generation(operation, active_io, active_io.cancellation())
+                    .await,
+            )?;
+            let root_cut = if opened.id() != root.id() && prior.is_none() {
+                Some(
+                    active_io.sdk(
+                        root.capture_policy_cut(active_io, active_io.cancellation())
+                            .await,
+                    )?,
+                )
+            } else {
+                None
+            };
+            let root_authorization = if opened.id() != root.id() {
+                let (generation, fence) = self
+                    .authorize_content_write(
+                        &root,
+                        grant,
+                        provisional.path(),
+                        prior.is_some(),
+                        ceiling,
+                        io,
+                    )?
+                    .await?;
+                let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
+                Some((generation, hold, fence))
+            } else {
+                None
+            };
+            let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
             let (authorized_generation, policy_fence) = self
                 .authorize_content_write(
                     &opened,
@@ -298,6 +351,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
                 .transpose()?;
             let authorized_generation = (authorized_generation, generation_hold);
+            if let Some(binding) = binding {
+                bounded_io::retain(&binding, io).await?;
+            }
             if let Some(prior) = prior {
                 let generation = (self).generation_ref_id(prior.id(), io)?;
                 bounded_io::retain(&prior, io).await?;
@@ -417,11 +473,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
             let generation = self
                 .apply_authorized_generation(
-                    &workspace,
-                    (policy_fence, grant),
+                    &opened,
+                    (policy_fence, grant, root_fence),
+                    root_cut,
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
-                    io,
+                    active_io,
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
@@ -718,11 +775,6 @@ mod pinned_read_tests;
 
 use crate::executor::{stock_boundary, stock_string_copy};
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
 pub(crate) mod workspace_policy;
 
 #[cfg(all(

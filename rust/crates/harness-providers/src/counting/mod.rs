@@ -101,7 +101,7 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (mut bytes, nodes) = crate::native::shape(request.bytes());
+            let (mut bytes, nodes) = request.projection_shape();
             for message in &request.request().messages {
                 bytes = bytes
                     .checked_add(crate::files::extra_bytes(
@@ -284,28 +284,6 @@ async fn exchange_count(
             }
             Ok(response) => {
                 let retry_after = response.retry_after;
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = work {
-                    // The bounded prefix, its lossy decoding and the excerpt.
-                    let mut hold = work.claim(
-                        4 * crate::EXCERPT_BYTES as u64 + 64,
-                        4,
-                        acyclic_fs::WorkCounters::UNCHARGED,
-                    )?;
-                    let failure =
-                        crate::http_failure(response, provider.config.max_event_bytes, Some(work))
-                            .await;
-                    match crate::native::model_diagnostic::<()>(Err(failure), &mut hold) {
-                        Err(failure) => (failure, retry_after),
-                        Ok(()) => return Err(boundary(Some(work), "token count refusal lost")),
-                    }
-                } else {
-                    (
-                        crate::http_failure(response, provider.config.max_event_bytes, work).await,
-                        retry_after,
-                    )
-                }
-                #[cfg(target_arch = "wasm32")]
                 (
                     crate::http_failure(response, provider.config.max_event_bytes, work).await,
                     retry_after,
@@ -317,21 +295,6 @@ async fn exchange_count(
             return Err(failure);
         };
         drop(failure);
-        let delay = crate::deadline::timer(provider.transport.as_ref(), wait, work)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = work {
-            let cancelled = work.cancellation_wait()?;
-            futures::pin_mut!(cancelled);
-            match futures::future::select(cancelled, delay).await {
-                futures::future::Either::Left(_) => {
-                    return Err(Error::from(
-                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                    ));
-                }
-                futures::future::Either::Right((result, _)) => result?,
-            }
-            continue;
-        }
-        delay.await?;
+        crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
     }
 }

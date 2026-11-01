@@ -303,6 +303,29 @@ pub fn conditioned_record_digest_with<E>(
     Ok(hash.finalize().into())
 }
 
+/// Binds an unconditional append's original path and borrowed record.
+/// No tail lookup or extra publication is needed to retain its retry identity.
+pub fn appended_record_digest_with<E>(
+    path: &StreamPath,
+    value: &[u8],
+    admit: impl FnOnce(u64) -> Result<(), E>,
+) -> Result<[u8; 32], E> {
+    let domain = b"appended-record";
+    let headers = crate::RecordHeaders::default();
+    admit(
+        b"acyclic.stream.request.v1\0".len() as u64
+            + domain.len() as u64
+            + path_hash_bytes(path)
+            + 8
+            + value.len() as u64
+            + headers.hash_bytes(),
+    )?;
+    let mut hash = request_hasher(domain);
+    hash_path(&mut hash, path);
+    hash_record(&mut hash, value, &headers);
+    Ok(hash.finalize().into())
+}
+
 fn condition_hash_bytes(condition: &CommitCondition) -> u64 {
     match condition {
         CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,

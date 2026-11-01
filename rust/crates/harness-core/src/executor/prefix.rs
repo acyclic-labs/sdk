@@ -111,6 +111,11 @@ impl StockExecution<'_> {
             }
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let completed = matches!(call, RecordedCall::Completed { .. });
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                let _ = guard.take_block_reason();
+                self.append_hook_context(&mut hook_context, guard)?;
+            }
             let projection = match call {
                 RecordedCall::Failed { reason, cause, .. } => {
                     tool_failure_content(reason, cause, self.io)?
@@ -118,12 +123,13 @@ impl StockExecution<'_> {
                 _ => {
                     completed_tool_projection(
                         journal,
-                        &records,
+                        &call_records,
                         step,
                         crate::tool::RecordedInvocation {
                             invocation: &invocation,
                             metadata: &metadata,
                             target: None,
+                            filesystem: None,
                         },
                         request.tools(),
                         self.stock.limits,
@@ -132,6 +138,14 @@ impl StockExecution<'_> {
                     .await?
                 }
             };
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(tool) = self.stock.tools.get(&invocation.name, None, self.io)?
+                && tool.executor.is_code_mode()
+                && let RecordedCall::Completed { result, .. } = call
+            {
+                let result = load_json::<ToolResult>(journal, result, self.io).await?;
+                self.restore_js_context(&result.0.value, &mut hook_context)?;
+            }
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             let feedback = if !completed {
                 crate::hooks::HookOutput::default()
@@ -178,10 +192,6 @@ impl StockExecution<'_> {
             )?;
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             {
-                // The refusal consumed the explicit guard decision into its
-                // tool result. Replay must consume it at the same point.
-                let _ = guard.take_block_reason();
-                self.append_hook_context(&mut hook_context, guard)?;
                 self.append_hook_context(&mut hook_context, feedback)?;
             }
             if through_call.is_some_and(|id| invocation.call_id == id) {

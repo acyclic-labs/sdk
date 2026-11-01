@@ -16,7 +16,7 @@ export class SessionSocket {
       protocol: "acyclic.session.v1", binaryType: "arraybuffer", bufferedAmount: 0, readyState: 0,
       onopen: null, onclose: null, onerror: null, onmessage: null,
       send(input: Uint8Array) {
-        void transport.then(peer => peer.send(fromBinary(SessionFrameSchema, input))).catch(() => socket.onerror?.(new Event("error")));
+        void transport.then(peer => peer.send(input)).catch(() => socket.onerror?.(new Event("error")));
       },
       close() {
         if (closed) return;
@@ -34,7 +34,7 @@ export class SessionSocket {
     void (async () => {
       try {
         for await (const output of (await transport).incoming) {
-          const transformed = this.transform(output);
+          const transformed = this.transform(fromBinary(SessionFrameSchema, output));
           const data = typeof transformed === "string" ? transformed : (transformed instanceof Uint8Array ? transformed : toBinary(SessionFrameSchema, transformed)).slice().buffer;
           socket.onmessage?.(new MessageEvent("message", { data }));
         }

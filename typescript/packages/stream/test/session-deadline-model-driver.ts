@@ -1,5 +1,7 @@
 import { plugin } from "bun";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { fromBinary } from "@bufbuild/protobuf";
+import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { serve, spend } from "./model-driver.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
@@ -18,9 +20,9 @@ plugin({ name: "raw-follow-deadline-model", setup(build) {
       source = source.replace(cancellation, "const abort = (): void => {}; ");
     }
     if (fault === "writeSignal") {
-      const forwarding = "transport.send(fromBinary(wire.SessionFrameSchema, bytes), writeSignal)";
+      const forwarding = "transport.send(bytes, writeSignal)";
       if (!source.includes(forwarding)) throw new Error("write signal negative control no longer matches");
-      source = source.replace(forwarding, "transport.send(fromBinary(wire.SessionFrameSchema, bytes))");
+      source = source.replace(forwarding, "transport.send(bytes)");
     }
     return { contents: source, loader: "ts" };
   });
@@ -48,11 +50,12 @@ const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
   return { ...transport, incoming: { async *[Symbol.asyncIterator]() {
     for await (const frame of transport.incoming) {
-      if (frame.body.case === "data") readData += 1;
+      if (fromBinary(wire.SessionFrameSchema, frame).body.case === "data") readData += 1;
       for (const notify of peer.changed) notify();
       yield frame;
     }
-  } }, async send(input, writeSignal) {
+  } }, async send(bytes, writeSignal) {
+    const input = fromBinary(wire.SessionFrameSchema, bytes);
     const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
@@ -61,7 +64,7 @@ const sessions = new StreamSessions(async (node, signal) => {
       await new Promise<void>(resolve => { releaseWrite = resolve; });
     }
     writeSignal?.throwIfAborted();
-    await transport.send(input, writeSignal);
+    await transport.send(bytes, writeSignal);
   } };
 });
 Object.assign(globalThis, { sessionDeadlineSessions: sessions });

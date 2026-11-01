@@ -1,0 +1,7 @@
+id: 214adfbb-cdfb-4af1-9fa9-da7f3ec81f6f
+data: 
+
+event: message
+id: a019f24d-53d7-405e-b870-7fd7c3c2c7ab
+data: {"result":{"content":[{"type":"text","text":"Echo: codec capture"}]},"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707"}
+

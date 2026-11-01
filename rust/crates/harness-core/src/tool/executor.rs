@@ -1,7 +1,22 @@
 use super::*;
 
+/// Records appended atomically with a tool call's claim
+/// ([`ToolExecutor::dispatch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dispatch {
+    /// The original command, fitting one protective Stream record.
+    pub delivery: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
+    /// The owning Actor's activation, committed with its input and tool claim.
+    pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
+}
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Runs a JavaScript composition through the stock caller. The interpreter
+    /// receives no executor or host authority; each inner call is admitted again.
+    fn is_code_mode(&self) -> bool {
+        false
+    }
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.
@@ -60,6 +75,31 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         }
         let _ = work;
         Ok(())
+    }
+
+    /// Rechecks mutable source authority before exposing a completed result.
+    /// The invocation has already passed `authorize` and its recorded identity
+    /// check. This must only authorize reads: it cannot execute or reconcile the
+    /// command. Executors whose synchronous authorization is sufficient return
+    /// `None`, without constructing a future.
+    fn authorize_replay<'a>(
+        &'a self,
+        _context: Option<&'a crate::runtime::ToolContext>,
+        _invocation: &'a ToolInvocation,
+    ) -> Option<BoxFuture<'a, Result<()>>> {
+        None
+    }
+
+    /// The record that hands this invocation to another host, appended in the
+    /// same commit as the journal entry that claims it; `None` when the
+    /// invocation runs here. A dispatch that is never claimed was never sent,
+    /// and a claimed one was sent exactly once.
+    fn dispatch(
+        &self,
+        _invocation: &ToolInvocation,
+        _context: Option<&crate::runtime::ToolContext>,
+    ) -> Result<Option<Dispatch>> {
+        Ok(None)
     }
 
     /// Whether dropping an invocation future retires all its I/O before return.

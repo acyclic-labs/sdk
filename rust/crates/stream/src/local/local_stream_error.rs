@@ -13,9 +13,12 @@ pub enum LocalStreamError {
     /// Stored bytes or configuration do not match the canonical local format.
     #[error("local Stream journal is corrupt or incompatible")]
     Corrupt,
-    /// A snapshot predates receipt revisions and cannot preserve their contract.
-    #[error("unsupported pre-revision local Stream store; re-create the store")]
-    UnsupportedPreRevisionStore,
+    /// A persisted format belongs to another version of the implementation.
+    #[error("unsupported local Stream {format} version; re-create the store with this build")]
+    UnsupportedVersion {
+        /// The refused format family.
+        format: &'static str,
+    },
     /// Configured bounds are zero or cannot represent the canonical format.
     #[error("local Stream limits are invalid")]
     InvalidLimits,
@@ -34,7 +37,7 @@ impl obs::ErrorKind for LocalStreamError {
             Self::Io(_) => "io",
             Self::AlreadyOpen => "already_open",
             Self::Corrupt => "corrupt",
-            Self::UnsupportedPreRevisionStore => "unsupported_pre_revision_store",
+            Self::UnsupportedVersion { .. } => "unsupported_version",
             Self::InvalidLimits => "invalid_limits",
             Self::Replay(error) => error.code(),
             Self::Executor => "executor",

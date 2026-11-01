@@ -44,6 +44,9 @@ pub enum GuestError {
     /// Host does not support the artifact-declared ABI.
     #[error("unsupported guest ABI: {0}")]
     UnsupportedAbi(u32),
+    /// A recognized guest message carries an absent, old or unknown format version.
+    #[error("unsupported guest message format")]
+    UnsupportedFormat,
     /// Nested synchronous mutations violate the documented no-nesting lock order.
     #[error("nested guest state mutation")]
     NestedMutation,
@@ -64,18 +67,16 @@ pub enum GuestError {
     Handler(String),
 }
 
-/// Artifact codec hooks. Decode must accept every identity listed in readable.
+/// Artifact codec hooks for exactly one checkpoint byte format.
 #[derive(TS)]
 #[ts(bound = "State: TS")]
 pub struct CheckpointCodec<State> {
     /// Identity written on the next checkpoint.
     pub identity: CodecIdentity,
-    /// Explicit decoder compatibility, including identity itself.
-    pub readable: Vec<CodecIdentity>,
     /// Artifact encoder.
     #[ts(type = "(state: State) => Uint8Array")]
     pub encode: fn(&State) -> Result<Bytes, GuestError>,
-    /// Artifact decoder, including migration of readable older versions.
+    /// Artifact decoder, called only after its exact codec identity is admitted.
     #[ts(type = "(checkpoint: Checkpoint) => State")]
     pub decode: fn(&Checkpoint) -> Result<State, GuestError>,
 }

@@ -16,8 +16,8 @@ pub(crate) fn rejection(error: Error) -> Error {
     }
 }
 
-/// Render directly into a fixed UTF-8 prefix. Native errors never invoke this renderer;
-/// portable errors allocate only the final bounded diagnostic, not an unbounded temporary.
+/// Render directly into a fixed UTF-8 prefix. Transport causes use this only on
+/// the portable path; admitted HTTP excerpts share the same bounded renderer.
 pub(super) fn excerpt(cause: impl fmt::Display) -> String {
     struct Prefix {
         bytes: [u8; super::EXCERPT_BYTES],
@@ -58,7 +58,7 @@ mod tests {
     use super::*;
     use acyclic_harness_core::ModelTransportFailure::*;
     #[test]
-    fn native_failures_never_render_discarded_causes() {
+    fn transport_causes_and_http_excerpts_keep_only_bounded_diagnostics() {
         struct Cause(std::cell::Cell<usize>);
         impl fmt::Display for Cause {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -84,6 +84,37 @@ mod tests {
                 .contains("cause text")
         );
         assert_eq!(cause.0.get(), 1);
+
+        let text = " diagnostic\nα".repeat(64);
+        let mut actual = String::new();
+        let allocation = acyclic_test_support::measure(|| {
+            actual = crate::excerpt(text.as_bytes());
+        });
+        assert_eq!(allocation.count_total, 1);
+        // The former HTTP renderer built a growable string and then copied
+        // its trimmed value. Keep that real primitive as the cost negative.
+        let mut former = String::new();
+        let copied = acyclic_test_support::measure(|| {
+            let bounded = &text.as_bytes()[..crate::EXCERPT_BYTES];
+            let valid = match std::str::from_utf8(bounded) {
+                Ok(text) => text,
+                Err(cut) => std::str::from_utf8(&bounded[..cut.valid_up_to()]).unwrap(),
+            };
+            let mut excerpt = String::new();
+            for character in valid.chars() {
+                if excerpt.len() + character.len_utf8() > crate::EXCERPT_BYTES {
+                    break;
+                }
+                excerpt.push(if character.is_control() {
+                    ' '
+                } else {
+                    character
+                });
+            }
+            former = excerpt.trim().to_owned();
+        });
+        assert_eq!(actual, former);
+        assert!(copied.count_total > allocation.count_total);
     }
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(64))]
@@ -95,6 +126,12 @@ mod tests {
             // A short ordinary string is preserved, not merely erased to meet the bound.
             if text.len() <= crate::EXCERPT_BYTES && !text.chars().any(char::is_control) {
                 proptest::prop_assert_eq!(rendered, text.trim());
+            }
+            let http = crate::excerpt(text.as_bytes());
+            proptest::prop_assert!(http.len() <= crate::EXCERPT_BYTES);
+            proptest::prop_assert!(!http.chars().any(char::is_control));
+            if text.len() <= crate::EXCERPT_BYTES {
+                proptest::prop_assert_eq!(http, excerpt(&text));
             }
         }
     }

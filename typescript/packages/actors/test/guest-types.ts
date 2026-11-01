@@ -4,7 +4,6 @@ type State = { count: number };
 type Bindings = { inbox: { append(value: Uint8Array, key: string): Promise<void> } };
 const codec: CheckpointCodec<State> = {
   identity: { name: "counter", version: "1" },
-  readable: [{ name: "counter", version: "1" }],
   encode: state => new Uint8Array([state.count]),
   decode: checkpoint => ({ count: checkpoint.bytes[0] ?? 0 }),
 };

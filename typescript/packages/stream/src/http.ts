@@ -1,4 +1,3 @@
-import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
@@ -10,16 +9,19 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
-import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
-  readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory;
+  readonly endpoint: string; readonly fetcher?: typeof fetch;
+  /** Bounds unary response bytes or cumulative protobuf record bytes in one finite read. Omitted is unbounded. */
+  readonly maximumResponseBytes?: number;
+  readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory;
   /** Select an implicit authority from an authenticated receipt; explicit minima remain intact. */
   readonly revisionScope?: Uint8Array;
 }
 
-/** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
+/** Authenticated JSON unary calls and credited binary reads. Mutation retries are the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
   readonly #sessions: StreamSessions;
   readonly #endpoint: string;
@@ -46,9 +48,11 @@ export class HttpStreamProvider implements StreamProvider {
     return observation;
   }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
-  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
-  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
-  async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> { for (const item of await this.#read(path, options)) yield item; }
+  async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); const input = await validateAppend(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
+  async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); const input = await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
+  read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
+    return observedIterable(this.#observer, "stream", "read", this.#sessions.read(path, options, this.#maximum));
+  }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     await this.#sessions.registerCredential(slot, credential);
   }
@@ -78,15 +82,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
       throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
     }
-    await validateWireRequest({
-      kind: "children_page",
-      ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
-      ...(request.parent === undefined ? {} : { parent: request.parent }),
-      ...(request.after === undefined ? {} : { after: request.after }),
-      ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
-      limit: request.limit,
-    });
-    const input = wireRequest({
+    const input = await validateWireRequest({
       kind: "children_page",
       ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
       ...(request.parent === undefined ? {} : { parent: request.parent }),
@@ -102,33 +98,14 @@ export class HttpStreamProvider implements StreamProvider {
     const input = wireCreateTokenRequest(request);
     return this.#request("tokens/create", await encodeHttpRequest("tokens/create", input));
   }
-  async #read(path: string, options: ReadOptions, signal?: AbortSignal): Promise<readonly EncodedRecord[]> {
-    const { from, limit, key } = structuredClone(options);
-    await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
-    const atLeast = this.#sessions.revisionFloor();
-    const input = wireRequest({ kind: "read", path, from, limit, atLeast, ...(key === undefined ? {} : { key }) });
-    const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal, path);
-    // The page's own served revision must prove the minimum sent, and then
-    // floors later reads: a lagging replica cannot serve older data.
-    this.#sessions.served(atLeast, applied);
-    // A canonical read is a contiguous page beginning at the requested
-    // cursor.  Checking this at the transport boundary prevents a malformed
-    // hosted response from making follow skip records or move its cursor
-    // backwards.
-    let expected = from;
-    for (const record of records) {
-      expected = checkedReadSequence(record, expected, key) + 1n;
-    }
-    return records;
-  }
   async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
     return this.#sessions.heads(options);
   }
 
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    return this.#request("head", await encodeHttpRequest("head", wireRequest(request)));
+    const input = await validateWireRequest(request);
+    return this.#request("head", await encodeHttpRequest("head", input));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
     await validateWireRequest({ kind: "tail", path });
@@ -138,10 +115,10 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions.served(atLeast, applied);
     return tail;
   }
-  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, followed?: string): Promise<HttpResponseFor<Route>> {
-    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes, followed));
+  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
+    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes));
   }
-  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes, followed?: string): Promise<HttpResponseFor<Route>> {
+  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
     const payload = typeof body === "string" ? body : JSON.stringify(body);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
     const lease = await resolveCredential(this.#credential, signal);
@@ -159,7 +136,7 @@ export class HttpStreamProvider implements StreamProvider {
     try { await ensureStreamWasm(); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     let decoded: HttpResponseFor<Route>;
-    try { decoded = decodeHttpResponseFor(route, text, followed); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    try { decoded = decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     return decoded;
   }

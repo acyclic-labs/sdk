@@ -9,6 +9,136 @@ struct BorrowedObservation<'a> {
     event: &'a ExecutionEvent,
 }
 
+pub(super) fn decode_observation(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Observation> {
+    acyclic_auth::format::header(
+        bytes,
+        b"{\"version\":",
+        b"4,",
+        || {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "unsupported execution observation format",
+            )
+        },
+        || {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "unsupported execution observation version",
+            )
+        },
+    )?;
+    crate::filesystem::decode_record(bytes, io)
+}
+
+fn encode_observation(
+    value: &BorrowedObservation<'_>,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    if let Some(io) = io {
+        return io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false);
+    }
+    let encoded = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
+        return Err(Error::Invalid(
+            "execution journal observation exceeds Stream limit".into(),
+        ));
+    }
+    Ok(encoded.into())
+}
+
+#[cfg(feature = "test-support")]
+pub(super) mod codec_fuzz {
+    use super::*;
+
+    fn encode(value: &Observation) -> Result<acyclic_stream::OwnedBytes> {
+        encode_observation(
+            &BorrowedObservation {
+                version: value.version,
+                operation_id: value.operation_id,
+                turn_operation: value.turn_operation,
+                retry_digest: &value.retry_digest,
+                event: &value.event,
+            },
+            None,
+        )
+    }
+
+    pub(in crate::filesystem::execution_journal) fn check(bytes: &[u8]) {
+        let ordinary = decode_observation(bytes, None);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .expect("unbounded decoder work");
+            let baseline = work.live_allocation_bytes();
+            {
+                let io = PreparationIo::from_native_work(&work).expect("original work is admitted");
+                let funded = decode_observation(bytes, Some(&io));
+                assert_eq!(
+                    funded.as_ref().map(|_| ()).map_err(Error::code),
+                    ordinary.as_ref().map(|_| ()).map_err(Error::code)
+                );
+                if let (Ok(funded), Ok(ordinary)) = (&funded, &ordinary) {
+                    assert_eq!(encode(funded).unwrap(), encode(ordinary).unwrap());
+                }
+            }
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline,
+                "decoder scratch retires on admission and refusal"
+            );
+        }
+        if let Ok(value) = ordinary {
+            let encoded = encode(&value).expect("admitted observation encodes");
+            let restored = decode_observation(&encoded, None).expect("writer output decodes");
+            assert_eq!(encode(&restored).unwrap(), encoded);
+            let version = b"{\"version\":".len();
+            for unsupported in [b'0', b'2', b'3', u8::MAX] {
+                let mut header = encoded[..version + 2].to_vec();
+                header[version] = unsupported;
+                assert_eq!(
+                    decode_observation(&header, None).err().unwrap().code(),
+                    crate::wire::ErrorCode::Unsupported
+                );
+            }
+            assert_ne!(
+                decode_observation(&encoded[..version + 2], None)
+                    .err()
+                    .unwrap()
+                    .code(),
+                crate::wire::ErrorCode::Unsupported
+            );
+        }
+    }
+
+    pub(in crate::filesystem::execution_journal) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>>
+    {
+        let event = ExecutionEvent::Started {
+            request_digest: [3; 32],
+        };
+        let operation_id = OperationId::from_bytes([1; 16]);
+        let retry_digest =
+            super::super::content::operation_digest(operation_id, "captured-retry", None)?
+                .to_hex()
+                .to_string();
+        let value = BorrowedObservation {
+            version: OBSERVATION_VERSION,
+            operation_id,
+            turn_operation: OperationId::from_bytes([2; 16]),
+            retry_digest: &retry_digest,
+            event: &event,
+        };
+        let bytes = encode_observation(&value, None)?;
+        decode_observation(&bytes, None)?;
+        Ok(vec![("execution-observation", bytes.to_vec())])
+    }
+}
+
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized,
@@ -269,7 +399,8 @@ where
         self.require_operation(operation_id, io)?;
         let identity = indexed_publication::contribution_identity(contributions, io)?;
         let bound = match event {
-            ExecutionEvent::ConversationItem { publication, .. } => *publication == identity,
+            ExecutionEvent::ConversationItem { publication, .. }
+            | ExecutionEvent::ToolStarted { publication, .. } => *publication == identity,
             _ => identity.is_none(),
         };
         if !bound || (!contributions.is_empty() && expected_tail.is_none()) {
@@ -314,22 +445,10 @@ where
             retry_digest: &retry_digest,
             event,
         };
-        let body_hold;
-        let bytes = if let Some(io) = io {
-            let encoded =
-                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-            body_hold = io.guard_bytes(&encoded)?;
-            encoded
-        } else {
-            body_hold = None;
-            let encoded = serde_json::to_vec(&observation)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "execution journal observation exceeds Stream limit".into(),
-                ));
-            }
-            encoded.into()
+        let bytes = encode_observation(&observation, io)?;
+        let body_hold = match io {
+            Some(io) => io.guard_bytes(&bytes)?,
+            None => None,
         };
         let retry_hashing = acyclic_fs::WorkCounters {
             bytes_hashed: 64,

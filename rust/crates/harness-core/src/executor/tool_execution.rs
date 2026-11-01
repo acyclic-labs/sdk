@@ -46,6 +46,8 @@ type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
 enum ToolInvocationOutcome {
     Settled(crate::model::ToolResultContent),
+    #[cfg(not(target_arch = "wasm32"))]
+    Pending(OperationId),
     Interrupted,
 }
 
@@ -93,7 +95,11 @@ impl StockExecution<'_> {
             ),
             None => None,
         };
-        let target = if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted) {
+        let target = if matches!(recorded, RecordedCall::Started(_) | RecordedCall::Unstarted)
+            || original
+                .as_ref()
+                .is_some_and(|record| record.0.filesystem.is_some())
+        {
             self.call_target(&invocation, original.as_ref().map(|record| &record.0))?
         } else {
             Ok(None)
@@ -225,6 +231,12 @@ impl StockExecution<'_> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
+                if let Some(authorization) = tool
+                    .executor
+                    .authorize_replay(context.as_ref(), &invocation)
+                {
+                    authorization.await?;
+                }
                 self.replay_tool_output(
                     journal,
                     operation_id,
@@ -332,6 +344,11 @@ impl StockExecution<'_> {
                                     .map(|target| stock_string_copy(&target.name, self.io))
                                     .transpose()?
                             },
+                            filesystem: if started || target.is_some() {
+                                None
+                            } else {
+                                self.filesystem_binding(&invocation)
+                            },
                         },
                         tool,
                         &mut context,
@@ -343,6 +360,10 @@ impl StockExecution<'_> {
                     ToolInvocationOutcome::Settled(content) => content,
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    ToolInvocationOutcome::Pending(operation) => {
+                        return Ok(ExecutionProgress::Pending(operation));
                     }
                 }
             }
@@ -432,6 +453,22 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
     ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+        if let Some(original) = original {
+            if let Some(identity) = original.filesystem {
+                return if original.target.is_none()
+                    && self.filesystem_binding(invocation) == Some(identity)
+                {
+                    Ok(Ok(None))
+                } else {
+                    Err(Error::Indeterminate(invocation.operation_id))
+                };
+            }
+            if original.target.is_none() && crate::runtime::is_workspace_call(invocation) {
+                return Err(Error::Indeterminate(invocation.operation_id));
+            }
+        } else if self.filesystem_binding(invocation).is_some() {
+            return Ok(Ok(None));
+        }
         let Some(targets) = self.context.and_then(|(task, _)| task.harness.targets()) else {
             return if original.is_some_and(|original| original.target.is_some()) {
                 Err(Error::Indeterminate(invocation.operation_id))
@@ -449,7 +486,7 @@ impl StockExecution<'_> {
                 };
             };
             let target = targets
-                .resolve(Some(name))
+                .recover(name)
                 .map_err(|_| Error::Indeterminate(invocation.operation_id))?;
             if target.record.name != name || name.starts_with(crate::agent::USER_PREFIX) {
                 return Err(Error::Indeterminate(invocation.operation_id));
@@ -457,6 +494,15 @@ impl StockExecution<'_> {
             return Ok(Ok(Some(target)));
         }
         Ok(crate::runtime::call_target(&**targets, invocation).transpose())
+    }
+
+    fn filesystem_binding(&self, invocation: &ToolInvocation) -> Option<[u8; 32]> {
+        if invocation.name != "fs" {
+            return None;
+        }
+        self.context
+            .and_then(|(task, _)| task.harness.filesystem.as_ref())
+            .map(|filesystem| filesystem.binding_identity())
     }
 
     /// Admits a call before dispatch. Every refusal a tool reports settles as the call's result;

@@ -6,24 +6,23 @@ use prost::{
 };
 use zeroize::Zeroizing;
 
-pub(super) enum Proof {
+pub(crate) enum Proof<'a> {
     Secret(Zeroizing<Vec<u8>>),
-    Sealed([u8; 64]),
+    Sealed(&'a [u8; 64]),
 }
 
-impl Proof {
+impl Proof<'_> {
     fn parts(&self) -> (u64, &[u8]) {
         match self {
             Self::Secret(bytes) => (18, bytes),
-            Self::Sealed(bytes) => (26, bytes),
+            Self::Sealed(bytes) => (26, *bytes),
         }
     }
 }
 
-pub(super) struct Envelope {
+pub(crate) struct Envelope<'a> {
     pub blocks: Vec<SignedBlockProto>,
-    pub proof: Proof,
-    pub version: u32,
+    pub proof: Proof<'a>,
 }
 
 fn varint(input: &mut &[u8]) -> Result<u64, VerifyError> {
@@ -37,11 +36,19 @@ fn bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], VerifyError> {
     Ok(value)
 }
 
-pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
+pub(crate) fn decode(mut input: &[u8]) -> Result<Envelope<'_>, VerifyError> {
     let original = input;
+    input = input.strip_prefix(&[32]).ok_or(VerifyError::Version(0))?;
+    let version_bytes = input.len();
+    let version = u32::try_from(varint(&mut input)?).map_err(|_| VerifyError::Malformed)?;
+    if version != crate::VERSION {
+        return Err(VerifyError::Version(version));
+    }
+    if version_bytes - input.len() != encoded_len_varint(u64::from(version)) {
+        return Err(VerifyError::Malformed);
+    }
     let mut blocks = Vec::new();
     let mut proof = None;
-    let mut version = 0;
     while !input.is_empty() {
         match varint(&mut input)? {
             10 => blocks.push(
@@ -65,25 +72,22 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
                     Proof::Sealed(value.try_into().map_err(|_| VerifyError::Malformed)?)
                 });
             }
-            32 => {
-                version = u32::try_from(varint(&mut input)?).map_err(|_| VerifyError::Malformed)?;
-            }
             _ => return Err(VerifyError::Malformed),
         }
     }
     let proof = proof.ok_or(VerifyError::Malformed)?;
     let (tag, value) = proof.parts();
-    if encode(&blocks, tag, value, version).as_slice() != original {
+    if encode(&blocks, Some((tag, value)), version).as_slice() != original {
         return Err(VerifyError::Malformed);
     }
-    Ok(Envelope {
-        blocks,
-        proof,
-        version,
-    })
+    Ok(Envelope { blocks, proof })
 }
 
-pub(super) fn encoded_len(blocks: &[SignedBlockProto], proof_len: usize, version: u32) -> usize {
+pub(crate) fn encoded_len(
+    blocks: &[SignedBlockProto],
+    proof_len: Option<usize>,
+    version: u32,
+) -> usize {
     blocks
         .iter()
         .map(|block| {
@@ -91,35 +95,29 @@ pub(super) fn encoded_len(blocks: &[SignedBlockProto], proof_len: usize, version
             1 + encoded_len_varint(len as u64) + len
         })
         .sum::<usize>()
+        + proof_len.map_or(0, |length| 1 + encoded_len_varint(length as u64) + length)
         + 1
-        + encoded_len_varint(proof_len as u64)
-        + proof_len
-        + if version == 0 {
-            0
-        } else {
-            1 + encoded_len_varint(u64::from(version))
-        }
+        + encoded_len_varint(u64::from(version))
 }
 
-pub(super) fn encode(
+pub(crate) fn encode(
     blocks: &[SignedBlockProto],
-    proof_tag: u64,
-    proof: &[u8],
+    proof: Option<(u64, &[u8])>,
     version: u32,
 ) -> Zeroizing<Vec<u8>> {
-    let len = encoded_len(blocks, proof.len(), version);
+    let len = encoded_len(blocks, proof.map(|(_, bytes)| bytes.len()), version);
     let mut output = Zeroizing::new(Vec::with_capacity(len));
+    encode_varint(32, &mut *output);
+    encode_varint(u64::from(version), &mut *output);
     for block in blocks {
         encode_varint(10, &mut *output);
         encode_varint(block.encoded_len() as u64, &mut *output);
         block.encode_raw(&mut *output);
     }
-    encode_varint(proof_tag, &mut *output);
-    encode_varint(proof.len() as u64, &mut *output);
-    output.extend_from_slice(proof);
-    if version != 0 {
-        encode_varint(32, &mut *output);
-        encode_varint(u64::from(version), &mut *output);
+    if let Some((tag, bytes)) = proof {
+        encode_varint(tag, &mut *output);
+        encode_varint(bytes.len() as u64, &mut *output);
+        output.extend_from_slice(bytes);
     }
     output
 }

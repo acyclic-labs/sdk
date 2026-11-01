@@ -78,8 +78,13 @@ pub fn call_key(step: u32, operation: OperationId) -> String {
 /// Whether `call` is the key [`call_key`] gives `operation`.
 #[must_use]
 pub fn is_call_of(call: &str, operation: OperationId) -> bool {
-    call.rsplit_once('-')
-        .is_some_and(|(_, key)| key == operation_key(operation))
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    call.rsplit_once('-').is_some_and(|(_, key)| {
+        key.bytes().eq(operation
+            .into_bytes()
+            .into_iter()
+            .flat_map(|byte| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 15)]]))
+    })
 }
 
 /// Lower-case hex of `operation`, as agent tool keys and intents name it.

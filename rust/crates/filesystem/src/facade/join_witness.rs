@@ -167,17 +167,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         workspace: &Volume<A, O>,
         operation_id: OperationId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(Option<(GenerationId, DurableCommit)>, KernelOwnedAllocation), WorkspaceError>
     {
         accounting.check()?;
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
             .find_operation(volume_authority_id(workspace.id), operation_id, &mut work)
             .await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         let record = result.map_err(FsError::from)?;
         let allocation = KernelOwnedAllocation::Standalone;
         let generation = record
@@ -220,7 +220,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             {
                 return Ok(false);
             }
-            let mut authority = authority_work(&accounting, cancellation)?;
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let observed = self
                 .inner
                 .authority
@@ -230,7 +230,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     &mut authority,
                 )
                 .await;
-            record_authority_work(&mut accounting, &authority)?;
+            finish_authority_work(authority)?;
             let observed = observed.map_err(FsError::from)?;
             let Some(commit) = observed.as_ref() else {
                 return Ok(false);

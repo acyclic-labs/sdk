@@ -126,6 +126,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
+            Ok(Event::Socket { next, bytes }) => (
+                Frame::data(&identity, cursor(next), Item::ActorSocket(bytes)),
+                None,
+            ),
             Ok(Event::End) => {
                 self.end(identity.channel_id, wire_codec::session::END_CODE)?;
                 return Ok(());
@@ -194,10 +198,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
 
-    /// Stops the source; `code` closes the channel after its queued frames.
-    fn end(&mut self, id: u64, code: &'static str) -> Result<(), StreamError> {
+    /// Stops both producers; `code` closes the channel after its queued frames.
+    pub(super) fn end(&mut self, id: u64, code: &'static str) -> Result<(), StreamError> {
         let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
         channel.ending = Some(code);
+        channel.socket.take();
         self.sources.remove(id);
         self.finish_if_drained(id)
     }

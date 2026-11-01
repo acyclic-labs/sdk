@@ -60,6 +60,21 @@ impl PathStyle {
     }
 }
 
+/// What kind of machine a target is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    /// A user's workstation or laptop.
+    Desktop,
+    /// A server.
+    Server,
+    /// A virtual machine.
+    VirtualMachine,
+    /// A container.
+    Container,
+}
+
 /// Whether a target takes commands now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -88,6 +103,8 @@ pub struct TargetRecord {
     pub shell: String,
     /// How its paths are spelled.
     pub path_style: PathStyle,
+    /// What kind of machine it is.
+    pub device_kind: DeviceKind,
     /// Whether it takes commands now.
     pub state: TargetState,
 }
@@ -128,21 +145,41 @@ fn check_name(name: &str) -> Result<(), super::Error> {
 /// Every target visible to an agent, in attach order, and its home.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RosterWire")]
 pub struct Roster {
-    /// The target an omitted `target` names.
-    pub home: String,
-    /// Every target connected to the tree, each with its owner.
-    pub targets: Vec<TargetRecord>,
+    home: String,
+    targets: Vec<TargetRecord>,
+    #[serde(skip)]
+    canonical: std::sync::Arc<[u8]>,
+    #[serde(skip)]
+    digest: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RosterWire {
+    home: String,
+    targets: Vec<TargetRecord>,
+}
+
+impl TryFrom<RosterWire> for Roster {
+    type Error = super::Error;
+
+    fn try_from(wire: RosterWire) -> Result<Self, Self::Error> {
+        Self::new(&wire.home, wire.targets)
+    }
 }
 
 /// Why a call's target cannot take it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
     /// No listed target has that name, or the user has no device.
     Unknown,
     /// The target is listed but not connected.
     Offline,
+    /// The device declined to run the command, for this reason: its
+    /// owner's policy refused it, or its grant did not verify there.
+    Declined(String),
 }
 
 /// A call refused because of its target; the model reads exactly this text
@@ -161,9 +198,16 @@ impl std::error::Error for TargetRefusal {}
 
 impl fmt::Display for TargetRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let state = match self.refused {
+        let state = match &self.refused {
             Refused::Unknown => "unknown",
             Refused::Offline => "offline",
+            Refused::Declined(reason) => {
+                return write!(
+                    formatter,
+                    "target '{}' declined the command: {reason}",
+                    self.target
+                );
+            }
         };
         write!(formatter, "target '{}' is {state}; online: ", self.target)?;
         if self.online.is_empty() {
@@ -190,9 +234,19 @@ impl Roster {
         if !names.contains(home) {
             return Err(super::Error::Record("roster home is not a listed target"));
         }
-        Ok(Self {
+        let wire = RosterWire {
             home: home.to_owned(),
             targets,
+        };
+        let bytes = crate::contract::canonical_json_bytes(&wire)
+            .map_err(|_| super::Error::Record("roster does not encode"))?;
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
+        hasher.update(&bytes);
+        Ok(Self {
+            home: wire.home,
+            targets: wire.targets,
+            canonical: bytes.into(),
+            digest: *hasher.finalize().as_bytes(),
         })
     }
 
@@ -205,30 +259,27 @@ impl Roster {
         Self::new(&home, vec![target])
     }
 
-    /// The canonical encoding an announcement stages, and its digest.
-    ///
-    /// # Errors
-    /// When the roster does not encode.
-    pub fn canonical(&self) -> Result<(Vec<u8>, [u8; 32]), super::Error> {
-        let bytes = crate::contract::canonical_json_bytes(self)
-            .map_err(|_| super::Error::Record("roster does not encode"))?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.targets.roster.v1");
-        hasher.update(&bytes);
-        let digest = *hasher.finalize().as_bytes();
-        Ok((bytes, digest))
+    /// The target an omitted `target` names.
+    pub fn home_name(&self) -> &str {
+        &self.home
+    }
+
+    /// Every target in attach order. Changes require admitting a new roster.
+    pub fn targets(&self) -> &[TargetRecord] {
+        &self.targets
+    }
+
+    /// The retained canonical announcement bytes and digest, admitted once
+    /// with this immutable roster. Reading them neither encodes nor hashes.
+    pub fn canonical(&self) -> (&[u8], [u8; 32]) {
+        (&self.canonical, self.digest)
     }
 
     /// What a turn announces when its agent last announced `announced`: this
     /// roster's encoding and digest when they differ, else nothing.
     ///
-    /// # Errors
-    /// When the roster does not encode.
-    pub fn announcement(
-        &self,
-        announced: Option<[u8; 32]>,
-    ) -> Result<Option<(Vec<u8>, [u8; 32])>, super::Error> {
-        let (bytes, digest) = self.canonical()?;
-        Ok((announced != Some(digest)).then_some((bytes, digest)))
+    pub fn announcement(&self, announced: Option<[u8; 32]>) -> Option<(&[u8], [u8; 32])> {
+        (announced != Some(self.digest)).then(|| self.canonical())
     }
 
     /// The target a call names: its home when `target` is omitted, the
@@ -273,6 +324,7 @@ mod tests {
             os: "linux".into(),
             shell: "bash".into(),
             path_style: PathStyle::Posix,
+            device_kind: DeviceKind::Desktop,
             state,
         }
     }
@@ -342,24 +394,43 @@ mod tests {
         }
     }
 
-    fn digest(roster: &Roster) -> Option<[u8; 32]> {
-        roster.canonical().ok().map(|(_, digest)| digest)
-    }
-
     #[test]
-    fn digest_changes_exactly_with_the_roster() {
+    fn admitted_roster_retains_exact_announcement_across_decode_and_changes() {
         let roster = roster();
-        assert_eq!(roster.canonical().ok(), roster.clone().canonical().ok());
+        let (bytes, digest) = roster.canonical();
+        assert_eq!(
+            bytes,
+            crate::contract::canonical_json_bytes(&roster).expect("encode")
+        );
+        let decoded: Roster = serde_json::from_slice(bytes).expect("admit original records");
+        assert_eq!(decoded.canonical(), (bytes, digest));
+        for count in [1, 100, 1000] {
+            for _ in 0..count {
+                assert!(std::ptr::eq(bytes, roster.canonical().0));
+                assert!(std::ptr::eq(bytes, roster.clone().canonical().0));
+            }
+        }
         // An announced roster is not announced again; any other one is.
-        let first = roster.announcement(None).ok().flatten().expect("announced");
-        assert_eq!(roster.announcement(Some(first.1)).ok(), Some(None));
-        assert!(roster.announcement(Some([0; 32])).ok().flatten().is_some());
+        let first = roster.announcement(None).expect("announced");
+        assert_eq!(roster.announcement(Some(first.1)), None);
+        assert!(roster.announcement(Some([0; 32])).is_some());
         // Negative control: any visible change is a new announcement.
-        let mut moved = roster.clone();
-        moved.targets[1].state = TargetState::Online;
-        assert_ne!(digest(&roster), digest(&moved));
-        let mut rehomed = roster.clone();
-        rehomed.home = "ci".into();
-        assert_ne!(digest(&roster), digest(&rehomed));
+        let mut targets = roster.targets().to_vec();
+        targets[1].state = TargetState::Online;
+        let moved = Roster::new(roster.home_name(), targets).expect("new admission");
+        assert_ne!(digest, moved.canonical().1);
+        let rehomed = Roster::new("ci", roster.targets().to_vec()).expect("new home");
+        assert_ne!(digest, rehomed.canonical().1);
+        // Cached state is not accepted from serialized input; record admission
+        // cannot be bypassed by deserialization either.
+        let mut wire: serde_json::Value = serde_json::from_slice(bytes).expect("real encoding");
+        wire["digest"] = serde_json::json!(vec![0; 32]);
+        assert!(serde_json::from_value::<Roster>(wire).is_err());
+        for invalid in [
+            serde_json::json!({"home":"absent", "targets":roster.targets()}),
+            serde_json::json!({"home":"laptop", "targets":[roster.targets()[0],roster.targets()[0]]}),
+        ] {
+            assert!(serde_json::from_value::<Roster>(invalid).is_err());
+        }
     }
 }

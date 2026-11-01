@@ -17,8 +17,10 @@ mod admissions;
 mod application;
 mod call;
 mod data;
+mod socket;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
+pub use socket::{ActorSocket, ActorSocketSender};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
@@ -158,15 +160,28 @@ fn consume_data(
                 .map_err(|_| StreamError::Unavailable)?,
         ),
         Some(
-            Item::LatestValue(_) | Item::ActorCall(_) | Item::ChildrenPage(_) | Item::Heads(_),
+            Item::LatestValue(_)
+            | Item::ActorCall(_)
+            | Item::ActorSocket(_)
+            | Item::ChildrenPage(_)
+            | Item::Heads(_),
         ) => progress.consume_latest(generation, sequence),
         _ => Err(StreamError::Unavailable),
     }
 }
 
 enum Command {
-    Credential { slot: u32, credential: Bytes },
+    Credential {
+        slot: u32,
+        credential: Bytes,
+    },
     Open(Box<OpenCommand>),
+    /// One peer frame on an open actor socket.
+    Socket {
+        id: u64,
+        frame: Bytes,
+        sent: oneshot::Sender<Result<(), StreamError>>,
+    },
 }
 struct OpenCommand {
     id: u64,
@@ -207,6 +222,7 @@ struct Route {
     observation: super::runtime::OperationSpan,
 }
 struct Link {
+    opening_subscription: Option<wire::SessionChannel>,
     opening_credentials: BTreeMap<u32, Bytes>,
     observation: Option<Observation>,
     epoch: u64,

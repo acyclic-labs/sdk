@@ -11,6 +11,16 @@ pub(crate) struct CheckoutRoots {
 }
 
 impl CheckoutRoots {
+    pub(crate) fn take_generation_hold(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<GenerationHold>, crate::FsError> {
+        self.hold
+            .take()
+            .map(|hold| GenerationHold::new(hold, self.base, self.config, accounting))
+            .transpose()
+    }
+
     pub(crate) fn new(
         collection: Option<&Arc<Collection>>,
         config: crate::model::VolumeConfig,
@@ -86,6 +96,13 @@ impl CheckoutRoots {
 
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         root_parent_bytes(&self.working) + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
+    }
+
+    /// Slot quota retires with its original lease, independently of scratch.
+    pub(crate) fn retained_slot_bytes(&self) -> u64 {
+        self.hold.as_ref().map_or(0, |_| {
+            crate::foundation::usize_to_u64(std::mem::size_of::<Slot>())
+        })
     }
 
     /// Tags freshly admitted vectors, excluding shared slot backing.

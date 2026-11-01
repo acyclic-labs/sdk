@@ -809,7 +809,7 @@ impl Authority {
 
 #[cfg(test)]
 #[path = "authority_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn close_authority(

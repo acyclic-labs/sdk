@@ -268,10 +268,11 @@ async function run() {
     consistency: "pinned",
     mutationMode: "private-cow",
   });
-  const mounted = new MountedView([
+  const mountEntries = [
     { mountId: new Uint8Array(16).fill(1), volumeId: volume.id, path: "/", checkout },
     { mountId: new Uint8Array(16).fill(2), volumeId: scratch.id, path: "/.scratch", checkout: scratchCheckout },
-  ]);
+  ];
+  const mounted = new MountedView(mountEntries);
   await mounted.createFile("/.scratch/temp.txt", encoder.encode("scratch"));
   assert((await scratchCheckout.lookupNoFollow("/temp.txt")).fileId !== undefined, "nested mount did not route to its volume");
   assert(new TextDecoder().decode((await mounted.readFileRange("/.scratch/temp.txt", 0n, 7n)).bytes) === "scratch", "mounted read did not use longest-prefix routing");
@@ -293,10 +294,15 @@ async function run() {
   } catch (error) {
     assert(error instanceof CrossVolumeError && error.code === "EXDEV", "cross-volume transaction did not fail as EXDEV");
   }
-  const snapshot = await mounted.checkpointSnapshot(2);
-  assert(snapshot.mounts.length === 2, "mounted snapshot did not capture every volume");
-  assert(snapshot.mounts.every((mount) => isObjectReference(mount.generationId, 6)), "mounted snapshot identity was malformed");
-  assert(snapshot.mounts.every((mount) => mount.volumeId.byteLength === 16), "mounted volume identity was malformed");
+  for (const entries of [mountEntries, [...mountEntries].reverse()]) {
+    const view = new MountedView(entries);
+    assert(new TextDecoder().decode((await view.readFileRange("/.scratch/temp.txt", 0n, 7n)).bytes) === "scratch", "mount order changed longest-prefix routing");
+    const snapshot = await view.checkpointSnapshot(2);
+    assert(snapshot.mounts.length === 2, "mounted snapshot did not capture every volume");
+    assert(snapshot.mounts.every((mount) => isObjectReference(mount.generationId, 6)), "mounted snapshot identity was malformed");
+    assert(snapshot.mounts.every((mount) => mount.volumeId.byteLength === 16), "mounted volume identity was malformed");
+    assert(mountEntries.every((entry) => snapshot.mounts.some((mount) => mount.path === entry.path && mount.mountId.every((byte, index) => byte === entry.mountId[index]) && mount.volumeId.every((byte, index) => byte === entry.volumeId[index]))), "mount order changed snapshot membership");
+  }
   const checkpoint = await checkout.checkpoint();
   assert(isObjectReference(checkpoint.generationId, 6), "browser checkpoint identity was malformed");
   const windowsVolume = await source.createVolume({

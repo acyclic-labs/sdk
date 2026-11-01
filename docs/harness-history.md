@@ -77,7 +77,7 @@ original producer follows for a quiet page. The frontend retains that same
 in-flight future across stdin and other stream deliveries. It creates no task,
 timer, repeated readiness request, per-input cursor collection or export store.
 Each output line borrows its record into one serialized frame, waits on the
-inherited output's original OS event, flushes, then atomically replaces the
+inherited output's original OS event with the owned frame, then atomically replaces the
 optional cursor artifact. It adds no payload-tree clone or durability barrier.
 The same asynchronous writer carries events, paged query replies and terminal
 errors; a full pipe leaves the existing shutdown and diagnostic paths runnable.
@@ -110,8 +110,8 @@ drain. Producer failure remains a typed stream failure.
 The registration cut uses the existing subscription lock and snapshot. It adds
 one scalar to the cursor and one requested control frame, with no extra tail
 request, filesystem syscall, durability barrier or transport round trip. Plain
-session follows request no extra control frame. JSONL output flushes before
-cursor replacement; it introduces no per-record durability barrier. The history
+session follows request no extra control frame. JSONL awaits the original owned
+write before cursor replacement; it adds no flush or per-record durability barrier. The history
 query adds one tail request only on the initial page, one indexed read per
 nonempty page, and bounded descriptor decoding and output copies. Older pages
 perform no head read. No operation enumerates the preceding history.

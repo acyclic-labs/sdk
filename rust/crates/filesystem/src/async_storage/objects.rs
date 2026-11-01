@@ -4,30 +4,23 @@ pub(crate) async fn prepare_object<S: AsyncObjectStore>(
     store: &S,
     object: crate::HashedObject,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    cancellation: &crate::CancellationToken,
 ) -> Result<crate::HashedObject, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        return store
-            .prepare_hashed(object, &mut AuthorityWork::native(original, cancellation))
-            .await
-            .map_err(Into::into);
-    }
-    let mut work = AuthorityWork::new(accounting.remaining()?, cancellation);
-    let result = store.prepare_hashed(object, &mut work).await;
-    crate::kernel::complete_standalone_backend(accounting, work.spent(), 0)?;
-    result.map_err(Into::into)
+    let mut work = AuthorityFrame::borrow(accounting)?;
+    store
+        .prepare_hashed(object, &mut work)
+        .await
+        .map_err(Into::into)
 }
 
 /// The objects one authority record makes reachable, which must be durable,
 /// and retained under the store's current collection epoch, before the
-/// record is appended. A reused proof's parent is live, so the collection
-/// that opened the epoch retained it, which is what lets its scope list
-/// only the difference.
+/// record is appended. A reused proof's parent is live through its accepted
+/// publication in this epoch or its original registered root hold. The
+/// collection retains that parent, so the scope lists only the difference.
 #[derive(Clone, Copy, Debug)]
 pub struct PublicationScope<'a> {
     /// Every object the record reaches, or, when its proof reused the
-    /// published parent's proof from the same collection epoch, every
+    /// published parent's proof in this epoch or under its retained root, every
     /// object it reaches that the parent's closure did not list.
     pub objects: &'a [ObjectId],
     /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
@@ -52,27 +45,18 @@ pub trait AsyncObjectStore: ProviderPlatform {
     }
     /// Whether decoded-cache hooks may retain or reject a decoded page.
     ///
-    /// Return false only when both hooks have their default no-cache behavior.
-    /// The default preserves existing providers' cache and admission hooks.
+    /// Return false only when lookup has its default no-cache behavior.
+    /// The default permits a provider's original miss to retain admission policy.
     fn supports_decoded_cache(&self) -> bool {
         true
     }
 
-    /// Borrows an immutable decoded cache entry.
-    fn decoded_cache_get(
+    /// Observes a decoded value or retains its original miss across I/O.
+    fn decoded_cache_lookup(
         &self,
-        _key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, crate::storage::ObjectStoreError> {
-        Ok(None)
-    }
-
-    /// Offers one authenticated decoded representation to a disposable cache.
-    fn decoded_cache_admit(
-        &self,
-        _key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, crate::storage::ObjectStoreError> {
-        Ok(DecodedCacheAdmission::Uncached(value))
+        key: DecodedCacheKey,
+    ) -> Result<DecodedCacheLookup<'_>, crate::storage::ObjectStoreError> {
+        Ok(DecodedCacheLookup::Miss(DecodedCacheMiss::uncached(key)))
     }
 
     /// Writes one immutable object.

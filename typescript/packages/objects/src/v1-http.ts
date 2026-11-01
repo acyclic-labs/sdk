@@ -94,7 +94,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       }
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (this.maximumResponse !== undefined && declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
-      const chunks: Uint8Array[] = [];
+      let data: Uint8Array | undefined;
+      let chunks: Uint8Array[] | undefined;
       let size = 0;
       if (reader !== undefined) while (true) {
         const { done, value } = await awaitSignal(reader.read(), signal);
@@ -102,12 +103,16 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         if (done) break;
         size += value.byteLength;
         if (this.maximumResponse !== undefined && size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
-        chunks.push(value);
+        if (data === undefined) data = value;
+        else (chunks ??= [data]).push(value);
       }
       if (sizes) sizes.responseBytes = size;
-      const data = new Uint8Array(size);
-      let offset = 0;
-      for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+      data ??= new Uint8Array(0);
+      if (chunks !== undefined) {
+        data = new Uint8Array(size);
+        let offset = 0;
+        for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
+      }
       if (response.status !== 200) {
         let detail: wire.ErrorDetail | undefined;
         try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, data.byteLength)); } catch { /* the status classifies it */ }

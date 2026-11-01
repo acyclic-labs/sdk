@@ -139,7 +139,7 @@ fn world(anchor: &Issuer, genesis: Vec<Vec<u8>>) -> World {
         Arc::clone(&follower),
         Arc::new(Clock),
     );
-    accounts.follow("account");
+    accounts.follow("account").unwrap();
     World {
         fake,
         follower,
@@ -213,7 +213,7 @@ fn reconnect_completes_an_interrupted_authenticated_replay() {
     );
     let mut run = Box::pin(feed.run());
     assert!(step(&mut run).is_none());
-    accounts.follow("account");
+    accounts.follow("account").unwrap();
     assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
     drop(run);
     assert!(follower.initialized("account").unwrap());
@@ -240,6 +240,20 @@ fn a_cancelled_run_fences_the_trust_it_served() {
         FollowerState::Fenced(FenceCause::LostFollow)
     );
     assert!(!served(&follower, "account"));
+    // Cancelling this run leaves its original feed available for reconnect.
+    world.accounts.follow("account").unwrap();
+    let late = world.accounts.clone();
+    let changed = follower.changed();
+    world.feed.close();
+    assert_eq!(
+        changed.now_or_never(),
+        Some(Err(acyclic_auth::trust::SourceClosed))
+    );
+    assert_eq!(
+        world.accounts.follow("account"),
+        Err(StreamError::Unavailable)
+    );
+    assert_eq!(late.follow("late"), Err(StreamError::Unavailable));
 }
 
 #[test]
@@ -329,7 +343,7 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
     for record in history {
         fake.push(&account_path("test", "late"), record);
     }
-    world.accounts.follow("late");
+    world.accounts.follow("late").unwrap();
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "late"));
     // The current key authenticates the checkpoint; a historical signature
@@ -346,7 +360,7 @@ fn a_new_account_replays_from_a_current_checkpoint_after_environment_rotation() 
             .environment_keyring(&mut frontier, &anchor.anchor(), NOW)
             .unwrap(),
     );
-    world.accounts.follow("foreign");
+    world.accounts.follow("foreign").unwrap();
     assert!(step(&mut run).is_none());
     assert!(!served(&follower, "foreign"));
     assert!(served(&follower, "late"));
@@ -366,7 +380,7 @@ fn a_slow_account_open_never_delays_another_accounts_revocations() {
         .lock()
         .unwrap()
         .insert(account_path("test", "slow"));
-    world.accounts.follow("slow");
+    world.accounts.follow("slow").unwrap();
     let mut run = Box::pin(world.feed.run());
     assert!(step(&mut run).is_none());
     assert!(served(&follower, "account"));

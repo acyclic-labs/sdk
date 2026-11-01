@@ -11,9 +11,12 @@ use crate::{
     approvals::{ApprovalCreate, ApprovalFiles},
     conversation::{ContentGrant, FileRef, VolumeRef},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, CancellationToken, DirectoryPage,
+    WorkBudget,
+};
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 /// Directory entries read per listing page.
 const PAGE: u32 = 256;
@@ -23,6 +26,167 @@ pub(in crate::filesystem) struct AgentInternalFiles<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,
+}
+
+/// Reads from one original private-volume generation, including its directory
+/// entries and file bodies. Later publications cannot change this selection.
+pub(in crate::filesystem) struct InternalRead<A: 'static, O: 'static> {
+    generation: acyclic_fs::Generation<A, O>,
+}
+
+/// The original file lookup before preparing a create-once body.
+pub(in crate::filesystem) enum InternalFileCreation<'a, A: 'static, O: 'static> {
+    Existing(OwnedBytes),
+    Vacant(VacantInternalFile<'a, A, O>),
+}
+
+/// An absent file's original owner, path and read bound. Publication still
+/// arbitrates concurrent creators through the original retry identity.
+pub(in crate::filesystem) struct VacantInternalFile<'a, A: 'static, O: 'static> {
+    files: &'a AgentInternalFiles<A, O>,
+    path: &'a str,
+    maximum_bytes: u64,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> VacantInternalFile<'_, A, O> {
+    /// Publishes once without repeating the preflight lookup. A conflicting
+    /// creator's original bytes are read only after publication refuses.
+    pub(in crate::filesystem) async fn create(self, bytes: &[u8]) -> Result<Option<OwnedBytes>> {
+        let Self {
+            files,
+            path,
+            maximum_bytes,
+        } = self;
+        // One retry identity per path: a second, different body conflicts
+        // instead of replacing the first.
+        let key = IdempotencyKey(format!("internal-file:{path}"));
+        let written = files
+            .host
+            .put_internal_content(
+                &files.volume,
+                &files.grant,
+                &internal(path),
+                bytes,
+                "application/json",
+                path.rsplit('/').next().unwrap_or(path),
+                maximum_bytes,
+                &key,
+                InternalContentClass::Interaction,
+                None,
+            )
+            .await;
+        match written {
+            Ok(_) => Ok(None),
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => files
+                .read(path, maximum_bytes)
+                .await?
+                .map(Some)
+                .ok_or(error),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Pages from one selected directory. The original page owns its allocation
+/// until consumption ends; its last entry also supplies the next cursor.
+pub(in crate::filesystem) struct InternalDirectory<'a, A: 'static, O: 'static> {
+    generation: &'a acyclic_fs::Generation<A, O>,
+    path: Cow<'a, str>,
+    page: Option<(DirectoryPage, AuthorityAllocation)>,
+    finished: bool,
+}
+
+impl<'a, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    InternalDirectory<'a, A, O>
+{
+    fn new(generation: &'a acyclic_fs::Generation<A, O>, path: Cow<'a, str>) -> Self {
+        Self {
+            generation,
+            path,
+            page: None,
+            finished: false,
+        }
+    }
+
+    /// Reads at most one page, without another read after the final page or
+    /// an error. A missing directory is empty.
+    pub(in crate::filesystem) async fn next(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<&DirectoryPage>> {
+        if self.finished {
+            self.page = None;
+            return Ok(None);
+        }
+        let after = self
+            .page
+            .as_ref()
+            .and_then(|(page, _)| page.entries.last())
+            .map(|entry| &entry.name);
+        let result = self
+            .generation
+            .list_directory(&self.path, after, PAGE, WorkBudget::UNBOUNDED, cancellation)
+            .await;
+        self.finished = true;
+        self.page = None;
+        let (page, allocation) = match result {
+            Ok(receipt) => receipt.value,
+            Err(failure) => {
+                let error = super::map_error(failure.error);
+                return if missing(&error) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                };
+            }
+        };
+        if page.has_more && page.entries.is_empty() {
+            return Err(crate::Error::Storage(
+                "internal directory page has no continuation entry".into(),
+            ));
+        }
+        self.finished = !page.has_more;
+        self.page = Some((page, allocation));
+        Ok(self.page.as_ref().map(|(page, _)| page))
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRead<A, O> {
+    pub(in crate::filesystem) async fn read(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<OwnedBytes>> {
+        AgentInternalFiles::read_at(
+            &self.generation,
+            &format!("/{}{path}", InternalContentClass::Interaction.prefix()),
+            maximum_bytes,
+        )
+        .await
+    }
+
+    pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
+        AgentInternalFiles::list_at(
+            &self.generation,
+            &format!("/{}{path}", InternalContentClass::Interaction.prefix()),
+        )
+        .await
+    }
+
+    pub(in crate::filesystem) fn directory(&self, path: &str) -> InternalDirectory<'_, A, O> {
+        InternalDirectory::new(
+            &self.generation,
+            Cow::Owned(format!(
+                "/{}{path}",
+                InternalContentClass::Interaction.prefix()
+            )),
+        )
+    }
+}
+
+pub(in crate::filesystem) fn filename(bytes: &[u8]) -> Result<&str> {
+    std::str::from_utf8(bytes)
+        .map_err(|_| crate::Error::Storage("internal file name is not UTF-8".into()))
 }
 
 /// Storage path of internal-relative `path`.
@@ -114,18 +278,21 @@ where
             .value)
     }
 
+    /// Selects one generation for an entire internal read, without another
+    /// workspace open or head observation for its individual files.
+    pub(in crate::filesystem) async fn reader(&self) -> Result<InternalRead<A, O>> {
+        Ok(InternalRead {
+            generation: self.head().await?,
+        })
+    }
+
     /// The original owned bytes of internal file `path`, if it exists.
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
         maximum_bytes: u64,
     ) -> Result<Option<OwnedBytes>> {
-        Self::read_at(
-            &self.head().await?,
-            &format!("/{}", internal(path)),
-            maximum_bytes,
-        )
-        .await
+        self.reader().await?.read(path, maximum_bytes).await
     }
 
     /// The bytes of volume file `path` in `head`, if it exists.
@@ -163,40 +330,33 @@ where
         bytes: &[u8],
         maximum_bytes: u64,
     ) -> Result<Option<OwnedBytes>> {
-        if let Some(existing) = self.read(path, maximum_bytes).await? {
-            return Ok(Some(existing));
+        match self.prepare_create(path, maximum_bytes).await? {
+            InternalFileCreation::Existing(existing) => Ok(Some(existing)),
+            InternalFileCreation::Vacant(file) => file.create(bytes).await,
         }
-        // One retry identity per path: a second, different body conflicts
-        // instead of replacing the first.
-        let key = IdempotencyKey(format!("internal-file:{path}"));
-        let written = self
-            .host
-            .put_internal_content(
-                &self.volume,
-                &self.grant,
-                &internal(path),
-                bytes,
-                "application/json",
-                path.rsplit('/').next().unwrap_or(path),
+    }
+
+    /// Looks up the original file before preparing its body. The vacant
+    /// result borrows this exact owner and path through create-once publication.
+    pub(in crate::filesystem) async fn prepare_create<'a>(
+        &'a self,
+        path: &'a str,
+        maximum_bytes: u64,
+    ) -> Result<InternalFileCreation<'a, A, O>> {
+        match self.read(path, maximum_bytes).await? {
+            Some(existing) => Ok(InternalFileCreation::Existing(existing)),
+            None => Ok(InternalFileCreation::Vacant(VacantInternalFile {
+                files: self,
+                path,
                 maximum_bytes,
-                &key,
-                InternalContentClass::Interaction,
-                None,
-            )
-            .await;
-        match written {
-            Ok(_) => Ok(None),
-            Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
-                self.read(path, maximum_bytes).await?.map(Some).ok_or(error)
-            }
-            Err(error) => Err(error),
+            })),
         }
     }
 
     /// The names of the files in internal directory `path`, in name order;
     /// empty when the directory does not exist.
     pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        Self::list_at(&self.head().await?, &format!("/{}", internal(path))).await
+        self.reader().await?.list(path).await
     }
 
     /// The names of the entries of volume directory `directory` in `head`,
@@ -204,40 +364,13 @@ where
     async fn list_at(head: &acyclic_fs::Generation<A, O>, directory: &str) -> Result<Vec<String>> {
         let cancellation = CancellationToken::new();
         let mut names = Vec::new();
-        let mut after = None;
-        loop {
-            let page = match head
-                .list_directory(
-                    directory,
-                    after.as_ref(),
-                    PAGE,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-            {
-                Ok(receipt) => receipt.value.0,
-                Err(failure) => {
-                    let error = super::map_error(failure.error);
-                    return if missing(&error) {
-                        Ok(names)
-                    } else {
-                        Err(error)
-                    };
-                }
-            };
+        let mut pages = InternalDirectory::new(head, Cow::Borrowed(directory));
+        while let Some(page) = pages.next(&cancellation).await? {
             for entry in &page.entries {
-                names.push(
-                    String::from_utf8(entry.name.as_bytes().to_vec()).map_err(|_| {
-                        crate::Error::Storage("internal file name is not UTF-8".into())
-                    })?,
-                );
+                names.push(filename(entry.name.as_bytes())?.to_owned());
             }
-            if !page.has_more || page.entries.is_empty() {
-                return Ok(names);
-            }
-            after = page.entries.last().map(|entry| entry.name.clone());
         }
+        Ok(names)
     }
 }
 

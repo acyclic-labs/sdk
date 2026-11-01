@@ -9,22 +9,25 @@ use std::sync::{
 
 /// Published trust and clock: trust is swapped before each publication or
 /// the owner's loss resolves a registered change.
-struct State {
-    trust: RwLock<Arc<signed::Snapshot>>,
+pub(in crate::session) struct State {
+    trust: RwLock<Arc<dyn verify::Trust + Send + Sync>>,
     clock: AtomicU64,
     published: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
     clock_events: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
 }
 impl State {
-    fn new() -> Arc<Self> {
+    pub(in crate::session) fn new() -> Arc<Self> {
+        Self::with_trust(Arc::new(signed::Snapshot::default()))
+    }
+    pub(in crate::session) fn with_trust(trust: Arc<dyn verify::Trust + Send + Sync>) -> Arc<Self> {
         Arc::new(Self {
-            trust: RwLock::new(Arc::new(signed::Snapshot::default())),
+            trust: RwLock::new(trust),
             clock: AtomicU64::new(signed::NOW),
             published: tokio::sync::watch::channel(Ok(())).0,
             clock_events: tokio::sync::watch::channel(Ok(())).0,
         })
     }
-    fn publish(&self, trust: signed::Snapshot, now: u64) {
+    pub(in crate::session) fn publish(&self, trust: signed::Snapshot, now: u64) {
         *self.trust.write().unwrap() = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
         let _ = self.published.send_replace(Ok(()));
@@ -146,7 +149,7 @@ impl AuthorityState for State {
         })
     }
 }
-fn authority(state: Arc<State>) -> Authority {
+pub(in crate::session) fn authority(state: Arc<State>) -> Authority {
     Authority::new(state, "workers:/test".into(), Some("account".into())).unwrap()
 }
 
@@ -747,7 +750,8 @@ fn live_session(
         0,
         0,
         Body::Hello(wire::SessionHello {
-            version: 1,
+            interest: None,
+            version: crate::session::VERSION,
             client_id: Bytes::from_static(b"authority-control"),
             destination_node: "node".into(),
             receive_bytes: 1_000_000,

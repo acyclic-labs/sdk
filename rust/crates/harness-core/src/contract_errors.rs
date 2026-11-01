@@ -367,11 +367,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An SDK git operation failure retaining the complete typed cause.
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(feature = "filesystem")]
     #[error("{source}")]
     NativeGit {
         /// Original capture, coordination, patch, lineage or durable-state cause.
@@ -402,7 +398,7 @@ pub(crate) fn native_work_error_code(
         | Native::UnexpectedBackup
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
-        Native::UnsupportedRename => ErrorCode::Unsupported,
+        Native::UnsupportedRename | Native::UnsupportedFormat => ErrorCode::Unsupported,
         Native::Cancelled => ErrorCode::Cancelled,
         Native::Io(_)
         | Native::OriginalWorkPoisoned
@@ -497,6 +493,7 @@ impl Error {
             Self::Target(refusal) => match refusal.refused {
                 crate::agent::Refused::Unknown => ErrorCode::NotFound,
                 crate::agent::Refused::Offline => ErrorCode::Unsupported,
+                crate::agent::Refused::Declined(_) => ErrorCode::Unauthorized,
             },
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
@@ -543,7 +540,9 @@ impl Error {
                 feature = "native-execution",
                 not(target_arch = "wasm32")
             ))]
-            Self::NativeWorkspacePublication { .. } | Self::NativeGit { .. } => ErrorCode::Storage,
+            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            #[cfg(feature = "filesystem")]
+            Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
@@ -731,11 +730,7 @@ impl Error {
                 not(target_arch = "wasm32")
             ))]
             Self::NativeWorkspacePublication { .. } => true,
-            #[cfg(all(
-                feature = "filesystem-local",
-                feature = "native-execution",
-                not(target_arch = "wasm32")
-            ))]
+            #[cfg(feature = "filesystem")]
             Self::NativeGit { .. } => true,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeTimeout { .. } => true,

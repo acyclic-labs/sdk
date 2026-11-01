@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { create } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { credentialTlsFixture } from "../../../test/credential-tls.js";
 import { NativeStreamProvider } from "../src/native.js";
@@ -20,10 +20,11 @@ async function fixture(node: SessionNode, name: string, movedEndpoint: () => str
       const transport = await node.connect(name === "home" ? undefined : create(wire.SessionNodeSchema, { nodeId: name }), context.signal);
       const close = () => transport.close();
       context.signal.addEventListener("abort", close, { once: true });
-      const pump = async () => { try { for await (const frame of input) await transport.send(frame); } finally { close(); } };
+      const pump = async () => { try { for await (const frame of input) await transport.send(toBinary(wire.SessionFrameSchema, frame)); } finally { close(); } };
       void pump().catch(close);
       try {
-        for await (const frame of transport.incoming) {
+        for await (const bytes of transport.incoming) {
+          const frame = fromBinary(wire.SessionFrameSchema, bytes);
           if (welcome && frame.body.case === "welcome" && sessions === 1) {
             welcome.arrived();
             await Promise.race([welcome.released, new Promise<void>(resolve => {

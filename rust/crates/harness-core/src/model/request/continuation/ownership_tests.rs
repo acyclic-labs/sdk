@@ -98,7 +98,7 @@ fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
                 assert_eq!(prepared.bytes(), expected);
                 // The former empty append still encodes the whole tool envelope.
                 let _previous = encoding::EncodingPrefix::append(
-                    prepared.bytes, prepared.encoding, count, &prepared.request, Some(io),
+                    prepared.bytes, prepared.encoding, count, &prepared.request, Some(io), &mut 0,
                 )?;
                 assert!(io.receipt().bytes_encoded > receipt.bytes_encoded,
                     "former empty append did not expose repeated encoding");
@@ -118,43 +118,62 @@ fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
 }
 
 #[test]
-fn an_unchanged_request_still_observes_original_cancellation() -> Result<()> {
+fn continuations_observe_original_cancellation_before_reusing_declarations() -> Result<()> {
     for native in [false, true] {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
-        let work = native
-            .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
-            .transpose()
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work
-            .as_ref()
-            .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
-        let io = match &work {
-            Some(work) => PreparationIo::from_native_work(work)?,
-            None => PreparationIo::from_budget(budget, &cancellation)?,
-        };
-        let prepared = PreparedModelRequest::prepare(
-            crate::model::clone_request(&request(1)?, Some(&io))?,
-            Limits::default(),
-            Some(&io),
-        )?;
-        let prepared = prepared
-            .into_continuation()
-            .finish(Limits::default(), Some(&io))?;
-        cancellation.cancel();
-        let failure = prepared
-            .into_continuation()
-            .finish(Limits::default(), Some(&io))
-            .err()
-            .ok_or_else(|| Error::Invalid("unchanged request ignored cancellation".into()))?;
-        assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
-        drop(failure);
-        drop(io);
-        assert_eq!(
-            work.as_ref()
-                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes),
-            baseline
-        );
+        for append in [false, true] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+            let work = native
+                .then(|| acyclic_fs::NativeMaterializationWork::new(budget, &cancellation))
+                .transpose()
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = work
+                .as_ref()
+                .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes);
+            let io = match &work {
+                Some(work) => PreparationIo::from_native_work(work)?,
+                None => PreparationIo::from_budget(budget, &cancellation)?,
+            };
+            let mut original = request(1)?;
+            original.tools = tools();
+            let prepared = PreparedModelRequest::prepare(
+                crate::model::clone_request(&original, Some(&io))?,
+                Limits::default(),
+                Some(&io),
+            )?;
+            let prepared = prepared
+                .into_continuation()
+                .finish(Limits::default(), Some(&io))?;
+            let mut continuation = prepared.into_continuation();
+            if append {
+                crate::executor::stock_vec_push(
+                    continuation.messages(),
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text(crate::executor::stock_string_copy(
+                            "new text",
+                            Some(&io),
+                        )?),
+                    },
+                    Some(&io),
+                )?;
+            }
+            cancellation.cancel();
+            let failure = continuation
+                .finish(Limits::default(), Some(&io))
+                .err()
+                .ok_or_else(|| {
+                    Error::Invalid("request continuation ignored cancellation".into())
+                })?;
+            assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
+            drop(failure);
+            drop(io);
+            assert_eq!(
+                work.as_ref()
+                    .map(acyclic_fs::NativeMaterializationWork::live_allocation_bytes),
+                baseline
+            );
+        }
     }
     Ok(())
 }

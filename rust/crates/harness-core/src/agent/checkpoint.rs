@@ -30,19 +30,25 @@ pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 #[cfg(test)]
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
-/// The checkpoint codec every agent actor commits with.
+/// The checkpoint codec every agent actor commits with. Its state embeds the
+/// same durable record shapes, so both boundaries admit the same version.
 pub(crate) fn codec() -> CodecIdentity {
-    CodecIdentity {
-        name: "acyclic.harness.agent".into(),
-        version: "1".into(),
-    }
+    identity().clone()
+}
+
+fn identity() -> &'static CodecIdentity {
+    static IDENTITY: std::sync::LazyLock<CodecIdentity> =
+        std::sync::LazyLock::new(|| CodecIdentity {
+            name: "acyclic.harness.agent".into(),
+            version: super::records::RECORD_VERSION.to_string(),
+        });
+    &IDENTITY
 }
 
 /// The agent state a committed checkpoint carries.
 pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
-    if checkpoint.codec != codec() {
-        return Err(Error::Record("agent checkpoint codec differs"));
-    }
+    acyclic_actors::guest::admit_checkpoint(Some(checkpoint), identity())
+        .map_err(|_| Error::IncompatibleCheckpointCodec)?;
     decode(&checkpoint.bytes)
 }
 
@@ -606,6 +612,49 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
         }
+    }
+
+    #[test]
+    fn checkpoint_codec_refusal_precedes_payload_decode() {
+        let adopted = adoption();
+        let path = adopted
+            .parent
+            .as_ref()
+            .unwrap()
+            .child(&adopted.agent)
+            .unwrap();
+        let bytes = encode(&AgentState::adopted(path, &adopted).unwrap()).unwrap();
+        let valid = Checkpoint {
+            codec: codec(),
+            bytes: bytes.into(),
+        };
+        assert!(checkpoint_state(&valid).is_ok());
+        for version in ["0", "1", "2", "unknown"] {
+            for bytes in [valid.bytes.clone(), Vec::new().into()] {
+                let mut checkpoint = valid.clone();
+                checkpoint.codec.version = version.into();
+                checkpoint.bytes = bytes;
+                assert!(matches!(
+                    checkpoint_state(&checkpoint),
+                    Err(Error::IncompatibleCheckpointCodec)
+                ));
+            }
+        }
+        let mut another = valid.clone();
+        another.codec.name.push_str(".other");
+        another.bytes = Vec::new().into();
+        assert!(matches!(
+            checkpoint_state(&another),
+            Err(Error::IncompatibleCheckpointCodec)
+        ));
+        let malformed = Checkpoint {
+            codec: codec(),
+            bytes: Vec::new().into(),
+        };
+        assert!(matches!(
+            checkpoint_state(&malformed),
+            Err(Error::Record(_))
+        ));
     }
 
     #[test]

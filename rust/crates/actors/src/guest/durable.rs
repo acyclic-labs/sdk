@@ -1,4 +1,5 @@
-//! Host adapters for Durable Object state. Storage and socket ownership stay in Cloud.
+//! Host adapters for Durable Object state. Socket ownership stays with the host:
+//! Cloud's and the local runtime's (`local::Sockets`).
 use super::{GuestError, SocketPayload};
 use crate::addressing::ActorReference;
 use bytes::Bytes;
@@ -18,13 +19,41 @@ pub struct WebSocketAutoResponse {
     /// Exact outgoing text frame.
     pub response: String,
 }
-/// Scoped runtime effects; implementations must check the actor reference on every call.
-pub trait DurableHost: Send + Sync {
-    /// Atomically clear actor storage and alarm; the address remains usable.
-    fn delete_all(
+/// Original socket failure retained across native executor threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SocketTerminalError = dyn std::error::Error + Send + Sync;
+/// Original socket failure retaining browser event-loop ownership.
+#[cfg(target_arch = "wasm32")]
+pub type SocketTerminalError = dyn std::error::Error;
+
+/// A retained observation of one original host socket's close producer.
+/// Dropping an observer never cancels that producer. The original decided
+/// failure remains reachable after the host retires its live socket entry.
+pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
+    /// Joins the original producer and retains its decided failure after retirement.
+    fn completion(
+        self: Arc<Self>,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>>;
+}
+
+/// Hibernatable socket effects. A host keeps sockets, tags, attachments and the
+/// auto-response pair outside the actor heap, so a hibernated actor holding
+/// sockets costs it nothing; implementations check the actor on every call.
+/// Like every host trait it follows the platform boundary: thread-safe on
+/// native targets, and free to own thread-affine handles in a browser.
+pub trait SocketHost: acyclic_stream::ProviderPlatform {
+    /// Registers against this actor's exact live socket before dispatch.
+    /// A missing socket refuses registration; absence is no close certificate.
+    fn web_socket_terminal(
         &self,
-        actor: &ActorReference,
-    ) -> impl Future<Output = Result<(), GuestError>> + Send;
+        _actor: &ActorReference,
+        _socket: &WebSocketId,
+    ) -> Result<Arc<dyn SocketTerminal>, GuestError> {
+        Err(GuestError::Handler(
+            "original socket terminal is unavailable".into(),
+        ))
+    }
+
     /// Transfer a pending socket to host ownership, retaining tags across hibernation.
     fn accept_web_socket(
         &self,
@@ -90,12 +119,26 @@ pub trait DurableHost: Send + Sync {
         socket: &WebSocketId,
     ) -> Result<Vec<String>, GuestError>;
 }
+/// Scoped runtime effects; implementations must check the actor reference on every call.
+pub trait DurableHost: SocketHost {
+    /// Atomically clear actor storage and alarm; the address remains usable.
+    fn delete_all(
+        &self,
+        actor: &ActorReference,
+    ) -> impl Future<Output = Result<(), GuestError>> + Send;
+}
 /// Scoped state supplied by the host at activation; the reference is never authority.
 pub struct DurableObjectState<H> {
     reference: ActorReference,
     host: Arc<H>,
 }
 impl<H: DurableHost> DurableObjectState<H> {
+    /// Clear state and alarm without deleting its address or namespace deployment.
+    pub async fn delete_all(&self) -> Result<(), GuestError> {
+        self.host.delete_all(&self.reference).await
+    }
+}
+impl<H: SocketHost> DurableObjectState<H> {
     /// Materialize only after host admission of the namespace binding.
     pub const fn new(reference: ActorReference, host: Arc<H>) -> Self {
         Self { reference, host }
@@ -103,10 +146,6 @@ impl<H: DurableHost> DurableObjectState<H> {
     /// Transferable address without the host adapter.
     pub const fn id(&self) -> &ActorReference {
         &self.reference
-    }
-    /// Clear state and alarm without deleting its address or namespace deployment.
-    pub async fn delete_all(&self) -> Result<(), GuestError> {
-        self.host.delete_all(&self.reference).await
     }
     /// Retain a socket and its tags across hibernation.
     pub fn accept_web_socket(

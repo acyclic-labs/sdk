@@ -9,7 +9,7 @@ fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
         fn() -> std::io::Result<()>,
     >;
     assert!(
-        std::mem::size_of::<Started<(), TestHandler>>()
+        std::mem::size_of::<Started<TestHandler>>()
             < std::mem::size_of::<acyclic_native_runtime::ProcessTree>(),
         "the old handoff retains the whole physical process tree in every completion slot"
     );
@@ -18,7 +18,200 @@ use proptest::prelude::*;
 
 #[test]
 fn capture_output_child() {
+    if std::env::var_os("ACYCLIC_CAPTURE_INTERACTIVE").is_some() {
+        use std::io::{Read, Write};
+        println!("INTERACTIVE_READY");
+        std::io::stdout().flush().unwrap();
+        let mut bytes = [0; 5];
+        std::io::stdin().read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"hello");
+        println!("INPUT_RECEIVED");
+        std::io::stdout().flush().unwrap();
+        let mut remaining = Vec::new();
+        std::io::stdin().read_to_end(&mut remaining).unwrap();
+        assert!(remaining.is_empty());
+        println!("INPUT_EOF");
+        return;
+    }
     println!("captured");
+}
+
+#[test]
+fn interactive_completion_retains_input_producer_and_cleanup()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::{
+        CaptureHandler, CaptureProgress, CaptureWakes, OwnedCaptureInput, ProcessInput,
+        ProcessOutput, ProcessWake, TaskSpawner,
+    };
+    use std::sync::mpsc;
+    use tokio::sync::oneshot;
+
+    struct Interactive {
+        input: mpsc::Receiver<ProcessInput>,
+        wake: Option<ProcessWake>,
+        ready: Option<oneshot::Sender<()>>,
+        received: Option<oneshot::Sender<()>>,
+        retired: Option<oneshot::Sender<bool>>,
+        stdout: Vec<u8>,
+        accepted: usize,
+        written: usize,
+        closed: bool,
+    }
+    impl CaptureHandler for Interactive {
+        fn take_wakes(&mut self) -> std::io::Result<CaptureWakes> {
+            Ok(self.wake.take().into())
+        }
+        fn check(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn input(&mut self) -> std::io::Result<ProcessInput> {
+            match self.input.try_recv() {
+                Ok(input) => Ok(input),
+                Err(mpsc::TryRecvError::Empty) => Ok(Default::default()),
+                Err(mpsc::TryRecvError::Disconnected) => Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "original interactive input producer was dropped",
+                )),
+            }
+        }
+        fn observe(&mut self, chunk: ProcessOutput<'_>) -> std::io::Result<ProcessInput> {
+            if let ProcessOutput::Stdout(bytes) = chunk {
+                self.stdout.extend_from_slice(bytes);
+                for (marker, signal) in [
+                    (b"INTERACTIVE_READY".as_slice(), &mut self.ready),
+                    (b"INPUT_RECEIVED".as_slice(), &mut self.received),
+                ] {
+                    if self.stdout.windows(marker.len()).any(|part| part == marker)
+                        && let Some(signal) = signal.take()
+                    {
+                        let _ = signal.send(());
+                    }
+                }
+            }
+            Ok(Default::default())
+        }
+        fn progress(&mut self, progress: CaptureProgress) {
+            match progress {
+                CaptureProgress::InputAccepted(bytes) => self.accepted += bytes,
+                CaptureProgress::InputWritten(bytes) => self.written += bytes,
+                CaptureProgress::StdinClosed => self.closed = true,
+                _ => {}
+            }
+        }
+        fn retired(&mut self, cleanup_completed: bool) {
+            // Physical capture ending withdraws any marker it did not emit.
+            // The returned handler may outlive completion, so its diagnostic
+            // senders must not keep those original producer waits alive.
+            self.ready.take();
+            self.received.take();
+            self.retired
+                .take()
+                .unwrap()
+                .send(cleanup_completed)
+                .unwrap();
+        }
+    }
+
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let root = tempfile::tempdir()?;
+    // All waits name the original output, input wake, completion or retirement
+    // producer. No timer can stand in for EOF, owner loss or physical cleanup.
+    for mode in ["eof", "producer-lost", "waiter-lost"] {
+        runtime.block_on(async {
+            let (input, pending) = mpsc::sync_channel(1);
+            let wake = ProcessWake::new()?;
+            let (ready, readiness) = oneshot::channel();
+            let (received, receipt) = oneshot::channel();
+            let (retired, retirement) = oneshot::channel();
+            let invocation = Invocation {
+                executable: std::env::current_exe()?,
+                argv: vec![
+                    "--exact".into(),
+                    "filesystem::native_process::capture::tests::capture_output_child".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: root.path().into(),
+                environment: std::collections::BTreeMap::from([(
+                    "ACYCLIC_CAPTURE_INTERACTIVE".into(),
+                    "1".into(),
+                )]),
+                inherit_environment: true,
+                schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                control_timeout_ms: 1000,
+                maximum_output_bytes: 32_768,
+                standard_input: Some(OwnedCaptureInput::Interactive {
+                    initial: Vec::new(),
+                    maximum: 5,
+                }),
+                process_custody: None,
+            };
+            let completion = start_capture(
+                invocation,
+                Interactive {
+                    input: pending,
+                    wake: Some(wake.clone()),
+                    ready: Some(ready),
+                    received: Some(received),
+                    retired: Some(retired),
+                    stdout: Vec::new(),
+                    accepted: 0,
+                    written: 0,
+                    closed: false,
+                },
+                OutputRetention::Observe,
+            )
+            .await?;
+            let completion = TaskSpawner::current().spawn(completion);
+            readiness.await?;
+            if mode == "waiter-lost" {
+                completion.abort();
+                assert!(completion.await.is_err());
+                assert!(retirement.await?, "lost completion released live custody");
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
+            if mode == "producer-lost" {
+                drop(input);
+                // This is the original producer's terminal notification, not
+                // a periodic check of the channel or process state.
+                wake.notify()?;
+            } else {
+                input.send(ProcessInput {
+                    bytes: b"hello".to_vec(),
+                    complete: false,
+                })?;
+                wake.notify()?;
+                receipt.await?;
+                input.send(ProcessInput {
+                    bytes: Vec::new(),
+                    complete: true,
+                })?;
+                wake.notify()?;
+            }
+            let (result, handler) = completion.await??;
+            assert!(retirement.await?);
+            let result = result.ok_or_else(|| Error::Storage("capture lost completion".into()))?;
+            if mode == "producer-lost" {
+                let stop = result.stop.expect("producer loss must be a typed failure");
+                assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
+                assert!(
+                    stop.message
+                        .contains("original interactive input producer was dropped")
+                );
+                assert!(stop.cleanup_completed);
+                assert_eq!((handler.accepted, handler.written), (0, 0));
+            } else {
+                assert!(result.success, "{result:?}");
+                assert!(handler.stdout.windows(9).any(|bytes| bytes == b"INPUT_EOF"));
+                assert_eq!((handler.accepted, handler.written), (5, 5));
+                assert!(handler.closed, "EOF did not close the original stdin");
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -45,6 +238,8 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         let handle = runtime.handle().clone();
         let observed = Arc::new(AtomicUsize::new(0));
         let completed = Arc::clone(&observed);
+        let handoff = Arc::new(tokio::sync::Notify::new());
+        let physical_handoff = Arc::clone(&handoff);
         let invocation = Invocation {
             executable: std::env::current_exe()?,
             argv: vec![
@@ -70,15 +265,21 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
                 "capture occupies the publication executor"
             );
             let completed = Arc::clone(&completed);
+            let physical_handoff = Arc::clone(&physical_handoff);
             handle.block_on(async move {
-                tokio::task::spawn_blocking(move || {
-                    completed.fetch_add(1, Ordering::SeqCst);
-                })
-                .await
-                .map_err(std::io::Error::other)
+                let previous =
+                    tokio::task::spawn_blocking(move || completed.fetch_add(1, Ordering::SeqCst))
+                        .await
+                        .map_err(std::io::Error::other)?;
+                if previous == 0 {
+                    // Physical capture may start before its foreground waiter
+                    // receives the completion. It must not hold that waiter.
+                    physical_handoff.notified().await;
+                }
+                Ok(())
             })
         });
-        let (output, ()) = runtime.block_on(capture_with_custody(
+        let capture = runtime.block_on(start_capture_with_custody(
             invocation,
             move |(), chunk| observer(chunk),
             || Ok(()),
@@ -86,6 +287,15 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
             None,
             OutputRetention::Observe,
         ))?;
+        let (output, ()) = runtime.block_on(async move {
+            // Transfer the SAME owned completion, without awaiting it on the
+            // foreground path or constructing another process/capture.
+            let completion = acyclic_native_runtime::TaskSpawner::current().spawn(capture);
+            handoff.notify_one();
+            completion.await.map_err(|error| {
+                Error::Storage(format!("native capture handoff interrupted: {error}"))
+            })?
+        })?;
         let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
         if let Some(kind) = stopped {

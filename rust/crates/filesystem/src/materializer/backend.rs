@@ -190,7 +190,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         preimage: &MaterializationPreimage,
     ) -> Result<MaterializationObservation, Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
-            let [before, after] = decode_native_witness(image)?;
+            let [before, after] = decode_native_witness(image)?.fingerprints;
             let [live, target, backup] = backend.paths(edit_path(edit));
             let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
             let target = if matches!(edit, MaterializationEdit::Install { .. }) {
@@ -239,7 +239,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
     ) -> Result<(), Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
             let [live, target, backup] = backend.paths(edit_path(edit));
-            let [before, after] = decode_native_witness(image)?;
+            let [before, after] = decode_native_witness(image)?.fingerprints;
             if let MaterializationEdit::SetMetadata { image, .. } = edit {
                 let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
                 if current == after {
@@ -310,7 +310,8 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
     ) -> Result<(), Self::Error> {
         self.run(edit, &preimage.image, |backend, edit, image| {
             let [live, _, backup] = backend.paths(edit_path(edit));
-            let [before, after] = decode_native_witness(image)?;
+            let witness = decode_native_witness(image)?;
+            let [before, after] = witness.fingerprints;
             let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
             if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
                 if current == before {
@@ -321,7 +322,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                 }
                 return apply_native_metadata(
                     &live,
-                    &decode_native_preimage_metadata(image)?.ok_or(Self::Error::InvalidLayout)?,
+                    &witness.metadata()?.ok_or(Self::Error::InvalidLayout)?,
                     after,
                     &backend.work,
                 );

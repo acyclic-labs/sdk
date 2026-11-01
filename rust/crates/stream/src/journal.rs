@@ -6,6 +6,8 @@ use crate::wire_codec;
 use crate::{MemoryStream, StreamError, StreamProvider, WriteOutcome, WriteRequest};
 use prost::Message;
 
+const MAGIC: &[u8] = b"ACYCLIC-STREAM-COMMAND-V1\0";
+
 pub(crate) struct CanonicalCommand {
     pub(crate) command: WriteRequest,
     pub(crate) digest: Option<[u8; 32]>,
@@ -53,14 +55,16 @@ impl WriteRequest {
 
     pub(crate) fn encoded_len(&self) -> usize {
         use wire_codec::requests::*;
-        block_len(match self {
-            Self::Append(request) => append_len(request),
-            Self::Fork(request) => fork_len(request),
-            Self::Commit(request) | Self::CommitAccepted(request) => commit_len(request),
-        })
+        MAGIC.len()
+            + block_len(match self {
+                Self::Append(request) => append_len(request),
+                Self::Fork(request) => fork_len(request),
+                Self::Commit(request) | Self::CommitAccepted(request) => commit_len(request),
+            })
     }
     pub(crate) fn encode(&self, output: &mut Vec<u8>) {
         use wire_codec::requests::*;
+        output.extend_from_slice(MAGIC);
         match self {
             Self::Append(request) => {
                 header(output, 1, append_len(request));
@@ -84,7 +88,8 @@ impl WriteRequest {
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<WriteRequest, StreamError> {
-    let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
+    let payload = crate::persistence::header(encoded, b"ACYCLIC-STREAM-COMMAND-V", b"1\0")?;
+    let journal = JournalCommand::decode(payload).map_err(|_| StreamError::InvalidArgument)?;
     let command = match journal.operation.ok_or(StreamError::InvalidArgument)? {
         journal_command::Operation::Append(request) => {
             wire_codec::append_from_wire(request).map(WriteRequest::Append)

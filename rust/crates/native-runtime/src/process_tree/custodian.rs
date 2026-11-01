@@ -18,10 +18,13 @@
 //! owner's next tree starts a new custodian.
 
 use super::custodian_admission::{self as admission, Secret};
-use std::collections::{BTreeMap, HashMap};
+use indexmap::IndexMap;
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Write as _};
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -103,7 +106,9 @@ fn poisoned() -> io::Error {
 /// has exited.
 pub(super) fn current() -> io::Result<Arc<Custodian>> {
     let mut current = CURRENT.lock().map_err(|_| poisoned())?;
-    if let Some(custodian) = current.as_ref().filter(|custodian| custodian.running()) {
+    if let Some(custodian) = current.as_ref()
+        && process_running(custodian.child.as_handle())?
+    {
         return Ok(Arc::clone(custodian));
     }
     let custodian = Arc::new(launch()?);
@@ -171,13 +176,22 @@ fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
     Ok((input, endpoint.to_owned()))
 }
 
-impl Custodian {
-    fn running(&self) -> bool {
-        // SAFETY: the owned custodian process handle; a zero wait only reads
-        // whether it has exited.
-        unsafe { WaitForSingleObject(self.child.as_raw_handle().cast(), 0) == WAIT_TIMEOUT }
+/// Observes the original process once. A refused wait cannot admit a new
+/// custodian as though the retained producer had exited.
+fn process_running(process: BorrowedHandle<'_>) -> io::Result<bool> {
+    // SAFETY: the caller retains this process handle through the observation.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        status => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected custodian process wait status {status}"),
+        )),
     }
+}
 
+impl Custodian {
     /// The PID and creation time that name this custodian in each record.
     pub(super) fn identity(&self) -> &str {
         &self.identity
@@ -577,10 +591,12 @@ fn serve() -> io::Result<()> {
         }
     });
     let mut state = State {
-        trees: HashMap::new(),
+        trees: IndexMap::new(),
         members: Members::default(),
         owner_exited: false,
         input_closed: false,
+        #[cfg(test)]
+        visits: 0,
     };
     loop {
         let mut message = 0;
@@ -647,10 +663,14 @@ fn serve() -> io::Result<()> {
 
 /// Every tree a custodian watches, and what it knows of its owner.
 struct State {
-    trees: HashMap<usize, Tree>,
+    // Dense iteration visits only live trees, including after a much larger
+    // population has retired. Keyed retirement swaps out one entry.
+    trees: IndexMap<usize, Tree>,
     members: Members,
     owner_exited: bool,
     input_closed: bool,
+    #[cfg(test)]
+    visits: usize,
 }
 
 impl State {
@@ -734,39 +754,44 @@ impl State {
     /// Kills every tree after admitting each member its Job lists, so their
     /// live handles are held before termination can drop them from the list.
     fn kill_all(&mut self) -> io::Result<()> {
-        for (id, tree) in &mut self.trees {
+        let mut index = 0;
+        while let Some((&id, tree)) = self.trees.get_index_mut(index) {
             for pid in super::custody::members(tree.job)? {
-                self.members.admit(tree, *id, pid)?;
+                self.members.admit(tree, id, pid)?;
             }
             // SAFETY: the handed-over Job with terminate access.
             if unsafe { TerminateJobObject(tree.job, 1) } == 0 {
                 return Err(io::Error::last_os_error());
             }
+            // A tree with no remaining member producer may already be done.
+            // Settle it in this one required owner-death pass. A swap leaves
+            // the next live tree at the same index; survivors advance once.
+            let count = self.trees.len();
+            self.settle_tree(id)?;
+            if self.trees.len() == count {
+                index += 1;
+            }
         }
         Ok(())
     }
 
-    /// Settles the tree an event touched, and once the owner has exited
-    /// every tree; answers whether the custodian is done: an owner that
-    /// exited and closed its input can hand over no further tree.
+    /// Settles only the tree this event touched. The live count and original
+    /// input terminal decide completion without querying any unrelated Job.
     fn settle(&mut self, touched: Option<usize>) -> io::Result<bool> {
-        if self.owner_exited {
-            let ids: Vec<usize> = self.trees.keys().copied().collect();
-            for id in ids {
-                self.settle_tree(id)?;
-            }
-            return Ok(self.input_closed && self.trees.is_empty());
-        }
         if let Some(id) = touched {
             self.settle_tree(id)?;
         }
-        Ok(false)
+        Ok(self.owner_exited && self.input_closed && self.trees.is_empty())
     }
 
     /// Lets go of tree `id` once no member is watched and none is active: a
     /// member stops counting as active before its process has fully exited,
     /// so both must hold. The owner learns of it from the tree's event.
     fn settle_tree(&mut self, id: usize) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            self.visits += 1;
+        }
         let Some(tree) = self.trees.get(&id) else {
             return Ok(());
         };
@@ -783,7 +808,7 @@ impl State {
             }
             // SAFETY: terminal publication completes this event's custody.
             unsafe { CloseHandle(tree.done) };
-            self.trees.remove(&id);
+            self.trees.swap_remove(&id);
         }
         Ok(())
     }
@@ -958,7 +983,7 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
 mod handoff_tests {
     use super::*;
     use std::os::windows::io::IntoRawHandle as _;
-    use windows_sys::Win32::Foundation::GetHandleInformation;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetHandleInformation};
     use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
@@ -970,6 +995,30 @@ mod handoff_tests {
         getrandom::fill(&mut random).map_err(io::Error::other)?;
         // SAFETY: the current-process pseudo-handle is borrowed for identity.
         let producer = identity(unsafe { GetCurrentProcess() })?;
+        // SAFETY: the running current process retains its pseudo-handle.
+        assert!(process_running(unsafe {
+            BorrowedHandle::borrow_raw(GetCurrentProcess())
+        })?);
+        // Retain a real process handle without SYNCHRONIZE. Its refused wait
+        // must remain the native error, not a false producer-exit observation.
+        // SAFETY: both pseudo-handles are live and duplication transfers the
+        // deliberately restricted handle to this same process.
+        let restricted = unsafe {
+            duplicate(
+                GetCurrentProcess(),
+                GetCurrentProcess(),
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+            )?
+        };
+        // SAFETY: the successful duplication transferred one owned handle.
+        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
+        assert_eq!(
+            process_running(restricted.as_handle())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(ERROR_ACCESS_DENIED.cast_signed()),
+        );
         let name = format!(
             "acyclic-process-tree-{}-{:016x}",
             producer,
@@ -1013,11 +1062,14 @@ mod handoff_tests {
             .into_iter()
             .collect(),
             members: Members::default(),
-            owner_exited: false,
-            input_closed: false,
+            owner_exited: true,
+            input_closed: true,
+            visits: 0,
         };
         std::fs::write(root.path().join(format!("{name}-custodian-{producer}")), [])?;
-        state.settle_tree(0)?;
+        assert!(!state.settle(Some(0))?);
+        assert!(!state.settle(None)?);
+        assert_eq!(state.visits, 1, "only the selected tree was visited");
         assert_eq!(
             super::super::ProcessCustody::open(root.path())?.fence_stale()?,
             1
@@ -1041,6 +1093,8 @@ mod handoff_tests {
             .spawn()?;
         let lost = identity(child.as_raw_handle().cast())?;
         assert!(child.wait()?.success());
+        // Query the same retained process handle, never a replacement PID.
+        assert!(!process_running(child.as_handle())?);
         assert_eq!(
             await_tree(&unrelated_done, &lost).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
@@ -1051,9 +1105,37 @@ mod handoff_tests {
             await_tree(&unrelated_done, &replaced).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
-        state.settle_tree(1)?;
+        assert!(state.settle(Some(1))?);
         await_tree(&unrelated_done, &producer)?;
         assert!(state.trees.is_empty());
+
+        // The original owner-death pass must also retire already-empty Jobs.
+        // Removing one live slot swaps another into it: neither may be skipped
+        // or left waiting for a member-exit producer that no longer exists.
+        let empty = [job(std::ptr::null())?, job(std::ptr::null())?];
+        let completion = [event(true, None)?, event(true, None)?];
+        let mut state = State {
+            trees: [
+                (0, tree(&empty[0], &completion[0])?),
+                (1, tree(&empty[1], &completion[1])?),
+            ]
+            .into_iter()
+            .collect(),
+            members: Members::default(),
+            owner_exited: true,
+            input_closed: true,
+            visits: 0,
+        };
+        state.kill_all()?;
+        assert!(state.settle(None)?);
+        assert_eq!(state.visits, empty.len());
+        for completed in completion {
+            // SAFETY: this retained event belongs to the exact original Job.
+            assert_eq!(
+                unsafe { WaitForSingleObject(completed.as_raw_handle().cast(), 0) },
+                WAIT_OBJECT_0
+            );
+        }
         Ok(())
     }
 

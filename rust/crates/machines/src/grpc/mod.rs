@@ -73,6 +73,8 @@ use tonic::{
 mod guest;
 use guest::*;
 mod codec;
+#[cfg(feature = "test-support")]
+pub use codec::codec_fuzz;
 mod duplex;
 mod files;
 mod input;

@@ -173,6 +173,41 @@ mod tests {
 
     #[test]
     fn parsed_profiles_bind_original_selection_capacity_and_protocol_controls() -> Result<()> {
+        for fragments in [
+            vec![],
+            vec![String::new()],
+            vec!["λ\n".into()],
+            vec![" x ".into(), "\r\n".into(), "tail".into()],
+        ] {
+            for separator in ["", "\n", "\n\n"] {
+                let expected = fragments.join(separator);
+                let mut owned = Some(fragments.clone());
+                let original = owned.as_ref().unwrap().first().map(|text| text.as_ptr());
+                let mut joined = None;
+                let cost = acyclic_test_support::measure(|| {
+                    joined = Some(crate::projection::text::join(
+                        owned.take().unwrap(),
+                        separator,
+                    ));
+                });
+                let joined = joined.unwrap();
+                assert_eq!(joined, expected);
+                if fragments.len() <= 1 {
+                    assert_eq!(cost.count_total, 0);
+                }
+                if fragments.len() == 1 {
+                    assert_eq!(Some(joined.as_ptr()), original);
+                    if !joined.is_empty() {
+                        let mut copied = None;
+                        let copied_cost = acyclic_test_support::measure(|| {
+                            copied = Some(fragments.join(separator));
+                        });
+                        assert_eq!(copied.unwrap(), joined);
+                        assert!(copied_cost.bytes_total > cost.bytes_total);
+                    }
+                }
+            }
+        }
         let empty = "---\nversion: 1\n---\n";
         let project = ProjectLayer::parse(empty)?;
         let approvals = ApprovalPolicy::default().bind()?;
@@ -238,7 +273,117 @@ mod tests {
             let (body, first_bytes) = measured_projection(&provider, &prepared, "first")?;
             let (_, repeated) = measured_projection(&provider, &prepared, "repeat")?;
             assert_eq!(repeated, first_bytes);
+            let retained: acyclic_harness_core::model::ModelRequest =
+                serde_json::from_slice(prepared.bytes()).unwrap();
+            assert_eq!(&retained, prepared.request());
+            // Restoring a deleted options map must refuse at the shared request
+            // boundary, rather than silently retaining the same cache identity
+            // while discarding configuration the caller expected to apply.
+            let mut restored = serde_json::to_value(&retained).unwrap();
+            restored["options"] = json!({
+                "max_output_tokens": 65,
+                "tools": [],
+                "reasoning_effort": "low",
+            });
+            let restored = serde_json::to_vec(&restored).unwrap();
+            let mut admitted = None;
+            let cost = acyclic_test_support::measure(|| {
+                admitted = Some(serde_json::from_slice::<
+                    acyclic_harness_core::model::ModelRequest,
+                >(&restored));
+            });
+            let error = admitted.unwrap().unwrap_err();
+            assert!(error.is_data());
+            println!(
+                "{}",
+                json!({
+                    "version": 1,
+                    "task": "removed-model-configuration",
+                    "input_kind": "generated_profile_and_request",
+                    "phase": "restored_options",
+                    "adapter": adapter,
+                    "model": provider.model(),
+                    "prefix_digest": profile.prefix_digest(),
+                    "prepared_request": std::str::from_utf8(prepared.bytes()).unwrap(),
+                    "restored_request": std::str::from_utf8(&restored).unwrap(),
+                    "refusal": error.to_string(),
+                    "allocation_count": cost.count_total,
+                    "allocated_bytes": cost.bytes_total,
+                    "peak_bytes": cost.bytes_max,
+                    "model_calls": 0,
+                    "tokens": Value::Null,
+                    "cache_hits": Value::Null,
+                    "tool_execution": Value::Null,
+                    "terminal_quality": Value::Null,
+                })
+            );
             assert_eq!(body.pointer(pointer), Some(&json!("high")));
+            if matches!(adapter, Adapter::Anthropic | Adapter::Gemini) {
+                let mut smaller = None;
+                for repetitions in [8192, 16384] {
+                    let header = "λ\n".repeat(repetitions);
+                    let mut request = prepared.request().clone();
+                    request.messages[0].content =
+                        acyclic_harness_core::model::ModelContent::Text(header.clone());
+                    let request = PreparedModelRequest::prepare(request, Default::default(), None)?;
+                    let names = crate::tool_names::Names::new(request.request());
+                    let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+                    let mut projected = None;
+                    let allocation = acyclic_test_support::measure(|| {
+                        projected = Some(crate::projection::body_named(
+                            &provider,
+                            request.request(),
+                            &names,
+                            &origin,
+                            &mut crate::files::FileText::default(),
+                        ));
+                    });
+                    let projected = projected.unwrap()?;
+                    let mut expected = body.clone();
+                    if adapter == Adapter::Anthropic {
+                        expected["system"] = json!(header);
+                    } else {
+                        expected["systemInstruction"]["parts"][0]["text"] = json!(header);
+                    }
+                    assert_eq!(serde_json::to_value(&projected).unwrap(), expected);
+                    let mut detached = None;
+                    let copied = acyclic_test_support::measure(|| {
+                        detached = Some(projected.fields.clone());
+                    });
+                    assert_eq!(detached.unwrap(), projected.fields);
+                    if let Some((bytes, allocated, copied_bytes)) = smaller {
+                        let growth = (header.len() - bytes) as u64;
+                        // One owned copy is required by the projected JSON.
+                        // A restored join/JSON clone regresses this byte oracle.
+                        assert_eq!(allocation.bytes_total - allocated, growth);
+                        assert_eq!(copied.bytes_total - copied_bytes, growth);
+                        assert_ne!(
+                            allocation.bytes_total - allocated + copied.bytes_total - copied_bytes,
+                            growth
+                        );
+                    }
+                    smaller = Some((header.len(), allocation.bytes_total, copied.bytes_total));
+                    println!(
+                        "{}",
+                        json!({
+                            "version": 1,
+                            "task": "system-text-projection",
+                            "input_kind": "generated_profile_and_request",
+                            "adapter": adapter,
+                            "model": provider.model(),
+                            "prefix_digest": profile.prefix_digest(),
+                            "prepared_request": std::str::from_utf8(request.bytes()).unwrap(),
+                            "request": serde_json::to_string(&projected).unwrap(),
+                            "system_bytes": header.len(),
+                            "allocation_count": allocation.count_total,
+                            "allocated_bytes": allocation.bytes_total,
+                            "peak_bytes": allocation.bytes_max,
+                            "detached_copy_bytes": copied.bytes_total,
+                            "model_calls": 0,
+                        })
+                    );
+                }
+            }
             let adaptive_role = RoleFile::parse(
                 "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\neffort: adaptive\nmax_output_tokens: 64\n---\n",
             )?;

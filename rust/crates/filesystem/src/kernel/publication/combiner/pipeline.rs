@@ -28,7 +28,7 @@ impl Ticket {
             if let Some(cost) = self
                 .proposal
                 .core
-                .capacity(authority, durable, accounting, cancellation)
+                .capacity(authority, durable, accounting)
                 .await?
             {
                 let core = &self.proposal.core;

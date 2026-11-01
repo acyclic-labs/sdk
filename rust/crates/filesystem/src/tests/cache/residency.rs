@@ -101,17 +101,17 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
         native_custody: None,
     };
     assert!(matches!(
-        cached.decoded_cache_admit(first_key, first_value)?,
+        crate::async_storage::publish_decoded(&cached, first_key, first_value)?,
         DecodedCacheAdmission::Shared(_)
     ));
-    let cached_value = cached
-        .decoded_cache_get(first_key)?
+    let cached_value = crate::async_storage::cached_value(&cached, first_key)?
         .ok_or("decoded cache admission was not observable")?;
     assert_eq!(cached_value.value.downcast_ref::<u64>(), Some(&41));
 
     let second_key = DecodedCacheKey::new::<u32>(missing_id, DecodeLimits::default());
     assert!(matches!(
-        cached.decoded_cache_admit(
+        crate::async_storage::publish_decoded(
+            &cached,
             second_key,
             DecodedCacheValue {
                 value: Arc::new(7_u32),
@@ -134,7 +134,7 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
         native_custody: None,
     };
     let DecodedCacheAdmission::Shared(existing) =
-        cached.decoded_cache_admit(first_key, replacement)?
+        crate::async_storage::publish_decoded(&cached, first_key, replacement)?
     else {
         return Err("existing decoded page was not shared".into());
     };
@@ -142,7 +142,8 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
 
     let oversized_key = DecodedCacheKey::new::<u16>(missing_id, DecodeLimits::default());
     assert!(matches!(
-        cached.decoded_cache_admit(
+        crate::async_storage::publish_decoded(
+            &cached,
             oversized_key,
             DecodedCacheValue {
                 value: Arc::new(5_u16),
@@ -189,7 +190,8 @@ async fn decoded_eviction_and_conflicting_immutable_bytes_fail_closed()
     let first_key = DecodedCacheKey::new::<u64>(first_id, DecodeLimits::default());
     let second_key = DecodedCacheKey::new::<u32>(second_id, DecodeLimits::default());
     assert!(matches!(
-        cached.decoded_cache_admit(
+        crate::async_storage::publish_decoded(
+            &cached,
             first_key,
             DecodedCacheValue {
                 value: Arc::new(1_u64),
@@ -201,7 +203,8 @@ async fn decoded_eviction_and_conflicting_immutable_bytes_fail_closed()
         DecodedCacheAdmission::Shared(_)
     ));
     assert!(matches!(
-        cached.decoded_cache_admit(
+        crate::async_storage::publish_decoded(
+            &cached,
             second_key,
             DecodedCacheValue {
                 value: Arc::new(2_u32),
@@ -212,10 +215,9 @@ async fn decoded_eviction_and_conflicting_immutable_bytes_fail_closed()
         )?,
         DecodedCacheAdmission::Shared(_)
     ));
-    assert!(cached.decoded_cache_get(first_key)?.is_none());
+    assert!(crate::async_storage::cached_value(&cached, first_key)?.is_none());
     assert_eq!(
-        cached
-            .decoded_cache_get(second_key)?
+        crate::async_storage::cached_value(&cached, second_key)?
             .and_then(|value| value.value.downcast_ref::<u32>().copied()),
         Some(2)
     );

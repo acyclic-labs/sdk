@@ -3,7 +3,6 @@
 use crate::{
     AsyncObjectStore, AuthorityAllocation, AuthorityId, AuthorityWork, Collection, DurableCommit,
     ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError, PublicationHold, PublicationScope,
-    async_storage::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue},
     storage::{HashedObject, ObjectWrite},
 };
 use acyclic_stream::{
@@ -60,19 +59,11 @@ impl<P: AsyncObjectStore> AsyncObjectStore for Counted<P> {
         self.inner().read_stored(id, maximum, context).await
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
-        key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        self.inner().decoded_cache_get(key)
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.inner().decoded_cache_admit(key, value)
+        key: crate::async_storage::DecodedCacheKey,
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        self.inner().decoded_cache_lookup(key)
     }
 
     fn put(

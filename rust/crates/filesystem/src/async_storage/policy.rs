@@ -79,7 +79,10 @@ impl PolicyCut {
         CURRENT.get()
     }
 
-    pub(crate) async fn scope<F: Future>(self, future: F) -> F::Output {
+    /// Apply this backend-authenticated cut only while polling `future`.
+    /// Publication must be awaited inside the future, never spawned separately.
+    /// The original cut is restored on Pending, completion and cancellation.
+    pub async fn scope<F: Future>(self, future: F) -> F::Output {
         struct Restore(Option<PolicyCut>);
         impl Drop for Restore {
             fn drop(&mut self) {

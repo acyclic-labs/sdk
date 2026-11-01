@@ -1,12 +1,12 @@
 use cargo_metadata::{Metadata, Package, TargetKind};
-use sdk_docs::rustdoc_profiles::{
-    api_owner_for_package, extract_owned_api, observe_rustdoc, project_into_docs,
-    validate_rustdoc_version, ApiOwnerKind, ProfileId, ProfileSpec,
-};
 use sdk_docs::CommandOutput;
+use sdk_docs::rustdoc_profiles::{
+    ApiOwnerKind, ProfileId, ProfileSpec, api_owner_for_package, extract_owned_api,
+    observe_rustdoc, project_into_docs, validate_rustdoc_version,
+};
 use sdk_docs::{
-    build_data, merge_profile_catalog, scenarios, write_bundle, write_bundle_files, BuildInput,
-    Channel, GeneratedSource, PackageMetadata,
+    BuildInput, Channel, GeneratedSource, PackageMetadata, build_data, merge_profile_catalog,
+    scenarios, write_bundle, write_bundle_files,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,8 +31,7 @@ mod artifacts;
 use sdk_docs::is_library_target;
 #[doc(hidden)]
 pub mod cache_record;
-#[path = "../../sdk-docs/src/concrete_versions.rs"]
-mod concrete_versions;
+use sdk_docs::concrete_versions;
 mod file_cache;
 mod shared_cache;
 mod source_selection;

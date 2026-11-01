@@ -1,4 +1,5 @@
 //! Only unchanged direct edges below a moved directory need subtree expansion.
+use super::super::allocation::fixed_index::FixedIndex;
 use super::*;
 
 struct Directory {
@@ -8,6 +9,7 @@ struct Directory {
 
 pub(super) struct Descendants {
     frames: Owned<Vec<Directory>>,
+    active: FixedIndex<()>,
     entry: Option<Owned<TreeEntry>>,
     parent: Option<FileId>,
     records: Option<[FileRecord; 2]>,
@@ -23,6 +25,7 @@ impl Descendants {
     ) -> Result<Self, FsError> {
         let mut result = Self {
             frames: Owned::allocate(0, accounting)?,
+            active: FixedIndex::default(),
             entry: None,
             parent: None,
             records: None,
@@ -45,20 +48,41 @@ impl Descendants {
         let FilePayload::Directory { entries } = record.payload else {
             return Err(FsError::InvalidDiff);
         };
-        for frame in &self.frames.value {
-            accounting.charge_items(1)?;
-            if frame.file_id == record.file_id {
-                return Err(FsError::InvalidDiff);
-            }
-        }
-        self.frames
-            .ensure_for_push(usize::from(config.limits.maximum_path_depth), accounting)?;
-        let entries = Values::new(entries, DecodeLimits::for_volume(config), accounting)?;
-        self.frames.value.push(Directory {
+        let frames = &mut self.frames;
+        let mut prepared = None;
+        // The shared index publishes membership only after this original
+        // frame admission succeeds. Existing keys never run the constructor.
+        self.active.get_or_try_insert_with(
+            record.file_id.into_bytes(),
+            accounting,
+            |accounting| {
+                frames
+                    .ensure_for_push(usize::from(config.limits.maximum_path_depth), accounting)?;
+                prepared = Some(Values::new(
+                    entries,
+                    DecodeLimits::for_volume(config),
+                    accounting,
+                )?);
+                Ok(())
+            },
+        )?;
+        let entries = prepared.ok_or(FsError::InvalidDiff)?;
+        frames.value.push(Directory {
             file_id: record.file_id,
             entries,
         });
         Ok(())
+    }
+
+    fn pop(&mut self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let frame = self.frames.value.pop().ok_or(FsError::InvalidDiff)?;
+        // The exact directory cursor retires before its active membership.
+        // Neither cleanup step admits new work or consults cancellation.
+        let retired = frame.entries.retire(accounting);
+        if !self.active.retire_if(frame.file_id.into_bytes(), |_| true) {
+            return Err(FsError::InvalidDiff);
+        }
+        retired
     }
 
     pub(super) async fn next<S: AsyncObjectStore>(
@@ -128,12 +152,7 @@ impl Descendants {
             self.parent = Some(frame.file_id);
             self.entry = frame.entries.next(store, accounting, cancellation).await?;
             let Some(entry) = &self.entry else {
-                self.frames
-                    .value
-                    .pop()
-                    .ok_or(FsError::InvalidDiff)?
-                    .entries
-                    .retire(accounting)?;
+                self.pop(accounting)?;
                 continue;
             };
             let file_id = entry.value.file_id;
@@ -189,10 +208,11 @@ impl Descendants {
             .take()
             .map_or(Ok(()), |path| path.retire(accounting));
         result = result.and(path);
-        while let Some(frame) = self.frames.value.pop() {
-            let retired = frame.entries.retire(accounting);
+        while !self.frames.value.is_empty() {
+            let retired = self.pop(accounting);
             result = result.and(retired);
         }
+        drop(self.active);
         let frames = self.frames.retire(accounting);
         result.and(frames)
     }
@@ -232,3 +252,6 @@ async fn unchanged_edge<S: AsyncObjectStore>(
     }
     Ok(found)
 }
+
+#[cfg(test)]
+mod tests;

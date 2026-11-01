@@ -1,6 +1,6 @@
 import { streamResource } from "../src/contract.js";
 import { expect, test } from "bun:test";
-import { create, equals } from "@bufbuild/protobuf";
+import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
 import { SessionNode, checkpoint } from "./session-node.js";
@@ -98,9 +98,10 @@ test("missing or mismatched checked confirmation removes only its channel withou
     const client = new StreamSessions(async (node, signal) => {
       const transport = await peer.connect(node, signal);
       return { ...transport, incoming: { async *[Symbol.asyncIterator]() {
-        for await (const input of transport.incoming) {
+        for await (const bytes of transport.incoming) {
+          const input = fromBinary(wire.SessionFrameSchema, bytes);
           if (input.body.case === "opened" && input.channelId === 3n) input.body.value.precedingCommitId = confirmation;
-          yield input;
+          yield toBinary(wire.SessionFrameSchema, input);
         }
       } } };
     });

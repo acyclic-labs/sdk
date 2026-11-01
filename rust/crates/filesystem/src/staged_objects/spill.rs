@@ -1,5 +1,32 @@
 use super::*;
 
+/// Selection remains resident until the original write completes. Restore it
+/// on either refusal or withdrawal before releasing the exclusive file lease.
+struct SpillSelection<'a, S> {
+    store: &'a StagedObjects<S>,
+    spill: &'a mut Option<NativeFile>,
+    victims: &'a [(ObjectId, OwnedBytes)],
+    committed: bool,
+}
+
+impl<S> Drop for SpillSelection<'_, S> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut index = self.store.index_mut();
+        if index.spilled_objects == 0 {
+            *self.spill = None;
+        }
+        for (id, _) in self.victims {
+            if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
+                let order = *order;
+                index.order.insert(order, *id);
+            }
+        }
+    }
+}
+
 impl<S> StagedObjects<S> {
     pub(super) async fn spill_locked(
         &self,
@@ -21,6 +48,12 @@ impl<S> StagedObjects<S> {
         let spilled = victims.iter().fold(0_u64, |sum, (_, bytes)| {
             sum.saturating_add(byte_length(bytes))
         });
+        let mut selection = SpillSelection {
+            store: self,
+            spill,
+            victims: &victims,
+            committed: false,
+        };
         let result = async {
             if work.original.is_none() {
                 work.accounting()
@@ -66,7 +99,7 @@ impl<S> StagedObjects<S> {
                     buffer_allocation.expect("native spill buffer is funded"),
                     native,
                 )?;
-                self.spill_file(spill, Some(native))
+                self.spill_file(selection.spill, Some(native))
                     .await?
                     .control_async(
                         move |file, meter| {
@@ -95,7 +128,7 @@ impl<S> StagedObjects<S> {
                     peak_allocation_bytes: spilled,
                     ..WorkCounters::UNCHARGED
                 };
-                let result = match self.spill_file(spill, None).await {
+                let result = match self.spill_file(selection.spill, None).await {
                     Ok(file) => {
                         file.write_all_batch_async(vec![OwnedWrite {
                             offset,
@@ -113,21 +146,9 @@ impl<S> StagedObjects<S> {
             Ok::<_, ObjectStoreError>(())
         }
         .await;
-        if result.is_err() {
-            let mut index = self.index_mut();
-            if index.spilled_objects == 0 {
-                // A refused first spill leaves no file behind.
-                *spill = None;
-            }
-            for (id, _) in &victims {
-                if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
-                    let order = *order;
-                    index.order.insert(order, *id);
-                }
-            }
-        }
         result?;
         self.index_mut().mark_spilled(&victims, offset);
+        selection.committed = true;
         Ok(())
     }
 }
@@ -179,16 +200,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             (allocation, targets)
         };
         let unswept = self.collection.unswept().await;
-        if work.is_native() {
-            self.drain_locked(&mut spill, &unswept, &targets, work)
-                .await?;
-        } else {
-            let cancellation = CancellationToken::new();
-            let mut housekeeping = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let _ = self
-                .drain_locked(&mut spill, &unswept, &targets, &mut housekeeping)
-                .await;
-        }
+        self.drain_locked(&mut spill, &unswept, &targets, work)
+            .await?;
         Ok(())
     }
 }

@@ -133,54 +133,8 @@ pub(super) fn generation_from_payload(
     payload: &[u8],
     meter: &mut AuthorityWork<'_>,
 ) -> Result<Option<GenerationId>, AuthorityStoreError> {
-    meter.check()?;
-    let examined = WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::UNCHARGED
-    };
-    meter.admit(examined)?;
-    const CREATED: &[u8] = b"acyclic-fs-volume-created-v1\0";
-    const PUBLISHED: &[u8] = b"acyclic-fs-publish-generation-v1\0";
-    let created = payload.starts_with(CREATED);
-    meter.charge(examined)?;
-    meter.check()?;
-    let published = payload.starts_with(PUBLISHED);
-    if !created && !published {
-        return Ok(None);
-    }
-    let fact = crate::kernel::decode_owned(&mut meter.accounting(), |observe| {
-        if created {
-            crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut |step| {
-                observe(step)
-            })
-            .map(|created| (created.volume_id, created.initial_generation_root))
-        } else {
-            crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut |step| {
-                observe(step)
-            })
-            .map(|published| (published.volume_id, published.generation_root))
-        }
-    })
-    .map(|(fact, _)| fact);
-    let (volume, digest) = match fact {
-        Ok(fact) => fact,
-        Err(failure)
-            if matches!(
-                failure,
-                crate::FsError::Decode(_) | crate::FsError::VolumeCreated(_)
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(failure) => return Err(authority_error(failure)),
-    };
-    if volume_authority_id(volume) != authority_id || created != (sequence == Sequence::new(1)) {
-        return Err(authority_corrupt(
-            "generation fact identity or sequence does not match its authority",
-            meter,
-        ));
-    }
-    Ok(Some(GenerationId::from_root(digest)))
+    crate::async_storage::generation_fact(authority_id, sequence, payload, &mut meter.accounting())
+        .map_err(authority_error)
 }
 #[cfg(test)]
 pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(

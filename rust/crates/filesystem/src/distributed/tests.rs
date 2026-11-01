@@ -667,6 +667,15 @@ impl ReleaseSpy {
             ..Self::new(inner)
         }
     }
+    pub(super) fn losing_ack_with_unreadable_record(
+        inner: Arc<MemoryStream>,
+        path: StreamPath,
+    ) -> Self {
+        Self {
+            corrupt_recovered_locator: Some((path, 1)),
+            ..Self::losing_ack(inner)
+        }
+    }
     pub(super) fn commit_attempts(&self) -> usize {
         self.commit_attempts.load(SeqCst)
     }

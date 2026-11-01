@@ -59,6 +59,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
                     step: 0,
                     call_id: "pending".into(),
                     invocation,
+                    publication: None,
                 },
                 Some(&io),
             )?

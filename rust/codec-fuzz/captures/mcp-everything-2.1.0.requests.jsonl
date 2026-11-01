@@ -1,0 +1,11 @@
+{"jsonrpc":"2.0","id":"06060606-0606-0606-0606-060606060606","method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"sampling":{}},"clientInfo":{"name":"codec-capture","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"tools/list","params":{}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"resources/list","params":{}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"resources/templates/list","params":{}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"resources/read","params":{"uri":"demo://resource/static/document/architecture.md"}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"prompts/list","params":{}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"prompts/get","params":{"name":"simple-prompt"}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"tools/call","params":{"name":"echo","arguments":{"message":"codec capture"}}}
+{"jsonrpc":"2.0","id":"07070707-0707-0707-0707-070707070707","method":"tools/call","params":{"name":"trigger-sampling-request","arguments":{"prompt":"codec capture","maxTokens":1}}}
+{"jsonrpc":"2.0","id":0,"error":{"code":-32601,"message":"Capture client does not execute sampling"}}

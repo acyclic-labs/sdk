@@ -8,6 +8,7 @@ pub(crate) mod stock;
 pub(super) struct Fixture {
     pub(super) response: Bytes,
     pub(super) sent: AtomicUsize,
+    status: u16,
     cancel: Option<CancellationToken>,
     pending_body: bool,
     prefix: Option<&'static str>,
@@ -18,6 +19,7 @@ impl Fixture {
         Self {
             response: Bytes::from_static(response.as_bytes()),
             sent: AtomicUsize::new(0),
+            status: 200,
             cancel: None,
             pending_body: false,
             prefix: None,
@@ -61,7 +63,7 @@ impl HttpTransport for Fixture {
             );
             Ok(HttpResponse {
                 retry_after: None,
-                status: 200,
+                status: self.status,
                 body: Box::pin(futures::stream::iter([Ok(self.response.clone())])),
             })
         })
@@ -96,19 +98,19 @@ impl HttpTransport for Fixture {
                     });
                     if let Some(prefix) = self.prefix {
                         return HttpResponse::with_native_body(
-                            200,
+                            self.status,
                             futures::stream::iter([Ok(Bytes::from_static(prefix.as_bytes()))])
                                 .chain(body),
                             work,
                         );
                     }
-                    return HttpResponse::with_native_body(200, body, work);
+                    return HttpResponse::with_native_body(self.status, body, work);
                 }
                 cancel.cancel();
                 return futures::future::pending().await;
             }
             HttpResponse::with_native_body(
-                200,
+                self.status,
                 futures::stream::iter([Ok(self.response.clone())]),
                 work,
             )
@@ -179,6 +181,11 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 work.receipt().source_bytes_read - source_before,
                 response.len() as u64
             );
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            // Cancellation after the original EOF must not create a new error.
+            work.cancellation().cancel();
+            assert!(stream.next().await.is_none());
+            assert!(stream.next().await.is_none());
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
@@ -187,19 +194,25 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
 }
 
 #[tokio::test]
-async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<()> {
-    for (pending_body, prefix) in [
-        (false, None),
-        (true, None),
+async fn native_cancellation_wakes_pending_headers_and_success_or_refusal_bodies() -> Result<()> {
+    for (status, pending_body, prefix) in [
+        (200, false, None),
+        (200, true, None),
         (
+            200,
             true,
             Some("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"),
         ),
+        (400, true, None),
+        (413, true, None),
+        (429, true, None),
+        (503, true, None),
     ] {
         let (mut provider, _) = provider(Adapter::Chat, 200);
         let cancel = CancellationToken::new();
         provider.transport = crate::deadline::Bounded::new(
             Arc::new(Fixture {
+                status,
                 cancel: Some(cancel.clone()),
                 pending_body,
                 prefix,
@@ -224,10 +237,19 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
                 );
                 drop((event, custody));
             }
-            stream.next().await.transpose().map(drop)
+            let result = stream.next().await.transpose().map(drop);
+            assert!(result.is_err());
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            assert!(stream.next().await.is_none());
+            assert!(stream.next().await.is_none());
+            result
         }
         .await;
         assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code(),
+            acyclic_harness_core::wire::ErrorCode::Cancelled
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
@@ -292,6 +314,8 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
             } if custody.work().shares_allocation_context(&work)),
                 "{adapter:?}: {error:?}"
             );
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            assert!(stream.next().await.is_none());
             drop(error);
         }
         assert_eq!(work.live_allocation_bytes(), baseline, "{adapter:?}");
@@ -364,11 +388,9 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
         .path = "cancel_count".into();
     provider.transport = crate::deadline::Bounded::new(
         Arc::new(Fixture {
-            response: Bytes::new(),
-            sent: AtomicUsize::new(0),
             cancel: Some(cancel),
             pending_body: true,
-            prefix: None,
+            ..Fixture::new(CHAT)
         }),
         crate::TimeoutSpec::DEFAULT,
     );

@@ -1,9 +1,14 @@
 use super::*;
 
-pub(super) fn existing_tracked_paths<'a>(
-    generation: &'a LocalGeneration,
+pub(super) fn existing_tracked_paths<
+    'a,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
+    generation: &'a Generation<A, O>,
     candidates: &'a BTreeSet<String>,
-) -> impl std::future::Future<Output = Result<BTreeSet<String>, Error>> + Send + 'a {
+) -> impl std::future::Future<Output = Result<BTreeSet<String>, Error>> + acyclic_stream::ProviderTask + 'a
+{
     async move {
         let mut tracked = BTreeSet::new();
         for path in candidates {
@@ -26,4 +31,17 @@ pub(super) fn existing_tracked_paths<'a>(
         }
         Ok(tracked)
     }
+}
+
+// Preparation can await storage and merge drivers. Revalidate after it,
+// before handing any prepared result to a publication using the lease permit.
+pub(super) async fn prepared<T, P, F, Fut>(preparation: P, before_effect: &F) -> Result<T, Error>
+where
+    P: Future<Output = Result<T, Error>>,
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<(), Error>>,
+{
+    let value = preparation.await?;
+    before_effect().await?;
+    Ok(value)
 }

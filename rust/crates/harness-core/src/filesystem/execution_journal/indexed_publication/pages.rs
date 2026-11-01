@@ -24,9 +24,15 @@ pub(super) struct Cut<'a> {
 
 /// One already-encoded record and its original optimistic publication fence.
 /// This adds no submission, index or authority; its producer owns the payload.
-pub(in crate::filesystem) struct Contribution<'a> {
-    pub(in crate::filesystem) condition: CommitCondition,
-    pub(in crate::filesystem) record: &'a OwnedBytes,
+pub(in crate::filesystem) enum Contribution<'a> {
+    Conditioned {
+        condition: CommitCondition,
+        record: &'a OwnedBytes,
+    },
+    Append {
+        path: &'a StreamPath,
+        record: &'a OwnedBytes,
+    },
 }
 
 pub(in crate::filesystem::execution_journal) fn contribution_identity(
@@ -57,31 +63,44 @@ pub(in crate::filesystem::execution_journal) fn contribution_identity(
             return Err(invalid(io));
         }
         previous = Some(path);
-        let digest = acyclic_stream::request::conditioned_record_digest_with(
-            &contribution.condition,
-            contribution.record,
-            |bytes_hashed| {
-                if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters {
-                        bytes_hashed,
-                        ..Default::default()
-                    })?;
-                }
-                Ok::<(), Error>(())
-            },
-        )?;
+        let admit = |bytes_hashed| {
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters {
+                    bytes_hashed,
+                    ..Default::default()
+                })?;
+            }
+            Ok::<(), Error>(())
+        };
+        let digest = match contribution {
+            Contribution::Conditioned { condition, record } => {
+                acyclic_stream::request::conditioned_record_digest_with(condition, record, admit)?
+            }
+            Contribution::Append { path, record } => {
+                acyclic_stream::request::appended_record_digest_with(path, record, admit)?
+            }
+        };
         hash.update(&digest);
     }
     Ok(Some(*hash.finalize().as_bytes()))
 }
 
 impl Contribution<'_> {
-    fn target(&self) -> Result<(&StreamPath, u64)> {
-        match &self.condition {
-            CommitCondition::Head { path, expected, .. }
-            | CommitCondition::Tail { path, expected } => Ok((path, *expected)),
-            CommitCondition::Absent { path } => Ok((path, 0)),
-            CommitCondition::Present { .. } => Err(invalid(None)),
+    fn target(&self) -> Result<(&StreamPath, Option<u64>)> {
+        match self {
+            Self::Append { path, .. } => Ok((path, None)),
+            Self::Conditioned { condition, .. } => match condition {
+                CommitCondition::Head { path, expected, .. }
+                | CommitCondition::Tail { path, expected } => Ok((path, Some(*expected))),
+                CommitCondition::Absent { path } => Ok((path, Some(0))),
+                CommitCondition::Present { .. } => Err(invalid(None)),
+            },
+        }
+    }
+
+    fn record(&self) -> &OwnedBytes {
+        match self {
+            Self::Conditioned { record, .. } | Self::Append { record, .. } => record,
         }
     }
 }
@@ -150,6 +169,28 @@ impl Cut<'_> {
             records,
             Some((observation, checkpoint)),
         )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = prepared
+            .1
+            .work()
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .cloned()
+        {
+            let bytes = prepared.1.retained();
+            let mut allocation = prepared.1.observer()?.take_native_custody(bytes)?;
+            prepared.1.transfer();
+            if let Err(error) = prepared.0.retain_native_custody(&mut allocation, &original) {
+                // Refusal leaves both guards intact. Destroy their request
+                // before either construction owner can refund its backing.
+                drop(prepared);
+                drop(allocation);
+                return Err(match error {
+                    acyclic_fs::AuthorityStoreError::NativeOriginal(cause) => cause.into(),
+                    error => acyclic_fs::FsError::from(error).into(),
+                });
+            }
+        }
         Ok(prepared)
     }
 
@@ -196,16 +237,14 @@ impl Cut<'_> {
                     return Err(invalid(None));
                 }
                 previous = Some(path);
-                crate::distributed::add_condition(
-                    request,
-                    custody,
-                    contribution.condition.clone(),
-                )?;
+                if let Contribution::Conditioned { condition, .. } = contribution {
+                    crate::distributed::add_condition(request, custody, condition.clone())?;
+                }
                 add_records(
                     request,
                     custody,
                     path,
-                    std::slice::from_ref(contribution.record),
+                    std::slice::from_ref(contribution.record()),
                 )?;
             }
         }
@@ -461,8 +500,8 @@ impl Cut<'_> {
                     confirms(
                         append,
                         path,
-                        start,
-                        std::slice::from_ref(contribution.record),
+                        start.unwrap_or(append.start),
+                        std::slice::from_ref(contribution.record()),
                     ),
                 )
             };

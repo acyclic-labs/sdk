@@ -163,15 +163,71 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         .map_err(|(error, _)| error)?;
         let mut native = AuthorityWork::native(&original, &cancellation);
         let before = provider.requests();
-        let observed = store.observe_record(path, &mut native).await?;
+        let observed = store.observe_record(path.clone(), &mut native).await?;
         assert_eq!(
-            observed.record.ok_or("missing native state")?.commit_id,
+            observed
+                .record
+                .as_ref()
+                .ok_or("missing native state")?
+                .commit_id,
             receipt.commit_id
         );
         assert!(observed.allocation.is_some());
+        assert_eq!(native.spent().backend_read_operations, 1);
+        assert_eq!(native.spent().authority_records_read, 1);
         let calls = provider.requests().since(before);
         assert_eq!(calls.class(RequestClass::Head), 1);
-        assert_eq!(calls.data(), 1);
+        assert_eq!(calls.data(), 0);
+        for (selected, absent) in [("state/absent", true), ("state/empty", false)] {
+            let before = provider.requests();
+            let result = store
+                .observe_record(StreamPath::new(selected)?, &mut native)
+                .await;
+            if absent {
+                assert!(matches!(
+                    result?.observation.condition(),
+                    CommitCondition::Absent { .. }
+                ));
+            } else {
+                assert!(matches!(result, Err(AuthorityStoreError::CorruptStatic(_))));
+            }
+            let calls = provider.requests().since(before);
+            assert_eq!(calls.class(RequestClass::Head), 1);
+            assert_eq!(calls.data(), 0);
+        }
+        for cancelled in [false, true] {
+            let token = CancellationToken::new();
+            let denied_original = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    authority_records_read: u64::from(cancelled),
+                    ..crate::performance::BOUNDARY_BUDGET
+                },
+                &token,
+            )
+            .map_err(|(error, _)| error)?;
+            if cancelled {
+                token.cancel();
+            }
+            let mut denied = AuthorityWork::native(&denied_original, &token);
+            let before = provider.requests();
+            assert!(
+                store
+                    .observe_record(path.clone(), &mut denied)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.requests().since(before).control(), 0);
+            assert_eq!(provider.requests().since(before).data(), 0);
+        }
+        drop(native);
+        drop(original);
+        assert_eq!(
+            observed
+                .record
+                .ok_or("lost retained native state")?
+                .commit_id,
+            receipt.commit_id
+        );
     }
     Ok(())
 }
@@ -1383,5 +1439,60 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     drop(spy);
     drop(provider);
     assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        GitCompatState, GitCompatStore, StreamGitCompatStore, StreamGitCompatStoreError,
+        WorkspaceId,
+    };
+    let provider = Arc::new(MemoryStream::default());
+    let id = WorkspaceId::from_bytes([4; 16]);
+    let path = StreamPath::new(format!(
+        "fs/git-state-v1/{}/refs",
+        hex::encode(id.into_bytes())
+    ))?;
+    let spy = Arc::new(super::tests::ReleaseSpy::losing_ack_with_unreadable_record(
+        provider.clone(),
+        path.clone(),
+    ));
+    let authority = StreamAuthorityStore::new(spy.clone());
+    let store = StreamGitCompatStore::new(authority.clone());
+    let mut initial = GitCompatState::new("main", id);
+    initial.revision = 1;
+    let error = GitCompatStore::compare_and_swap(&store, id, 0, initial.clone())
+        .await
+        .expect_err("lost acknowledgement must not become success or absence");
+    let StreamGitCompatStoreError::Unknown { mut commit, error } = error else {
+        return Err("unresolved publication lost its owner".into());
+    };
+    assert!(matches!(
+        error,
+        AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unavailable)
+    ));
+    assert_eq!(spy.commit_attempts(), 1);
+    assert_eq!(provider.tail(path.clone()).await?, 1);
+    assert!(
+        commit.request_mut().is_none(),
+        "the original request remains sealed"
+    );
+    let request = commit.request().clone();
+    let outcome = provider.commit(request.clone()).await?;
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        authority.settle(commit, outcome, &mut work).await?,
+        FilesystemCommitOutcome::Committed(_)
+    ));
+    assert_eq!(
+        provider.tail(path).await?,
+        1,
+        "an exact retry cannot append twice"
+    );
+    let reopened = StreamGitCompatStore::new(StreamAuthorityStore::new(provider));
+    assert_eq!(GitCompatStore::load(&reopened, id).await?, Some(initial));
     Ok(())
 }

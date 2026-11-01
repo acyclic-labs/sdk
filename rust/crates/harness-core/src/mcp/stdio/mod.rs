@@ -18,6 +18,9 @@ pub use request::McpStdioRequest;
 mod exchange;
 pub use exchange::McpStdioExchange;
 mod codec;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 use codec::*;
 #[cfg(test)]
 mod tests;

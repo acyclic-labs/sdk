@@ -3,6 +3,8 @@ use super::*;
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
     composed_cut_keeps_caller_members_and_original_request().await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    composed_cut_retains_original_native_construction().await?;
     let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::from_bytes([11; 16]);
     let execution = crate::distributed::execution_path(operation, &mut None)?;
@@ -15,97 +17,234 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
     let records = [OwnedBytes::from_static(b"index page")];
     let envelope = OwnedBytes::from_static(b"original context envelope");
     let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
-    for omitted in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
-        let provider = Arc::new(acyclic_stream::MemoryStream::default());
-        let seed = provider
-            .append(acyclic_stream::AppendRequest {
-                path: context.clone(),
-                records: vec![OwnedBytes::from_static(b"prior context").into()],
-                if_tail: None,
-                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
-            })
-            .await?;
-        let acyclic_stream::AppendOutcome::Committed(seed) = seed else {
-            unreachable!("unconditional initial append refused")
-        };
-        let contributions = [
-            Contribution {
-                condition: CommitCondition::Head {
+    for unconditional in [false, true] {
+        for omitted in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
+            let provider = Arc::new(acyclic_stream::MemoryStream::default());
+            let seed = provider
+                .append(acyclic_stream::AppendRequest {
                     path: context.clone(),
-                    expected: 1,
-                    commit_id: seed.commit_id,
-                },
-                record: &envelope,
-            },
-            Contribution {
-                condition: CommitCondition::Absent {
-                    path: epoch.clone(),
-                },
-                record: &snapshot,
-            },
-        ];
-        let cut = Cut {
-            operation,
-            execution: &execution,
-            head: &head,
-            pages: &pages,
-            execution_condition: CommitCondition::Absent {
-                path: execution.clone(),
-            },
-            head_condition: CommitCondition::Absent { path: head.clone() },
-            execution_tail: 0,
-            head_tail: 0,
-            base: 0,
-            digest: [11; 32],
-            contributions: &contributions,
-        };
-        let mut work = None;
-        let mut request = cut.request(
-            CommitCondition::Absent {
-                path: pages.clone(),
-            },
-            &records,
-            Some((&observation, &checkpoint)),
-            &mut work,
-        )?;
-        assert_eq!(request.0.conditions.len(), 5);
-        assert_eq!(request.0.mutations.len(), 5);
-        if let Some(index) = omitted {
-            request.0.mutations.remove(index);
-        }
-        let original = request.0.clone();
-        let outcome = provider.commit(request.0).await?;
-        let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
-        if omitted.is_some() {
-            assert!(
-                matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
-            );
-        } else {
-            assert!(confirmed?.is_some());
-            let CommitOutcome::Committed(mut receipt) = outcome else {
-                unreachable!()
+                    records: vec![OwnedBytes::from_static(b"prior context").into()],
+                    if_tail: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                })
+                .await?;
+            let acyclic_stream::AppendOutcome::Committed(seed) = seed else {
+                unreachable!("unconditional initial append refused")
             };
-            receipt.appends.swap(3, 4);
+            let contributions = if unconditional {
+                [
+                    Contribution::Append {
+                        path: &context,
+                        record: &envelope,
+                    },
+                    Contribution::Append {
+                        path: &epoch,
+                        record: &snapshot,
+                    },
+                ]
+            } else {
+                [
+                    Contribution::Conditioned {
+                        condition: CommitCondition::Head {
+                            path: context.clone(),
+                            expected: 1,
+                            commit_id: seed.commit_id,
+                        },
+                        record: &envelope,
+                    },
+                    Contribution::Conditioned {
+                        condition: CommitCondition::Absent {
+                            path: epoch.clone(),
+                        },
+                        record: &snapshot,
+                    },
+                ]
+            };
+            let cut = Cut {
+                operation,
+                execution: &execution,
+                head: &head,
+                pages: &pages,
+                execution_condition: CommitCondition::Absent {
+                    path: execution.clone(),
+                },
+                head_condition: CommitCondition::Absent { path: head.clone() },
+                execution_tail: 0,
+                head_tail: 0,
+                base: 0,
+                digest: [11; 32],
+                contributions: &contributions,
+            };
+            let mut work = None;
+            let mut request = cut.request(
+                CommitCondition::Absent {
+                    path: pages.clone(),
+                },
+                &records,
+                Some((&observation, &checkpoint)),
+                &mut work,
+            )?;
+            assert_eq!(
+                request.0.conditions.len(),
+                if unconditional { 3 } else { 5 }
+            );
+            assert_eq!(request.0.mutations.len(), 5);
+            if let Some(index) = omitted {
+                request.0.mutations.remove(index);
+            }
+            let original = request.0.clone();
+            let outcome = provider.commit(request.0).await?;
+            let confirmed = cut.confirm(&outcome, 0, &records, &observation, &checkpoint);
+            if omitted.is_some() {
+                assert!(
+                    matches!(confirmed, Err(Error::Indeterminate(operation)) if operation == cut.operation)
+                );
+            } else {
+                assert!(confirmed?.is_some());
+                let CommitOutcome::Committed(mut receipt) = outcome else {
+                    unreachable!()
+                };
+                receipt.appends.swap(3, 4);
+                assert!(matches!(
+                    cut.confirm(
+                        &CommitOutcome::Committed(receipt),
+                        0,
+                        &records,
+                        &observation,
+                        &checkpoint
+                    ),
+                    Err(Error::Indeterminate(_))
+                ));
+                let mut racing = original;
+                racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+                let refused = provider.commit(racing).await?;
+                assert!(matches!(refused, CommitOutcome::Conflict(_)));
+                assert!(
+                    cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
+                        .is_none()
+                );
+            }
+            drop(request.1);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn composed_cut_retains_original_native_construction() -> Result<()> {
+    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    let operation = OperationId::from_bytes([13; 16]);
+    let execution = crate::distributed::execution_path(operation, &mut None)?;
+    let head = journal.index_path(operation, "head", None)?;
+    let pages = journal.index_path(operation, "pages", None)?;
+    let cut = Cut {
+        operation,
+        execution: &execution,
+        head: &head,
+        pages: &pages,
+        execution_condition: CommitCondition::Absent {
+            path: execution.clone(),
+        },
+        head_condition: CommitCondition::Absent { path: head.clone() },
+        execution_tail: 0,
+        head_tail: 0,
+        base: 0,
+        digest: [13; 32],
+        contributions: &[],
+    };
+    let observation = OwnedBytes::from_static(b"observation");
+    let checkpoint = OwnedBytes::from_static(b"checkpoint");
+    let records = [OwnedBytes::from_static(b"index page")];
+    for mode in 0..3 {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 4 * 1024 * 1024);
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let foreign = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = original.live_allocation_bytes();
+        let foreign_baseline = foreign.live_allocation_bytes();
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = acyclic_fs::StreamAuthorityStore::new(provider.clone());
+        let result = {
+            let io = PreparationIo::from_native_work(&original)?;
+            let mut history = io.history_io();
+            let mut work = Some(&mut history as &mut dyn crate::store::HistoryIo);
+            let (key, held) = crate::distributed::digest_key(&[13; 32], &mut work)?;
+            let (request, quota) = crate::distributed::commit_request(key, held, &mut work);
+            let mut commit = acyclic_fs::FilesystemCommit::new(request);
+            let context = if mode == 1 { &foreign } else { &original };
+            let mut existing = context.claim(32, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+            commit
+                .retain_native_custody(&mut existing, context)
+                .map_err(acyclic_fs::FsError::from)?;
+            if mode == 2 {
+                cancellation.cancel();
+            }
+            let result = cut.contribute(
+                (commit, quota),
+                CommitCondition::Absent {
+                    path: pages.clone(),
+                },
+                &records,
+                &observation,
+                &checkpoint,
+            );
+            match result {
+                Ok((commit, quota)) => {
+                    assert_eq!(mode, 0, "foreign or cancelled preparation was accepted");
+                    assert_eq!(quota.retained(), 0);
+                    drop(quota);
+                    assert_eq!(io.owned_bytes()?, 0);
+                    Some(commit)
+                }
+                Err(error) => {
+                    match mode {
+                        1 => assert!(matches!(
+                            error,
+                            Error::NativeWork {
+                                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                                ..
+                            }
+                        )),
+                        2 => assert!(matches!(
+                            error,
+                            Error::NativeWork {
+                                cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                                ..
+                            }
+                        )),
+                        _ => panic!("original construction refused: {error:?}"),
+                    }
+                    drop(error);
+                    None
+                }
+            }
+        };
+        if let Some(commit) = result {
+            // Both preparation adapters are gone. The original unsent batch
+            // still pays for every journal vector and its pre-existing guard.
+            assert!(original.live_allocation_bytes() > baseline + 32);
+            assert_eq!(commit.request().mutations.len(), 3);
+            let mut work = acyclic_fs::AuthorityWork::native(&original, &cancellation);
+            let outcome = store
+                .submit(commit, &mut work)
+                .await
+                .map_err(acyclic_fs::FsError::from)?;
             assert!(matches!(
-                cut.confirm(
-                    &CommitOutcome::Committed(receipt),
-                    0,
-                    &records,
-                    &observation,
-                    &checkpoint
-                ),
-                Err(Error::Indeterminate(_))
+                outcome,
+                acyclic_fs::FilesystemCommitOutcome::Committed(_)
             ));
-            let mut racing = original;
-            racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
-            let refused = provider.commit(racing).await?;
-            assert!(matches!(refused, CommitOutcome::Conflict(_)));
-            assert!(
-                cut.confirm(&refused, 0, &records, &observation, &checkpoint)?
-                    .is_none()
+        } else {
+            assert_eq!(
+                provider.tail(execution.clone()).await,
+                Err(acyclic_stream::StreamError::NotFound)
             );
         }
-        drop(request.1);
+        drop(store);
+        drop(provider);
+        assert_eq!(original.live_allocation_bytes(), baseline, "mode {mode}");
+        assert_eq!(foreign.live_allocation_bytes(), foreign_baseline);
     }
     Ok(())
 }
@@ -135,14 +274,14 @@ async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> 
     let envelope = OwnedBytes::from_static(b"original context envelope");
     let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
     let contributions = [
-        Contribution {
+        Contribution::Conditioned {
             condition: CommitCondition::Tail {
                 path: context.clone(),
                 expected: 1,
             },
             record: &envelope,
         },
-        Contribution {
+        Contribution::Conditioned {
             condition: CommitCondition::Absent {
                 path: epoch.clone(),
             },

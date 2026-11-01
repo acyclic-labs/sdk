@@ -448,7 +448,7 @@ fn churn(_root: &Path) {
 
 #[cfg(windows)]
 fn churn_event(output: &mut impl std::io::BufRead, expected: &str) -> std::io::Result<()> {
-    for line in output.lines() {
+    for line in std::io::BufRead::lines(&mut *output) {
         if line? == expected {
             return Ok(());
         }

@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const PAYLOAD_DOMAIN: &[u8] = b"acyclic-fs-publish-generation-v1\0";
+pub(super) const PAYLOAD_VERSION: u16 = 4;
 pub(super) const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v1\0";
 pub(super) const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v2\0";
 pub(super) const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evidence-v1\0";
@@ -36,10 +37,10 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     maximum_payload_bytes: u64,
     mut observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<BorrowedPublicationEvidence<'a>, E> {
-    let (mut decoder, version) = Decoder::new_recognized_versions(
+    let mut decoder = Decoder::new(
         bytes,
         PAYLOAD_DOMAIN,
-        &[1, 2, 3],
+        PAYLOAD_VERSION,
         maximum_payload_bytes,
         &mut observe,
     )?;
@@ -49,8 +50,18 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
         volume_id,
         generation_root,
     };
-    let origin = read_origin(version, &mut decoder, &mut observe)?;
-    if version == 1 {
+    let flags = decoder.u8(&mut observe)?;
+    if flags & !3 != 0 {
+        return Err(E::from(CanonicalDecodeError::Invariant(
+            crate::kernel::codec::CanonicalInvariant::Static("invalid publication option flags"),
+        )));
+    }
+    let origin = if flags & 1 != 0 {
+        Some(read_origin(&mut decoder, &mut observe)?)
+    } else {
+        None
+    };
+    if flags & 2 == 0 {
         decoder.finish().map_err(E::from)?;
         return Ok(BorrowedPublicationEvidence {
             publication,
@@ -59,14 +70,6 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
         });
     }
     let length = decoder.u32(&mut observe)?;
-    if version == 3 && length == 0 {
-        decoder.finish().map_err(E::from)?;
-        return Ok(BorrowedPublicationEvidence {
-            publication,
-            original_evidence: None,
-            origin,
-        });
-    }
     if length == 0 {
         return Err(E::from(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static("empty original publication evidence"),
@@ -111,26 +114,22 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
 }
 
 fn read_origin<E: From<CanonicalDecodeError>>(
-    version: u16,
     decoder: &mut Decoder<'_>,
     observe: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
-) -> Result<Option<PublicationOrigin>, E> {
-    if version != 3 {
-        return Ok(None);
-    }
+) -> Result<PublicationOrigin, E> {
     let epoch = Epoch::new(decoder.u64(observe)?).map_err(|_| {
         E::from(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static("zero original publication epoch"),
         ))
     })?;
-    Ok(Some(PublicationOrigin {
+    Ok(PublicationOrigin {
         expected: Head {
             epoch,
             sequence: crate::Sequence::new(decoder.u64(observe)?),
             digest: Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
         },
         generation_root: decoder.object(ObjectKind::GenerationRoot, observe)?,
-    }))
+    })
 }
 
 pub(crate) fn decode_publication_evidence_with_accounting<'a>(
@@ -231,7 +230,7 @@ pub(super) fn permit_context(
 }
 
 pub(super) const fn publication_payload_length() -> usize {
-    PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32
+    PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32 + 1
 }
 
 pub(super) fn publication_payload_length_with_evidence(
@@ -243,9 +242,7 @@ pub(super) fn publication_payload_length_with_evidence(
         .checked_add(origin.map_or(0, |origin| 48 + origin.generation_root.encoded_len()))
         .ok_or(WorkError::Overflow)?;
     let Some(evidence) = evidence else {
-        return base
-            .checked_add(if origin.is_some() { 4 } else { 0 })
-            .ok_or_else(|| WorkError::Overflow.into());
+        return Ok(base);
     };
     if evidence.is_empty() {
         return Err(CanonicalDecodeError::Invariant(
@@ -288,18 +285,10 @@ pub(super) fn write_publication_payload(
     origin: Option<PublicationOrigin>,
 ) {
     bytes.extend_from_slice(PAYLOAD_DOMAIN);
-    bytes.extend_from_slice(
-        &(if origin.is_some() {
-            3_u16
-        } else if evidence.is_some() {
-            2_u16
-        } else {
-            1_u16
-        })
-        .to_le_bytes(),
-    );
+    bytes.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
     bytes.extend_from_slice(&volume_id.into_bytes());
     bytes.extend_from_slice(&generation_root.to_bytes());
+    bytes.push(u8::from(origin.is_some()) | (u8::from(evidence.is_some()) << 1));
     if let Some(origin) = origin {
         bytes.extend_from_slice(&origin.expected.epoch.get().to_le_bytes());
         bytes.extend_from_slice(&origin.expected.sequence.get().to_le_bytes());
@@ -310,8 +299,6 @@ pub(super) fn write_publication_payload(
         bytes.extend_from_slice(&(evidence.len() as u32).to_le_bytes());
         bytes.extend_from_slice(evidence);
         bytes.extend_from_slice(digest.as_bytes());
-    } else if origin.is_some() {
-        bytes.extend_from_slice(&0_u32.to_le_bytes());
     }
 }
 

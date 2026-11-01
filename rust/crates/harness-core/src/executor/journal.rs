@@ -24,9 +24,11 @@ pub struct ExecutionRecordQuery<'a> {
     pub operation: OperationId,
     /// Step ordinal within that operation.
     pub step: u32,
+    /// Selects this call's observation chain. `None` selects non-tool observations.
+    pub call_id: Option<&'a str>,
     /// Includes the operation's initial binding in the selection.
     pub include_started: bool,
-    /// Bound on all observations admitted for this step, including summary work.
+    /// Bound on observations admitted for the selected chain, including summary work.
     pub maximum_step_records: usize,
     /// Bound on the selected output records.
     pub maximum: usize,
@@ -45,7 +47,6 @@ impl ExecutionRecordQuery<'_> {
         limits
             .model_events_per_step
             .saturating_mul(2)
-            .saturating_add(limits.tool_calls_per_step.saturating_mul(3))
             .saturating_add(7)
     }
 }
@@ -196,6 +197,23 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             Some(io),
             crate::wire::ErrorCode::Unsupported,
             "execution journal has no immutable conversation admission",
+        ))
+    }
+
+    /// Appends the original remote dispatch in the tool claim's commit.
+    fn dispatch_if_tail<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _expected_tail: u64,
+        _claim_id: &'a str,
+        _event: &'a mut ExecutionEvent,
+        _dispatch: &'a crate::tool::Dispatch,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal cannot dispatch with a claim",
         ))
     }
 

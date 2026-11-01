@@ -1,10 +1,8 @@
-//! Hosted and generated clients replay Cloud's filesystem handler-test JSON.
+//! Generated clients replay captured filesystem handler-test JSON.
 
 #[path = "../support/cloud_contract.rs"]
 mod contract;
 
-use acyclic_fs::model::FilesystemProfile;
-use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
 use acyclic_fs_wire::wire::filesystem::v2::{
     self as wire, filesystem_service_client::FilesystemServiceClient,
 };
@@ -83,7 +81,7 @@ impl<Q: Message + Default + Send + 'static, R: Message + Default + Send + 'stati
                 .ok_or_else(|| Status::internal("missing input"))?;
             let json = contract::json(input, request.get_ref())
                 .map_err(|error| Status::internal(error.to_string()))?;
-            // Cloud's probe sends an empty handshake; the hosted facade sends its required identity.
+            // The captured probe sends an empty handshake.
             let case = if self.method == "Handshake" {
                 first
             } else {
@@ -181,7 +179,7 @@ impl tower::Service<http::Request<Body>> for GoldenService {
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-/// Golden cases whose responses the hosted roundtrip reproduces, in its call order.
+/// Golden cases whose responses the generated roundtrip reproduces, in its call order.
 const ROUNDTRIP_CASES: [usize; 7] = [2, 4, 5, 6, 7, 8, 9];
 
 /// Fields whose values a server assigns, so two servers agree on them only up to renaming.
@@ -239,7 +237,7 @@ fn golden() -> TestResult<Vec<Value>> {
     Ok(cases)
 }
 
-/// Cloud's handler-test responses for the hosted roundtrip.
+/// Cloud's handler-test responses for the generated roundtrip.
 fn golden_roundtrip(cases: &[Value]) -> TestResult<Vec<Value>> {
     ROUNDTRIP_CASES
         .iter()
@@ -264,102 +262,197 @@ enum Head {
     Written,
 }
 
-async fn hosted_roundtrip(hosted: &HostedFs, reopen: Head) -> TestResult<Vec<Value>> {
-    // Names the failing call, since a live server's status alone does not.
-    let at =
-        |step: &'static str| move |error: acyclic_fs::HostedFsError| format!("{step}: {error}");
-    let read = |contents: &[u8]| {
-        contract::json(
-            "ReadResponse",
-            &wire::ReadResponse {
-                contents: contents.to_vec(),
+async fn generated_roundtrip(
+    mut client: FilesystemServiceClient<tonic::transport::Channel>,
+    bearer: &str,
+    reopen: Head,
+) -> TestResult<Vec<Value>> {
+    fn request<T>(value: T, bearer: &str) -> TestResult<Request<T>> {
+        let mut request = Request::new(value);
+        let mut authorization =
+            format!("Bearer {bearer}").parse::<tonic::metadata::MetadataValue<_>>()?;
+        authorization.set_sensitive(true);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
+        Ok(request)
+    }
+    let operation = |byte| wire::OperationOptions {
+        idempotency_key: vec![byte; 16],
+        ..Default::default()
+    };
+    let created = client
+        .create_workspace(request(
+            wire::CreateWorkspaceRequest {
+                name: "same-name".into(),
+                profile: wire::FilesystemProfile::Portable as i32,
+                operation: Some(operation(1)),
             },
-        )
-    };
-    let list = |page| {
-        contract::json(
-            "ListDirectoryResponse",
-            &wire::ListDirectoryResponse { page: Some(page) },
-        )
-    };
-    let mut responses = Vec::new();
-    let workspace = hosted
-        .create_workspace(
-            "same-name",
-            FilesystemProfile::Portable,
-            IdempotencyKey::from_bytes([1; 16]),
-        )
-        .await
-        .map_err(at("create workspace"))?;
-    assert_eq!(workspace.name(), "same-name");
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([2; 16]));
-    transaction.create_file("/value", b"probe".to_vec(), None);
-    let written = transaction.commit(16).await.map_err(at("write"))?;
-    responses.push(contract::json("MutationResponse", &written)?);
+            bearer,
+        )?)
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("missing created workspace")?;
+    let reference = created
+        .workspace
+        .clone()
+        .ok_or("missing workspace reference")?;
+    assert_eq!(reference.name, "same-name");
+    let written = client
+        .apply_transaction(request(
+            wire::ApplyTransactionRequest {
+                base: created.head,
+                mutations: vec![wire::Mutation {
+                    mutation: Some(wire::mutation::Mutation::CreateFile(wire::CreateFile {
+                        path: "/value".into(),
+                        contents: b"probe".to_vec(),
+                        metadata: None,
+                    })),
+                }],
+                operation: Some(operation(2)),
+                maximum_conflicts: 16,
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    let mut responses = vec![contract::json("MutationResponse", &written)?];
     let head = match reopen {
-        Head::Current => workspace.head().await.map_err(at("head"))?,
-        Head::Written => workspace
-            .generation(
-                written
-                    .generation
-                    .ok_or("missing written generation")?
-                    .generation_id,
-            )
-            .await
-            .map_err(at("written generation"))?,
+        Head::Current => client
+            .get_head(request(
+                wire::GetHeadRequest {
+                    workspace: Some(reference.clone()),
+                },
+                bearer,
+            )?)
+            .await?
+            .into_inner(),
+        Head::Written => client
+            .get_generation(request(
+                wire::GetGenerationRequest {
+                    generation: written.generation,
+                },
+                bearer,
+            )?)
+            .await?
+            .into_inner(),
+    }
+    .generation
+    .ok_or("missing written generation")?;
+    let read = client
+        .read(request(
+            wire::ReadRequest {
+                generation: Some(head.clone()),
+                path: "/value".into(),
+                range: None,
+                maximum_bytes: 64,
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    responses.push(contract::json("ReadResponse", &read)?);
+    let page = || {
+        Some(wire::PageOptions {
+            maximum_items: 16,
+            ..Default::default()
+        })
     };
-    responses.push(read(
-        head.read("/value", 64)
-            .await
-            .map_err(at("read head"))?
-            .as_ref(),
-    )?);
-    responses.push(list(
-        head.list_directory("/", None, 16)
-            .await
-            .map_err(at("list head"))?,
-    )?);
-    let reopened = hosted
-        .open_workspace("same-name")
-        .await
-        .map_err(at("open workspace"))?;
-    let mut transaction = reopened.begin_transaction(IdempotencyKey::from_bytes([3; 16]));
-    transaction.remove("/value");
-    let removed = transaction.commit(16).await.map_err(at("remove"))?;
+    let listed = client
+        .list_directory(request(
+            wire::ListDirectoryRequest {
+                generation: Some(head.clone()),
+                path: "/".into(),
+                page: page(),
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    responses.push(contract::json("ListDirectoryResponse", &listed)?);
+    let reopened = client
+        .open_workspace(request(
+            wire::OpenWorkspaceRequest {
+                selector: Some(wire::open_workspace_request::Selector::Name(
+                    "same-name".into(),
+                )),
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner()
+        .workspace
+        .ok_or("missing reopened workspace")?;
+    let removed = client
+        .apply_transaction(request(
+            wire::ApplyTransactionRequest {
+                base: reopened.head,
+                mutations: vec![wire::Mutation {
+                    mutation: Some(wire::mutation::Mutation::Remove(wire::Remove {
+                        path: "/value".into(),
+                    })),
+                }],
+                operation: Some(operation(3)),
+                maximum_conflicts: 16,
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
     responses.push(contract::json("MutationResponse", &removed)?);
-    let generation = reopened
-        .generation(
-            removed
-                .generation
-                .ok_or("missing removed generation")?
-                .generation_id,
-        )
-        .await
-        .map_err(at("generation"))?;
-    responses.push(list(
-        generation
-            .list_directory("/", None, 16)
-            .await
-            .map_err(at("list removed"))?,
-    )?);
-    responses.push(read(
-        head.read("/value", 64)
-            .await
-            .map_err(at("read retained"))?
-            .as_ref(),
-    )?);
-    responses.push(contract::json(
-        "MutationResponse",
-        &workspace
-            .delete(IdempotencyKey::from_bytes([4; 16]))
-            .await
-            .map_err(at("delete"))?,
-    )?);
+    let generation = client
+        .get_generation(request(
+            wire::GetGenerationRequest {
+                generation: removed.generation,
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner()
+        .generation
+        .ok_or("missing removed generation")?;
+    let listed = client
+        .list_directory(request(
+            wire::ListDirectoryRequest {
+                generation: Some(generation),
+                path: "/".into(),
+                page: page(),
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    responses.push(contract::json("ListDirectoryResponse", &listed)?);
+    let retained = client
+        .read(request(
+            wire::ReadRequest {
+                generation: Some(head),
+                path: "/value".into(),
+                range: None,
+                maximum_bytes: 64,
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    responses.push(contract::json("ReadResponse", &retained)?);
+    let deleted = client
+        .delete_workspace(request(
+            wire::DeleteWorkspaceRequest {
+                workspace: Some(reference),
+                operation: Some(operation(4)),
+            },
+            bearer,
+        )?)
+        .await?
+        .into_inner();
+    responses.push(contract::json("MutationResponse", &deleted)?);
     Ok(responses)
 }
 
 #[tokio::test]
-async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip() -> TestResult {
+async fn generated_clients_match_cloud_filesystem_roundtrip() -> TestResult {
     let cases = golden()?;
     let seen = Arc::new(Mutex::new(Vec::new()));
     let service = GoldenService {
@@ -376,10 +469,15 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip() -> Test
                 let _ = stopping.await;
             }),
     );
-    let hosted = HostedFs::connect(HostedFsOptions::new(&endpoint, "fixture")).await?;
+    let client = FilesystemServiceClient::connect(endpoint.clone()).await?;
+    let mut handshake = Request::new(wire::HandshakeRequest { protocol: None });
+    handshake
+        .metadata_mut()
+        .insert("authorization", "Bearer fixture".parse()?);
+    client.clone().handshake(handshake).await?;
     let golden = golden_roundtrip(&cases)?;
     // The replaying server answers with Cloud's own bytes, so the trace is exact.
-    let responses = hosted_roundtrip(&hosted, Head::Current).await?;
+    let responses = generated_roundtrip(client.clone(), "fixture", Head::Current).await?;
     assert_eq!(responses, golden);
     assert_eq!(
         *seen.lock().map_err(|_| "poisoned lock")?,
@@ -421,12 +519,12 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip() -> Test
 
     // The live run's reopening of the written generation yields the same responses.
     assert_eq!(
-        hosted_roundtrip(&hosted, Head::Written).await?,
+        generated_roundtrip(client.clone(), "fixture", Head::Written).await?,
         golden_roundtrip(&cases)?
     );
 
     replay_generated(&endpoint, &cases).await?;
-    drop(hosted);
+    drop(client);
     let _ = stop.send(());
     server.await??;
     Ok(())
@@ -438,7 +536,7 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip() -> Test
 /// `ACYCLIC_LOCAL_CLOUD`.
 #[tokio::test]
 #[ignore = "needs a local cloud: node scripts/local-cloud.mjs --topology full"]
-async fn hosted_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResult {
+async fn generated_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResult {
     let file = std::env::var("ACYCLIC_LOCAL_CLOUD")
         .map_err(|_| "ACYCLIC_LOCAL_CLOUD names the local cloud's endpoints file")?;
     let endpoints: Value = serde_json::from_slice(&std::fs::read(file)?)?;
@@ -450,35 +548,63 @@ async fn hosted_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResul
             .ok_or(format!("endpoints file has no fs.{name}"))
     };
     let ca = std::fs::read(field("ca_file")?)?;
-    let hosted = HostedFs::connect(
-        HostedFsOptions::new(field("endpoint")?, field("bearer")?).with_ca_certificate(ca),
-    )
-    .await?;
+    let endpoint = tonic::transport::Endpoint::from_shared(field("endpoint")?)?.tls_config(
+        tonic::transport::ClientTlsConfig::new()
+            .with_webpki_roots()
+            .ca_certificate(tonic::transport::Certificate::from_pem(ca)),
+    )?;
+    let client = FilesystemServiceClient::new(endpoint.connect().await?);
+    let bearer = field("bearer")?;
     let cases = golden()?;
     let golden = renamed(golden_roundtrip(&cases)?);
-    // The gate's locally minted Filesystem bearer omits GetHead (and every
-    // operation past Cloud's own e2e calls), so this run reopens the written
-    // generation instead; the responses compared are the same. Once the bearer
-    // carries GetHead this refusal fails, and the run should use Head::Current.
-    let probe = hosted
-        .create_workspace(
-            "head-probe",
-            FilesystemProfile::Portable,
-            IdempotencyKey::from_bytes([5; 16]),
-        )
-        .await?;
-    match probe.head().await {
-        Err(acyclic_fs::HostedFsError::Status(status))
-            if status.code() == tonic::Code::PermissionDenied => {}
+    // The captured restricted credential cannot fetch a mutable head. The
+    // immutable written generation must still be readable with that credential.
+    let mut probe = Request::new(wire::CreateWorkspaceRequest {
+        name: "head-probe".into(),
+        profile: wire::FilesystemProfile::Portable as i32,
+        operation: Some(wire::OperationOptions {
+            idempotency_key: vec![5; 16],
+            ..Default::default()
+        }),
+    });
+    let mut authorization =
+        format!("Bearer {bearer}").parse::<tonic::metadata::MetadataValue<_>>()?;
+    authorization.set_sensitive(true);
+    probe
+        .metadata_mut()
+        .insert("authorization", authorization.clone());
+    let workspace = client
+        .clone()
+        .create_workspace(probe)
+        .await?
+        .into_inner()
+        .workspace
+        .and_then(|workspace| workspace.workspace)
+        .ok_or("missing probe workspace")?;
+    let mut head = Request::new(wire::GetHeadRequest {
+        workspace: Some(workspace.clone()),
+    });
+    head.metadata_mut()
+        .insert("authorization", authorization.clone());
+    match client.clone().get_head(head).await {
+        Err(status) if status.code() == tonic::Code::PermissionDenied => {}
         other => return Err(format!("GetHead is no longer refused: {:?}", other.err()).into()),
     }
-    probe.delete(IdempotencyKey::from_bytes([6; 16])).await?;
+    let mut delete = Request::new(wire::DeleteWorkspaceRequest {
+        workspace: Some(workspace),
+        operation: Some(wire::OperationOptions {
+            idempotency_key: vec![6; 16],
+            ..Default::default()
+        }),
+    });
+    delete.metadata_mut().insert("authorization", authorization);
+    client.clone().delete_workspace(delete).await?;
     assert_eq!(
-        renamed(hosted_roundtrip(&hosted, Head::Written).await?),
+        renamed(generated_roundtrip(client, &bearer, Head::Written).await?),
         golden
     );
     println!(
-        "local cloud: hosted Filesystem roundtrip matched {} Cloud handler responses",
+        "local cloud: generated Filesystem roundtrip matched {} Cloud handler responses",
         golden.len()
     );
     Ok(())

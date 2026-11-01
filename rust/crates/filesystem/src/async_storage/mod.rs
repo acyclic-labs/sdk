@@ -18,13 +18,17 @@ use std::sync::Arc;
 #[macro_use]
 mod contract;
 mod cache;
+pub(crate) use cache::DecodedCacheOrigin;
 #[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
 pub(crate) use cache::owned_read;
-pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
+pub use cache::{
+    DecodedCacheAdmission, DecodedCacheKey, DecodedCacheLookup, DecodedCacheMiss, DecodedCacheValue,
+};
 mod fork;
 pub use fork::{GenerationFork, GenerationForkSource, WorkspaceForkCommit, WorkspaceForkOutcome};
 pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
+pub(crate) use work::AuthorityFrame;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::NativeAuthorityGuard;
 #[cfg(any(test, feature = "distributed"))]
@@ -32,6 +36,8 @@ pub(crate) use work::authority_error;
 pub(crate) use work::authority_parts;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
+mod generation;
+pub(crate) use generation::generation_fact;
 mod owned_group;
 pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
 pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};
@@ -50,3 +56,6 @@ pub(crate) use read_batch::read_many_stored_sequential;
 mod tests;
 
 pub(crate) use objects::prepare_object;
+
+#[cfg(test)]
+pub(crate) use cache::{cached_value, publish_decoded};

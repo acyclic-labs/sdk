@@ -298,18 +298,16 @@ pub(super) fn serve_vring_packet(
         else {
             return Ok(QueueProgress::Empty);
         };
-        let input = buffers
-            .input
-            .get_mut(..packet.readable)
-            .ok_or(libc::EMSGSIZE)?;
+        let maximum = session.packet_capacity();
+        let capacity = maximum.min(packet.writable);
+        let input = PacketBuffers::input_for(&mut buffers.input, packet.readable, maximum)?;
         packet.gather(input, work)?;
         let request = PacketRequest::parse(input)?;
         if hiprio != matches!(request.opcode, 2 | 36 | 42) {
             return Err(libc::EPROTO.into());
         }
         // Bound the packet entry before dispatching any filesystem effect.
-        let capacity = buffers.output.len().min(packet.writable);
-        let response = buffers.output.get_mut(..capacity).ok_or(libc::ENOBUFS)?;
+        let response = PacketBuffers::output_for(&mut buffers.output, &request, capacity)?;
         let running = session
             .publish(&request, response, |reply| {
                 let slices = reply.slices();

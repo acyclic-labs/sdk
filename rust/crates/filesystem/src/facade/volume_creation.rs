@@ -260,7 +260,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await?;
         accounting.check()?;
-        let mut authority = authority_work(accounting, cancellation)?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
@@ -271,7 +271,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 guard,
             )
             .await;
-        let recorded = record_authority_work(accounting, &authority);
+        let recorded = finish_authority_work(authority);
         Self::retire_creation_commit(prepared.changes, prepared.capacity, accounting)?;
         recorded?;
         drop(prepared.hold);
@@ -376,10 +376,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         volume_id: VolumeId,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
+        _cancellation: &CancellationToken,
     ) -> Result<(VolumeCreated, OperationId), FsError> {
         accounting.check()?;
-        let mut work = authority_work(accounting, cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = self
             .inner
             .authority
@@ -393,7 +393,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 &mut work,
             )
             .await;
-        record_authority_work(accounting, &work)?;
+        finish_authority_work(work)?;
         let (records, _allocation) = result.map_err(|error| match error {
             #[cfg(not(target_arch = "wasm32"))]
             AuthorityStoreError::NativeStream(acyclic_stream::StreamError::NotFound) => {

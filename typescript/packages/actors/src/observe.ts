@@ -18,6 +18,12 @@ export interface AcyclicObserver { onOperation(event: OperationEvent): void }
 
 export interface OperationSizes { requestBytes?: number; responseBytes?: number }
 
+function report(observer: AcyclicObserver, family: string, op: string, start: number, sizes: OperationSizes, ok: boolean, outcome: unknown): void {
+  const { code, status, work } = (typeof outcome === "object" && outcome !== null ? outcome : {}) as { code?: unknown; status?: unknown; work?: unknown };
+  const failure = ok ? undefined : (typeof code === "string" || typeof code === "number") && code !== "" && code !== 0 ? code : typeof status === "number" ? status : "unknown";
+  observer.onOperation({ family, op, durationMs: performance.now() - start, ok, ...sizes, ...(failure === undefined ? {} : { code: failure }), ...(work === undefined ? {} : { work }) });
+}
+
 /** Records each call as a `performance.measure` entry named `acyclic.<family>.<op>`. */
 export function performanceObserver(): AcyclicObserver {
   return {
@@ -39,12 +45,20 @@ export function observed<T>(observer: AcyclicObserver | undefined, family: strin
   if (observer === undefined) return run();
   const sizes: OperationSizes = {};
   const start = performance.now();
-  const report = (ok: boolean, outcome: unknown) => {
-    const { code, status, work } = (typeof outcome === "object" && outcome !== null ? outcome : {}) as { code?: unknown; status?: unknown; work?: unknown };
-    const failure = ok ? undefined : (typeof code === "string" || typeof code === "number") && code !== "" && code !== 0 ? code : typeof status === "number" ? status : "unknown";
-    observer.onOperation({ family, op, durationMs: performance.now() - start, ok, ...sizes, ...(failure === undefined ? {} : { code: failure }), ...(work === undefined ? {} : { work }) });
-  };
-  return run(sizes).then(value => { report(true, value); return value; }, (error: unknown) => { report(false, error); throw error; });
+  return run(sizes).then(value => { report(observer, family, op, start, sizes, true, value); return value; }, (error: unknown) => { report(observer, family, op, start, sizes, false, error); throw error; });
+}
+
+/** Reports after the original iterator completes or closes, including failures after a yield. */
+export function observedIterable<T>(observer: AcyclicObserver | undefined, family: string, op: string, source: AsyncIterable<T>): AsyncIterable<T> {
+  if (observer === undefined) return source;
+  return (async function* () {
+    const start = performance.now();
+    let ok = true;
+    let outcome: unknown;
+    try { yield* source; }
+    catch (error) { ok = false; outcome = error; throw error; }
+    finally { report(observer, family, op, start, {}, ok, outcome); }
+  })();
 }
 
 /** `interceptors` itself without an observer; otherwise a copy ending in one timing interceptor. */

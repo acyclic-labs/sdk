@@ -679,7 +679,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     kind: ObjectKind,
     encoded: Owned<Vec<u8>>,
     accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
+    _cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
     accounting.check()?;
     accounting.admit(WorkCounters {
@@ -700,17 +700,16 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
             &mut encoded.value,
             allocation,
             original,
-            cancellation,
+            _cancellation,
         )?;
-        let hashed =
-            crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
+        let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
         let object = hashed.object_id();
         accounting.charge(WorkCounters {
             page_writes: u64::from(kind != ObjectKind::BlobChunk),
             ..WorkCounters::UNCHARGED
         })?;
         {
-            let mut work = crate::AuthorityWork::native(original, cancellation);
+            let mut work = crate::AuthorityWork::native(original, _cancellation);
             store.put_hashed(hashed, &mut work).await
         }
         .map_err(super::file_read::read_store_error)?;
@@ -732,21 +731,16 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         page_writes: u64::from(kind != ObjectKind::BlobChunk),
         ..WorkCounters::UNCHARGED
     })?;
-    let hashed =
-        crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
+    let hashed = crate::async_storage::prepare_object(store, hashed, accounting).await?;
     let object = hashed.object_id();
-    let receipt = {
-        let mut object_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+    let result = {
+        let mut object_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         let result = store.put_hashed(hashed, &mut object_work).await;
-        object_work.receipt(result)
+        object_work.spent().verify(object_work.budget)?;
+        result
     };
-    let spent = match &receipt {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
-    super::file_read::complete_standalone_backend(accounting, spent, 0)?;
     retire_allocation(allocation, bytes, accounting)?;
-    receipt.map_err(|failure| super::file_read::read_store_error(failure.error))?;
+    result.map_err(super::file_read::read_store_error)?;
     Ok(object)
 }
 

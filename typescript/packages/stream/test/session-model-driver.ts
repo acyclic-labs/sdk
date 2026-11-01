@@ -24,14 +24,15 @@ let rejectWrite = false;
 let observedRejection = false;
 const sessions = new StreamSessions(async (node, signal) => {
   const transport = await peer.connect(node, signal);
-  return { ...transport, async send(frame, writeSignal) {
+  return { ...transport, async send(bytes, writeSignal) {
+    const frame = fromBinary(wire.SessionFrameSchema, bytes);
     if (rejectWrite && frame.body.case === "interest" && frame.body.value.upsert.some(item => item.kind.case === "follow" && item.kind.value.resource === "streams:/events")) {
       observedRejection = true;
       for (const notify of peer.changed) notify();
       if (fault === "rejection") await new Promise<void>(() => {});
       throw new Error("subscription rejected");
     }
-    return transport.send(frame, writeSignal);
+    return transport.send(bytes, writeSignal);
   } };
 });
 const controller = new AbortController();

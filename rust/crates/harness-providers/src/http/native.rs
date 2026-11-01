@@ -9,19 +9,24 @@ use std::{
 struct Body<S> {
     stream: S,
     custody: Option<NativeAllocation>,
+    terminated: bool,
 }
 
 impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
     type Item = Result<Bytes>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if this.terminated {
+            return Poll::Ready(None);
+        }
         if let Some(custody) = &this.custody {
             if let Err(cause) = custody.work().remaining() {
+                this.terminated = true;
                 return Poll::Ready(Some(Err(cause.into())));
             }
         }
         let next = Pin::new(&mut this.stream).poll_next(cx);
-        match (next, &this.custody) {
+        let next = match (next, &this.custody) {
             (Poll::Ready(Some(Ok(bytes))), Some(owner)) if !bytes.is_empty() => {
                 // Admit the entire received buffer before exposing it to a reader.
                 // SSE may suspend at any frame with the remainder still resident.
@@ -40,7 +45,9 @@ impl<S: Stream<Item = Result<Bytes>> + Unpin> Stream for Body<S> {
                 Poll::Ready(Some(result))
             }
             (next, _) => next,
-        }
+        };
+        this.terminated = matches!(&next, Poll::Ready(None | Some(Err(_))));
+        next
     }
 }
 
@@ -64,5 +71,9 @@ where
             )
         })
         .transpose()?;
-    Ok(Box::pin(Body { stream, custody }))
+    Ok(Box::pin(Body {
+        stream,
+        custody,
+        terminated: false,
+    }))
 }

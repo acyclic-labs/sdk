@@ -137,6 +137,10 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             Err(Error::Configuration(_))
         ));
         assert!(matches!(
+            client.call("DeployNamespace", &[]).await,
+            Err(Error::Configuration(_))
+        ));
+        assert!(matches!(
             client.call("Unknown", &[]).await,
             Err(Error::Configuration(_))
         ));

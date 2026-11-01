@@ -1,5 +1,38 @@
 use super::*;
 
+pub(in super::super) fn decode_machine_page(
+    page: wire::MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<MachinePage, ProviderError> {
+    let mut previous = after;
+    let mut machines = Vec::with_capacity(page.machines.len());
+    for value in page.machines {
+        let expected = decode_machine(value.machine.as_ref())?;
+        if previous.is_some_and(|cursor| expected <= cursor) {
+            return Err(ProviderError::Rejected(
+                "server returned a noncanonical machine page".into(),
+            ));
+        }
+        machines.push(decode_machine_observation(value, expected)?);
+        previous = Some(expected);
+    }
+    let next = page
+        .next
+        .as_ref()
+        .map(|value| decode_machine(Some(value)))
+        .transpose()?;
+    if machines.len()
+        > usize::try_from(limit).map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
+        || next.is_some() && next != machines.last().map(|value| value.id)
+    {
+        return Err(ProviderError::Rejected(
+            "server returned a malformed machine cursor".into(),
+        ));
+    }
+    Ok(MachinePage { machines, next })
+}
+
 impl TryFrom<wire::MachineState> for MachineObservation {
     type Error = ProviderError;
 

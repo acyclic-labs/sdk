@@ -1,5 +1,5 @@
 //! The one stock composition of an agent turn's executor, shared by every
-//! host: the local harness, the browser and a hosted server. A host supplies
+//! host: the local harness, the browser and an agent Actor. A host supplies
 //! its model, tools and limits, and a [`TurnContext`] for what only it adds;
 //! the turn's admission is the host's own, carried by its
 //! [`super::FilesystemTurnHost`] or [`super::hosting::Bound`], never chosen
@@ -85,7 +85,7 @@ impl TurnContext for Tasks {
     }
 
     fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
-        self.0.targets().map(|targets| Arc::clone(targets.roster()))
+        self.0.targets().map(|targets| targets.roster())
     }
 }
 
@@ -93,8 +93,8 @@ impl TurnContext for Grants {
     fn prepare<'a>(
         &'a self,
         (executor, limits): (StockExecutor, Limits),
-        _: &'a AgentState,
-        _: OperationId,
+        agent: &'a AgentState,
+        turn: OperationId,
         _: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
@@ -107,10 +107,19 @@ impl TurnContext for Grants {
                     .chain(self.0.iter().cloned())
                     .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
             );
-            executor.with_tool_authority(
-                RuntimeScope::new(grants, limits)?,
-                authority.approval.clone(),
-            )
+            let scope = RuntimeScope::new(grants, limits)?;
+            if authority.workspace_tools.is_none() {
+                return executor.with_tool_authority(scope, authority.approval.clone());
+            }
+            let harness = crate::runtime::Bindings {
+                targets: None,
+                filesystem: authority.workspace_tools.clone(),
+                scope,
+                content: Some(authority.content.clone()),
+                artifacts: None,
+            }
+            .build()?;
+            Tasks::bind(&harness, executor, agent, turn, authority).map(|(executor, _)| executor)
         })
     }
 }
@@ -149,7 +158,8 @@ impl Preset {
 
     /// This preset's tools, the one construction every host takes them from:
     /// the catalog tools it selects that the host can back (the volume tools
-    /// always; each workspace tool only when `workspace` admits its name),
+    /// and filesystem commands always; each workspace tool only when
+    /// `workspace` admits its name),
     /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
     ///

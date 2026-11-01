@@ -1,5 +1,52 @@
 use super::*;
 
+impl Route {
+    fn subscription(
+        &mut self,
+        id: u64,
+        served: &crate::RevisionCut,
+    ) -> Result<wire::SessionSubscription, StreamError> {
+        let progress::Position {
+            next,
+            opaque,
+            preceding,
+        } = self.progress.subscription()?;
+        if let Kind::Follow(follow) = &mut self.kind {
+            follow.preceding_commit_id =
+                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+            // The route keeps the whole minimum it sends, so its open is
+            // checked against exactly that cut. Only a Streams source carries
+            // the stream floor; another source keeps its explicit minimum.
+            if wire_codec::session::tracks_revisions(follow) {
+                self.revisions
+                    .raise_uncovered(&mut follow.at_least, served)?;
+            }
+        }
+        self.received = next;
+        self.received_opaque = opaque.clone().into();
+        self.observation.in_scope(|| {
+            self.observation.record("generation", self.generation);
+            tracing::debug!(event = "subscribe", generation = self.generation);
+        });
+        self.opened = false;
+        self.watermark = None;
+        self.credit = wire::SessionWindow::default();
+        Ok(wire::SessionSubscription {
+            channel: Some(wire::SessionChannel {
+                channel_id: id,
+                generation: self.generation,
+            }),
+            resume: Some(wire::SessionCursor {
+                next,
+                opaque: opaque.into(),
+            }),
+            kind: Some(self.kind.clone()),
+            credential: self.credential,
+            filter: self.filter.clone(),
+        })
+    }
+}
+
 impl Pool {
     pub(super) fn install(
         &mut self,
@@ -11,8 +58,8 @@ impl Pool {
         link.epoch = self.next_link;
         self.next_link = self.next_link.checked_add(1).ok_or(StreamError::Capacity)?;
         // A rotation may race the handshake. Replay the current complete slot
-        // set before any subscription; dropped slots from the old handshake
-        // are also explicitly removed.
+        // set before subsequent subscriptions; the first request is already
+        // bound to its admission credentials. Explicitly remove dropped slots.
         let opening_credentials = std::mem::take(&mut link.opening_credentials);
         let slots = opening_credentials
             .keys()
@@ -52,8 +99,21 @@ impl Pool {
         let Some(owner) = self.dial_owner(&name) else {
             return;
         };
-        let Some(route) = self.routes.get(&owner) else {
+        let Some(route) = self.routes.get_mut(&owner) else {
             return;
+        };
+        let replayable = route.resumable();
+        let subscription = match route.subscription(owner, &crate::RevisionCut::default()) {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                self.reject(owner, error);
+                return;
+            }
+        };
+        let interest = wire::SessionInterest {
+            revision: 1,
+            upsert: vec![subscription],
+            remove: Vec::new(),
         };
         let context = route
             .observation
@@ -61,20 +121,42 @@ impl Pool {
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
+                let mut attempt = 0_u32;
                 let outcome = loop {
-                    let result = async {
-                        let channel = match &channel {
-                            Some(channel) => channel.clone(),
-                            None => connect(node.clone()).await?,
-                        };
-                        open_link(channel, &name, identity.clone(), credentials.clone()).await
-                    }
-                    .await;
+                    let mut observation = Observation::session(attempt);
+                    let result = observation
+                        .operation
+                        .clone()
+                        .scope(async {
+                            let endpoint = match &channel {
+                                Some(channel) => channel.clone(),
+                                None => connect(node.clone()).await?,
+                            };
+                            handshake(
+                                endpoint,
+                                &name,
+                                identity.clone(),
+                                credentials.clone(),
+                                interest.clone(),
+                            )
+                            .await
+                        })
+                        .await;
                     match result {
-                        // Retry only an observed transport failure. Dropping the
-                        // final interest cancels the dial and its backoff.
-                        Err(StreamError::Unavailable) => executor.sleep(100).await,
-                        result => break result,
+                        Ok((node, mut link, response)) => {
+                            link.observation = Some(observation);
+                            break Ok((node, link, response));
+                        }
+                        Err(error) => {
+                            observation.finish(Some(&error));
+                            // Admission carries the request. An effectful call
+                            // may have committed before transport failed.
+                            if error != StreamError::Unavailable || !replayable {
+                                break Err(error);
+                            }
+                            attempt = attempt.saturating_add(1);
+                            executor.sleep(10).await;
+                        }
                     }
                 };
                 (name, epoch, outcome)
@@ -110,6 +192,16 @@ impl Pool {
         node: &str,
         value: wire::SessionFrame,
     ) -> Result<(), StreamError> {
+        // A refused frame has already evicted its node's session.
+        self.queue(node, value).map(|_refused| ())
+    }
+    /// Queue one frame for `node`; the inner result says whether it was
+    /// queued. The outer error means `node` has no link.
+    pub(super) fn queue(
+        &mut self,
+        node: &str,
+        value: wire::SessionFrame,
+    ) -> Result<Result<(), StreamError>, StreamError> {
         let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
         if value.channel_id == 0
             && let Some(Body::Window(grant)) = &value.body
@@ -117,53 +209,31 @@ impl Pool {
             wire_codec::session::grant_credit(&mut link.credit, grant)?;
         }
         let bytes = value.encoded_len();
-        if let Err(error) = link.sender.push(value, bytes) {
+        let queued = link.sender.push(value, bytes);
+        if let Err(error) = &queued {
             // A full control queue cannot safely retain remote interests after
             // cancellation. Evict this node's session, never the shared pool.
-            self.fail_link(node, &error);
+            self.fail_link(node, error);
         }
-        Ok(())
+        Ok(queued)
     }
     pub(super) fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
         let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
         if route.progress.cancelled() {
             return self.remove(id);
         }
-        let progress::Position {
-            next,
-            opaque,
-            preceding,
-        } = route.progress.subscription()?;
         let served = &self
             .links
             .get(&route.node)
             .ok_or(StreamError::Unavailable)?
             .served;
-        if let Kind::Follow(follow) = &mut route.kind {
-            follow.preceding_commit_id =
-                preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
-            // The route keeps the whole minimum it sends, so its open is
-            // checked against exactly that cut. Only a Streams source carries
-            // the stream floor; another source keeps its explicit minimum.
-            if wire_codec::session::tracks_revisions(follow) {
-                if let Err(error) = route
-                    .revisions
-                    .raise_uncovered(&mut follow.at_least, served)
-                {
-                    self.reject(id, error);
-                    return Ok(());
-                }
+        let subscription = match route.subscription(id, served) {
+            Ok(subscription) => subscription,
+            Err(error) => {
+                self.reject(id, error);
+                return Ok(());
             }
-        }
-        route.received = next;
-        route.received_opaque = opaque.clone().into();
-        route.observation.in_scope(|| {
-            route.observation.record("generation", route.generation);
-            tracing::debug!(event = "subscribe", generation = route.generation);
-        });
-        route.opened = false;
-        route.watermark = None;
-        route.credit = wire::SessionWindow::default();
+        };
         let link = self
             .links
             .get_mut(&route.node)
@@ -174,19 +244,6 @@ impl Pool {
                 .follows_from_same_subscriber(&route.observation);
         }
         let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let subscription = wire::SessionSubscription {
-            channel: Some(wire::SessionChannel {
-                channel_id: id,
-                generation: route.generation,
-            }),
-            resume: Some(wire::SessionCursor {
-                next,
-                opaque: opaque.into(),
-            }),
-            kind: Some(route.kind.clone()),
-            credential: route.credential,
-            filter: route.filter.clone(),
-        };
         let value = frame(
             0,
             0,
@@ -260,31 +317,13 @@ impl Pool {
             return Ok(());
         };
         let node = route.node.clone();
-        if let Some(link) = self.links.get(&node) {
-            link.channel.cancel_channel(wire::SessionChannel {
+        self.cancel_subscription(
+            &node,
+            wire::SessionChannel {
                 channel_id: id,
                 generation: route.generation,
-            });
-        }
-        if let Some(link) = self.links.get_mut(&node) {
-            link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
-            let revision = link.revision;
-            self.send(
-                &node,
-                frame(
-                    0,
-                    0,
-                    Body::Interest(wire::SessionInterest {
-                        revision,
-                        upsert: Vec::new(),
-                        remove: vec![wire::SessionChannel {
-                            channel_id: id,
-                            generation: route.generation,
-                        }],
-                    }),
-                ),
-            )?;
-        }
+            },
+        )?;
         if !self.node_interested(&node) {
             self.dials.remove(&node);
             self.links.remove(&node);
@@ -293,6 +332,30 @@ impl Pool {
             }
         }
         Ok(())
+    }
+    pub(super) fn cancel_subscription(
+        &mut self,
+        node: &str,
+        channel: wire::SessionChannel,
+    ) -> Result<(), StreamError> {
+        let Some(link) = self.links.get_mut(node) else {
+            return Ok(());
+        };
+        link.channel.cancel_channel(channel);
+        link.revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
+        let revision = link.revision;
+        self.send(
+            node,
+            frame(
+                0,
+                0,
+                Body::Interest(wire::SessionInterest {
+                    revision,
+                    upsert: Vec::new(),
+                    remove: vec![channel],
+                }),
+            ),
+        )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
         let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
@@ -367,35 +430,12 @@ impl Pool {
     }
 }
 
-async fn open_link(
-    channel: Endpoint,
-    destination: &str,
-    identity: Bytes,
-    credentials: BTreeMap<u32, Bytes>,
-) -> Result<Ready, StreamError> {
-    let mut observation = Observation::session(0);
-    let result = observation
-        .operation
-        .clone()
-        .scope(handshake(channel, destination, identity, credentials))
-        .await;
-    match result {
-        Ok((node, mut link, response)) => {
-            link.observation = Some(observation);
-            Ok((node, link, response))
-        }
-        Err(error) => {
-            observation.finish(Some(&error));
-            Err(error)
-        }
-    }
-}
-
 async fn handshake(
     channel: Endpoint,
     destination: &str,
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
+    interest: wire::SessionInterest,
 ) -> Result<Ready, StreamError> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
@@ -409,11 +449,17 @@ async fn handshake(
             .collect::<Vec<_>>(),
         None => vec![],
     };
+    let opening_subscription = interest
+        .upsert
+        .first()
+        .and_then(|subscription| subscription.channel);
+    let revision = interest.revision;
     let hello = frame(
         0,
         0,
         Body::Hello(wire::SessionHello {
-            version: 1,
+            version: super::super::VERSION,
+            interest: Some(interest),
             client_id: identity,
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
@@ -428,11 +474,12 @@ async fn handshake(
     sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
+        opening_subscription,
         opening_credentials,
         observation: None,
         channel,
         sender,
-        revision: 0,
+        revision,
         applied_revision: 0,
         released: wire::SessionWindow::default(),
         served: crate::RevisionCut::default(),
@@ -455,10 +502,10 @@ async fn handshake(
     let Some(Body::Welcome(welcome)) = welcome.into_wire().body else {
         return Err(StreamError::InvalidResponse);
     };
-    if welcome.version != 1
-        || welcome.node_id.is_empty()
-        || (!destination.is_empty() && welcome.node_id != destination)
-    {
+    if welcome.version != super::super::VERSION {
+        return Err(StreamError::Unsupported);
+    }
+    if welcome.node_id.is_empty() || (!destination.is_empty() && welcome.node_id != destination) {
         return Err(StreamError::InvalidResponse);
     }
     Ok((welcome.node_id, link, response))

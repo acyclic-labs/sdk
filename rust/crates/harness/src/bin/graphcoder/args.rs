@@ -50,6 +50,12 @@ pub struct Args {
     /// stdout and sends ordinary answers to stderr. Missing metrics stay null.
     #[arg(long, value_name = "PATH|-")]
     pub usage_jsonl: Option<PathBuf>,
+    /// Explicit number of retained diagnostic text records; no default credit.
+    #[arg(long, requires = "diagnostic_record_bytes")]
+    pub diagnostic_records: Option<usize>,
+    /// Explicit bytes reserved per diagnostic record, allocated only for enabled logging.
+    #[arg(long, requires = "diagnostic_records")]
+    pub diagnostic_record_bytes: Option<usize>,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
     /// With `--host-workspace` it answers only native permission prompts for
     /// coordination tools, and defaults to leaving them to the host.

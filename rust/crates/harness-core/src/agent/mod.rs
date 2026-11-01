@@ -7,6 +7,9 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 mod commit;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
@@ -39,8 +42,8 @@ pub use settled::{TurnChildren, answer, settled};
 mod slots;
 mod targets;
 pub use targets::{
-    MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass, TargetRecord,
-    TargetRefusal, TargetState, USER_PREFIX,
+    DeviceKind, MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass,
+    TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
 };
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -86,6 +89,9 @@ pub enum Error {
     /// A record violates its bounds or the step protocol.
     #[error("invalid agent record: {0}")]
     Record(&'static str),
+    /// The retained checkpoint belongs to another artifact codec.
+    #[error("unsupported agent checkpoint codec")]
+    IncompatibleCheckpointCodec,
     /// The recipient agent was never created.
     #[error("no such agent")]
     NoSuchAgent,
@@ -130,6 +136,7 @@ impl Error {
             },
             Self::Path(_)
             | Self::Record(_)
+            | Self::IncompatibleCheckpointCodec
             | Self::UnsupportedRecordVersion(_)
             | Self::NoSuchAgent
             | Self::SpawnRefused(_)
@@ -144,6 +151,7 @@ impl Error {
         match self {
             Self::Path(_) => "invalid_agent_path",
             Self::Record(_) => "invalid_agent_record",
+            Self::IncompatibleCheckpointCodec => "unsupported_checkpoint_codec",
             Self::UnsupportedRecordVersion(_) => "unsupported_record_version",
             Self::NoSuchAgent => "no_such_agent",
             Self::SpawnRefused(_) => "spawn_refused",

@@ -11,6 +11,9 @@ use acyclic_stream::{
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod commit_tests;
 
+mod frame;
+pub(crate) use frame::AuthorityFrame;
+
 /// Transfer retained custody only at an existing public value/guard boundary.
 /// Internal fallible operations keep `Owned` intact so its value drops first.
 pub(crate) fn authority_parts<T>(owned: crate::kernel::Owned<T>) -> (T, AuthorityAllocation) {

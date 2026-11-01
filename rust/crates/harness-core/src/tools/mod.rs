@@ -8,27 +8,23 @@ pub use agents::{
 };
 pub mod shell;
 pub use shell::ShellInput;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod code_mode;
 mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
 mod bounds;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use bounds::prefix as json_string_prefix;
 mod command;
 mod fs_command;
 mod workspace_executor;
 pub use command::parse_command;
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub use fs_command::{FsCommand, parse_fs_command};
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
+#[cfg(feature = "filesystem")]
 pub mod git;
 
 #[doc(hidden)]

@@ -5,10 +5,9 @@
 
 use std::{future::Future, sync::Arc};
 
-use acyclic_actors::{client, domain, wire};
+use acyclic_actors::{client, domain};
 use napi::bindgen_prelude::{BigInt, Buffer, Error, Result, Status, Uint8Array};
 use napi_derive::napi;
-use prost::Message;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
@@ -66,10 +65,16 @@ pub struct NativeActorsOperationResult {
 }
 
 impl NativeActorsOperationResult {
-    fn failure(error: NativeActorsErrorMetadata) -> Self {
-        Self {
-            value: None,
-            error: Some(error),
+    fn from_result(result: std::result::Result<Vec<u8>, NativeActorsErrorMetadata>) -> Self {
+        match result {
+            Ok(value) => Self {
+                value: Some(value.into()),
+                error: None,
+            },
+            Err(error) => Self {
+                value: None,
+                error: Some(error),
+            },
         }
     }
 }
@@ -185,45 +190,10 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
     }
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "Preserve structured error metadata at the ABI boundary"
-)]
-fn decode<T: Message + Default>(
-    value: &Buffer,
-    operation: &str,
-) -> std::result::Result<T, NativeActorsErrorMetadata> {
-    T::decode(value.as_ref()).map_err(|error| NativeActorsErrorMetadata {
-        code: String::from("invalid_argument"),
-        message: format!("{operation}: {error}"),
-        ..Default::default()
-    })
-}
-
-#[allow(
-    clippy::result_large_err,
-    reason = "Preserve structured error metadata at the ABI boundary"
-)]
-fn decode_semantic<T, D>(
-    value: &Buffer,
-    operation: &str,
-) -> std::result::Result<D, NativeActorsErrorMetadata>
-where
-    T: Message + Default,
-    D: TryFrom<T>,
-    D::Error: std::fmt::Display,
-{
-    let wire = decode::<T>(value, operation)?;
-    D::try_from(wire).map_err(|error| NativeActorsErrorMetadata {
-        code: String::from("invalid_argument"),
-        message: format!("{operation}: {error}"),
-        ..Default::default()
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_actors::wire;
 
     #[test]
     fn nominal_identity_admission_retains_owned_string_allocations() {
@@ -262,44 +232,6 @@ mod tests {
             Some(&serde_json::json!(false))
         );
     }
-
-    #[test]
-    fn malformed_wire_returns_structured_invalid_argument() {
-        let error = decode::<wire::DeploymentRequest>(&Buffer::from(vec![255]), "deploy_namespace")
-            .expect_err("malformed protobuf must fail before dispatch");
-        assert_eq!(error.code, "invalid_argument");
-        assert!(error.message.starts_with("deploy_namespace: "));
-    }
-
-    #[test]
-    fn invalid_semantics_returns_structured_invalid_argument() {
-        let error = decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
-            &Buffer::from(Vec::<u8>::new()),
-            "deploy_namespace",
-        )
-        .expect_err("empty request must fail Rust semantic validation before dispatch");
-        assert_eq!(error.code, "invalid_argument");
-        assert!(error.message.starts_with("deploy_namespace: "));
-    }
-}
-
-#[allow(
-    clippy::result_large_err,
-    reason = "The structured N-API error is intentionally lossless at the ABI boundary"
-)]
-fn encode<T: Message>(
-    value: &T,
-    operation: &str,
-) -> std::result::Result<Buffer, NativeActorsErrorMetadata> {
-    let mut bytes = Vec::with_capacity(value.encoded_len());
-    value
-        .encode(&mut bytes)
-        .map_err(|error| NativeActorsErrorMetadata {
-            code: String::from("internal"),
-            message: format!("{operation}: {error}"),
-            ..Default::default()
-        })?;
-    Ok(Buffer::from(bytes))
 }
 
 #[derive(Clone)]
@@ -472,52 +404,30 @@ impl NativeActorsClient {
             cancellation.map(|value| value.state.clone()),
         )
         .await;
-        Ok(match result {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(value.into()),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
+        Ok(NativeActorsOperationResult::from_result(result))
     }
 }
 
 // The ABI owns only names and carriers; validation, cancellation and metadata
 // stay in the same Rust semantic client path for every operation.
 macro_rules! operation_wrappers {
-    ($(($export:ident, $js:literal, $method:ident, $input:ident, $output:ident)),+ $(,)?) => {
+    ($(($export:ident, $js:literal, $method:literal)),+ $(,)?) => {
         #[napi]
         impl NativeActorsClient {
             $(
             #[napi(js_name = $js)]
-            #[doc = concat!("Execute `", stringify!($method), "` and return encoded bytes or structured error.")]
+            #[doc = concat!("Execute `", $method, "` and return encoded bytes or structured error.")]
             pub async fn $export(
                 &self,
                 request: Buffer,
                 cancellation: Option<&NativeActorsCancellation>,
             ) -> Result<NativeActorsOperationResult> {
-                let decoded = match decode_semantic::<wire::$input, domain::$input>(
-                    &request,
-                    stringify!($method),
-                ) {
-                    Ok(value) => value,
-                    Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-                };
                 let value = cancellable(
-                    self.inner.$method(&decoded),
+                    self.inner.call($method, &request),
                     cancellation.map(|value| value.state.clone()),
                 )
                 .await;
-                Ok(match value {
-                    Ok(value) => NativeActorsOperationResult {
-                        value: Some(
-                            encode(&wire::$output::from(value), stringify!($method))
-                                .map_err(napi_error)?,
-                        ),
-                        error: None,
-                    },
-                    Err(error) => NativeActorsOperationResult::failure(error),
-                })
+                Ok(NativeActorsOperationResult::from_result(value))
             }
             )+
         }
@@ -525,17 +435,17 @@ macro_rules! operation_wrappers {
 }
 
 operation_wrappers! {
-    (deploy_namespace_result, "deployNamespaceResult", deploy_namespace, DeploymentRequest, DeploymentResponse),
-    (deploy_worker_result, "deployWorkerResult", deploy_worker, DeploymentRequest, DeploymentResponse),
-    (invoke_worker_result, "invokeWorkerResult", invoke_worker, InvokeWorkerRequest, InvokeActorResponse),
-    (delete_worker_result, "deleteWorkerResult", delete_worker, DeleteWorkerRequest, DeleteWorkerResponse),
-    (update_namespace_result, "updateNamespaceResult", update_namespace, UpdateNamespaceRequest, UpdateNamespaceResponse),
-    (inspect_actor_result, "inspectActorResult", inspect_actor, InspectActorRequest, InspectActorResponse),
-    (add_subscription_result, "addSubscriptionResult", add_subscription, AddSubscriptionRequest, AddSubscriptionResponse),
-    (remove_subscription_result, "removeSubscriptionResult", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
-    (resume_subscription_result, "resumeSubscriptionResult", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
-    (checkpoint_actor_result, "checkpointActorResult", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
-    (fork_actor_result, "forkActorResult", fork_actor, ForkActorRequest, ForkActorResponse),
-    (delete_all_result, "deleteAllResult", delete_all, DeleteAllRequest, DeleteAllResponse),
-    (invoke_actor_result, "invokeActorResult", invoke_actor, InvokeActorRequest, InvokeActorResponse),
+    (deploy_namespace_result, "deployNamespaceResult", "DeployNamespace"),
+    (deploy_worker_result, "deployWorkerResult", "DeployWorker"),
+    (invoke_worker_result, "invokeWorkerResult", "InvokeWorker"),
+    (delete_worker_result, "deleteWorkerResult", "DeleteWorker"),
+    (update_namespace_result, "updateNamespaceResult", "UpdateNamespace"),
+    (inspect_actor_result, "inspectActorResult", "InspectActor"),
+    (add_subscription_result, "addSubscriptionResult", "AddSubscription"),
+    (remove_subscription_result, "removeSubscriptionResult", "RemoveSubscription"),
+    (resume_subscription_result, "resumeSubscriptionResult", "ResumeSubscription"),
+    (checkpoint_actor_result, "checkpointActorResult", "CheckpointActor"),
+    (fork_actor_result, "forkActorResult", "ForkActor"),
+    (delete_all_result, "deleteAllResult", "DeleteAll"),
+    (invoke_actor_result, "invokeActorResult", "InvokeActor"),
 }

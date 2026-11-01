@@ -3,9 +3,17 @@ use super::*;
 /// Immutable runtime bindings that every agent turn context shares.
 pub struct AgentHarness {
     pub(crate) targets: Option<Arc<dyn super::TargetResolver>>,
+    pub(crate) filesystem: Option<Arc<dyn FilesystemExecutor>>,
     pub(super) scope: RuntimeScope,
     pub(super) content: Option<ContentBindings>,
     pub(super) artifacts: Option<ContentBindings>,
+}
+
+/// Filesystem commands bound to one provider and immutable volume-name mapping.
+/// The identity is recorded before dispatch; it is routing evidence, never a grant.
+pub trait FilesystemExecutor: crate::tool::ToolExecutor {
+    /// Identity of the complete provider and volume-name binding.
+    fn binding_identity(&self) -> [u8; 32];
 }
 
 /// Provider-owned, scope-bound file handles. The reader verifies every exact
@@ -41,6 +49,8 @@ impl ContentBindings {
 pub struct Bindings {
     /// The agent's execution targets; its home runs its checkout or fork view.
     pub targets: Option<Arc<dyn super::TargetResolver>>,
+    /// Provider-backed filesystem commands, independently of machine targets.
+    pub filesystem: Option<Arc<dyn FilesystemExecutor>>,
     /// Effective authority and bounds.
     pub scope: RuntimeScope,
     /// Optional owner-bound content access for tools.
@@ -67,6 +77,7 @@ impl Bindings {
         }
         Ok(Arc::new(AgentHarness {
             targets: self.targets,
+            filesystem: self.filesystem,
             scope: self.scope,
             content: self.content,
             artifacts: self.artifacts,
@@ -86,6 +97,7 @@ impl AgentHarness {
         content.validate()?;
         Ok(Arc::new(Self {
             targets,
+            filesystem: None,
             content: Some(content),
             scope: self.scope.clone(),
             artifacts: self.artifacts.clone(),

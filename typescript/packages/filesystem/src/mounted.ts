@@ -54,7 +54,7 @@ export class MountedView {
     }
     if (root === undefined) throw new RangeError("a mounted view requires a root mount");
     this.#root = root;
-    this.#mounts = Object.freeze(normalized.sort((left, right) => right.path.length - left.path.length));
+    this.#mounts = Object.freeze(normalized);
   }
 
   applyTransaction(operations: readonly TransactionOperation[]): Promise<TransactionResult> {

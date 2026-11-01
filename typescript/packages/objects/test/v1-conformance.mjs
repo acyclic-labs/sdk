@@ -85,6 +85,7 @@ test("Objects original request boundary initializes and owns bytes before a fres
       import { create, toBinary } from "@bufbuild/protobuf";
       import * as wire from "@acyclic-labs/objects/proto";
       import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
+      import { blobDigest, verified } from "@acyclic-labs/objects";
       import { snapshotBytes } from "@acyclic-labs/auth";
       const client = new HttpObjectsV1({endpoint: process.argv[1], token: "fixture"});
       const expected = new Uint8Array(32).fill(61);
@@ -102,19 +103,38 @@ test("Objects original request boundary initializes and owns bytes before a fres
       assert.deepEqual(owned, encoded);
       const request = client.open("blobs/head", input);
       input.fill(0);
+      const pulling = assert.rejects(request.next(), error => error.code === wire.ErrorCode.NOT_FOUND);
+      const body = new Uint8Array([81, 82, 83]);
+      const member = new Uint8Array([84, 85, 86]);
+      const digesting = blobDigest(body);
+      const publishing = client.put(body);
+      const publishingBatch = client.putBlobs([{body: member}]);
+      const head = {blake3: expected};
+      const heading = assert.rejects(client.head(head), error => error.code === wire.ErrorCode.NOT_FOUND);
+      body.fill(0);
+      member.fill(0);
+      expected.fill(0);
+      head.blake3 = new Uint8Array();
+
       try {
-        await assert.rejects(request.next(), error => error.code === wire.ErrorCode.NOT_FOUND);
+        await pulling;
       } finally { request.close(); }
+      const publication = verified(await publishing);
+      assert.deepEqual(publication.digest.blake3, (await digesting).blake3);
+      assert.deepEqual((await client.get({digest: publication.digest, maximumBytes: 3n})).body, new Uint8Array([81, 82, 83]));
+      const batch = await publishingBatch;
+      assert.deepEqual((await client.get({digest: verified(batch[0].outcome.value).digest, maximumBytes: 3n})).body, new Uint8Array([84, 85, 86]));
+      await heading;
       assert.throws(() => client.open("blobs/usage", new Uint8Array(new SharedArrayBuffer(0))),
         error => error.code === wire.ErrorCode.INVALID_ARGUMENT);
-      assert.equal((await client.usage()).blobs, 0n);
+      assert.equal((await client.usage()).blobs, 2n);
     `, server.endpoint], { cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", chunk => { output += chunk; });
     child.stderr.on("data", chunk => { output += chunk; });
     const [code] = await once(child, "close");
     assert.equal(code, 0, output);
-    assert.deepEqual([...server.seen].sort(), ["blobs/head", "blobs/usage"]);
+    assert.deepEqual([...server.seen].sort(), ["blobs/get", "blobs/head", "blobs/put", "blobs/put-batch", "blobs/usage"]);
   } finally { await server.close(); }
 });
 

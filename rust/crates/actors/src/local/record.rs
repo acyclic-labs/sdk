@@ -101,9 +101,7 @@ impl State {
 
     /// The state a durable record holds.
     pub fn decode(record: &[u8]) -> Result<Self, Error> {
-        let record = record
-            .strip_prefix(STATE_FORMAT_V1)
-            .ok_or(Error::Invalid("unsupported actor state format"))?;
+        let record = acyclic_stream::persistence::header(record, b"\xffAST", b"\x01")?;
         let record =
             Record::decode(record).map_err(|_| Error::Invalid("malformed actor state record"))?;
         let mut subscriptions = BTreeMap::new();
@@ -192,6 +190,14 @@ mod tests {
         // can silently replace this actor's committed metadata and journal cut.
         assert!(Record::decode(record.as_slice()).is_err());
         assert!(State::decode(&record[STATE_FORMAT_V1.len()..]).is_err());
+        for version in [0, 2, u8::MAX] {
+            let mut obsolete = STATE_FORMAT_V1.to_vec();
+            *obsolete.last_mut().expect("version") = version;
+            assert!(matches!(
+                State::decode(&obsolete),
+                Err(Error::Stream(acyclic_stream::StreamError::Unsupported))
+            ));
+        }
         let variable = "acyclic.harness.agent".len() + "1".len() + bytes.len();
         let subscription = "inbox".len() + path.as_str().len() + SUBSCRIPTION_OVERHEAD;
         assert!(

@@ -20,7 +20,6 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
   };
   const codec = {
     identity: { name: "counter", version: "1" },
-    readable: [{ name: "counter", version: "1" }],
     encode: (value: { count: number }) => bytes([value.count]),
     decode: (value: { bytes: Uint8Array }) => ({ count: value.bytes[0] ?? 0 }),
   };
@@ -49,6 +48,11 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
     },
   });
   const retained = { codec: codec.identity, bytes: bytes([7]) };
+  for (const version of ["0", "2", "unknown"]) {
+    expect(() => new GuestActivation(actor, { codec: { ...codec.identity, version }, bytes: bytes([]) }, context))
+      .toThrow("incompatible checkpoint codec");
+  }
+  expect(restores).toBe(0);
   const activation = new GuestActivation(actor, retained, context);
   retained.bytes[0] = 99;
   const held = activation.fetch(new Request("https://example.test/held"), { ...context, deliveryId: "held" });
@@ -80,4 +84,6 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
   await expect(nested.fetch(new Request("https://example.test/nested"), context)).rejects.toThrow("nested guest state");
   const fresh = new GuestActivation(actor, null, context);
   expect(await json(await fresh.fetch(new Request("https://example.test/next"), context))).toEqual({ count: 1, delivery: null });
+  const wrongCapture = new GuestActivation({ ...actor, checkpoint: () => ({ codec: { ...codec.identity, version: "2" }, bytes: bytes([]) }) }, null, context);
+  await expect(wrongCapture.checkpoint()).rejects.toMatchObject({ type: "incompatibleCodec" });
 });

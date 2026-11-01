@@ -41,7 +41,7 @@ fn exercise(io: Option<&PreparationIo>) -> Result<()> {
             let previous = request.messages.len();
             push(&mut request, previous, io)?;
             let (next, digest, next_state) =
-                EncodingPrefix::append(bytes, state, previous, &request, io)?;
+                EncodingPrefix::append(bytes, state, previous, &request, io, &mut 0)?;
             bytes = next;
             state = next_state;
             let expected = crate::contract::canonical_json_bytes(&request)?;
@@ -74,7 +74,7 @@ fn a_shared_encoding_is_copied_without_changing_its_immutable_peer() -> Result<(
     let mut request = prepared.request;
     push(&mut request, 10, None)?;
     let (bytes, digest, state) =
-        EncodingPrefix::append(prepared.bytes, Vec::new(), 10, &request, None)?;
+        EncodingPrefix::append(prepared.bytes, Vec::new(), 10, &request, None, &mut 0)?;
     assert_eq!(original.as_slice(), expected_original);
     assert_eq!(
         bytes.as_slice(),
@@ -89,11 +89,37 @@ fn a_shared_encoding_is_copied_without_changing_its_immutable_peer() -> Result<(
 fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Result<()> {
     for count in [1, 10, 100, 1_000] {
         let mut prepared = PreparedModelRequest::prepare(request(count)?, Limits::default(), None)?;
+        let (shape, cold) = shape_work(|| prepared.projection_shape());
+        assert_eq!(cold, prepared.bytes().len() as u64);
+        assert_eq!(
+            shape,
+            (
+                prepared.bytes().len() as u64,
+                crate::executor::json::encoded_json_shape(prepared.bytes()).1 as u64
+            )
+        );
+        assert_eq!(shape_work(|| prepared.projection_shape()), (shape, 0));
         for added in 0..5 {
             let previous = prepared.request().messages.len();
             let mut continued = prepared.into_continuation();
             continued.messages().push(message(added));
-            prepared = continued.finish(Limits::default(), None)?;
+            let suffix_bytes =
+                crate::contract::canonical_json_bytes(&*continued.messages())?.len() - 2;
+            let (next, scanned) = shape_work(|| continued.finish(Limits::default(), None));
+            prepared = next?;
+            assert_eq!(
+                scanned, suffix_bytes as u64,
+                "projection shape rescanned history"
+            );
+            let (shape, warm) = shape_work(|| prepared.projection_shape());
+            assert_eq!(warm, 0);
+            let ((_, nodes), old_scanned) =
+                shape_work(|| crate::executor::json::encoded_json_shape(prepared.bytes()));
+            assert_eq!(shape, (prepared.bytes().len() as u64, nodes as u64));
+            assert!(
+                old_scanned > scanned,
+                "former whole request scan did not expose repeated work"
+            );
             let expected = crate::contract::canonical_json_bytes(prepared.request())?;
             assert_eq!(prepared.bytes(), expected);
             assert_eq!(
@@ -121,10 +147,16 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             );
         }
         let peer = prepared.clone();
+        assert_eq!(shape_work(|| peer.projection_shape()).1, 0);
         let original = peer.bytes().to_vec();
         let mut continued = prepared.into_continuation();
         continued.messages().push(message(7));
         let prepared = continued.finish(Limits::default(), None)?;
+        assert_eq!(shape_work(|| prepared.projection_shape()).1, 0);
+        assert_eq!(
+            prepared.projection_shape().1,
+            crate::executor::json::encoded_json_shape(prepared.bytes()).1 as u64
+        );
         assert_eq!(peer.bytes(), original);
         assert_ne!(prepared.bytes(), peer.bytes());
         assert_eq!(
@@ -142,6 +174,12 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
             ..Limits::default()
         };
         let prepared = continued.finish(changed, None)?;
+        assert_eq!(
+            shape_work(|| prepared.projection_shape()).1,
+            prepared.bytes().len() as u64
+        );
+        let recovered = PreparedModelRequest::decode(prepared.bytes(), changed, None)?;
+        assert_eq!(recovered.projection_shape(), prepared.projection_shape());
         assert!(
             prepared.encoding.is_empty(),
             "changed admission limits require a fresh encoding"
@@ -152,6 +190,19 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
         );
     }
     Ok(())
+}
+
+fn shape_work<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let (result, trace) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(|| (), |()| run());
+    (
+        result,
+        trace
+            .into_iter()
+            .filter(|(kind, _)| *kind == "JSON shape bytes")
+            .map(|(_, bytes)| bytes)
+            .sum(),
+    )
 }
 
 #[cfg(all(
@@ -249,8 +300,14 @@ fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)>
     )?;
     let mut request = prepared.request;
     push(&mut request, 0, Some(io))?;
-    let (bytes, _, state) =
-        EncodingPrefix::append(prepared.bytes, Vec::new(), count, &request, Some(io))?;
+    let (bytes, _, state) = EncodingPrefix::append(
+        prepared.bytes,
+        Vec::new(),
+        count,
+        &request,
+        Some(io),
+        &mut 0,
+    )?;
     // Isolate suffix work from geometric capacity growth, which is separately
     // checked with real relocation admission by Streams.
     let mut buffer = Buffer::new(bytes, Some(io)).unwrap_or_else(|_| unreachable!());
@@ -259,7 +316,8 @@ fn measure_suffix(count: usize, io: &PreparationIo) -> Result<(SuffixWork, u64)>
     let previous = request.messages.len();
     push(&mut request, 0, Some(io))?;
     let before = io.receipt();
-    let (bytes, _, state) = EncodingPrefix::append(bytes, state, previous, &request, Some(io))?;
+    let (bytes, _, state) =
+        EncodingPrefix::append(bytes, state, previous, &request, Some(io), &mut 0)?;
     let after = io.receipt();
     let suffix = (
         after.bytes_encoded - before.bytes_encoded,

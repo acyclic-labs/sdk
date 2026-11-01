@@ -4,12 +4,12 @@
 //! call's approval. Each segment's effects commit together, so a segment's
 //! directory lists exactly the effects not yet committed.
 
-use super::agent_internal::AgentInternalFiles;
+use super::agent_internal::{AgentInternalFiles, InternalFileCreation, filename};
 use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, TurnEffect, TurnEffects},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken};
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use std::sync::Arc;
 
@@ -77,9 +77,10 @@ where
             // The call key already orders effects by model step. The file's
             // create-once identity supplies replay without a directory index.
             let path = format!("{}/{call}.json", self.directory);
-            if let Some(existing) = self.files.read(&path, self.maximum_bytes).await? {
-                return decode(&existing);
-            }
+            let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
+                InternalFileCreation::Existing(existing) => return decode(&existing),
+                InternalFileCreation::Vacant(file) => file,
+            };
             // A spawn names a new child: a name already taken would make the
             // step's fork conflict on every retry.
             if let TurnEffect::Spawn { intent, .. } = effect {
@@ -92,7 +93,7 @@ where
                 }
             }
             let bytes = crate::agent::records::seal(effect)?;
-            match self.files.create(&path, &bytes, self.maximum_bytes).await? {
+            match vacant.create(&bytes).await? {
                 Some(existing) => decode(&existing),
                 None => Ok(effect.clone()),
             }
@@ -101,14 +102,19 @@ where
 
     fn recorded(&self) -> BoxProviderFuture<'_, Result<Vec<TurnEffect>>> {
         Box::pin(async move {
+            let reader = self.files.reader().await?;
             let mut recorded = Vec::new();
-            for name in self.files.list(&self.directory).await? {
-                let bytes = self
-                    .files
-                    .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
-                    .await?
-                    .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
-                recorded.push(decode(&bytes)?);
+            let mut pages = reader.directory(&self.directory);
+            let cancellation = CancellationToken::new();
+            while let Some(page) = pages.next(&cancellation).await? {
+                for entry in &page.entries {
+                    let name = filename(entry.name.as_bytes())?;
+                    let bytes = reader
+                        .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
+                        .await?
+                        .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
+                    recorded.push(decode(&bytes)?);
+                }
             }
             Ok(recorded)
         })
@@ -116,11 +122,20 @@ where
 
     fn holds(&self, operation: OperationId) -> BoxProviderFuture<'_, Result<bool>> {
         Box::pin(async move {
-            Ok(self.files.list(&self.directory).await?.iter().any(|name| {
-                !name
-                    .strip_suffix(".json")
-                    .is_some_and(|call| crate::agent::is_call_of(call, operation))
-            }))
+            let reader = self.files.reader().await?;
+            let mut pages = reader.directory(&self.directory);
+            let cancellation = CancellationToken::new();
+            while let Some(page) = pages.next(&cancellation).await? {
+                for entry in &page.entries {
+                    if !filename(entry.name.as_bytes())?
+                        .strip_suffix(".json")
+                        .is_some_and(|call| crate::agent::is_call_of(call, operation))
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
         })
     }
 }
@@ -174,7 +189,7 @@ mod tests {
             u64::MAX,
             &mut None,
         )?;
-        let files = Arc::new(AgentInternalFiles::new(host, volume.clone(), write));
+        let files = Arc::new(AgentInternalFiles::new(host.clone(), volume.clone(), write));
         let effects = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
@@ -267,6 +282,192 @@ mod tests {
             Err(Error::UnsupportedRecordVersion(version)) if version == refusal
         ));
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+
+        // Preparing a body does not reserve the name. Two original absent
+        // observations still arbitrate through the same create-once identity;
+        // a stale observation cannot replace the first creator's effect.
+        let raced_path = "create-observation/race.json";
+        let InternalFileCreation::Vacant(first_creation) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("new file already exists");
+        };
+        let InternalFileCreation::Vacant(later_creation) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("preparation created a file");
+        };
+        let first_bytes = crate::agent::records::seal(&first)?;
+        let later_bytes = crate::agent::records::seal(&later)?;
+        assert!(first_creation.create(&first_bytes).await?.is_none());
+        let replayed = later_creation
+            .create(&later_bytes)
+            .await?
+            .expect("original winner");
+        assert_eq!(decode(&replayed)?, first);
+        let InternalFileCreation::Existing(existing) =
+            files.prepare_create(raced_path, 4096).await?
+        else {
+            panic!("published original is missing");
+        };
+        assert_eq!(decode(&existing)?, first);
+        let abandoned_path = "create-observation/abandoned.json";
+        {
+            let InternalFileCreation::Vacant(_abandoned) =
+                files.prepare_create(abandoned_path, 4096).await?
+            else {
+                panic!("new file already exists");
+            };
+        }
+        assert!(files.read(abandoned_path, 4096).await?.is_none());
+
+        // Removing a file after selection changes a fresh read, but cannot
+        // remove a listed effect from the retained original generation.
+        let reader = files.reader().await?;
+        let selected = reader.list(&effects.directory).await?;
+        let removed = format!("{}/0000000001-a.json", effects.directory);
+        let workspace = host
+            .filesystem
+            .open_workspace(
+                volume.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| super::super::map_error(failure.error))?
+            .value;
+        workspace
+            .remove(&format!(
+                "/{}{removed}",
+                super::super::InternalContentClass::Interaction.prefix(),
+            ))
+            .await
+            .map_err(super::super::map_error)?;
+        assert!(files.read(&removed, 4096).await?.is_none());
+        assert_eq!(reader.list(&effects.directory).await?, selected);
+        let mut retained = Vec::new();
+        for name in selected {
+            let bytes = reader
+                .read(&format!("{}/{name}", effects.directory), 4096)
+                .await?
+                .ok_or_else(|| Error::Storage("selected effect disappeared".into()))?;
+            retained.push(decode(&bytes)?);
+        }
+        assert_eq!(retained, [first, later.clone()]);
+        assert_eq!(effects.recorded().await?, [later]);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // One real atomic batch crosses a directory page. The foreign call
+            // is beyond the first page, so a truncated hold check misses it.
+            let paged = FilesystemTurnEffects::new(
+                files.clone(),
+                Arc::new(acyclic_stream::MemoryStream::default()),
+                AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
+                (OperationId::from_bytes([5; 16]), 3),
+                4096,
+            );
+            let prefix = format!(
+                "/{}{}",
+                super::super::InternalContentClass::Interaction.prefix(),
+                paged.directory,
+            );
+            let foreign = OperationId::from_bytes([8; 16]);
+            let paths: Vec<_> = (0..257)
+                .map(|step| {
+                    format!(
+                        "{prefix}/{}.json",
+                        crate::agent::call_key(step, if step == 256 { foreign } else { own }),
+                    )
+                })
+                .collect();
+            let saved = effect("paged")?;
+            let bytes = acyclic_stream::OwnedBytes::from(crate::agent::records::seal(&saved)?);
+            let batch: Vec<_> = paths
+                .iter()
+                .map(|path| (path.as_str(), bytes.clone()))
+                .collect();
+            let cancellation = CancellationToken::new();
+            let mut transaction = workspace
+                .begin_transaction(
+                    acyclic_fs::IdempotencyKey::new(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?
+                .value;
+            transaction
+                .write_batch(
+                    &[&prefix],
+                    &batch,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?;
+            let committed = transaction
+                .commit::<acyclic_fs::WorkspaceError, _, _>(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    |_| async {
+                        Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        })
+                    },
+                )
+                .await
+                .map_err(|failure| super::super::map_error(failure.error))?;
+            assert!(matches!(
+                committed.value,
+                acyclic_fs::TransactionCommit::Committed(_)
+            ));
+            assert_eq!(paged.recorded().await?, vec![saved; paths.len()]);
+            assert!(paged.holds(own).await?);
+            assert!(paged.holds(foreign).await?);
+
+            let reader = files.reader().await?;
+            let mut pages = reader.directory(&paged.directory);
+            let page = pages.next(&cancellation).await?.expect("first page");
+            assert!(page.has_more);
+            assert!(page.entries.iter().all(|entry| {
+                filename(entry.name.as_bytes())
+                    .unwrap()
+                    .strip_suffix(".json")
+                    .is_some_and(|call| crate::agent::is_call_of(call, own))
+            }));
+            workspace
+                .remove(paths.last().unwrap())
+                .await
+                .map_err(super::super::map_error)?;
+            let page = pages
+                .next(&cancellation)
+                .await?
+                .expect("retained final page");
+            assert!(!page.has_more);
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(
+                filename(page.entries[0].name.as_bytes())?,
+                format!("{}.json", crate::agent::call_key(256, foreign)),
+            );
+            // A completed cursor performs no further source work, even if the
+            // next read would fail cancellation. An interrupted cursor is terminal.
+            cancellation.cancel();
+            assert!(pages.next(&cancellation).await?.is_none());
+            let cancellation = CancellationToken::new();
+            let mut interrupted = reader.directory(&paged.directory);
+            assert!(interrupted.next(&cancellation).await?.is_some());
+            cancellation.cancel();
+            assert!(matches!(
+                interrupted.next(&cancellation).await,
+                Err(Error::Cancelled)
+            ));
+            assert!(interrupted.next(&CancellationToken::new()).await?.is_none());
+            assert!(!paged.holds(own).await?);
+        }
         Ok(())
     }
 }

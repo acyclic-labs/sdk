@@ -4,7 +4,7 @@ import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/se
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
-import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
+import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
@@ -13,7 +13,7 @@ import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/p
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
-import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
 import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
@@ -113,10 +113,10 @@ function streamGrpc(options: StreamGrpcOptions) {
       const input = new SessionQueue<SessionFrame>(wire.StreamLimit.MAX_ITEMS);
       const client = createClient(StreamSessionService, transport);
       const incoming = async function* () {
-        try { yield* client.session(input, { signal }); }
+        try { for await (const frame of client.session(input, { signal })) yield toBinary(SessionFrameSchema, frame); }
         catch (error) { throw sessionTransportError(error); }
       };
-      return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
+      return { incoming: incoming(), send: (frame, writeSignal) => input.send(fromBinary(SessionFrameSchema, frame), writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false, options.revisionScope);
     return { client, sessions };
 }
@@ -157,8 +157,8 @@ export class GrpcStreamProvider implements StreamProvider {
 
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
-    await validateWireRequest(request);
-    const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, wireRequest(request))));
+    const input = await validateWireRequest(request);
+    const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, input)));
     return this.#project("head", toBinary(wire.PathHeadSchema, response));
   }
   async tail(path: string): Promise<bigint> {
@@ -172,8 +172,8 @@ export class GrpcStreamProvider implements StreamProvider {
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
     const authored = options === undefined ? undefined : structuredClone(options);
-    await validateAppend(path, records, authored);
-    const request = fromBinary(wire.AppendRequestSchema, wireAppendRequest(path, records, authored));
+    const input = await validateAppend(path, records, authored);
+    const request = fromBinary(wire.AppendRequestSchema, input);
     const response = await this.#call("append", () => this.#client.append(request));
     const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
     if (result.ok) this.#sessions.observe(result.revision);
@@ -181,8 +181,8 @@ export class GrpcStreamProvider implements StreamProvider {
   }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
-    await validateWireRequest(request);
-    const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, wireRequest(request))));
+    const input = await validateWireRequest(request);
+    const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, input)));
     const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
     this.#sessions.observe(receipt.revision);
     return receipt;
@@ -247,8 +247,8 @@ export class GrpcStreamProvider implements StreamProvider {
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
     };
-    await validateWireRequest(authored);
-    const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, wireRequest(authored))));
+    const input = await validateWireRequest(authored);
+    const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, input)));
     return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {

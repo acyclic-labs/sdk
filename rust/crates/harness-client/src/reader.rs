@@ -338,6 +338,7 @@ enum OpKey {
 #[cfg(test)]
 thread_local! {
     static OP_PATH_PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static WANT_RESOLUTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl OpKey {
@@ -395,6 +396,19 @@ struct InFlight {
     issued: u64,
     paging: Paging,
     observed: Option<(u64, u64)>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static DEADLINE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl InFlight {
+    fn deadline(&self) -> u64 {
+        #[cfg(test)]
+        DEADLINE_READS.with(|reads| reads.set(reads.get() + 1));
+        self.deadline
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -743,17 +757,18 @@ impl Reader {
 
     /// Begin a frame: expire overdue reads, reset per-frame budgets and mark
     /// recency so entries displayed this frame are protected from prefetch.
+    /// Time observations never move the reader's admission clock backwards.
     pub fn begin_frame(&mut self, now: u64) {
-        self.now = now;
+        self.now = self.now.max(now);
+        let now = self.now;
         self.delivered = 0;
         self.frame_mark = self.cache.begin_frame();
-        let overdue: Vec<u64> = self
-            .inflight
-            .iter()
-            .filter(|(_, flight)| flight.deadline <= now)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in overdue {
+        // IDs follow monotonic admission time and one immutable timeout.
+        // Their existing order is therefore also the deadline order.
+        while let Some((&id, flight)) = self.inflight.first_key_value() {
+            if flight.deadline() > now {
+                break;
+            }
             if self.cancel(id) {
                 self.fail(Failure::Unavailable, now);
             }
@@ -766,23 +781,40 @@ impl Reader {
     /// visible wants cover is marked displayed, so no insert evicts it, and
     /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
-        let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        // Keep the first admission order, but resolve and retain each exact
+        // intent only once at its strongest supplied priority.
+        let mut positions = BTreeMap::<Want, usize>::new();
+        let mut retained = Vec::<(Want, Priority)>::new();
+        for (want, priority) in wants {
+            match positions.entry(want) {
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    // Every position was inserted with the corresponding push;
+                    // the vector does not remove entries during admission.
+                    if let Some((_, retained_priority)) = retained.get_mut(*entry.get()) {
+                        *retained_priority = (*retained_priority).min(priority);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    retained.push((entry.key().clone(), priority));
+                    entry.insert(retained.len() - 1);
+                }
+            }
+        }
+        drop(positions);
         let pass_mark = self.cache.clock();
-        // Rows of one page each state the same page want; display it once.
-        let mut displayed = BTreeSet::new();
-        for (want, priority) in &wants {
-            if *priority == Priority::Visible && displayed.insert(want) {
+        for (want, priority) in &retained {
+            if *priority == Priority::Visible {
                 self.touch_want(want, true);
             }
         }
-        for (want, _) in &wants {
-            if displayed.insert(want) {
+        for (want, priority) in &retained {
+            if *priority == Priority::Prefetch {
                 self.touch_want(want, false);
             }
         }
         self.cache.retain_passed(pass_mark);
         self.demand.begin_plan();
-        for (want, priority) in wants {
+        for (want, priority) in retained {
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
@@ -849,6 +881,8 @@ impl Reader {
 
     /// The next uncached read for one want, or `None` when it is satisfied.
     fn resolve(&self, want: &Want) -> Option<(OpKey, Paging)> {
+        #[cfg(test)]
+        WANT_RESOLUTIONS.with(|visits| visits.set(visits.get() + 1));
         let path = match want {
             Want::Range { stream, .. } | Want::Last { stream, .. } => stream,
             Want::Listing { parent, .. } => parent,
@@ -936,8 +970,10 @@ impl Reader {
     }
 
     /// Reads to start now, in aged priority order, within every budget.
+    /// Older time samples cannot admit a deadline before an earlier request.
     pub fn poll(&mut self, now: u64) -> Vec<Op> {
-        self.now = now;
+        self.now = self.now.max(now);
+        let now = self.now;
         let mut ops = Vec::new();
         if !self.ready(now) {
             return ops;
@@ -1581,7 +1617,10 @@ impl Reader {
     /// is armed while reads are wanted or a wanted follow waits to reopen.
     #[must_use]
     pub fn next_deadline(&self) -> Option<u64> {
-        let read = self.inflight.values().map(|flight| flight.deadline).min();
+        let read = self
+            .inflight
+            .first_key_value()
+            .map(|(_, flight)| flight.deadline());
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
         let credential = self.credentials.as_ref().and_then(Credentials::deadline);
@@ -2361,7 +2400,7 @@ mod reader_tests {
     }
 
     #[test]
-    fn denial_retires_only_indexed_requests_and_refuses_original_late_bytes() {
+    fn indexed_request_retirement_preserves_deadlines_and_refuses_late_bytes() {
         use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
 
         futures::executor::block_on(async {
@@ -2383,19 +2422,152 @@ mod reader_tests {
                     .unwrap();
                 heads.insert(path.clone(), provider.head(path).await.unwrap());
             }
+            let policy = ReaderPolicy {
+                requests: 64,
+                prefetch_requests: 0,
+                timeout_ms: 100,
+                ..ReaderPolicy::default()
+            };
+            let first_want = (
+                Want::Last {
+                    stream: denied.clone(),
+                    count: 1,
+                },
+                Priority::Visible,
+            );
+            let wants = || {
+                heads.keys().map(|stream| {
+                    (
+                        Want::Last {
+                            stream: stream.clone(),
+                            count: 1,
+                        },
+                        Priority::Visible,
+                    )
+                })
+            };
+            let mut deadlines = Reader::new(policy).unwrap();
+            deadlines.begin_frame(10);
+            deadlines.plan([first_want.clone()]);
+            let first = deadlines.poll(10);
+            assert_eq!(first.len(), 1);
+            let first_id = first[0].id();
+            deadlines.plan(wants());
+            let later = deadlines.poll(20);
+            assert_eq!(later.len(), heads.len() - 1);
+            DEADLINE_READS.with(|reads| reads.set(0));
+            deadlines.begin_frame(109);
+            assert_eq!(deadlines.next_deadline(), Some(110));
+            assert_eq!(
+                DEADLINE_READS.with(std::cell::Cell::get),
+                2,
+                "deadline observation scanned later requests"
+            );
+            assert!(deadlines.take_cancelled().is_empty());
+            DEADLINE_READS.with(|reads| reads.set(0));
+            deadlines.begin_frame(110);
+            assert_eq!(
+                deadlines.take_cancelled(),
+                vec![first_id],
+                "request did not retire at its exact deadline"
+            );
+            assert_eq!(
+                DEADLINE_READS.with(std::cell::Cell::get),
+                2,
+                "deadline expiration scanned later requests"
+            );
+            assert_eq!(deadlines.inflight.len(), later.len());
+            assert_eq!(deadlines.next_deadline(), Some(120));
+            deadlines.complete(first_id, Outcome::Head(heads[&denied].clone()), 110);
+            assert!(deadlines.cache.record(&denied, 0).is_none());
+            // Completion can remove any position from the deadline order.
+            let Op::Head { id, stream } = &later[later.len() / 2] else {
+                panic!("original head request");
+            };
+            deadlines.complete(*id, Outcome::Head(heads[stream].clone()), 111);
+            deadlines.begin_frame(120);
+            assert_eq!(
+                deadlines.take_cancelled(),
+                later
+                    .iter()
+                    .filter(|op| op.id() != *id)
+                    .map(Op::id)
+                    .collect::<Vec<_>>(),
+                "equal deadlines must retire at their original boundary"
+            );
+            assert!(deadlines.inflight.is_empty());
+            assert!(deadlines.keys.is_empty());
+            deadlines.begin_frame(121);
+            assert!(deadlines.take_cancelled().is_empty());
+
+            // A stale caller clock cannot reorder request deadlines. Remove
+            // the first request to observe the second one's admitted deadline.
+            let mut monotonic = Reader::new(policy).unwrap();
+            monotonic.begin_frame(20);
+            monotonic.plan([first_want]);
+            let first = monotonic.poll(20);
+            monotonic.begin_frame(15);
+            monotonic.plan(wants());
+            assert_eq!(monotonic.poll(15).len(), heads.len() - 1);
+            monotonic.complete(first[0].id(), Outcome::Head(heads[&denied].clone()), 20);
+            assert_eq!(
+                monotonic.next_deadline(),
+                Some(120),
+                "stale time reordered admitted request deadlines"
+            );
+
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
             reader.begin_frame(0);
-            reader.plan(heads.iter().map(|(stream, _)| {
-                (
-                    Want::Last {
-                        stream: stream.clone(),
-                        count: 1,
-                    },
-                    Priority::Visible,
+            // The lexically last path arrives first, repeatedly at lower
+            // priority. A later unique intent must survive that entire prefix.
+            let first = heads.last_key_value().unwrap().0.clone();
+            WANT_RESOLUTIONS.with(|visits| visits.set(0));
+            reader.plan(
+                std::iter::repeat_n(
+                    (
+                        Want::Last {
+                            stream: first.clone(),
+                            count: 1,
+                        },
+                        Priority::Prefetch,
+                    ),
+                    4097,
                 )
-            }));
+                .chain(heads.keys().map(|stream| {
+                    (
+                        Want::Last {
+                            stream: stream.clone(),
+                            count: 1,
+                        },
+                        Priority::Visible,
+                    )
+                })),
+            );
+            assert_eq!(
+                reader.residency().demand,
+                heads.len(),
+                "later unique intents were discarded"
+            );
+            assert_eq!(
+                reader
+                    .demand
+                    .get(&OpKey::Head(first.clone()))
+                    .unwrap()
+                    .priority,
+                Priority::Visible,
+                "duplicate priority weakened an original intent"
+            );
             let ops = reader.poll(0);
             assert_eq!(ops.len(), heads.len());
+            assert!(
+                matches!(ops.first(), Some(Op::Head { stream, .. }) if stream == &first),
+                "deduplication reordered original admission"
+            );
+            assert_eq!(
+                WANT_RESOLUTIONS.with(std::cell::Cell::get),
+                heads.len(),
+                "duplicate intents repeated cache resolution"
+            );
             let denied_id = ops
                 .iter()
                 .find_map(|op| match op {

@@ -387,10 +387,29 @@ async fn overflow_spills_privately_until_the_publication_drain()
 }
 
 #[tokio::test]
-async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
+async fn spill_relief_retains_original_work_cancellation_and_refusal()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let (store, provider) = open_staged(directory.path()).await?;
+    let provider = Arc::new(
+        acyclic_objects::local::LocalObjects::open(
+            directory.path().join("objects"),
+            acyclic_objects::local::LocalObjectsLimits::default(),
+            None,
+        )
+        .await?,
+    );
+    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let store = StagedObjects::open(
+        PausedStore {
+            inner: LogicalObjectStore::new(Arc::clone(&provider)),
+            gate: Arc::clone(&gate),
+            pause_writes: true,
+            first: std::sync::atomic::AtomicBool::new(false),
+            paused: tokio::sync::Notify::new(),
+            stored: std::sync::atomic::AtomicUsize::new(0),
+        },
+        directory.path().to_owned(),
+    );
     let token = CancellationToken::new();
     let body_bytes = 256 * 1_024;
     let window = usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
@@ -417,20 +436,48 @@ async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
     // Stand in for a spill file that has grown past its bound.
     advance_spill_past_bound(&store).await?;
 
-    // An admission may spend exactly its own spill: one backend write.
-    let mut admission = WorkBudget::UNBOUNDED;
-    admission.backend_write_operations = 1;
+    let mut denied = AuthorityWork::new(
+        WorkBudget {
+            backend_read_operations: 0,
+            ..crate::performance::BOUNDARY_BUDGET
+        },
+        &token,
+    );
+    assert!(matches!(
+        store.relieve_window(&mut denied).await,
+        Err(ObjectStoreError::Work(_))
+    ));
+    assert_eq!(denied.spent().backend_read_operations, 0);
+    assert_eq!(denied.spent().backend_write_operations, 0);
+    assert!(store.index().spilled_objects > 0);
+
+    let cancelled = CancellationToken::new();
+    let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
+    let held = gate.lock_owned().await;
+    let spilled = store.index().spilled_objects;
+    store.inner().first.store(true, Ordering::Relaxed);
+    let drained = {
+        let drain = store.relieve_window(&mut stopped);
+        tokio::pin!(drain);
+        tokio::select! {
+            result = &mut drain => panic!("drain ended before its provider write: {result:?}"),
+            () = store.inner().paused.notified() => {}
+        }
+        cancelled.cancel();
+        drop(held);
+        drain.await
+    };
+    assert!(matches!(drained, Err(ObjectStoreError::Cancelled)));
+    assert!(stopped.spent().backend_read_operations > 0);
+    assert_eq!(stopped.spent().backend_write_operations, 0);
+    assert_eq!(store.index().spilled_objects, spilled);
+
+    let mut admission = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
     for (object_id, bytes) in late {
-        let receipt = {
-            let __object_args = (*object_id, bytes.clone(), admission, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-        assert!(receipt.work.backend_write_operations <= 1);
+        store.put(*object_id, bytes.clone(), &mut admission).await?;
     }
+    assert!(admission.spent().backend_read_operations > 0);
+    assert!(admission.spent().backend_write_operations > 0);
     let durable = {
         let mut durable = 0;
         for (object_id, _) in early {
@@ -465,6 +512,90 @@ async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
     }
     drop(store);
     drop(provider);
+    Ok(())
+}
+
+#[tokio::test]
+async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
+-> Result<(), Box<dyn std::error::Error>> {
+    for existing_spill in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let (store, provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let mut objects = Vec::new();
+        if existing_spill {
+            objects.push(spill_fixture(&store, &token).await?);
+        }
+        let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
+        let (first, first_bytes) = blob(vec![41; 3 * 1_048_576].into());
+        let (second, second_bytes) = blob(vec![42; 3 * 1_048_576].into());
+        store.put(first, first_bytes.clone(), &mut work).await?;
+        objects.push((first, first_bytes));
+        objects.push((second, second_bytes.clone()));
+
+        // Hold this real file's original ordered driver before its next write.
+        // Dropping the release sender also ends the gate on a failed assertion.
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let control = {
+            let mut spill = store.spill_io.write().await;
+            store.spill_file(&mut spill, None).await?.control_async(
+                move |_, _| {
+                    entered
+                        .send(())
+                        .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+                    released.recv().map_err(std::io::Error::other)
+                },
+                None,
+            )?
+        };
+        tokio::pin!(control);
+        tokio::select! {
+            entered = entry => entered?,
+            result = &mut control => panic!("file control ended before entry: {result:?}"),
+        }
+        {
+            let admission = store.put(second, second_bytes, &mut work);
+            tokio::pin!(admission);
+            assert!(matches!(
+                std::future::Future::poll(
+                    admission.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                ),
+                std::task::Poll::Pending
+            ));
+            let index = store.index();
+            assert!(index.order.is_empty(), "the spill selected both residents");
+            assert_eq!(index.resident_bytes, 6 * 1_048_576);
+        }
+        {
+            let index = store.index();
+            assert_eq!(index.order.len(), 2, "withdrawal restores the selection");
+            assert_eq!(index.resident_bytes, 6 * 1_048_576);
+            for (_, id) in &index.order {
+                assert!(matches!(
+                    index.objects.get(id),
+                    Some(Staged::Resident { .. })
+                ));
+            }
+        }
+        assert_eq!(store.spill_io.read().await.is_some(), existing_spill);
+        release.send(())?;
+        control.await?;
+
+        store.relieve_window(&mut work).await?;
+        assert_eq!(store.index().resident_bytes, 0);
+        assert_eq!(store.index().spilled_objects, objects.len());
+        assert!(store.index().order.is_empty());
+        for (id, bytes) in objects {
+            assert_eq!(
+                store.read(id, bytes.len() as u64, &mut work).await?.bytes,
+                bytes
+            );
+        }
+        drop(store);
+        drop(provider);
+    }
     Ok(())
 }
 
@@ -671,17 +802,16 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
         logical_bytes: 4,
         native_custody: None,
     };
-    assert!(store.decoded_cache_get(key)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, key)?.is_none());
     assert!(matches!(
-        store.decoded_cache_admit(key, decoded)?,
+        crate::async_storage::publish_decoded(&store, key, decoded)?,
         DecodedCacheAdmission::Shared(_)
     ));
-    let cached = store
-        .decoded_cache_get(key)?
+    let cached = crate::async_storage::cached_value(&store, key)?
         .ok_or("resident page lost its decoding")?;
     assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
     let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
-    assert!(store.decoded_cache_get(other)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, other)?.is_none());
     {
         let __object_args = (
             PublicationScope {
@@ -697,7 +827,7 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
             .await;
         __object_work.receipt(__object_result)
     }?;
-    assert!(store.decoded_cache_get(key)?.is_none());
+    assert!(crate::async_storage::cached_value(&store, key)?.is_none());
     let (object_id, _) = object.into_parts();
     let forged = {
         let __object_args = (
@@ -801,17 +931,26 @@ async fn concurrent_admissions_reads_and_publication_agree()
     Ok(())
 }
 
-/// Holds its first flush until the test releases `gate`, counting the
-/// objects that reach it.
-struct PausedFlush {
-    inner: crate::MemoryObjectStore,
+/// Holds the selected write or flush until the test releases `gate`.
+struct PausedStore<S> {
+    inner: S,
     gate: Arc<tokio::sync::Mutex<()>>,
+    pause_writes: bool,
     first: std::sync::atomic::AtomicBool,
     paused: tokio::sync::Notify,
     stored: std::sync::atomic::AtomicUsize,
 }
 
-impl AsyncObjectStore for PausedFlush {
+impl<S: AsyncObjectStore> PausedStore<S> {
+    async fn pause(&self) {
+        if self.first.swap(false, Ordering::Relaxed) {
+            self.paused.notify_one();
+            drop(self.gate.lock().await);
+        }
+    }
+}
+
+impl<S: AsyncObjectStore> AsyncObjectStore for PausedStore<S> {
     async fn put(
         &self,
         id: ObjectId,
@@ -827,6 +966,9 @@ impl AsyncObjectStore for PausedFlush {
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         self.stored.fetch_add(writes.len(), Ordering::Relaxed);
+        if self.pause_writes {
+            self.pause().await;
+        }
         self.inner.put_many(writes, work).await
     }
     async fn flush_before_publish(
@@ -834,9 +976,8 @@ impl AsyncObjectStore for PausedFlush {
         scope: crate::PublicationScope<'_>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        if self.first.swap(false, Ordering::Relaxed) {
-            self.paused.notify_one();
-            drop(self.gate.lock().await);
+        if !self.pause_writes {
+            self.pause().await;
         }
         self.inner.flush_before_publish(scope, work).await
     }
@@ -873,9 +1014,10 @@ async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
     let gate = Arc::new(tokio::sync::Mutex::new(()));
     let held = Arc::clone(&gate).lock_owned().await;
     let store = StagedObjects::open(
-        PausedFlush {
+        PausedStore {
             inner: crate::MemoryObjectStore::default(),
             gate,
+            pause_writes: false,
             first: std::sync::atomic::AtomicBool::new(true),
             paused: tokio::sync::Notify::new(),
             stored: std::sync::atomic::AtomicUsize::new(0),
@@ -940,5 +1082,100 @@ async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
         "the second publication's drain waited on the first one's inner flush"
     );
     assert_eq!(store.inner().stored.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn decoded_miss_cannot_adopt_a_replaced_resident_or_another_admission_origin()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::async_storage::DecodedCacheLookup;
+    let inner = crate::CachedObjectStore::new(
+        crate::MemoryObjectStore::default(),
+        crate::ObjectCacheOptions::default(),
+    )?;
+    let store = StagedObjects::open(inner, PathBuf::new());
+    let token = CancellationToken::new();
+    let object = HashedObject::new(
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"same staged body"),
+    );
+    let id = object.object_id();
+    let key = DecodedCacheKey::new::<u32>(id, DecodeLimits::default());
+    let value = || DecodedCacheValue {
+        value: Arc::new(7_u32),
+        logical_bytes: 4,
+        native_custody: None,
+    };
+    // An absent staged observation belongs to the inner namespace even when
+    // the same object becomes resident before decoding finishes.
+    let DecodedCacheLookup::Miss(absent) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected initial hit".into());
+    };
+    store
+        .put_hashed(
+            object.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    store.inner.clear()?;
+    assert!(matches!(
+        absent.admit(value())?,
+        DecodedCacheAdmission::Uncached(_)
+    ));
+    assert!(matches!(
+        store.decoded_cache_lookup(key)?,
+        DecodedCacheLookup::Miss(_)
+    ));
+    let DecodedCacheLookup::Miss(original) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected resident hit".into());
+    };
+    store.index_mut().remove(id);
+    store
+        .put_hashed(
+            object,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    let pending = value();
+    let backing = Arc::clone(&pending.value);
+    let DecodedCacheAdmission::Uncached(pending) = original.admit(pending)? else {
+        return Err("retired slot accepted old fill".into());
+    };
+    assert!(Arc::ptr_eq(&pending.value, &backing));
+    assert!(matches!(
+        store.decoded_cache_lookup(key)?,
+        DecodedCacheLookup::Miss(_)
+    ));
+    let DecodedCacheLookup::Miss(fresh) = store.decoded_cache_lookup(key)? else {
+        return Err("unexpected replacement hit".into());
+    };
+    assert!(matches!(
+        fresh.admit(value())?,
+        DecodedCacheAdmission::Shared(_)
+    ));
+    let DecodedCacheLookup::Hit(cached) = store.decoded_cache_lookup(key)? else {
+        return Err("replacement did not cache".into());
+    };
+    assert_eq!(cached.value.downcast_ref::<u32>(), Some(&7));
+    let wrong = DecodedCacheKey::new::<u16>(id, DecodeLimits::default());
+    let DecodedCacheLookup::Miss(wrong) = store.decoded_cache_lookup(wrong)? else {
+        return Err("decoder identity aliased".into());
+    };
+    assert!(matches!(
+        wrong.admit(value()),
+        Err(ObjectStoreError::Corrupt)
+    ));
+    let other = DecodedCacheKey::new::<u64>(id, DecodeLimits::default());
+    let DecodedCacheLookup::Miss(other) = store.decoded_cache_lookup(other)? else {
+        return Err("decoder identity aliased".into());
+    };
+    assert!(matches!(
+        other.admit(DecodedCacheValue {
+            value: Arc::new(9_u64),
+            logical_bytes: 8,
+            native_custody: None
+        })?,
+        DecodedCacheAdmission::Uncached(_)
+    ));
     Ok(())
 }

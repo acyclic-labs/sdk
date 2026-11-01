@@ -120,6 +120,28 @@ impl WasmSession {
             .encode_to_vec())
     }
 
+    /// Opens a finite read through the shared pool; each pull returns one Record.
+    /// The native read owns the pinned end, revision floor and terminal refusal.
+    pub fn read(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
+        use futures::TryStreamExt as _;
+        check_command_size(input)?;
+        let request =
+            wire_codec::read_from_wire(decode::<wire::ReadRequest>(input)?).map_err(js_error)?;
+        let path = request.path.clone();
+        let client = self.client.clone();
+        let acknowledge = self.acknowledge;
+        let source =
+            futures::stream::once(async move { client.read_with_ack(request, acknowledge).await })
+                .try_flatten()
+                .map(move |item| {
+                    item.map(|record| wire_codec::record_wire(record, Some(&path)).encode_to_vec())
+                })
+                .boxed_local();
+        Ok(WasmFollow {
+            state: Rc::new(FollowState::new(source, StreamError::Unavailable)),
+        })
+    }
+
     /// Opens explicit application decisions through the same session pool.
     pub fn deliveries(&self, input: &[u8]) -> Result<WasmApplicationSubscription, JsValue> {
         use futures::TryStreamExt as _;
