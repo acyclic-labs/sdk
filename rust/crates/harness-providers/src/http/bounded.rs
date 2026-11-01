@@ -43,14 +43,12 @@ pub(crate) async fn read(
             .filter(|n| *n <= maximum)
             .ok_or_else(|| boundary(work, "HTTP JSON response exceeds byte limit"))?;
         if next > bytes.capacity() {
-            let capacity = next
-                .checked_next_power_of_two()
-                .unwrap_or(maximum)
-                .min(maximum);
+            let previous = bytes.capacity();
+            let capacity = next.max(previous.saturating_mul(2)).min(maximum);
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(work), Some(hold)) = (work, custody.as_mut()) {
                 let mut growth = work.claim(
-                    (capacity - bytes.capacity()) as u64,
+                    capacity as u64,
                     1,
                     acyclic_fs::WorkCounters {
                         bytes_copied: bytes.len() as u64,
@@ -59,7 +57,23 @@ pub(crate) async fn read(
                 )?;
                 hold.absorb(&mut growth)?;
             }
-            bytes.reserve_exact(capacity - bytes.len());
+            bytes
+                .try_reserve_exact(capacity - bytes.len())
+                .map_err(|cause| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if work.is_some() {
+                        return acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)
+                            .into();
+                    }
+                    let _ = cause;
+                    boundary(work, "cannot allocate HTTP JSON response")
+                })?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(hold) = custody.as_mut() {
+                // Reallocation may overlap both buffers. The full new claim
+                // precedes it; only the old backing retires after it returns.
+                hold.release(previous as u64)?;
+            }
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
@@ -77,3 +91,7 @@ pub(crate) async fn read(
         custody,
     })
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "bounded_tests.rs"]
+mod tests;
