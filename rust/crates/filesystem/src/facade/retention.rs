@@ -30,83 +30,170 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let mut label = label;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                if label.bytes != label.value.capacity() as u64
-                    || !matches!(&label.allocation,
-                    KernelOwnedAllocation::NativeOriginal(allocation)
-                        if allocation.bytes() == label.bytes && allocation.work().shares_ledger(original))
-                {
-                    return Err(FsError::from(NativeTreeMaterializationError::InvalidLayout).into());
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            async {
+                let mut label = label;
+                if accounting.standalone_parts().is_some() {
+                    label.allocation = accounting.claim_owned(label.bytes, 0)?;
                 }
-            } else {
-                label.allocation = accounting.claim_owned(label.bytes, 0)?;
+                self.retain_workspace_generation_with_accounting(
+                    volume,
+                    generation_id,
+                    kind,
+                    label,
+                    publication,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                label.allocation = accounting.claim_owned(label.bytes, 0)?;
-            }
-            let accounting = &mut accounting;
-
-            accounting.check()?;
-            let generation_root = generation_id.object_id();
-            let hashed = WorkCounters { bytes_hashed: (b"acyclic-fs-retention-authority-v1\0".len() + 16 + 1 + 8 + label.value.len()) as u64, bytes_copied: 16, ..WorkCounters::UNCHARGED };
-            accounting.admit(hashed)?;
-            let authority_id = retention_authority_id(volume.id, kind, &label.value);
-            accounting.record_completed(hashed)?;
-            let Owned { value: label, allocation, bytes } = label;
-            let fact = Owned::new(RetentionCreated { volume_id: volume.id, kind, label, generation_root, config: volume.config }, allocation, bytes);
-            let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_retention_created(&fact.value, observe, allocation_error))?;
-            let commit = creation_commit(OperationId::from_bytes(authority_id.into_bytes()), encoded, accounting)?;
-            fact.retire(accounting)?;
-            let cached_bytes = publication.as_ref().map_or(0, VerifiedPublication::retained_bytes);
-            let cached = if let Some(publication) = publication {
-                let bytes = if accounting.standalone_parts().is_some() { cached_bytes } else { 0 };
-                let allocation = accounting.claim_owned(bytes, 0)?;
-                Some(Owned::new(publication, allocation, bytes))
-            } else {
-                None
-            };
-            let head = self.retention_head_with_accounting(authority_id, accounting, cancellation).await;
-            match head {
-                Ok(_) => {
-                    let found = self.retention_operation_with_accounting(authority_id, commit.operation_id, accounting, cancellation).await?;
-                    if found.is_some_and(|(sequence, fingerprint)| sequence == Sequence::new(1) && fingerprint == commit.fingerprint) {
-                        if let Some(cached) = cached {
-                            cached.retire(accounting)?;
-                        }
-                        return Ok(());
-                    }
-                }
-                Err(FsError::Authority(AuthorityStoreError::Missing)) => {}
-                Err(error) => return Err(error.into()),
-            }
-            let limits = closure_limits(volume.config);
-            let cached = match cached {
-                Some(proof)
-                    if self.same_deployment(&proof.value.filesystem)
-                        && proof.value.generation_root == generation_root
-                        && proof.value.volume_id == volume.id
-                        && proof.value.limits == limits
-                        && proof.value.proven_at == self.inner.objects.collection_sweeps() =>
-                {
-                    Some(proof)
-                }
-                Some(proof) => {
-                    proof.retire(accounting)?;
-                    None
-                }
-                None => None,
-            };
-            let publication = if let Some(proof) = cached { proof } else { self.retention_publication_with_accounting(volume, generation_root, accounting, cancellation).await? };
-            let result = self.publish_retention_with_accounting(authority_id, commit, &publication.value, accounting, cancellation).await;
-            publication.retire(accounting)?;
-            if result? { Ok(()) } else { Err(WorkspaceError::RetentionConflict) }
-        }
-        .await;
+            .await
+        };
         budget.finish(result, &accounting)
+    }
+
+    pub(crate) async fn retain_workspace_generation_with_accounting(
+        &self,
+        volume: &Volume<A, O>,
+        generation_id: GenerationId,
+        kind: RetentionKind,
+        label: Owned<String>,
+        publication: Option<VerifiedPublication<A, O>>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work()
+            && (label.bytes != label.value.capacity() as u64
+                || !matches!(&label.allocation,
+                    KernelOwnedAllocation::NativeOriginal(allocation)
+                        if allocation.bytes() == label.bytes && allocation.work().shares_ledger(original)))
+        {
+            return Err(FsError::from(NativeTreeMaterializationError::InvalidLayout).into());
+        }
+        accounting.check()?;
+        let generation_root = generation_id.object_id();
+        let hashed = WorkCounters {
+            bytes_hashed: (b"acyclic-fs-retention-authority-v1\0".len()
+                + 16
+                + 1
+                + 8
+                + label.value.len()) as u64,
+            bytes_copied: 16,
+            ..WorkCounters::UNCHARGED
+        };
+        accounting.admit(hashed)?;
+        let authority_id = retention_authority_id(volume.id, kind, &label.value);
+        accounting.record_completed(hashed)?;
+        let Owned {
+            value: label,
+            allocation,
+            bytes,
+        } = label;
+        let fact = Owned::new(
+            RetentionCreated {
+                volume_id: volume.id,
+                kind,
+                label,
+                generation_root,
+                config: volume.config,
+            },
+            allocation,
+            bytes,
+        );
+        let encoded =
+            crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_retention_created(&fact.value, observe, allocation_error)
+            })?;
+        let commit = creation_commit(
+            OperationId::from_bytes(authority_id.into_bytes()),
+            encoded,
+            accounting,
+        )?;
+        fact.retire(accounting)?;
+        let cached_bytes = publication
+            .as_ref()
+            .map_or(0, VerifiedPublication::retained_bytes);
+        let cached = if let Some(publication) = publication {
+            let bytes = if accounting.standalone_parts().is_some() {
+                cached_bytes
+            } else {
+                0
+            };
+            let allocation = accounting.claim_owned(bytes, 0)?;
+            Some(Owned::new(publication, allocation, bytes))
+        } else {
+            None
+        };
+        let head = self
+            .retention_head_with_accounting(authority_id, accounting, cancellation)
+            .await;
+        match head {
+            Ok(_) => {
+                let found = self
+                    .retention_operation_with_accounting(
+                        authority_id,
+                        commit.operation_id,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                if found.is_some_and(|(sequence, fingerprint)| {
+                    sequence == Sequence::new(1) && fingerprint == commit.fingerprint
+                }) {
+                    if let Some(cached) = cached {
+                        cached.retire(accounting)?;
+                    }
+                    return Ok(());
+                }
+            }
+            Err(FsError::Authority(AuthorityStoreError::Missing)) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let limits = closure_limits(volume.config);
+        let cached = match cached {
+            Some(proof)
+                if self.same_deployment(&proof.value.filesystem)
+                    && proof.value.generation_root == generation_root
+                    && proof.value.volume_id == volume.id
+                    && proof.value.limits == limits
+                    && proof.value.proven_at == self.inner.objects.collection_sweeps() =>
+            {
+                Some(proof)
+            }
+            Some(proof) => {
+                proof.retire(accounting)?;
+                None
+            }
+            None => None,
+        };
+        let publication = if let Some(proof) = cached {
+            proof
+        } else {
+            self.retention_publication_with_accounting(
+                volume,
+                generation_root,
+                accounting,
+                cancellation,
+            )
+            .await?
+        };
+        let result = self
+            .publish_retention_with_accounting(
+                authority_id,
+                commit,
+                &publication.value,
+                accounting,
+                cancellation,
+            )
+            .await;
+        publication.retire(accounting)?;
+        if result? {
+            Ok(())
+        } else {
+            Err(WorkspaceError::RetentionConflict)
+        }
     }
 
     pub(super) async fn retention_head_with_accounting(

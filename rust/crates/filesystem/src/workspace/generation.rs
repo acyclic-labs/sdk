@@ -60,36 +60,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            if self
-                .workspace
-                .volume
-                .fs
-                .workspace_generation_is_retained(
-                    &self.workspace.volume,
-                    self.id,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?
-            {
-                return Ok(());
+        let result = {
+            let mut accounting = accounting.allocation_scope();
+            async {
+                if !self
+                    .workspace
+                    .volume
+                    .fs
+                    .workspace_generation_is_retained(
+                        &self.workspace.volume,
+                        self.id,
+                        &mut accounting,
+                        cancellation,
+                    )
+                    .await?
+                {
+                    self.pin_with_accounting(identity.as_ref(), &mut accounting, cancellation)
+                        .await?;
+                }
+                Ok(())
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.pin(identity, original, cancellation).await?;
-                return Ok(());
-            }
-            let retained = self
-                .pin(identity, accounting.remaining()?, cancellation)
-                .await;
-            let (allocations, spent, _, _) = accounting
-                .standalone_parts()
-                .ok_or(crate::WorkError::Overflow)?;
-            merge_workspace_backend(retained, spent, allocations.live_bytes())?;
-            Ok(())
-        }
-        .await;
+            .await
+        };
         work.finish(result, &accounting)
     }
 
@@ -468,55 +460,48 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         cancellation: &CancellationToken,
     ) -> W::Output<(WorkspaceName, Generation<A, O>), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result: Result<(WorkspaceName, Generation<A, O>), WorkspaceError> = async {
-            let identity = WorkspaceName::with_accounting(identity.as_ref(), &mut accounting)?;
-            let mut label = copy_workspace_label(&identity, &mut accounting)?;
-            if accounting.standalone_parts().is_some() {
-                accounting.release_owned(&mut label.allocation, label.bytes)?;
-            }
-            let publication = self
-                .publication_closure
-                .as_ref()
-                .and_then(crate::facade::GenerationClosure::take_pin);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
+        let result = self
+            .pin_with_accounting(identity.as_ref(), &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    pub(super) async fn pin_with_accounting(
+        &self,
+        identity: &str,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(WorkspaceName, Generation<A, O>), WorkspaceError> {
+        let mut accounting = accounting.allocation_scope();
+        let result = async {
+            let identity = WorkspaceName::with_accounting(identity, &mut accounting)?;
+            {
+                let mut temporary = accounting.allocation_scope();
+                let label = copy_workspace_label(&identity, &mut temporary)?;
+                let publication = self
+                    .publication_closure
+                    .as_ref()
+                    .and_then(crate::facade::GenerationClosure::take_pin);
                 self.workspace
                     .volume
                     .fs
-                    .retain_workspace_generation(
+                    .retain_workspace_generation_with_accounting(
                         &self.workspace.volume,
                         self.id,
                         crate::kernel::RetentionKind::Pin,
                         label,
                         publication,
-                        original,
+                        &mut temporary,
                         cancellation,
                     )
                     .await?;
-                return Ok((identity, self.clone()));
             }
-            let retained = self
-                .workspace
-                .volume
-                .fs
-                .retain_workspace_generation(
-                    &self.workspace.volume,
-                    self.id,
-                    crate::kernel::RetentionKind::Pin,
-                    label,
-                    publication,
-                    accounting.remaining()?,
-                    cancellation,
-                )
-                .await;
-            let (allocations, spent, budget, _) = accounting
-                .standalone_parts()
-                .ok_or(crate::WorkError::Overflow)?;
-            merge_workspace_backend(retained, spent, allocations.live_bytes())?;
-            spent.verify(budget)?;
             Ok((identity, self.clone()))
         }
         .await;
-        work.finish(result, &accounting)
+        if result.is_ok() {
+            accounting.keep();
+        }
+        result
     }
 }
