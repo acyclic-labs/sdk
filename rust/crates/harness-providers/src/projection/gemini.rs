@@ -1,7 +1,6 @@
-use acyclic_harness_core::model::ModelRole;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
-use std::{borrow::Cow, collections::VecDeque};
+use std::borrow::Cow;
 
 #[derive(Deserialize)]
 struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
@@ -19,178 +18,113 @@ mod tests {
             // Negative control: skipping functionCall alone accepts malformed
             // nested string tokens. Native replay must validate the whole part.
             prop_assert!(serde_json::from_str::<crate::protocol::gemini::Part<&RawValue>>(&raw).is_ok());
-            prop_assert!(Replay::default().native(raw.as_bytes(), false).is_err());
+            prop_assert!(part(raw.as_bytes()).is_err());
         }
     }
 }
 
-// GEM-THK-01/04: native visible parts own their original signature boundaries.
-// The final assistant answer also contains their streamed text. Consume that
-// duplicate prefix across text chunks and tool steps, without merging parts.
-#[derive(Default)]
-pub(crate) struct Replay<'a> {
-    call: Option<(&'a RawValue, crate::protocol::gemini::Function<'a>)>,
-    visible: VecDeque<Cow<'a, str>>,
-    offset: usize,
+// GEM-THK-01/04: every signed part keeps its original bytes on its own
+// canonical part (text, call or thought), so replay needs no retained state.
+
+/// One retained part's exact bytes, validated without re-encoding.
+pub(crate) fn part(
+    bytes: &[u8],
+) -> acyclic_harness_core::Result<(&RawValue, crate::protocol::gemini::NativePart<'_>)> {
+    let raw: &RawValue = serde_json::from_slice(bytes)
+        .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+    if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
+        return Err(crate::invalid("invalid retained Gemini part"));
+    }
+    Ok((raw, crate::protocol::gemini::native_part(raw)?))
 }
 
-impl<'a> Replay<'a> {
-    pub fn begin(&mut self, role: ModelRole) -> acyclic_harness_core::Result<()> {
-        if role != ModelRole::Assistant {
-            self.finish()?;
-        }
-        if role == ModelRole::User {
-            self.visible.clear();
-            self.offset = 0;
-        }
-        Ok(())
-    }
+fn decode<'a>(raw: &'a RawValue) -> acyclic_harness_core::Result<Cow<'a, str>> {
+    let Text(text): Text<'a> = serde_json::from_str(raw.get())
+        .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
+    Ok(text)
+}
 
-    pub fn finish(&self) -> acyclic_harness_core::Result<()> {
-        if self.call.is_some() {
-            return Err(crate::invalid("retained Gemini call has no canonical call"));
-        }
-        Ok(())
+/// A retained thought: any part but a call.
+pub fn thought(bytes: &[u8]) -> acyclic_harness_core::Result<&RawValue> {
+    match part(bytes)? {
+        (raw, crate::protocol::gemini::NativePart { function: None, .. }) => Ok(raw),
+        _ => Err(crate::invalid("retained Gemini thought carries a call")),
     }
+}
 
-    pub fn native(
-        &mut self,
-        bytes: &'a [u8],
-        suppress_display: bool,
-    ) -> acyclic_harness_core::Result<Option<&'a RawValue>> {
-        // One original part must be consumed by its immediately following
-        // canonical call. Never overwrite, drop or reorder signed calls.
-        self.finish()?;
-        let raw: &RawValue = serde_json::from_slice(bytes)
-            .map_err(|_| crate::invalid("invalid retained Gemini part"))?;
-        if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
-            return Err(crate::invalid("invalid retained Gemini part"));
-        }
-        let crate::protocol::gemini::NativePart {
-            fields: part,
-            function,
-        } = crate::protocol::gemini::native_part(raw)?;
-        if let Some(function) = function {
-            // A signature authenticates this exact part, including the call.
-            // Retain its bytes rather than reconstructing a signed envelope.
-            self.call = Some((raw, function));
-            return Ok(None);
-        }
-        self.call = None;
-        if suppress_display && part.thought.is_none_or(|thought| thought.get() != "true") {
-            if let Some(text) = part.text {
-                let Text(text): Text<'a> = serde_json::from_str(text.get())
-                    .map_err(|_| crate::invalid("invalid retained Gemini text"))?;
-                if !text.is_empty() {
-                    self.visible.push_back(text);
-                }
-            }
-        }
-        Ok(Some(raw))
+/// A retained visible text part, which must carry exactly its canonical text.
+pub fn text<'a>(bytes: &'a [u8], text: &str) -> acyclic_harness_core::Result<&'a RawValue> {
+    let (raw, native) = part(bytes)?;
+    let thought = native
+        .fields
+        .thought
+        .is_some_and(|thought| thought.get() == "true");
+    let retained = native.fields.text.map(decode).transpose()?;
+    if native.function.is_some() || thought || retained.as_deref().unwrap_or_default() != text {
+        return Err(crate::invalid(
+            "retained Gemini text differs from its canonical text",
+        ));
     }
+    Ok(raw)
+}
 
-    /// Binds the executable call to its exact original signed part. Validation
-    /// never changes the bytes used for native replay.
-    pub fn take_call(
-        &mut self,
-        id: Option<&str>,
-        name: &str,
-        arguments: &Value,
-    ) -> acyclic_harness_core::Result<Option<&'a RawValue>> {
-        let Some((_, original)) = self.call else {
-            return Ok(None);
-        };
-        let decode = |raw: &'a RawValue| -> acyclic_harness_core::Result<Cow<'a, str>> {
-            let Text(text): Text<'a> = serde_json::from_str(raw.get())
-                .map_err(|_| crate::invalid("invalid retained Gemini call"))?;
-            Ok(text)
-        };
-        if original.id.map(decode).transpose()?.as_deref() != id || decode(original.name)? != name {
-            return Err(crate::invalid(
-                "retained Gemini call differs from its canonical call",
-            ));
-        }
-        let same_arguments = match original.args {
-            Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
-            None => arguments.as_object().is_some_and(|args| args.is_empty()),
-        };
-        if !same_arguments {
-            return Err(crate::invalid(
-                "retained Gemini call differs from its canonical call",
-            ));
-        }
-        Ok(self.call.take().map(|(raw, _)| raw))
+/// A retained signed call, which must carry exactly its canonical call.
+pub fn call<'a>(
+    bytes: &'a [u8],
+    id: Option<&str>,
+    name: &str,
+    arguments: &Value,
+) -> acyclic_harness_core::Result<&'a RawValue> {
+    let (raw, native) = part(bytes)?;
+    let Some(original) = native.function else {
+        return Err(crate::invalid("retained Gemini call carries no call"));
+    };
+    let same_arguments = match original.args {
+        Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
+        None => arguments.as_object().is_some_and(|args| args.is_empty()),
+    };
+    if original.id.map(decode).transpose()?.as_deref() != id
+        || decode(original.name)? != name
+        || !same_arguments
+    {
+        return Err(crate::invalid(
+            "retained Gemini call differs from its canonical call",
+        ));
     }
-
-    pub fn remaining<'text>(&mut self, mut text: &'text str) -> &'text str {
-        while !text.is_empty() {
-            let Some(part) = self.visible.front() else {
-                break;
-            };
-            let pending = &part[self.offset..];
-            let count = pending.len().min(text.len());
-            if pending.as_bytes()[..count] != text.as_bytes()[..count] {
-                self.visible.clear();
-                self.offset = 0;
-                break;
-            }
-            // Matching UTF-8 prefixes end at the shorter string's boundary.
-            text = &text[count..];
-            self.offset += count;
-            if self.offset == part.len() {
-                self.visible.pop_front();
-                self.offset = 0;
-            }
-        }
-        text
-    }
+    Ok(raw)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn assert_visible_replay(events: &[acyclic_harness_core::model::ModelEvent]) {
     use acyclic_harness_core::model::ModelEvent;
-    use serde_json::Value;
-    let mut replay = Replay::default();
-    let mut native_text = String::new();
+    let mut parts = String::new();
+    let mut streamed = String::new();
     for event in events {
-        if matches!(event, ModelEvent::ToolCall(_)) {
-            replay.call.take();
-        }
-        if let ModelEvent::ReasoningBlock { block } = event {
-            if let Some(item) = replay
-                .native(
-                    &block.continuity,
-                    block.outcome
-                        == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-                )
-                .unwrap()
-            {
-                let bytes = serde_json::to_vec(&item).unwrap();
-                assert_eq!(bytes, block.continuity, "native part bytes changed");
-                let part: Value = crate::projection::arguments::literal(&bytes).unwrap();
-                if part["thought"] != true {
-                    if let Some(text) = part["text"].as_str() {
-                        native_text.push_str(text);
-                    }
+        match event {
+            ModelEvent::Content { delta } => streamed.push_str(delta),
+            ModelEvent::TextPart {
+                text: visible,
+                native,
+            } => {
+                if let Some(native) = native {
+                    text(&native.continuity, visible).unwrap();
+                }
+                parts.push_str(visible);
+            }
+            ModelEvent::ToolCall(tool) => {
+                if let Some(native) = &tool.native {
+                    let id = tool.metadata["provider_call"]["id"].as_str();
+                    call(&native.continuity, id, &tool.name, &tool.arguments).unwrap();
                 }
             }
-        }
-    }
-    replay.finish().unwrap();
-    let visible: String = events
-        .iter()
-        .filter_map(|event| match event {
-            ModelEvent::Content { delta } => Some(delta.as_str()),
-            _ => None,
-        })
-        .collect();
-    for event in events {
-        if let ModelEvent::Content { delta } = event {
-            native_text.push_str(replay.remaining(delta));
+            ModelEvent::ReasoningBlock { block } => {
+                thought(&block.continuity).unwrap();
+            }
+            _ => {}
         }
     }
     assert_eq!(
-        native_text, visible,
-        "native parts and answer must replay each byte once"
+        parts, streamed,
+        "text parts must carry each streamed byte once"
     );
 }

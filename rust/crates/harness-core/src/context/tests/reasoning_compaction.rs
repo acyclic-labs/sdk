@@ -46,9 +46,7 @@ fn transcript(batches: &[Batch], text: &str) -> (Context, Vec<(usize, usize)>) {
                     outcome: ReasoningOutcome::PreservedOpaque,
                 },
             });
-            parts.push(ModelContentPart::Text {
-                text: format!("between:{id}:{text}"),
-            });
+            parts.push(ModelContentPart::text(format!("between:{id}:{text}")));
             parts.push(ModelContentPart::ToolCall(ToolCall::new(
                 id,
                 "tool".into(),

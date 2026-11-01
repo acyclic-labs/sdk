@@ -546,6 +546,7 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
             text: "done".into(),
             metadata: Value::Null,
             steps: 1,
+            parts: Vec::new(),
             attachments: Vec::new(),
         }),
     };

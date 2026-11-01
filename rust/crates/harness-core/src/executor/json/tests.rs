@@ -891,9 +891,7 @@ fn buffered_escaped_strings_reserve_every_copy() {
     enum Keyed {
         Map(BTreeMap<String, u8>),
     }
-    let part = |text: &str| ModelContentPart::Text {
-        text: text.to_owned(),
-    };
+    let part = |text: &str| ModelContentPart::text(text.to_owned());
     let long = "\"quoted\\path\"\n".repeat(4096);
     let short = "\"quoted\\path\"\n".repeat(64);
     let shorts = || (0..64).map(|_| short.clone()).collect::<Vec<_>>();

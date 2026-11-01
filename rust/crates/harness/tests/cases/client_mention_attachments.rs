@@ -224,7 +224,7 @@ proptest::proptest! {
             }
             ModelContent::Parts(parts) => {
                 proptest::prop_assert_eq!(parts.len(), expected.len() + 1);
-                proptest::prop_assert_eq!(&parts[0], &ModelContentPart::Text { text: original });
+                proptest::prop_assert_eq!(&parts[0], &ModelContentPart::text(original));
                 for (part, (volume, path, version)) in parts[1..].iter().zip(expected) {
                     match part {
                         ModelContentPart::File { file, policy } => {

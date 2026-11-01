@@ -247,3 +247,103 @@ proptest! {
         prop_assert_eq!(provider.requests().len(), earlier.len() + 1);
     }
 }
+
+#[test]
+fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
+    use crate::model::{NativePart, ReasoningBlock, ReasoningKind, ReasoningOrigin};
+    use futures::FutureExt as _;
+
+    let origin = ReasoningOrigin {
+        provider: "gemini".into(),
+        model: "fixture".into(),
+        credential_scope: Some([7; 32]),
+    };
+    let native = |bytes: &str| NativePart {
+        origin: origin.clone(),
+        continuity: bytes.as_bytes().to_vec(),
+    };
+    let thought = ReasoningBlock {
+        kind: ReasoningKind::Signature,
+        text: Some("plan".into()),
+        origin: origin.clone(),
+        continuity: br#"{"text":"plan","thought":true}"#.to_vec(),
+        outcome: crate::model::ReasoningOutcome::PreservedReadable,
+    };
+    let answer = Some(native(r#"{"text":"done","thoughtSignature":"s="}"#));
+    let provider = Arc::new(ScriptedModelProvider::new([
+        tool_turn([
+            ModelEvent::Content {
+                delta: "looking".into(),
+            },
+            ModelEvent::TextPart {
+                text: "looking".into(),
+                native: None,
+            },
+            echo_call("call", json!({})),
+        ]),
+        tool_turn([
+            ModelEvent::ReasoningBlock {
+                block: thought.clone(),
+            },
+            ModelEvent::Content {
+                delta: "done".into(),
+            },
+            ModelEvent::TextPart {
+                text: "done".into(),
+                native: answer.clone(),
+            },
+        ]),
+    ]));
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "parts".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        echo_tools(
+            Arc::new(FakeTool(AtomicUsize::new(0))),
+            json!({"type":"object"}),
+            json!({}),
+            crate::tool::json_projection_schema(json!({})),
+        )?,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("hello".into()),
+        selected_context: None,
+        max_steps: 2,
+    };
+    let output = executor
+        .execute(input, &Journal::default())
+        .now_or_never()
+        .expect("scripted turn settles")?;
+    assert_eq!(output.text, "done");
+    assert_eq!(
+        output.parts,
+        vec![
+            ModelContentPart::Reasoning { block: thought },
+            ModelContentPart::Text {
+                text: "done".into(),
+                native: answer,
+            },
+        ]
+    );
+    // The tool step's interim text reaches the next request ahead of its call.
+    let followup = &provider.requests()[1].messages;
+    let interim = followup
+        .iter()
+        .position(|message| {
+            message.content == ModelContent::Part(ModelContentPart::text("looking".into()))
+        })
+        .expect("interim text is kept");
+    assert!(matches!(
+        followup[interim + 1].content,
+        ModelContent::Part(ModelContentPart::ToolCall(_))
+    ));
+    Ok(())
+}

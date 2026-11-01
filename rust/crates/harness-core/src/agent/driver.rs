@@ -485,9 +485,7 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
             ..
         } => match instructions {
             Some(file) => ModelContent::Parts(vec![
-                ModelContentPart::Text {
-                    text: format!("{COMPACT_INSTRUCTION} Follow this guidance:"),
-                },
+                ModelContentPart::text(format!("{COMPACT_INSTRUCTION} Follow this guidance:")),
                 body(file),
             ]),
             None => ModelContent::Text(COMPACT_INSTRUCTION.to_owned()),
@@ -538,6 +536,7 @@ async fn stage_text(open: &OpenTurn, turn: OperationId, text: String) -> Result<
         attachments: Vec::new(),
         metadata: serde_json::Value::Null,
         steps: 0,
+        parts: Vec::new(),
     };
     let bytes =
         crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;

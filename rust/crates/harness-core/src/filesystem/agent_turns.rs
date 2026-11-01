@@ -1224,7 +1224,7 @@ impl<'a> TurnContext<'a> {
             if let Some(announced) = &announced {
                 announce(&mut messages, &mut message_ids, settled, announced);
             }
-            let text = staged_text(reader, &output).await?;
+            let reply = staged_reply(reader, &output).await?;
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
                     .await?;
@@ -1244,7 +1244,7 @@ impl<'a> TurnContext<'a> {
             }
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text(text),
+                content: reply,
             });
             message_ids.push(message_id(settled, ModelRole::Assistant));
         }
@@ -1293,6 +1293,24 @@ async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) ->
     serde_json::from_slice::<TurnOutput>(&bytes)
         .map(|output| output.text)
         .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
+}
+
+/// A settled turn's reply as the next turn sees it: its kept assistant parts,
+/// native bytes included, or its text when it kept none.
+async fn staged_reply(
+    reader: &dyn ContentResidencyVerifier,
+    output: &FileRef,
+) -> Result<ModelContent> {
+    let bytes = reader
+        .read(output, output.descriptor().byte_length(), None, None)?
+        .await?;
+    let output = serde_json::from_slice::<TurnOutput>(&bytes)
+        .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+    Ok(if output.parts.is_empty() {
+        ModelContent::Text(output.text)
+    } else {
+        ModelContent::Parts(output.parts)
+    })
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>

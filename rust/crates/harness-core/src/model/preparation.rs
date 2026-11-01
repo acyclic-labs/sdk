@@ -213,6 +213,16 @@ fn copy_value(value: &Value, quota: &mut CodecQuota<'_, '_>) -> Result<Value> {
         crate::executor::json::json_value_retained_owned_bytes(value)
     })
 }
+fn copy_native(
+    native: Option<&NativePart>,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<Option<NativePart>> {
+    native
+        .map(|native| {
+            crate::core::copy(native, quota, |value: &NativePart, _| value.payload_bytes())
+        })
+        .transpose()
+}
 pub(crate) fn clone_content(
     content: &ModelContent,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -324,8 +334,9 @@ impl ModelContentPart {
                 prefix: *prefix,
                 effort: *effort,
             },
-            Self::Text { text } => Self::Text {
+            Self::Text { text, native } => Self::Text {
                 text: copy_text(text, quota)?,
+                native: copy_native(native.as_ref(), quota)?,
             },
             Self::File { file, policy } => Self::File {
                 file: file.clone_in_quota(quota)?,
@@ -341,13 +352,15 @@ impl ModelContentPart {
                 name,
                 arguments,
                 metadata,
+                native,
             }) => Self::ToolCall(
                 crate::model::ToolCall::new(
                     copy_text(call_id, quota)?,
                     copy_text(name, quota)?,
                     copy_value(arguments, quota)?,
                 )
-                .with_metadata(copy_value(metadata, quota)?),
+                .with_metadata(copy_value(metadata, quota)?)
+                .with_native(copy_native(native.as_ref(), quota)?),
             ),
             Self::ToolResult {
                 call_id,

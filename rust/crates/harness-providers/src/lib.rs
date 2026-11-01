@@ -81,7 +81,7 @@ pub use http::BrowserTransport;
 pub use http::ReqwestTransport;
 pub use http::{HttpRequest, HttpResponse, HttpTransport};
 pub use model_spec::{ModelFeatures, ModelSpec};
-pub use reasoning::{ProjectedReasoning, project_reasoning};
+pub use reasoning::{ProjectedReasoning, project_native, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};

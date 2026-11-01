@@ -85,7 +85,7 @@ fn counted_model(
                         10 + text_bytes,
                         |total, part| {
                             let count = match part {
-                                ModelContentPart::Text { text } => text.len() as u64,
+                                ModelContentPart::Text { text, .. } => text.len() as u64,
                                 ModelContentPart::File { file, .. } => {
                                     file.descriptor().byte_length()
                                 }

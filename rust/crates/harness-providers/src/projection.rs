@@ -145,7 +145,6 @@ pub(crate) fn body_named<'a>(
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut deferred_media = Vec::new();
     let mut system = Vec::new();
-    let mut gemini = gemini::Replay::default();
     let mut effective_effort = provider
         .profile
         .as_ref()
@@ -160,8 +159,6 @@ pub(crate) fn body_named<'a>(
         }
         let event = message.content.notice_parts();
         if let Some((notices, attachments)) = event {
-            // A notice is its own turn; retained Gemini parts cannot span it.
-            gemini.begin(message.role)?;
             let notice = acyclic_model_render::notice_block(
                 acyclic_model_render::Provenance {
                     family: adapter,
@@ -216,15 +213,7 @@ pub(crate) fn body_named<'a>(
         {
             system.push(text_content(&message.content, files)?);
         } else {
-            for projected in project_message(
-                adapter,
-                message,
-                names,
-                &call_ids,
-                target,
-                &mut gemini,
-                files,
-            )? {
+            for projected in project_message(adapter, message, names, &call_ids, target, files)? {
                 if message.role == ModelRole::Tool
                     && matches!(adapter, Adapter::Chat | Adapter::Responses)
                     && matches!(&projected, Message::Item(Item::Json(_)))
@@ -247,7 +236,6 @@ pub(crate) fn body_named<'a>(
             ));
         }
     }
-    gemini.finish()?;
     sequence::finish(adapter, &mut messages)?;
     let tools = request
         .model_tools()
@@ -347,7 +335,6 @@ fn project_message<'a>(
     names: &'a crate::tool_names::Names<'_>,
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness_core::model::ReasoningOrigin,
-    gemini: &mut gemini::Replay<'a>,
     files: &mut FileText,
 ) -> Result<Vec<Message<'a>>> {
     let role: &'static str = match message.role {
@@ -361,23 +348,20 @@ fn project_message<'a>(
     let mut results = Vec::new();
     let mut ordered = Vec::new();
     let mut tool_media = Vec::new();
-    gemini.begin(message.role)?;
     let mut chat_reasoning = None;
     if let ModelContent::Text(text) = &message.content {
-        gemini.finish()?;
-        project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
+        project_text(adapter, role, text.clone(), &mut texts, &mut ordered);
     }
     let parts = message
         .content
         .notice_parts()
         .map_or(message.content.parts(), |(_, files)| files);
+    // Native bytes replay only to their own origin, and only Gemini keeps
+    // them on text and call parts.
+    let native = |native: Option<&'a acyclic_harness_core::model::NativePart>| {
+        crate::project_native(native, target).filter(|_| adapter == Adapter::Gemini)
+    };
     for part in parts {
-        if !matches!(
-            part,
-            ModelContentPart::ToolCall(_) | ModelContentPart::Reasoning { .. }
-        ) {
-            gemini.finish()?;
-        }
         match part {
             ModelContentPart::Notices { .. } => {
                 return Err(invalid("notice batch must occupy one message"));
@@ -385,9 +369,12 @@ fn project_message<'a>(
             ModelContentPart::Configuration { .. } => {
                 return Err(invalid("configuration update must occupy one message"));
             }
-            ModelContentPart::Text { text } => {
-                project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
-            }
+            ModelContentPart::Text { text, native: kept } => match native(kept.as_ref()) {
+                Some(bytes) if role == "assistant" => {
+                    ordered.push(Item::Native(gemini::text(bytes, text)?));
+                }
+                _ => project_text(adapter, role, text.clone(), &mut texts, &mut ordered),
+            },
             ModelContentPart::File { file, policy } => {
                 if let acyclic_harness_core::model::FileProjectionPolicy::Native(policy) = policy {
                     if role != "user" {
@@ -422,18 +409,20 @@ fn project_message<'a>(
                 name,
                 arguments,
                 metadata: _,
+                native: kept,
             }) => {
                 let name = names.wire(name)?;
                 let (call_id, freeform, omit_gemini_id) = call_ids.binding(call_id)?;
-                let native = if adapter == Adapter::Gemini {
-                    gemini.take_call(
-                        (!omit_gemini_id).then_some(call_id.as_ref()),
-                        &name,
-                        arguments,
-                    )?
-                } else {
-                    None
-                };
+                let native = native(kept.as_ref())
+                    .map(|bytes| {
+                        gemini::call(
+                            bytes,
+                            (!omit_gemini_id).then_some(call_id.as_ref()),
+                            &name,
+                            arguments,
+                        )
+                    })
+                    .transpose()?;
                 let call = call::Call {
                     adapter,
                     id: call_id.into_owned(),
@@ -460,13 +449,7 @@ fn project_message<'a>(
                         ordered.push(Item::Native(raw));
                     }
                     ProjectedReasoning::Native { continuity, .. } if adapter == Adapter::Gemini => {
-                        if let Some(part) = gemini.native(
-                            continuity,
-                            block.outcome
-                                == acyclic_harness_core::model::ReasoningOutcome::SuppressedDisplay,
-                        )? {
-                            ordered.push(Item::Native(part));
-                        }
+                        ordered.push(Item::Native(gemini::thought(continuity)?));
                     }
                     ProjectedReasoning::Native { continuity, .. } => {
                         let raw = native_reasoning::chat(continuity)
@@ -553,24 +536,6 @@ fn project_message<'a>(
     }
 }
 
-fn project_visible_text(
-    adapter: Adapter,
-    role: &str,
-    text: &str,
-    texts: &mut Vec<String>,
-    ordered: &mut Vec<Item<'_>>,
-    gemini: &mut gemini::Replay<'_>,
-) {
-    let text = if adapter == Adapter::Gemini && role == "assistant" {
-        gemini.remaining(text)
-    } else {
-        text
-    };
-    if !text.is_empty() || adapter != Adapter::Gemini {
-        project_text(adapter, role, text.to_owned(), texts, ordered);
-    }
-}
-
 fn project_text(
     adapter: Adapter,
     role: &str,
@@ -638,7 +603,7 @@ fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> 
         .parts()
         .iter()
         .map(|part| match part {
-            ModelContentPart::Text { text } => Ok(text.clone()),
+            ModelContentPart::Text { text, .. } => Ok(text.clone()),
             ModelContentPart::File { file, policy } => files.project(file, policy),
             _ => Err(invalid("system messages cannot contain tool exchanges")),
         })

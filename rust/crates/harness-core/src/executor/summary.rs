@@ -168,6 +168,7 @@ impl StockExecution<'_> {
                     ));
                 }
                 ModelEvent::Content { .. }
+                | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }
                 | ModelEvent::Completed { .. } => {}

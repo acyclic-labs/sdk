@@ -72,6 +72,10 @@ pub enum ModelContentPart {
     Text {
         /// Model-visible text.
         text: String,
+        /// The provider's exact original text part, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(optional))]
+        native: Option<NativePart>,
     },
     /// Immutable file with an explicit resolution policy.
     File {
@@ -151,6 +155,14 @@ pub enum ToolResultContent {
     },
 }
 
+impl ModelContentPart {
+    /// Plain text with no native part.
+    #[must_use]
+    pub const fn text(text: String) -> Self {
+        Self::Text { text, native: None }
+    }
+}
+
 impl ModelContent {
     /// Structured parts; plain text has no structured parts.
     #[must_use]
@@ -221,8 +233,13 @@ impl ModelContent {
                             .map_err(|_| invalid(work, "invalid notice"))?;
                     }
                 }
-                ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
-                    return Err(invalid(work, "model text exceeds render limit"));
+                ModelContentPart::Text { text, native } => {
+                    if text.len() as u64 > limits.render_bytes {
+                        return Err(invalid(work, "model text exceeds render limit"));
+                    }
+                    if let Some(native) = native {
+                        native.validate_limits(limits, work)?;
+                    }
                 }
                 ModelContentPart::File { file, policy } => {
                     policy.validate_file(file, limits, work)?;
@@ -230,11 +247,15 @@ impl ModelContent {
                 ModelContentPart::ToolCall(crate::model::ToolCall {
                     arguments,
                     metadata,
+                    native,
                     ..
                 }) => {
                     value_bound(arguments, limits.render_bytes, work)?;
                     if !metadata.is_null() {
                         value_bound(metadata, limits.render_bytes, work)?;
+                    }
+                    if let Some(native) = native {
+                        native.validate_limits(limits, work)?;
                     }
                 }
                 ModelContentPart::Reasoning { block } => {
@@ -243,7 +264,7 @@ impl ModelContent {
                 ModelContentPart::ToolResult { content, .. } => {
                     content.validate_limits(limits, work)?;
                 }
-                ModelContentPart::Text { .. } | ModelContentPart::Configuration { .. } => {}
+                ModelContentPart::Configuration { .. } => {}
             }
         }
         let mut references = 0usize;
@@ -295,7 +316,7 @@ impl ModelContent {
         for part in self.parts() {
             history_step(work, 1)?;
             match part {
-                ModelContentPart::Text { text } if !text.is_empty() => {}
+                ModelContentPart::Text { text, .. } if !text.is_empty() => {}
                 ModelContentPart::File { file, .. } => file.validate(work)?,
                 _ => return Err(invalid(work, "user input contains an unsupported part")),
             }

@@ -14,6 +14,7 @@ fn append(events: Vec<ModelEvent>, request: &mut ModelRequest, answer: &mut Stri
                 answer.push_str(&delta);
                 continue;
             }
+            ModelEvent::TextPart { text, native } => ModelContentPart::Text { text, native },
             ModelEvent::ReasoningBlock { block } => ModelContentPart::Reasoning { block },
             ModelEvent::ToolCall(call) => {
                 results.push(ModelMessage {
@@ -38,11 +39,21 @@ fn append(events: Vec<ModelEvent>, request: &mut ModelRequest, answer: &mut Stri
     request.messages.extend(results);
 }
 
-fn finish(request: &mut ModelRequest, answer: &str) {
-    request.messages.push(ModelMessage {
-        role: ModelRole::Assistant,
-        content: ModelContent::Text(answer.into()),
-    });
+/// Native bytes on every kind of part, in transcript order.
+fn natives(events: &[ModelEvent]) -> Vec<&[u8]> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ModelEvent::ReasoningBlock { block } => Some(block.continuity.as_slice()),
+            ModelEvent::TextPart { native, .. } => native.as_ref().map(|n| n.continuity.as_slice()),
+            ModelEvent::ToolCall(call) => call.native.as_ref().map(|n| n.continuity.as_slice()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The answer already rides on its text parts; the turn ends with a user message.
+fn finish(request: &mut ModelRequest) {
     request.messages.push(ModelMessage {
         role: ModelRole::User,
         content: ModelContent::Text("next".into()),
@@ -143,7 +154,7 @@ fn signed_answer_fixture_replays_once_with_exact_native_parts() {
     let mut request = prepared.request().clone();
     let seed = include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse");
     let stream = std::str::from_utf8(&seed[1..]).unwrap();
-    let events = futures::executor::block_on(
+    let events: Vec<ModelEvent> = futures::executor::block_on(
         stream::events_named(
             Adapter::Gemini,
             chunks(stream, 1),
@@ -155,28 +166,19 @@ fn signed_answer_fixture_replays_once_with_exact_native_parts() {
         .try_collect(),
     )
     .unwrap();
+    let signed: Vec<_> = natives(&events)
+        .into_iter()
+        .filter(|bytes| {
+            serde_json::from_slice::<Value>(bytes).unwrap()["thoughtSignature"].is_string()
+        })
+        .map(|bytes| String::from_utf8(bytes.to_vec()).unwrap())
+        .collect();
     let mut answer = String::new();
     append(events, &mut request, &mut answer);
-    let signed: Vec<_> = request
-        .messages
-        .iter()
-        .flat_map(|message| message.content.parts())
-        .filter_map(|part| match part {
-            ModelContentPart::Reasoning { block } => {
-                let value: Value = serde_json::from_slice(&block.continuity).unwrap();
-                value
-                    .get("thoughtSignature")
-                    .map(|_| String::from_utf8(block.continuity.clone()).unwrap())
-            }
-            _ => None,
-        })
-        .collect();
     assert_eq!(signed.len(), 3, "including the empty signed part");
     assert_eq!(answer, "prefix\nhé\"llo\\ tail");
-    finish(&mut request, &answer);
+    finish(&mut request);
     round_trip(&provider, request, &answer, &signed);
-    // Negative control: the old native-parts + final-answer path doubles text.
-    assert_ne!(format!("{answer}{answer}"), answer);
     crate::fuzzing::assert_stream_invariants(seed);
 }
 
@@ -185,6 +187,16 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     let (provider, _) = provider(Adapter::Gemini, 200);
     let (prepared, dispatch) = request(&provider).unwrap();
     let mut request = prepared.request().clone();
+    request
+        .tools
+        .push(acyclic_harness_core::tool::ToolDefinition {
+            name: "read".into(),
+            revision: "1".into(),
+            description: "read".into(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            output_schema: json!({}),
+            projection_schema: json!({}),
+        });
     // Generated adversarial inputs, not a captured external transcript.
     // Missing provider IDs, unusual key order and escaped signature bytes
     // expose reconstruction even when the decoded JSON is equivalent.
@@ -210,7 +222,7 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     .unwrap();
     let mut answer = String::new();
     append(events, &mut request, &mut answer);
-    finish(&mut request, &answer);
+    finish(&mut request);
     // Native Part data is a union. A matching canonical call cannot authorize
     // replaying a second data field hidden in the same signed envelope.
     for extra in [
@@ -224,21 +236,21 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
         "toolResponse",
     ] {
         let mut changed = request.clone();
-        let block = changed
+        let native = changed
             .messages
             .iter_mut()
             .find_map(|message| match &mut message.content {
-                ModelContent::Part(ModelContentPart::Reasoning { block }) => Some(block),
+                ModelContent::Part(ModelContentPart::ToolCall(call)) => call.native.as_mut(),
                 _ => None,
             })
             .unwrap();
-        let mut part: Value = serde_json::from_slice(&block.continuity).unwrap();
+        let mut part: Value = serde_json::from_slice(&native.continuity).unwrap();
         part[extra] = if extra == "text" {
             json!("ambiguous")
         } else {
             json!({})
         };
-        block.continuity = serde_json::to_vec(&part).unwrap();
+        native.continuity = serde_json::to_vec(&part).unwrap();
         assert!(
             projection::body(&provider, &changed).is_err(),
             "ambiguous signed {extra} must refuse"
@@ -279,21 +291,6 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
         let body = projection::body(&foreign, &changed).unwrap();
         assert!(!body.to_string().contains("thoughtSignature"));
     }
-    let mut reordered = request.clone();
-    let calls: Vec<_> = reordered
-        .messages
-        .iter()
-        .enumerate()
-        .filter_map(|(index, message)| {
-            matches!(
-                message.content,
-                ModelContent::Part(ModelContentPart::ToolCall(_))
-            )
-            .then_some(index)
-        })
-        .collect();
-    reordered.messages.swap(calls[0], calls[1]);
-    assert!(projection::body(&provider, &reordered).is_err());
     assert!(
         crate::validate_input(
             Adapter::Gemini,
@@ -391,7 +388,7 @@ proptest! {
             });
             if index == 0 { exchange_prefix = encode(&request); }
         }
-        finish(&mut request, &answer);
+        finish(&mut request);
         let continued = encode(&request);
         let body: Value = serde_json::from_slice(&continued).unwrap();
         let returned_id = &body["contents"][1]["parts"][0]["functionCall"]["id"];
@@ -481,21 +478,12 @@ fn malformed_native_part_fields_fail_before_publication() {
         let raw = format!(
             r#"{{ "thoughtSignature":"original\u003d", "extension":{{"kept":true}}{member} }}"#
         );
-        let mut replay = crate::projection::gemini::Replay::default();
-        let item = replay.native(raw.as_bytes(), false).unwrap();
-        if field == Some("functionCall") {
-            assert!(item.is_none());
-            assert_eq!(
-                replay
-                    .take_call(None, "echo", &json!({}))
-                    .unwrap()
-                    .unwrap()
-                    .get(),
-                raw
-            );
+        let item = if field == Some("functionCall") {
+            crate::projection::gemini::call(raw.as_bytes(), None, "echo", &json!({})).unwrap()
         } else {
-            assert_eq!(serde_json::to_vec(&item.unwrap()).unwrap(), raw.as_bytes());
-        }
+            crate::projection::gemini::thought(raw.as_bytes()).unwrap()
+        };
+        assert_eq!(item.get(), raw);
         let input = format!(
             "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
         );
@@ -504,7 +492,7 @@ fn malformed_native_part_fields_fail_before_publication() {
                 .try_collect::<Vec<_>>(),
         )
         .unwrap();
-        assert!(events.iter().any(|event| matches!(event,ModelEvent::ReasoningBlock {block} if block.continuity == raw.as_bytes())));
+        assert!(natives(&events).contains(&raw.as_bytes()));
     }
     // Native continuity may carry only thought metadata. Local wire admission
     // must accept the same exact model part as ingress/replay, without adding
@@ -514,11 +502,8 @@ fn malformed_native_part_fields_fail_before_publication() {
         json!({"thought":true}),
     ] {
         let raw = serde_json::to_vec(&part).unwrap();
-        let item = crate::projection::gemini::Replay::default()
-            .native(&raw, false)
-            .unwrap()
-            .unwrap();
-        assert_eq!(serde_json::to_vec(&item).unwrap(), raw);
+        let item = crate::projection::gemini::thought(&raw).unwrap();
+        assert_eq!(item.get().as_bytes(), raw);
         let (provider, _) = provider(Adapter::Gemini, 200);
         let (prepared, dispatch) = request(&provider).unwrap();
         let input = format!(
@@ -540,7 +525,7 @@ fn malformed_native_part_fields_fail_before_publication() {
         let mut request = prepared.request().clone();
         let mut answer = String::new();
         append(events, &mut request, &mut answer);
-        finish(&mut request, &answer);
+        finish(&mut request);
         round_trip(
             &provider,
             request,
@@ -601,11 +586,7 @@ fn malformed_native_part_fields_fail_before_publication() {
         .collect();
     parts.extend(unsigned);
     let rejects = |raw: &str| {
-        assert!(
-            crate::projection::gemini::Replay::default()
-                .native(raw.as_bytes(), false)
-                .is_err()
-        );
+        assert!(crate::projection::gemini::part(raw.as_bytes()).is_err());
         let input = format!(
             "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"functionCall\":{{\"name\":\"prior\",\"args\":{{}}}},\"thoughtSignature\":\"prior==\"}},{raw}]}},\"finishReason\":\"STOP\"}}]}}\n\n"
         );
@@ -660,7 +641,7 @@ proptest! {
     #[test]
     fn signature_boundaries_survive_chunks_tool_steps_and_foreign_projection(
         fragments in prop::collection::vec((prop::collection::vec(any::<char>(),0..24),any::<bool>()),1..8),
-        width in 1usize..64, tools in any::<bool>(), split_answer in any::<bool>(),
+        width in 1usize..64, tools in any::<bool>(),
     ) {
         let (provider, _) = provider(Adapter::Gemini, 200);
         let (initial, dispatch) = request(&provider).unwrap();
@@ -691,13 +672,7 @@ proptest! {
             ).try_collect()).unwrap();
             append(events,&mut request,&mut answer);
         }
-        finish(&mut request,&answer);
-        if split_answer {
-            let index=request.messages.len()-2;
-            request.messages[index].content=ModelContent::Parts(answer.chars().map(|ch| {
-                ModelContentPart::Text {text:ch.to_string()}
-            }).collect());
-        }
+        finish(&mut request);
         round_trip(&provider,request,&answer,&signed);
     }
 }

@@ -14,7 +14,8 @@ pub(super) struct Group {
     pub size: usize,
 }
 
-/// Native continuity, its assistant calls and their results share a component.
+/// Native bytes on any assistant part, its assistant calls and their results
+/// share a component.
 /// Plain text between them remains independently selectable.
 pub(super) fn exchange_groups<'a>(
     context: &'a Context,
@@ -51,8 +52,18 @@ pub(super) fn exchange_groups<'a>(
                         let first = *reasoning_start.get_or_insert(position);
                         link(&mut groups, first, position, quota)?;
                     }
-                    ModelContentPart::ToolCall(_) => {
-                        if let Some(first) = reasoning_start {
+                    ModelContentPart::Text {
+                        native: Some(_), ..
+                    } => {
+                        let first = *reasoning_start.get_or_insert(position);
+                        link(&mut groups, first, position, quota)?;
+                    }
+                    ModelContentPart::ToolCall(call) => {
+                        let first = match call.native {
+                            Some(_) => Some(*reasoning_start.get_or_insert(position)),
+                            None => reasoning_start,
+                        };
+                        if let Some(first) = first {
                             link(&mut groups, first, position, quota)?;
                         }
                     }

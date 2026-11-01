@@ -499,6 +499,7 @@ impl NativeChildren {
                     text: text.clone(),
                     metadata: Value::Null,
                     steps: 1,
+                    parts: Vec::new(),
                     attachments: Vec::new(),
                 }),
                 Outcome::Failed { message } => Outcome::Failed {

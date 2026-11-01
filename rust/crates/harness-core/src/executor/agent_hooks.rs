@@ -168,7 +168,7 @@ async fn prompt_text(context: &TaskContext, prompt: &ModelContent) -> Result<Str
     let mut text = Vec::new();
     for part in parts {
         match part {
-            crate::model::ModelContentPart::Text { text: part } => text.push(part.clone()),
+            crate::model::ModelContentPart::Text { text: part, .. } => text.push(part.clone()),
             crate::model::ModelContentPart::File { file, .. } => {
                 let bytes = context.read_file(file, None).await?;
                 text.push(String::from_utf8_lossy(&bytes).into_owned());

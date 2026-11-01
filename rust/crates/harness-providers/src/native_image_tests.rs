@@ -78,16 +78,12 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         let request = with_parts(
             &provider,
             vec![
-                ModelContentPart::Text {
-                    text: "before".into(),
-                },
+                ModelContentPart::text("before".into()),
                 ModelContentPart::File {
                     file: image.clone(),
                     policy: policy(bytes.len()),
                 },
-                ModelContentPart::Text {
-                    text: "after".into(),
-                },
+                ModelContentPart::text("after".into()),
             ],
         )?;
         let encoded = crate::dispatch::encode(

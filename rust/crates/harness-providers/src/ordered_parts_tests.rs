@@ -62,7 +62,7 @@ fn project(adapter: Adapter, pattern: &[bool], text: &str) -> (Vec<String>, Vec<
             if *call {
                 ModelContentPart::ToolCall(ToolCall::new(label, "echo".into(), json!({})))
             } else {
-                ModelContentPart::Text { text: label }
+                ModelContentPart::text(label)
             }
         })
         .collect();

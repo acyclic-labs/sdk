@@ -757,6 +757,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     text: "done".into(),
                     metadata: Value::Null,
                     steps: 1,
+                    parts: Vec::new(),
                     attachments: Vec::new(),
                 }),
             })

@@ -28,7 +28,9 @@ impl Executor for CustomExecutor {
                     ModelEvent::Content { delta } => text.push_str(&delta),
                     ModelEvent::MessageCompleted { text: completed } => text = completed,
                     ModelEvent::Completed { metadata: value } => metadata = Some(value),
-                    ModelEvent::Reasoning { .. } | ModelEvent::ReasoningBlock { .. } => {}
+                    ModelEvent::TextPart { .. }
+                    | ModelEvent::Reasoning { .. }
+                    | ModelEvent::ReasoningBlock { .. } => {}
                     ModelEvent::ToolCall(_) => {
                         return Err(Error::Unsupported("this custom loop has no tools".into()));
                     }
@@ -39,6 +41,7 @@ impl Executor for CustomExecutor {
                 attachments: Vec::new(),
                 metadata: metadata.ok_or(Error::Indeterminate(input.operation_id))?,
                 steps: 1,
+                parts: Vec::new(),
             })
         })
     }

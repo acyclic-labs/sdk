@@ -33,7 +33,7 @@ impl CommandResolution {
         }
         drop(seen);
         let mut parts = Vec::with_capacity(selected.len() + 1);
-        parts.push(ModelContentPart::Text { text });
+        parts.push(ModelContentPart::text(text));
         let mut selected = selected.into_iter().peekable();
         for (index, mention) in mentions.into_iter().enumerate() {
             if selected.peek() == Some(&index) {

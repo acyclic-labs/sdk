@@ -412,8 +412,9 @@ pub async fn tools_and_results(
             ModelEvent::ReasoningBlock { block } => Some(ModelContentPart::Reasoning {
                 block: block.clone(),
             }),
-            ModelEvent::Content { delta } => Some(ModelContentPart::Text {
-                text: delta.clone(),
+            ModelEvent::TextPart { text, native } => Some(ModelContentPart::Text {
+                text: text.clone(),
+                native: native.clone(),
             }),
             _ => None,
         })

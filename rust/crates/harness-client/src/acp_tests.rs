@@ -130,9 +130,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     assert_eq!(
         body,
         &ModelContent::Parts(vec![
-            ModelContentPart::Text {
-                text: "explain this selection".into()
-            },
+            ModelContentPart::text("explain this selection".into()),
             ModelContentPart::File {
                 file,
                 policy: FileProjectionPolicy::BoundedFull
@@ -255,7 +253,7 @@ async fn pending_context(
     assert!(
         matches!(call.command(), AgentCommand::Prompt { agent: target, body: ModelContent::Parts(parts), .. }
         if target == agent && parts == &vec![
-            ModelContentPart::Text { text: "retained input".into() },
+            ModelContentPart::text("retained input".into()),
             ModelContentPart::File { file, policy: FileProjectionPolicy::BoundedFull },
         ])
     );

@@ -300,9 +300,9 @@ async fn project_message(
     });
     attachments::append(items, hold, count, &mut parts, limits.render_bytes, io)?;
     if omitted != 0 {
-        parts.push(ModelContentPart::Text {
-            text: attachments::omission_text(omitted, io)?,
-        });
+        parts.push(ModelContentPart::text(attachments::omission_text(
+            omitted, io,
+        )?));
     }
     Ok((role, ModelContent::Parts(parts)))
 }

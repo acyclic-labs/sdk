@@ -141,9 +141,7 @@ async fn check_projection(
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Parts(vec![
-                    ModelContentPart::Text {
-                        text: "before".into(),
-                    },
+                    ModelContentPart::text("before".into()),
                     ModelContentPart::File {
                         file: file.clone(),
                         policy: FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
@@ -159,9 +157,7 @@ async fn check_projection(
                             configuration: None,
                         })),
                     },
-                    ModelContentPart::Text {
-                        text: "after".into(),
-                    },
+                    ModelContentPart::text("after".into()),
                 ]),
             }],
             tools: vec![],

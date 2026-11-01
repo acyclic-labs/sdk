@@ -53,12 +53,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                 }
                 let event: Event<'_> =
                     serde_json::from_str(data).map_err(|_| invalid("invalid reasoning item"))?;
-                state.raw_part(
-                    index(value, "output_index")?,
-                    item,
-                    Some(event.item.get()),
-                    false,
-                )?;
+                state.raw_part(index(value, "output_index")?, item, Some(event.item.get()))?;
             }
             if matches!(kind, Output::Function | Output::Freeform) {
                 admit_call(
@@ -281,6 +276,24 @@ impl State<'_> {
         if item["role"] != "assistant" {
             return Err(invalid("response message must be assistant-authored"));
         }
+        let content = item["content"]
+            .as_array()
+            .ok_or_else(|| invalid("response message content must be an array"))?;
+        let (part, budget) = self.text_part(position)?;
+        budget.string(&mut part.text, "")?;
+        for value in content {
+            let value = match value["type"].as_str() {
+                Some("output_text") => &value["text"],
+                Some("refusal") => &value["refusal"],
+                _ => return Err(invalid("unsupported assistant message content")),
+            };
+            budget.append_str(
+                &mut part.text,
+                value
+                    .as_str()
+                    .ok_or_else(|| invalid("assistant message text must be a string"))?,
+            )?;
+        }
         if self
             .completed_message
             .as_ref()
@@ -288,26 +301,10 @@ impl State<'_> {
         {
             return Ok(());
         }
-        let content = item["content"]
-            .as_array()
-            .ok_or_else(|| invalid("response message content must be an array"))?;
         let (last, text) = self
             .completed_message
             .get_or_insert_with(|| (position, String::new()));
-        self.budget.string(text, "")?;
-        for part in content {
-            let value = match part["type"].as_str() {
-                Some("output_text") => &part["text"],
-                Some("refusal") => &part["refusal"],
-                _ => return Err(invalid("unsupported assistant message content")),
-            };
-            self.budget.append_str(
-                text,
-                value
-                    .as_str()
-                    .ok_or_else(|| invalid("assistant message text must be a string"))?,
-            )?;
-        }
+        self.budget.string(text, &self.texts[&position].text)?;
         *last = position;
         Ok(())
     }

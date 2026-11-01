@@ -1,6 +1,14 @@
 use super::*;
 
-type CollectedStep = (Vec<(ToolInvocation, usize)>, String, Value);
+pub(super) struct CollectedStep {
+    pub(super) calls: Vec<(ToolInvocation, usize)>,
+    pub(super) text: String,
+    pub(super) metadata: Value,
+    /// Index of this step's first assistant part in the request history.
+    pub(super) first: usize,
+    /// Whether the provider emitted the step's text as ordered parts.
+    pub(super) parts: bool,
+}
 
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
@@ -47,8 +55,13 @@ impl StockExecution<'_> {
                 )?
                 .await?;
             self.retire_working_history(&mut prior_messages).await?;
-            let (calls, text, metadata) =
-                self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+            let CollectedStep {
+                calls,
+                text,
+                metadata,
+                first,
+                parts,
+            } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -59,16 +72,19 @@ impl StockExecution<'_> {
                     // of the loop reports the same budget exhaustion as tools.
                     // The superseded answer moves into history; the turn's
                     // output is the answer given after the hook's reason.
-                    self.continue_after_stop(&mut prior_messages, &text, reason)?;
+                    let answer = if parts { "" } else { text.as_str() };
+                    self.continue_after_stop(&mut prior_messages, answer, reason)?;
                     self.retire_step_text(text)?;
                     stop_active = true;
                     continue;
                 }
+                let parts = self.settled_parts(prior_messages, first, parts, &text)?;
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
                     metadata,
                     steps: step + 1,
+                    parts,
                 }));
             }
             self.retire_step_text(text)?;
@@ -137,6 +153,8 @@ impl StockExecution<'_> {
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<CollectedStep> {
         let completed_message = self.has_completed_message(&model_events)?;
+        let first = prior_messages.len();
+        let mut parts = false;
         let mut calls = Vec::new();
         let mut text = String::new();
         let mut completed = Value::Null;
@@ -160,6 +178,7 @@ impl StockExecution<'_> {
                     name,
                     arguments,
                     metadata,
+                    native,
                 }) => {
                     if self.single_request {
                         return Err(stock_boundary(
@@ -181,7 +200,8 @@ impl StockExecution<'_> {
                         stock_string_copy(&invocation.name, self.io)?,
                         crate::model::clone_value(&invocation.arguments, self.io)?,
                     )
-                    .with_metadata(metadata);
+                    .with_metadata(metadata)
+                    .with_native(native);
                     let index = prior_messages.len();
                     self.append_assistant_part(prior_messages, ModelContentPart::ToolCall(call))?;
                     stock_vec_push(&mut calls, (invocation, index), self.io)?;
@@ -193,10 +213,53 @@ impl StockExecution<'_> {
                         ModelContentPart::Reasoning { block },
                     )?;
                 }
+                ModelEvent::TextPart { text, native } => {
+                    parts = true;
+                    self.append_assistant_part(
+                        prior_messages,
+                        ModelContentPart::Text { text, native },
+                    )?;
+                }
                 ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
             }
         }
-        Ok((calls, text, completed))
+        Ok(CollectedStep {
+            calls,
+            text,
+            metadata: completed,
+            first,
+            parts,
+        })
+    }
+
+    /// The final step's assistant parts, which the turn's output keeps so the
+    /// next turn replays them; none when no part carries native bytes.
+    fn settled_parts(
+        &self,
+        mut messages: Vec<ModelMessage>,
+        first: usize,
+        parts: bool,
+        text: &str,
+    ) -> Result<Vec<ModelContentPart>> {
+        let native = |part: &ModelContentPart| match part {
+            ModelContentPart::Reasoning { .. } => true,
+            ModelContentPart::Text { native, .. } => native.is_some(),
+            _ => false,
+        };
+        let mut settled = Vec::new();
+        for message in messages.drain(first.min(messages.len())..) {
+            if let ModelContent::Part(part) = message.content {
+                stock_vec_push(&mut settled, part, self.io)?;
+            }
+        }
+        if !settled.iter().any(native) {
+            return Ok(Vec::new());
+        }
+        if !parts && !text.is_empty() {
+            let text = ModelContentPart::text(stock_string_copy(text, self.io)?);
+            stock_vec_push(&mut settled, text, self.io)?;
+        }
+        Ok(settled)
     }
 
     pub(super) fn append_assistant_part(

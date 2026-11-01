@@ -25,7 +25,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                         budget.encoded(&mut call.arguments, &block["input"])?;
                     }
                 }
-                Some("text") => text(&mut events, &block["text"], false),
+                Some("text") => {
+                    state.visible(index(value, "index")?, &block["text"])?;
+                    text(&mut events, &block["text"], false);
+                }
                 Some("thinking") => {
                     #[derive(serde::Deserialize)]
                     struct Event<'a> {
@@ -34,12 +37,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     }
                     let raw: Event<'_> = serde_json::from_str(data)
                         .map_err(|_| invalid("invalid thinking block"))?;
-                    state.raw_part(
-                        index(value, "index")?,
-                        block,
-                        Some(raw.content_block.get()),
-                        false,
-                    )?;
+                    state.raw_part(index(value, "index")?, block, Some(raw.content_block.get()))?;
                     text(&mut events, &block["thinking"], true);
                 }
                 Some("redacted_thinking") => {
@@ -50,12 +48,7 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
                     }
                     let raw: Event<'_> = serde_json::from_str(data)
                         .map_err(|_| invalid("invalid thinking block"))?;
-                    state.raw_part(
-                        index(value, "index")?,
-                        block,
-                        Some(raw.content_block.get()),
-                        false,
-                    )?;
+                    state.raw_part(index(value, "index")?, block, Some(raw.content_block.get()))?;
                 }
                 _ => {}
             }
@@ -63,7 +56,10 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         Some("content_block_delta") => {
             let delta = &value["delta"];
             match delta["type"].as_str() {
-                Some("text_delta") => text(&mut events, &delta["text"], false),
+                Some("text_delta") => {
+                    state.visible(index(value, "index")?, &delta["text"])?;
+                    text(&mut events, &delta["text"], false);
+                }
                 Some("thinking_delta" | "signature_delta") => {
                     let key = if delta["type"] == "thinking_delta" {
                         "thinking"
