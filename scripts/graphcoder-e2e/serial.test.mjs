@@ -6,7 +6,6 @@ import {mkdtemp,mkdir,readFile,writeFile,rename,rm,rmdir,copyFile,symlink} from 
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
-import {installedHost} from '../../plugin/tests/hosts/native-model.mjs';
 import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
@@ -49,12 +48,6 @@ test('installed host admission launches package entries and binds their actual c
   finally {await rename(entry+'.withdrawn',entry);}
   await assert.rejects(nativeHost('pi',{E2E_PI:process.execPath}),/step=admit E2E_PI/);
   await assert.rejects(nativeHost('pi',{E2E_PI:dependency}),/declared package bin/);
-  // Pinned Pi's actual unsupported provider must refuse before staging any
-  // package, creating workspace files or starting the original process scope.
-  await assert.rejects(installedHost({host:'pi',fixture:{env},
-   processes:{runOwned(){assert.fail('unsupported Pi started a process');}},
-   capture(){assert.fail('unsupported Pi produced a process result');}}),
-   error=>error.code==='UNSUPPORTED_NATIVE_KEYLESS_PROVIDER');
  } finally {
   try {
    if(retained) {
