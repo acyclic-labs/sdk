@@ -38,6 +38,8 @@ pub(crate) mod layout;
 #[cfg(feature = "filesystem")]
 pub(crate) use layout::LayoutCost;
 mod schema;
+mod shape;
+pub use shape::encoded_json_shape;
 mod serialization;
 pub(crate) use admission::admit_value_layout;
 #[cfg(test)]

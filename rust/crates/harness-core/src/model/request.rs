@@ -2,6 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 #[cfg(feature = "filesystem")]
 use std::mem::size_of;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod admission;
 mod continuation;
@@ -298,6 +299,7 @@ pub struct PreparedModelRequest {
     request: ModelRequest,
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
+    projection_nodes: AtomicUsize,
     admitted_limits: Limits,
     instruction_remaining: u64,
     encoding: Vec<encoding::EncodingPrefix>,
@@ -312,6 +314,7 @@ impl Clone for PreparedModelRequest {
             request: self.request.clone(),
             bytes: self.bytes.clone(),
             request_digest: self.request_digest,
+            projection_nodes: AtomicUsize::new(self.projection_nodes.load(Ordering::Relaxed)),
             admitted_limits: self.admitted_limits,
             instruction_remaining: self.instruction_remaining,
             encoding: self.encoding.clone(),
@@ -441,6 +444,7 @@ impl PreparedModelRequest {
                 request,
                 bytes,
                 request_digest,
+                projection_nodes: AtomicUsize::new(0),
                 admitted_limits: limits,
                 instruction_remaining,
                 encoding: Vec::new(),
@@ -509,6 +513,7 @@ impl PreparedModelRequest {
             request,
             bytes,
             request_digest,
+            projection_nodes: AtomicUsize::new(0),
             admitted_limits: limits,
             instruction_remaining,
             encoding: Vec::new(),
@@ -530,6 +535,20 @@ impl PreparedModelRequest {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+    /// Exact byte length and conservative JSON allocation nodes for projection.
+    /// Sequential callers scan the immutable bytes at most once. Warm reads are
+    /// fixed work; concurrent cold callers may each scan, without waiting.
+    #[must_use]
+    pub fn projection_shape(&self) -> (u64, u64) {
+        let mut nodes = self.projection_nodes.load(Ordering::Relaxed);
+        if nodes == 0 {
+            nodes = crate::executor::json::encoded_json_shape(&self.bytes).1;
+            // Every publisher writes the same fact about these immutable bytes;
+            // no other storage or authority is published through this cache.
+            self.projection_nodes.store(nodes, Ordering::Relaxed);
+        }
+        (self.bytes.len() as u64, nodes as u64)
     }
     /// BLAKE3 digest of the exact request bytes.
     #[must_use]

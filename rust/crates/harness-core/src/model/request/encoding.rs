@@ -174,6 +174,7 @@ impl EncodingPrefix {
         old_count: usize,
         request: &ModelRequest,
         io: Option<&PreparationIo>,
+        projection_nodes: &mut usize,
     ) -> Result<Encoded> {
         let (envelope, open) = envelope(request, io)?;
         #[cfg(feature = "filesystem")]
@@ -208,6 +209,15 @@ impl EncodingPrefix {
         let appended = encoded
             .get(1..encoded.len().saturating_sub(1))
             .ok_or_else(|| invalid(io, "canonical request suffix is not an array"))?;
+        if *projection_nodes != 0 {
+            // The unchanged envelope and prior messages retain their count.
+            // The scanner's initial node is framing, not part of this suffix.
+            let added = crate::executor::json::encoded_json_shape(appended).1 - 1;
+            *projection_nodes = projection_nodes
+                .checked_add(added)
+                .and_then(|nodes| nodes.checked_add(usize::from(old_count != 0)))
+                .ok_or_else(|| invalid(io, "canonical request shape overflows"))?;
+        }
         let Ok(bytes) = Buffer::new(old_bytes, io) else {
             // An explicit PreparedModelRequest clone shares its immutable
             // encoding. Give the clone new storage; never mutate its peer.
