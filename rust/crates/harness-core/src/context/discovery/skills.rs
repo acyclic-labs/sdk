@@ -428,7 +428,7 @@ mod tests {
             }
             let prefix = format!(
                 "---\n{}\n---\nBODY",
-                serde_saphyr::to_string(&header).expect("generated header encodes")
+                serde_json::to_string(&header).expect("generated header encodes")
             );
             let mut direct = None;
             let direct_allocations = acyclic_test_support::measure(|| {
