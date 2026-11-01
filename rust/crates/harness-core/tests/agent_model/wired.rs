@@ -841,12 +841,12 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     let after_cancel = batches(&requests[2]);
     assert_eq!(
         after_cancel.len(),
-        3,
-        "two immutable prior blocks and new input"
+        4,
+        "three immutable prior blocks and new input"
     );
-    assert_eq!(after_cancel[2].len(), 1);
+    assert_eq!(after_cancel[3].len(), 1);
     assert_eq!(
-        after_cancel[2][0].body["paths"],
+        after_cancel[3][0].body["paths"],
         serde_json::json!(["after-cancel"])
     );
     assert!(
