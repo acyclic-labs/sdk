@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
 /// terminal conversation entry. Version 4 lets a conversation entry name the
-/// execution-target roster its turn announced.
-pub const RECORD_VERSION: u32 = 4;
+/// execution-target roster its turn announced. Version 5 retains large failure
+/// diagnostics by their complete staged stream prefix.
+pub const RECORD_VERSION: u32 = 5;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -253,6 +254,12 @@ pub enum AgentOutcome {
     Failed {
         /// Failure description.
         message: String,
+    },
+    /// Failed with complete text spanning ordinary Stream records. The same
+    /// reference is retained by the checkpoint, status and parent notification.
+    FailedDiagnostic {
+        /// Original diagnostic, readable in bounded pages.
+        diagnostic: super::Diagnostic,
     },
     /// Stopped by archive before completing.
     Archived,

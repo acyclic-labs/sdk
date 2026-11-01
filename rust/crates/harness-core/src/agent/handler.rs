@@ -354,6 +354,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 .bind(Arc::clone(self.agents.store.provider()));
         }
         let mut step = super::step(&self.driver, &path, state, cursor, wake, cancellation).await?;
+        for out in &step.outs {
+            if let Out::Diagnostic { diagnostic, text } = out {
+                diagnostic
+                    .stage(self.agents.store.provider().as_ref(), text)
+                    .await?;
+            }
+        }
         step.state
             .open_children
             .bind(Arc::clone(self.agents.store.provider()));

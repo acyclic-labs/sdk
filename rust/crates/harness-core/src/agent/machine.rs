@@ -291,6 +291,14 @@ impl AgentState {
 /// An effect of one step, lowered into the step's single commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
+    /// Stage complete diagnostic text before publishing its terminal reference.
+    /// The lowering conditions on the complete staged prefix.
+    Diagnostic {
+        /// Original diagnostic identity.
+        diagnostic: super::Diagnostic,
+        /// Complete original text, consumed only by the staging boundary.
+        text: String,
+    },
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
@@ -582,7 +590,8 @@ pub async fn step<T: TurnDriver + ?Sized>(
                 state.roster = None;
             }
             Out::Roster(digest) => state.roster = Some(*digest),
-            Out::Send { .. }
+            Out::Diagnostic { .. }
+            | Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::GoalCompleted { .. } => {}
@@ -717,6 +726,8 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 /// Reject driver effects that violate the agent protocol.
 fn valid_effect(out: &Out) -> bool {
     match out {
+        // Only the machine stages the original failure after driver validation.
+        Out::Diagnostic { .. } => false,
         Out::Conversation(_) => true,
         Out::Send { record, .. } => {
             !matches!(
@@ -842,7 +853,22 @@ async fn run<T: TurnDriver + ?Sized>(
         }
         Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
         Wait::Input => (kernel::Wait::Input, None, None),
-        Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
+        Wait::Done(outcome) => {
+            let outcome = match outcome {
+                AgentOutcome::Failed { message }
+                    if message.len() > super::diagnostic::INLINE_BYTES =>
+                {
+                    let diagnostic = super::Diagnostic::new(&state.path, &message);
+                    outs.push(Out::Diagnostic {
+                        diagnostic: diagnostic.clone(),
+                        text: message,
+                    });
+                    AgentOutcome::FailedDiagnostic { diagnostic }
+                }
+                outcome => outcome,
+            };
+            (kernel::Wait::Done, None, Some(outcome))
+        }
     };
     let (next, send) = kernel::settle(control(state), wait);
     state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
