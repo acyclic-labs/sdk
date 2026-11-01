@@ -168,7 +168,12 @@ impl Issuer {
             snapshot,
             signature,
         });
-        frontier.check(&record, &[self.key.verifying_key().to_bytes()], now)?;
+        frontier.state.check_keyring(
+            &frontier.id,
+            &record,
+            &[self.key.verifying_key().to_bytes()],
+            now,
+        )?;
         Ok(self::record(record))
     }
 
@@ -323,21 +328,6 @@ impl KeyringFrontier {
             .keyring
             .as_ref()
             .map_or(1, |keyring| keyring.minimum_key_epoch)
-    }
-
-    /// Whether `record` would apply, without changing this frontier: only
-    /// the keyring chain is involved.
-    fn check(
-        &self,
-        record: &TrustRecordKind,
-        environment: &[BlockId],
-        now: u64,
-    ) -> Result<(), VerifyError> {
-        let mut scratch = Account::default();
-        scratch.keyring = self.state.keyring.clone();
-        scratch
-            .apply(&self.id, record, environment, now)
-            .map(|_| ())
     }
 
     fn next_keyring(

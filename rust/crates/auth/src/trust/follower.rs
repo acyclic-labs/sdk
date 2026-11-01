@@ -217,7 +217,6 @@ impl EnvironmentRevision {
     }
 }
 
-#[derive(Clone)]
 pub(super) struct Keyring {
     pub(super) sequence: u64,
     pub(super) digest: BlockId,
@@ -241,6 +240,23 @@ pub(super) struct Account {
 }
 
 impl Account {
+    /// Check a proposed keyring without cloning or advancing retained trust.
+    /// Issuance and application use the same canonical preparation below.
+    pub(super) fn check_keyring(
+        &self,
+        id: &str,
+        record: &TrustRecordKind,
+        environment: &[BlockId],
+        now: u64,
+    ) -> Result<(), VerifyError> {
+        match record {
+            TrustRecordKind::Keyring(signed) if signed.snapshot.account_id == id => {
+                prepare_keyring(self, signed, environment, now).map(|_| ())
+            }
+            _ => Err(VerifyError::Trust),
+        }
+    }
+
     /// Authenticates and applies one record of account `id` at `now`: the one
     /// account validation path. An environment key signs every keyring that
     /// sets a root; the current root alone may sign one that keeps it.

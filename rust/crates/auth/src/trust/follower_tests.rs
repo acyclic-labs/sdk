@@ -550,6 +550,25 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     let anchor = world.issuer.anchor();
     let mut frontier =
         KeyringFrontier::resume("account", &anchor, &slices(&world.genesis)).unwrap();
+    // Start from the real writer's canonical next record, with retained
+    // cumulative revocations. Validation must borrow these original indexes.
+    let retained = resign(
+        &world
+            .issuer
+            .keyring_for(&frontier, &key(2).verifying_key(), 1, NOW)
+            .unwrap(),
+        1,
+        |snapshot| {
+            snapshot.revoked_key_ids = vec!["retired-runtime".into()];
+            snapshot.revocations = vec![Revocation {
+                id: [90; 32].to_vec(),
+                expires_at_unix_seconds: NOW + 50,
+                reason: String::new(),
+                label: None,
+            }];
+        },
+    );
+    frontier.apply(&retained, &anchor, NOW).unwrap();
     let customer = key(6);
     let rotated = world
         .issuer
@@ -562,11 +581,48 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
             .keyring_for(&frontier, &customer.verifying_key(), 0, NOW)
             .is_err()
     );
+    assert!(
+        world
+            .issuer
+            .keyring_for(&frontier, &customer.verifying_key(), 1, NOW - 1)
+            .is_err()
+    );
+    // Neither accepted previews nor refused proposals advance the original
+    // frontier. Repeating the same signed proposal produces identical bytes.
+    assert_eq!(
+        world
+            .issuer
+            .keyring_for(&frontier, &customer.verifying_key(), 1, NOW)
+            .unwrap(),
+        rotated
+    );
+    let TrustRecordKind::Keyring(signed) = decode(&rotated).unwrap().record else {
+        panic!("writer did not produce a keyring");
+    };
+    assert_eq!(signed.snapshot.revoked_key_ids, ["retired-runtime"]);
+    assert_eq!(signed.snapshot.revocations.len(), 1);
+    assert_eq!(signed.snapshot.revocations[0].id, [90; 32]);
     frontier.apply(&rotated, &anchor, NOW).unwrap();
     let trust = follower(&world);
+    trust.apply(&retained, NOW).unwrap();
     trust.apply(&rotated, NOW).unwrap();
+    assert_eq!(
+        trust.revoked("account", RevocationCheck::Block(&[90; 32])),
+        Ok(true)
+    );
+    assert_eq!(
+        trust.revoked(
+            "account",
+            RevocationCheck::Key {
+                id: "retired-runtime",
+                epoch: 1
+            }
+        ),
+        Ok(true)
+    );
     // The customer root alone resumes, revokes and certifies.
     let mut stream = world.genesis.clone();
+    stream.push(retained);
     stream.push(rotated);
     let mut root = AccountRoot::resume("account", key(6), &anchor, &slices(&stream)).unwrap();
     assert_eq!(frontier.root(), Some(customer.verifying_key().to_bytes()));
