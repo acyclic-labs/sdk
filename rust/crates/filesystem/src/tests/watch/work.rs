@@ -12,8 +12,8 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
     let scan = watch.begin_rescan()?;
     watch.finish_rescan(scan)?;
     let work = native_watch_work()?;
-    let mut first = std::pin::pin!(watch.changed_with_native_work(&work));
-    let mut second = std::pin::pin!(watch.changed_with_native_work(&work));
+    let mut first = std::pin::pin!(watch.subscription().changed_with_native_work(&work));
+    let mut second = std::pin::pin!(watch.subscription().changed_with_native_work(&work));
     assert!(
         first
             .as_mut()
@@ -41,11 +41,8 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
         fenced: Arc::clone(&watch.fenced),
     };
     sink.delivery_lost();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        first.await?;
-        second.await
-    })
-    .await??;
+    first.await?;
+    second.await?;
     assert!(matches!(
         watch
             .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -57,7 +54,7 @@ async fn native_delivery_loss_wakes_every_observer_and_preserves_invalidation()
     ));
     // The notification is not the evidence: a later subscriber sees the same
     // retained failure even though no callback will ever fire again.
-    watch.changed_with_native_work(&work).await?;
+    watch.subscription().changed_with_native_work(&work).await?;
     Ok(())
 }
 

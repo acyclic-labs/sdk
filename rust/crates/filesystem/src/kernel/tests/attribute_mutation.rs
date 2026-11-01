@@ -56,7 +56,6 @@ async fn two_leaf_tree(
             AttributeMutation::Insert(entry(4, 1, 4)?),
             AttributeMutation::Insert(entry(6, 1, 6)?),
         ],
-        4,
         pair_limits(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -335,7 +334,6 @@ async fn oversized_attribute_item_takes_a_page_and_only_the_object_bound_refuses
     let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let mut limits = DecodeLimits {
         maximum_page_bytes: 99,
-        maximum_name_bytes: 40,
         ..DecodeLimits::default()
     };
     let inserted = apply_attribute_mutations(
@@ -346,7 +344,6 @@ async fn oversized_attribute_item_takes_a_page_and_only_the_object_bound_refuses
             AttributeMutation::Insert(entry(2, 40, 2)?),
             AttributeMutation::Insert(entry(3, 1, 3)?),
         ],
-        3,
         limits,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -519,12 +516,10 @@ async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independe
         mutations: Vec<AttributeMutation>,
         limits: DecodeLimits,
     ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-        let maximum = u32::try_from(mutations.len())?;
         Ok(apply_attribute_mutations(
             store,
             root,
             mutations,
-            maximum,
             limits,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -638,7 +633,6 @@ async fn hard_object_bounds_keep_valid_attributes_writable_and_history_independe
                 expected: first.clone(),
                 replacement: first,
             }],
-            1,
             limits,
             WorkBudget {
                 page_writes: 0,

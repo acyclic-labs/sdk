@@ -87,7 +87,6 @@ async fn two_leaf_table(
             .into_iter()
             .map(|byte| FileTableMutation::Insert(record(byte, byte)))
             .collect(),
-        4,
         pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -394,7 +393,6 @@ async fn item_larger_than_page_bound_takes_a_page_and_only_the_object_bound_refu
         &store,
         root,
         vec![FileTableMutation::Insert(record(1, 1))],
-        1,
         limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
