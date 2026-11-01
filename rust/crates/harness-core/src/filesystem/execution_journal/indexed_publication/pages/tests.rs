@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
     composed_cut_keeps_caller_members_and_original_request().await?;
     #[cfg(not(target_arch = "wasm32"))]
     composed_cut_retains_original_native_construction().await?;
@@ -249,6 +250,7 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> {
     let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
@@ -518,7 +520,11 @@ async fn atomic_cut_rejects_missing_members_and_preserves_conditional_refusal() 
 
 #[tokio::test]
 async fn oversized_snapshots_stage_pages_and_publish_one_final_cut() -> Result<()> {
-    for native in [false, true] {
+    for native in [
+        false,
+        #[cfg(not(target_arch = "wasm32"))]
+        true,
+    ] {
         for large in [false, true] {
             check_publication(native, large).await?;
         }
@@ -526,7 +532,7 @@ async fn oversized_snapshots_stage_pages_and_publish_one_final_cut() -> Result<(
     Ok(())
 }
 
-async fn check_publication(native: bool, large: bool) -> Result<()> {
+async fn check_publication(_native: bool, large: bool) -> Result<()> {
     let provider = Arc::new(acyclic_stream::MemoryStream::default());
     let execution = StreamPath::new("snapshot/execution")?;
     let head = StreamPath::new("snapshot/head")?;
@@ -578,14 +584,19 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
     drop(old.1);
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+    #[cfg(not(target_arch = "wasm32"))]
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    #[cfg(not(target_arch = "wasm32"))]
     let native_baseline = work.live_allocation_bytes();
-    let io = if native {
+    #[cfg(not(target_arch = "wasm32"))]
+    let io = if _native {
         PreparationIo::from_native_work(&work)?
     } else {
         PreparationIo::from_budget(budget, &cancellation)?
     };
+    #[cfg(target_arch = "wasm32")]
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
     let mut history = Some(io.history_io());
     let mut work_io = history
         .as_mut()
@@ -624,7 +635,8 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         0,
         "snapshot publication retained acknowledgment custody"
     );
-    if native {
+    #[cfg(not(target_arch = "wasm32"))]
+    if _native {
         assert_eq!(
             work.live_allocation_bytes(),
             native_baseline,

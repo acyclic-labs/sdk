@@ -9,8 +9,7 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
-    publication_pause:
-        Option<Arc<dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()> + Send + Sync>>,
+    publication_pause: Option<Arc<PublicationPause>>,
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
@@ -242,3 +241,8 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(identity == witness._identity)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+type PublicationPause = dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()> + Send + Sync;
+#[cfg(all(test, target_arch = "wasm32"))]
+type PublicationPause = dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()>;

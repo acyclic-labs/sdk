@@ -245,6 +245,7 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
     let body: Vec<u8> = (0..2 * 1024 * 1024).map(|index| index as u8).collect();

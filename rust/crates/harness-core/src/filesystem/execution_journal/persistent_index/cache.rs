@@ -251,29 +251,42 @@ mod tests {
 
     #[tokio::test]
     async fn hot_page_updates_do_not_read_history_or_retain_replaced_pages() -> Result<()> {
-        for native in [false, true] {
-            check_pages(native, 32).await?;
+        for _native in [
+            false,
+            #[cfg(not(target_arch = "wasm32"))]
+            true,
+        ] {
+            check_pages(_native, 32).await?;
         }
         Ok(())
     }
 
     #[tokio::test]
     async fn distinct_historical_keys_do_not_grow_the_hot_page_cache() -> Result<()> {
-        for native in [false, true] {
-            check_pages(native, 1_000).await?;
+        for _native in [
+            false,
+            #[cfg(not(target_arch = "wasm32"))]
+            true,
+        ] {
+            check_pages(_native, 1_000).await?;
         }
         Ok(())
     }
 
-    async fn check_pages(native: bool, distinct: u32) -> Result<()> {
+    async fn check_pages(_native: bool, distinct: u32) -> Result<()> {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let path = StreamPath::new("hot-index/pages")?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 4 * 1024 * 1024);
+        #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        #[cfg(not(target_arch = "wasm32"))]
         let native_baseline = work.live_allocation_bytes();
-        let io = if native {
+        #[cfg(target_arch = "wasm32")]
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = if _native {
             PreparationIo::from_native_work(&work)?
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
@@ -378,7 +391,8 @@ mod tests {
             baseline,
             "page cache retained allocation after drop"
         );
-        if native {
+        #[cfg(not(target_arch = "wasm32"))]
+        if _native {
             assert_eq!(
                 work.live_allocation_bytes(),
                 native_baseline,

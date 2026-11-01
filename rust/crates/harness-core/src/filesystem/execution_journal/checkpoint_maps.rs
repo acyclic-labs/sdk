@@ -421,21 +421,30 @@ mod tests {
 
     #[tokio::test]
     async fn model_admission_cells_exceed_one_record_without_restricting_calls() -> Result<()> {
-        for native in [false, true] {
-            check_admission(native).await?;
+        for _native in [
+            false,
+            #[cfg(not(target_arch = "wasm32"))]
+            true,
+        ] {
+            check_admission(_native).await?;
         }
         Ok(())
     }
 
-    async fn check_admission(native: bool) -> Result<()> {
+    async fn check_admission(_native: bool) -> Result<()> {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let path = acyclic_stream::StreamPath::new("model-cell/pages")?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
+        #[cfg(not(target_arch = "wasm32"))]
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        #[cfg(not(target_arch = "wasm32"))]
         let native_baseline = work.live_allocation_bytes();
-        let io = if native {
+        #[cfg(target_arch = "wasm32")]
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = if _native {
             PreparationIo::from_native_work(&work)?
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
@@ -515,7 +524,8 @@ mod tests {
             0,
             "large model cell retained original custody"
         );
-        if native {
+        #[cfg(not(target_arch = "wasm32"))]
+        if _native {
             assert_eq!(
                 work.live_allocation_bytes(),
                 native_baseline,
