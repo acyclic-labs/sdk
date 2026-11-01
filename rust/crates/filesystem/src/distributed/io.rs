@@ -97,6 +97,99 @@ impl AuthorityRead {
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+    /// Captures exact named heads at one provider cut. Request storage and
+    /// native output remain on the original caller's funding owner.
+    pub(super) async fn authority_heads(
+        &self,
+        projection: acyclic_stream::HeadProjection,
+        paths: &[StreamPath],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(acyclic_stream::Heads, ProviderAllocation), AuthorityStoreError> {
+        work.check()?;
+        let make_request = |work: &mut AuthorityWork<'_>| {
+            let mut selected = acyclic_stream::HeadSet::new();
+            if paths.len() > selected.inline_size() {
+                selected = acyclic_stream::HeadSet::from_vec(work.vec(paths.len())?);
+            }
+            selected.extend(paths.iter().cloned());
+            Ok::<_, AuthorityStoreError>(acyclic_stream::HeadsRequest {
+                retained: Default::default(),
+                durable_through: None,
+                projection,
+                paths: selected,
+                children: None,
+                limit: u32::try_from(paths.len()).map_err(|_| crate::WorkError::Overflow)?,
+                at_least: Default::default(),
+            })
+        };
+        let read = WorkCounters {
+            backend_read_operations: u64::from(!work.is_native()),
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(WorkCounters {
+            authority_records_read: if projection == acyclic_stream::HeadProjection::History {
+                paths.len() as u64
+            } else {
+                0
+            },
+            ..read
+        })?;
+        // Keep the selection for boundary validation; fund its forwarded copy
+        // before allocating, including the multi-path SmallVec spill.
+        let request = make_request(work)?;
+        let forwarded = make_request(work)?;
+        let observed = {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_native() {
+                let meter = work.native_meter()?;
+                let result = self.provider.native_heads(forwarded, meter).await;
+                work.check()?;
+                work.result(result)?
+            } else {
+                work.record(read)?;
+                let result = self.provider.heads(forwarded).await;
+                work.check()?;
+                (result.map_err(map_stream_error)?, None)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                work.record(read)?;
+                let result = self.provider.heads(forwarded).await;
+                work.check()?;
+                (result.map_err(map_stream_error)?, None)
+            }
+        };
+        let heads = &observed.0;
+        heads.validate_for(&request).map_err(map_stream_error)?;
+        if !work.is_native() && heads.heads.spilled() {
+            work.hold_opaque(
+                (heads.heads.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<Option<acyclic_stream::PathHead>>() as u64)
+                    .ok_or(crate::WorkError::Overflow)?,
+            )?;
+        }
+        for record in heads
+            .heads
+            .iter()
+            .flatten()
+            .filter_map(|head| head.last.as_ref())
+        {
+            work.charge(WorkCounters {
+                authority_records_read: 1,
+                authority_bytes_read: if work.is_native() {
+                    0
+                } else {
+                    record.value.len() as u64
+                },
+                ..WorkCounters::UNCHARGED
+            })?;
+            if !work.is_native() {
+                work.hold_opaque(record.value.len() as u64)?;
+            }
+        }
+        Ok(observed)
+    }
+
     pub(super) async fn authority_read(
         &self,
         request: acyclic_stream::ReadRequest,

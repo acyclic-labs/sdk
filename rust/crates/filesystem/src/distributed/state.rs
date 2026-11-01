@@ -95,62 +95,24 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     ) -> Result<ObservedRecord, AuthorityStoreError> {
         work.check()?;
         let observed = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_native() {
-                work.admit(WorkCounters {
-                    authority_records_read: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let request = acyclic_stream::HeadsRequest {
-                    retained: Default::default(),
-                    durable_through: None,
-                    projection: acyclic_stream::HeadProjection::History,
-                    paths: std::iter::once(path.clone()).collect(),
-                    children: None,
-                    limit: 1,
-                    at_least: Default::default(),
-                };
-                let meter = work.native_meter()?;
-                let result = self.provider.native_heads(request.clone(), meter).await;
-                work.check()?;
-                let (mut heads, allocation) = work.result(result)?;
-                heads.validate_for(&request).map_err(map_stream_error)?;
-                let head = heads
-                    .heads
-                    .pop()
-                    .flatten()
-                    .ok_or(AuthorityStoreError::Missing)?;
-                let record = head
-                    .last
-                    .ok_or_else(|| authority_corrupt("filesystem state stream is empty", work))?;
-                work.charge(WorkCounters {
-                    authority_records_read: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                return Ok((head.tail, record, allocation));
-            }
-            work.admit(WorkCounters {
-                backend_read_operations: 1,
-                authority_records_read: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            work.record(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let head = self.provider.head(path.clone()).await;
-            work.check()?;
-            let head = head.map_err(map_stream_error)?;
+            let retained = self
+                .authority_heads(
+                    acyclic_stream::HeadProjection::History,
+                    std::slice::from_ref(&path),
+                    work,
+                )
+                .await?;
+            let allocation = retained.1;
+            let mut heads = retained.0;
+            let head = heads
+                .heads
+                .pop()
+                .flatten()
+                .ok_or(AuthorityStoreError::Missing)?;
             let record = head
                 .last
                 .ok_or_else(|| authority_corrupt("filesystem state stream is empty", work))?;
-            work.charge(WorkCounters {
-                authority_records_read: 1,
-                authority_bytes_read: record.value.len() as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            work.hold_opaque(record.value.len() as u64)?;
-            Ok((head.tail, record, None))
+            Ok((head.tail, record, allocation))
         }
         .await;
         let (record, condition, allocation) = match observed {

@@ -15,18 +15,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             .ok_or(crate::WorkError::Overflow)?;
         self.authority_require_live(authority, work).await?;
         let path = work.path(&self.placement, authority, "/records", None)?;
-        let request = acyclic_stream::HeadsRequest {
-            retained: Default::default(),
-            durable_through: None,
-            projection: acyclic_stream::HeadProjection::Tail,
-            paths: std::iter::once(path.clone()).collect(),
-            children: None,
-            limit: 1,
-            at_least: Default::default(),
-        };
-        let retained_heads = self.authority_heads(&request, work).await?;
+        let retained_heads = self
+            .authority_heads(
+                acyclic_stream::HeadProjection::Tail,
+                std::slice::from_ref(&path),
+                work,
+            )
+            .await?;
         let heads = &retained_heads.0;
-        heads.validate_for(&request).map_err(map_stream_error)?;
         let tail = heads
             .heads
             .first()
@@ -59,7 +55,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                         key: key.clone(),
                         before,
                     }),
-                    path,
+                    path: path.clone(),
                     from: 1,
                     limit: 1,
                     at_least,
@@ -72,7 +68,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             return Ok(None);
         };
         let record = &retained_record.0;
-        if record.origin != request.paths[0]
+        if record.origin != path
             || record
                 .headers
                 .keys()
@@ -98,28 +94,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         work.check()?;
         Ok(Some(durable.sequence))
-    }
-
-    async fn authority_heads(
-        &self,
-        request: &acyclic_stream::HeadsRequest,
-        work: &mut AuthorityWork<'_>,
-    ) -> Result<(acyclic_stream::Heads, ProviderAllocation), AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_native() {
-            // One inline path and empty selections do not allocate while cloned.
-            let meter = work.native_meter()?;
-            return work.result(self.provider.native_heads(request.clone(), meter).await);
-        }
-        work.charge(WorkCounters {
-            backend_read_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        self.provider
-            .heads(request.clone())
-            .await
-            .map(|heads| (heads, None))
-            .map_err(map_stream_error)
     }
 }
 
