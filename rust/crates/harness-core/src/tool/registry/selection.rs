@@ -109,9 +109,13 @@ impl ToolRegistry {
     }
 
     /// Presents capability `name` to the model as `natives`, declarations
-    /// already registered and selected under their own names. Calls under the
-    /// capability's own name are no longer offered.
-    pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
+    /// already registered, by name and revision. A call under the capability's
+    /// own name reaches its declaration of that name, if any, and nothing else.
+    pub(crate) fn present_natively(
+        &mut self,
+        name: &str,
+        natives: Vec<(String, String)>,
+    ) -> Result<()> {
         let selection = Arc::make_mut(&mut self.data)
             .selected
             .get_mut(name)
@@ -178,6 +182,12 @@ impl ToolRegistry {
                 Some(pinned) => pinned,
                 None => match self.data.selected.get(name) {
                     Some(ModelSelection::Revision(revision)) => (name, revision.as_str()),
+                    Some(ModelSelection::Native(natives)) => {
+                        match natives.iter().find(|(native, _)| native == name) {
+                            Some((_, revision)) => (name, revision.as_str()),
+                            None => return Ok(None),
+                        }
+                    }
                     _ => return Ok(None),
                 },
             },
@@ -229,19 +239,16 @@ impl ToolRegistry {
         let admitted = || {
             names()
                 .flat_map(move |name| {
-                    let natives = match self.data.selected.get(name) {
+                    let selection = self.data.selected.get(name);
+                    let natives = match selection {
                         Some(ModelSelection::Native(natives)) if capabilities => Some(natives),
                         _ => None,
                     };
-                    let own = natives.is_none().then_some(name);
-                    natives.into_iter().flatten().map(String::as_str).chain(own)
-                })
-                .filter_map(move |name| {
-                    if let Err(error) = crate::model::charge_items(io, 1) {
-                        return Some(Err(error));
-                    }
-                    match self.data.selected.get(name) {
-                        Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
+                    let own = match selection {
+                        _ if natives.is_some() => None,
+                        Some(ModelSelection::Revision(revision)) => {
+                            Some(Ok((name, revision.as_str())))
+                        }
                         Some(ModelSelection::Hidden | ModelSelection::Native(_)) | None => None,
                         Some(ModelSelection::Ambiguous) => {
                             Some(Err(crate::executor::stock_boundary(
@@ -250,7 +257,16 @@ impl ToolRegistry {
                                 "tool requires an explicit model revision",
                             )))
                         }
-                    }
+                    };
+                    natives
+                        .into_iter()
+                        .flatten()
+                        .map(|(native, revision)| Ok((native.as_str(), revision.as_str())))
+                        .chain(own)
+                })
+                .map(move |selection| {
+                    crate::model::charge_items(io, 1)?;
+                    selection
                 })
         };
         let count = admitted().try_fold(0usize, |count, selection| selection.map(|_| count + 1))?;

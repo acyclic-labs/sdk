@@ -761,3 +761,46 @@ async fn context_files_stage_and_resolve_only_with_owner_bound_grants() -> Resul
     })
     .await
 }
+
+#[tokio::test]
+async fn codex_apply_patch_publishes_through_the_canonical_variant() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+    let mut tools = crate::tools::defaults()?;
+    crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Openai)?;
+    let tool = tools
+        .get("apply_patch", None, None)?
+        .ok_or_else(|| Error::NotFound("apply_patch".into()))?
+        .clone();
+    // Its grant is the edit capability's, whatever the variant's name.
+    assert_eq!(
+        tool.executor
+            .capability()
+            .map(|capability| capability.definition.name.as_str()),
+        Some("edit")
+    );
+    run_admitted_file_case(&storage, Limits::default(), move |task| {
+        let tool = tool.clone();
+        async move {
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: "call_patch".into(),
+                name: "apply_patch".into(),
+                arguments: json!({"input":"*** Begin Patch\n*** Add File: notes/a.txt\n+patched\n*** End Patch\n"}),
+            };
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(task.clone()),
+                invocation.operation_id,
+                &invocation.call_id,
+            )?;
+            let result = tool.executor.execute(invocation, Some(context)).await?;
+            let file: FileRef = serde_json::from_value(result.value["files"][0].clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(
+                task.read_file(&file, None).await?.as_ref(),
+                b"patched\n".as_ref()
+            );
+            Ok(())
+        }
+    })
+    .await
+}

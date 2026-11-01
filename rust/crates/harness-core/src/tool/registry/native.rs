@@ -67,10 +67,15 @@ impl ToolRegistry {
                 ),
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
-                ModelSelection::Native(names) => ModelSelection::Native(
-                    names
+                ModelSelection::Native(natives) => ModelSelection::Native(
+                    natives
                         .iter()
-                        .map(|name| crate::executor::stock_string_copy(name, Some(&io)))
+                        .map(|(name, revision)| {
+                            Ok((
+                                crate::executor::stock_string_copy(name, Some(&io))?,
+                                crate::executor::stock_string_copy(revision, Some(&io))?,
+                            ))
+                        })
                         .collect::<Result<_>>()?,
                 ),
             };

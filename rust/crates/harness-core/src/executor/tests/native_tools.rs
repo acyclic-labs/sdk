@@ -237,17 +237,44 @@ async fn google_native_calls_run_their_capabilities() -> Result<()> {
 }
 
 #[tokio::test]
-async fn openai_stays_on_canonical_tools_until_its_engine_lands() -> Result<()> {
-    let (offered, invocations, _) = run(
+async fn openai_native_calls_run_their_capabilities() -> Result<()> {
+    let patch = "*** Begin Patch
+*** Add File: a.txt
++a
+*** End Patch
+";
+    let (offered, invocations, results) = run(
         NativeToolProfile::Openai,
-        vec![native_call("call_1", "read", json!({"path":"src/lib.rs"}))],
+        vec![
+            native_call(
+                "call_1",
+                "shell",
+                json!({"command":["ls","-a"],"workdir":"src","timeout":5000}),
+            ),
+            native_call("call_2", "shell", json!({"command":["pwd"]})),
+            native_call("call_3", "apply_patch", json!({"input":patch})),
+            native_call(
+                "call_4",
+                "edit",
+                json!({"path":"a.txt","old_text":"a","new_text":"b"}),
+            ),
+        ],
     )
     .await?;
-    assert_eq!(offered, ["edit", "read", "shell", "write"]);
+    // The shell declaration shares its capability's name and replaces it.
+    assert_eq!(offered, ["apply_patch", "read", "shell", "write"]);
     assert_eq!(
         ran(&invocations),
-        [("call_1".into(), "read".into(), json!({"path":"src/lib.rs"}))]
+        [
+            (
+                "call_1".into(),
+                "shell".into(),
+                json!({"command":["ls","-a"],"cwd":"src","timeout_ms":5000}),
+            ),
+            ("call_2".into(), "shell".into(), json!({"command":["pwd"]})),
+        ]
     );
+    assert_eq!(results, include_str!("native_tools/openai.json").trim_end());
     Ok(())
 }
 

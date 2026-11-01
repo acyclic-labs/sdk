@@ -65,8 +65,17 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
         .collect()
 }
 
+/// One mapped declaration: its capability, the variant that runs it when
+/// not the capability's own tool, its definition and its template.
+type Mapped = (
+    String,
+    Option<Arc<Tool>>,
+    ToolDefinition,
+    Arc<arguments::Arguments>,
+);
+
 /// One profile's mapped declarations, decoded and checked once.
-pub struct NativeTools(Vec<(String, ToolDefinition, Arc<arguments::Arguments>)>);
+pub struct NativeTools(Vec<Mapped>);
 
 impl NativeTools {
     /// The declarations `profile`'s layer maps, in the layer's order.
@@ -81,10 +90,21 @@ impl NativeTools {
             .zip(definitions(profile)?)
             .filter_map(|(revision, definition)| {
                 let template = revision.arguments?;
-                Some(
-                    arguments::Arguments::new(template, revision.refuse)
-                        .map(|arguments| (revision.capability, definition, Arc::new(arguments))),
-                )
+                Some((|| {
+                    let implementation = revision
+                        .implementation
+                        .as_deref()
+                        .map(crate::tools::variants::tool)
+                        .transpose()?
+                        .map(Arc::new);
+                    let arguments = arguments::Arguments::new(template, revision.refuse)?;
+                    Ok((
+                        revision.capability,
+                        implementation,
+                        definition,
+                        Arc::new(arguments),
+                    ))
+                })())
             })
             .collect::<Result<_>>()
             .map(Self)
@@ -98,12 +118,15 @@ impl NativeTools {
     /// # Errors
     /// A registry refusal of a declaration.
     pub fn bind(&self, tools: &mut ToolRegistry) -> Result<()> {
-        let mut presented: Vec<(&str, Vec<String>)> = Vec::new();
-        for (capability, definition, arguments) in &self.0 {
-            let Some(original) = tools.get(capability, None, None)? else {
+        let mut presented: Vec<(&str, Vec<(String, String)>)> = Vec::new();
+        for (name, implementation, definition, arguments) in &self.0 {
+            let Some(capability) = tools.get(name, None, None)? else {
                 continue;
             };
-            let original = Arc::new(original.clone());
+            let capability = Arc::new(capability.clone());
+            let original = implementation
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&capability));
             let mut definition = definition.clone();
             // Results are the capability's, so their contracts are too.
             definition
@@ -112,9 +135,10 @@ impl NativeTools {
             definition
                 .projection_schema
                 .clone_from(&original.definition.projection_schema);
-            let name = definition.name.clone();
+            let native = (definition.name.clone(), definition.revision.clone());
             let adapter = Arc::new(adapter::Adapter {
                 arguments: Arc::clone(arguments),
+                capability,
                 original,
             });
             tools.register(
@@ -130,12 +154,9 @@ impl NativeTools {
                 &mut None,
                 None,
             )?;
-            match presented
-                .iter_mut()
-                .find(|(offered, _)| offered == capability)
-            {
-                Some((_, natives)) => natives.push(name),
-                None => presented.push((capability, vec![name])),
+            match presented.iter_mut().find(|(offered, _)| offered == name) {
+                Some((_, natives)) => natives.push(native),
+                None => presented.push((name, vec![native])),
             }
         }
         presented

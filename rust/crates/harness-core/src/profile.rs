@@ -39,6 +39,11 @@ pub struct ToolRevision {
     /// refused before anything runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refuse: Vec<String>,
+    /// The canonical variant that runs the declaration when it is not the
+    /// capability's own tool (see [`crate::tools::variants`]). Grants, policy
+    /// and approval stay the capability's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementation: Option<String>,
 }
 
 pub use acyclic_model_render::{Cache, Effort, Reasoning};

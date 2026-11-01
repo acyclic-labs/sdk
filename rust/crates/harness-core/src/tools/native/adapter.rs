@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 pub(super) struct Adapter {
     pub(super) arguments: Arc<Arguments>,
+    /// The capability whose grant admits the call.
+    pub(super) capability: Arc<Tool>,
+    /// The canonical tool that runs it: the capability's own, or a variant.
     pub(super) original: Arc<Tool>,
 }
 
@@ -32,7 +35,7 @@ impl Adapter {
 
 impl ToolExecutor for Adapter {
     fn capability(&self) -> Option<&Tool> {
-        Some(&self.original)
+        Some(&self.capability)
     }
 
     fn canonical(&self, invocation: &ToolInvocation) -> Result<Option<ToolInvocation>> {

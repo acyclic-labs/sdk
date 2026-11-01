@@ -164,8 +164,7 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
     ] {
         assert!(adapt(profile, variant, call).is_err(), "{variant}");
     }
-    // Declarations the layer does not map, and the whole Codex family until
-    // its engine lands, stay unexposed.
+    // Declarations the layer does not map stay unexposed.
     for (profile, variant) in [
         (NativeToolProfile::Anthropic, "Glob"),
         (NativeToolProfile::Anthropic, "Grep"),
@@ -173,12 +172,48 @@ fn refused_and_unmapped_arguments_never_reach_the_capability() -> Result<()> {
     ] {
         assert!(adapt(profile, variant, json!({})).is_err(), "{variant}");
     }
-    assert!(
-        NativeToolProfile::Openai
+    Ok(())
+}
+
+#[test]
+fn openai_calls_map_to_canonical_inputs() -> Result<()> {
+    let openai = NativeToolProfile::Openai;
+    let shell = adapt(
+        openai,
+        "shell",
+        json!({"command":["git","status"],"workdir":"src","timeout":5000}),
+    )?;
+    assert_eq!(
+        shell,
+        json!({"command":["git","status"],"cwd":"src","timeout_ms":5000})
+    );
+    let shell = decodes::<ShellInput>(&shell);
+    assert_eq!(
+        shell.command,
+        crate::tools::shell::ShellCommand::Argv(vec!["git".into(), "status".into()])
+    );
+    assert_eq!(
+        adapt(openai, "shell", json!({"command":["pwd"]}))?,
+        json!({"command":["pwd"]})
+    );
+    // The raw freeform patch is the canonical variant's whole input.
+    let patch = "*** Begin Patch
+*** Delete File: a.txt
+*** End Patch
+";
+    assert_eq!(
+        adapt(openai, "apply_patch", json!({"input":patch}))?,
+        json!({"patch":patch})
+    );
+    assert_eq!(
+        openai
             .tools()?
             .iter()
-            .all(|revision| revision.arguments.is_none())
+            .map(|revision| revision.implementation.as_deref())
+            .collect::<Vec<_>>(),
+        [None, Some("apply_patch")]
     );
+    assert!(crate::tools::variants::tool("apply_patch").is_ok());
     Ok(())
 }
 
