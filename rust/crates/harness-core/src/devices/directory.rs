@@ -550,7 +550,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         }
         context.authorize_content_publication(
             &format!(
-                "{}/00000000000000000001-stdout.bin",
+                "{}/00000000000000000001-00000000000000000000-stdout.bin",
                 super::output::directory(invocation.operation_id)
             ),
             None,

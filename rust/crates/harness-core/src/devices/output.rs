@@ -42,35 +42,44 @@ impl Output {
                 "device output exceeds its protective chunk".into(),
             ));
         }
+        // RuntimeScope admits only a positive file limit.
+        let maximum =
+            usize::try_from(context.effective_scope().limits().file_bytes).unwrap_or(usize::MAX);
         let channel = if stderr { "stderr" } else { "stdout" };
-        let path = format!("{}/{sequence:020}-{channel}.bin", directory(self.operation));
-        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.devices.output-file.v1");
-        hash.update(&self.operation.into_bytes());
-        hash.update(&sequence.to_le_bytes());
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        // The immutable original stream position selects one file operation.
-        // Reconciliation reuses it even if the first publication reply was lost.
-        let (file, _) = context
-            .stage_tool_file_once(
-                OperationId::from_bytes(identity),
-                &path,
-                data,
-                "application/octet-stream",
-                channel,
-                None,
-            )
-            .await?;
-        let parent = file
-            .path()
-            .rsplit_once('/')
-            .map_or("", |(parent, _)| parent);
-        if let Some((volume, path)) = &self.destination {
-            if volume != file.volume() || path != parent {
-                return Err(Error::Storage("device output destination changed".into()));
+        let directory = directory(self.operation);
+        for (index, piece) in data.chunks(maximum).enumerate() {
+            let offset = (index * maximum) as u64;
+            let path = format!("{directory}/{sequence:020}-{offset:020}-{channel}.bin");
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.devices.output-file.v1");
+            hash.update(&self.operation.into_bytes());
+            hash.update(&sequence.to_le_bytes());
+            hash.update(&offset.to_le_bytes());
+            let mut identity = [0; 16];
+            identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+            // The original task's file limit partitions this immutable stream
+            // position. Each byte offset retains its own publication identity
+            // across partial publication and lost-reply recovery.
+            let (file, _) = context
+                .stage_tool_file_once(
+                    OperationId::from_bytes(identity),
+                    &path,
+                    piece,
+                    "application/octet-stream",
+                    channel,
+                    None,
+                )
+                .await?;
+            let parent = file
+                .path()
+                .rsplit_once('/')
+                .map_or("", |(parent, _)| parent);
+            if let Some((volume, path)) = &self.destination {
+                if volume != file.volume() || path != parent {
+                    return Err(Error::Storage("device output destination changed".into()));
+                }
+            } else {
+                self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
-        } else {
-            self.destination = Some((file.volume().clone(), parent.to_owned()));
         }
         let take = self.remaining.min(data.len() as u64) as usize;
         self.remaining -= take as u64;
@@ -127,7 +136,7 @@ mod tests {
         bindings.scope = RuntimeScope::new(
             storage.owner_scope().capabilities().clone(),
             Limits {
-                file_bytes: 4096,
+                file_bytes: 2,
                 render_bytes: 4,
                 ..Limits::default()
             },
@@ -141,7 +150,10 @@ mod tests {
         let context = ToolContext::new(Arc::clone(&task), operation, "original-call")?;
         let mut first = Output::new(&context);
         first.append(&context, 1, false, b"out").await?;
-        let path = format!("{}/00000000000000000001-stdout.bin", directory(operation));
+        let path = format!(
+            "{}/00000000000000000001-00000000000000000000-stdout.bin",
+            directory(operation)
+        );
         // A file is readable before any terminal event arrives.
         let (original, bytes, _) = storage
             .content_reader()
@@ -154,7 +166,22 @@ mod tests {
                 ContentAccess::default(),
             )?
             .await?;
-        assert_eq!(bytes.as_ref(), b"out");
+        assert_eq!(bytes.as_ref(), b"ou");
+        let (_, remainder, _) = storage
+            .content_reader()
+            .read_private_path(
+                storage.volume(),
+                "",
+                &format!(
+                    "{}/00000000000000000001-00000000000000000002-stdout.bin",
+                    directory(operation)
+                ),
+                None,
+                2,
+                ContentAccess::default(),
+            )?
+            .await?;
+        assert_eq!(remainder.as_ref(), b"t");
         first.append(&context, 2, true, b"err").await?;
         let terminal = ToolResult {
             value: serde_json::json!({"exit_code": 7}),
@@ -203,7 +230,7 @@ mod tests {
             .stage(
                 OperationId::new(),
                 &path,
-                b"edited",
+                b"xx",
                 "application/octet-stream",
                 "stdout",
             )
@@ -212,8 +239,8 @@ mod tests {
         replay.append(&context, 1, false, b"out").await?;
         replay.append(&context, 2, true, b"err").await?;
         assert_eq!(replay.finish(terminal)?, result);
-        assert_eq!(task.read_file(&original, None).await?.as_ref(), b"out");
-        assert_eq!(task.read_file(&edited, None).await?.as_ref(), b"edited");
+        assert_eq!(task.read_file(&original, None).await?.as_ref(), b"ou");
+        assert_eq!(task.read_file(&edited, None).await?.as_ref(), b"xx");
         let (_, visible, _) = storage
             .content_reader()
             .read_private_path(
@@ -225,14 +252,14 @@ mod tests {
                 ContentAccess::default(),
             )?
             .await?;
-        assert_eq!(visible.as_ref(), b"edited");
+        assert_eq!(visible.as_ref(), b"xx");
         assert!(
             Output::new(&context)
                 .append(&context, 1, false, b"changed")
                 .await
                 .is_err()
         );
-        assert_eq!(task.read_file(&original, None).await?.as_ref(), b"out");
+        assert_eq!(task.read_file(&original, None).await?.as_ref(), b"ou");
         Ok(())
     }
 }

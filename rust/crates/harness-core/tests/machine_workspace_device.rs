@@ -274,6 +274,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
             scope.capabilities().clone(),
             acyclic_harness_core::conversation::Limits {
+                file_bytes: 2,
                 render_bytes: 4,
                 ..Default::default()
             },
@@ -725,6 +726,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 .follow(FollowRequest::new(paths.run("desktop", operation)?, 0))
                 .await?;
             let mut chunks = 0;
+            let mut split_chunks = 0;
             let tail = provider.head(paths.run("desktop", operation)?).await?.tail;
             loop {
                 let event = records.next().await.ok_or("original run prefix ended")??;
@@ -738,23 +740,30 @@ async fn committed_handover(refused_close: bool) -> Result {
                     } else {
                         "stdout"
                     };
-                    let path = format!(
-                        "tools/{operation}/device/{:020}-{channel}.bin",
-                        record.sequence
-                    );
-                    let (_, bytes, _) = storage
-                        .content_reader()
-                        .read_private_path(
-                            storage.volume(),
-                            "",
-                            &path,
-                            None,
-                            4096,
-                            acyclic_harness_core::conversation::ContentAccess::default(),
-                        )?
-                        .await?;
                     let original: Vec<u8> = serde_json::from_value(output["data"].clone())?;
-                    assert_eq!(bytes.as_ref(), original.as_slice());
+                    split_chunks += usize::from(original.len() > 2);
+                    let mut restored = Vec::new();
+                    for (index, piece) in original.chunks(2).enumerate() {
+                        let offset = index * 2;
+                        let path = format!(
+                            "tools/{operation}/device/{:020}-{offset:020}-{channel}.bin",
+                            record.sequence
+                        );
+                        let (_, bytes, _) = storage
+                            .content_reader()
+                            .read_private_path(
+                                storage.volume(),
+                                "",
+                                &path,
+                                None,
+                                2,
+                                acyclic_harness_core::conversation::ContentAccess::default(),
+                            )?
+                            .await?;
+                        assert_eq!(bytes.as_ref(), piece);
+                        restored.extend_from_slice(&bytes);
+                    }
+                    assert_eq!(restored, original);
                     chunks += 1;
                 } else if value["event"].get("started").is_none() {
                     break;
@@ -764,6 +773,10 @@ async fn committed_handover(refused_close: bool) -> Result {
                 }
             }
             assert!(chunks > 0, "real command produced no retained output");
+            assert!(
+                split_chunks > 0,
+                "real output did not exceed the original file limit"
+            );
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     };
