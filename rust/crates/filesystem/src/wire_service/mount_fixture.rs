@@ -83,6 +83,7 @@ impl Mounts {
                         attributes: vec![],
                     },
                     parent_revocation_ids: vec![],
+                    trust_requirements: vec![],
                 },
             )
             .expect("certify");

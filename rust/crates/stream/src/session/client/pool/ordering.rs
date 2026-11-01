@@ -236,6 +236,8 @@ fn open(
         revisions: Arc::clone(&client.revisions),
         filter: None,
         credential: 0,
+
+        affinity: None,
         id,
         attempt_epoch: 0,
         acknowledge: false,
@@ -438,7 +440,7 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
         .remove("bad")
         .ok_or_else(|| missing("bad link"))?;
     pool.links.clear();
-    let mut expected = BTreeMap::<u32, Bytes>::new();
+    let mut expected = BTreeMap::<u32, CredentialSlot>::new();
     for (slot, length) in [(0, 8), (1, 4), (0, 2), (1, 12), (0, 0)]
         .iter()
         .chain(actions)
@@ -453,12 +455,16 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
         if credential.is_empty() {
             expected.remove(&slot);
         } else {
-            expected.insert(slot, credential);
+            expected.insert(slot, CredentialSlot::Portable(credential));
         }
         prop_assert_eq!(&pool.credentials, &expected);
         prop_assert_eq!(
             pool.credential_bytes,
-            expected.values().map(Bytes::len).sum::<usize>()
+            expected
+                .values()
+                .filter_map(CredentialSlot::bytes)
+                .map(Bytes::len)
+                .sum::<usize>()
         );
     }
     for slot in expected.keys().copied().collect::<Vec<_>>() {
@@ -475,7 +481,7 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
         credential: maximum.clone(),
     })
     .map_err(fail)?;
-    expected.insert(0, maximum);
+    expected.insert(0, CredentialSlot::Portable(maximum));
     // Aggregate rejection must leave both the actual slots and the retained
     // total unchanged, even though this new credential fits by itself.
     prop_assert_eq!(
@@ -498,12 +504,16 @@ fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
         credential: final_value.clone(),
     })
     .map_err(fail)?;
-    expected.insert(0, final_value);
+    expected.insert(0, CredentialSlot::Portable(final_value));
     prop_assert!(!pool.links.contains_key("bad"));
     prop_assert_eq!(&pool.credentials, &expected);
     prop_assert_eq!(
         pool.credential_bytes,
-        expected.values().map(Bytes::len).sum::<usize>()
+        expected
+            .values()
+            .filter_map(CredentialSlot::bytes)
+            .map(Bytes::len)
+            .sum::<usize>()
     );
     Ok(())
 }

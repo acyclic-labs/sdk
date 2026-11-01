@@ -42,9 +42,12 @@ impl CallProvider for Endpoint {
         &self,
         invocation: Bytes,
         authorization: CallAuthorization,
-    ) -> BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+    ) -> BoxProviderFuture<'static, Result<acyclic_stream::session::CallReply, StreamError>> {
         let staged = self.staged.clone();
         Box::pin(async move {
+            if authorization.enrolling() {
+                return Err(StreamError::Unsupported);
+            }
             authorization.authorize(
                 RESOURCE,
                 &[],
@@ -95,6 +98,7 @@ impl CallProvider for Endpoint {
                 _ => return Err(StreamError::InvalidArgument),
             };
             call.reply(&Ok(reply))
+                .map(acyclic_stream::session::CallReply::new)
                 .map_err(|_| StreamError::InvalidArgument)
         })
     }

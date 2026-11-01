@@ -30,10 +30,12 @@ pub use sources::model::{
 };
 
 mod calls;
+mod custody;
 mod pages;
 mod resources;
+pub use calls::{CallAuthorization, CallContribution, CallProvider};
+pub use custody::{CallReply, CredentialCustody, CredentialEnrollment};
 mod sockets;
-pub use calls::{CallAuthorization, CallProvider};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
@@ -60,6 +62,7 @@ pub(crate) use client::Cache;
 pub use client::transport;
 pub use client::{
     ActorSocket, ActorSocketSender, ApplicationDelivery, ApplicationSubscription, Client,
+    SessionCredential,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
@@ -126,6 +129,9 @@ enum Event {
     /// Confirmed anchor and the applied revision the open was served at.
     Opened(Option<crate::CommitId>, Option<wire::Revision>),
     Record(crate::Record),
+    Enroll(CredentialEnrollment),
+    /// Original lifetime producer ended; discard pending data without credit.
+    Terminated(StreamError),
     Progress(wire::SessionWatermark),
     /// One fragment of a finite one-shot reply, carried in `item`.
     CallChunk {

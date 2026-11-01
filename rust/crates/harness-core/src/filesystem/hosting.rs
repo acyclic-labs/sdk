@@ -485,6 +485,48 @@ where
             .map_err(turn)
     }
 
+    /// Issue the selected agent's observation from its own committed scope,
+    /// retaining the original session caller's complete signed contribution.
+    /// The serving owner transfers this sealed capability and its original
+    /// policy/operation custody into the same session; no bearer is exported.
+    ///
+    /// # Errors
+    /// When either admission is lost, the selected private grant cannot prove
+    /// its read scope, or the original issuer cannot supply the contribution.
+    pub async fn observation_credential(
+        &self,
+        agent: &AgentPath,
+        calls: &str,
+        caller: &acyclic_stream::session::CallContribution,
+    ) -> Result<(String, acyclic_auth::verify::VerifiedCapability), Error> {
+        caller.check().map_err(Error::Stream)?;
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .await
+        .map_err(turn)?;
+        let selected = self
+            .volumes
+            .observation_credential(
+                &authority,
+                &state.path,
+                &authority.private.volume,
+                self.clock.now_unix_ms() / 1000,
+                Some(calls),
+                Some((caller.principal(), caller.evidence())),
+            )
+            .await
+            .map_err(turn)?;
+        caller.check().map_err(Error::Stream)?;
+        Ok(selected)
+    }
+
     /// The `fs:/` resource of `agent`'s tool output, whose follow announces
     /// each new chunk.
     ///

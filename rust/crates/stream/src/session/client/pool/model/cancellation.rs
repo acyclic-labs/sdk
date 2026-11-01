@@ -29,6 +29,8 @@ pub fn verify_cancel_before_open(broken: bool) {
                     revisions: Arc::default(),
                     filter: None,
                     credential: 0,
+
+                    affinity: None,
                     id: 5,
                     attempt_epoch: 0,
                     acknowledge: false,

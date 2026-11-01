@@ -3,6 +3,8 @@ use super::*;
 use crate::OperationId;
 use acyclic_auth::operation::Context;
 use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
+mod resources;
+pub use resources::ResourceIssuance;
 
 /// A checkpoint operation, rather than an unrestricted signing oracle.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -129,6 +131,25 @@ pub trait AuthorityOperations: ProviderPlatform {
     /// This is synchronous and starts no foreign operation.
     fn check(&self, scope: &Scope) -> Result<()>;
 
+    /// Issue the original resource owner's exact admitted contribution. Only
+    /// trusted resource producers can construct this request. The result is
+    /// sealed public authority; original live custody remains with the caller
+    /// and selected source through issuance and subsequent enrollment.
+    /// Unsupported platforms refuse before dispatching any signing operation.
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        let _ = (context, operation, request);
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "platform resource issuance is unavailable".into(),
+            ))
+        })
+    }
+
     /// Derive a host-attested scope from an authenticated descendant of the
     /// original admission. The platform checks the actual created resource or
     /// acting agent; request metadata alone never establishes that authority.
@@ -161,16 +182,80 @@ enum Custody {
 
 enum Parent<'a> {
     Original(&'a AdmittedAuthority),
-    Descendant(Arc<acyclic_auth::verify::VerifiedCapability>),
+    Descendant {
+        scope: &'a Scope,
+        capability: Arc<acyclic_auth::verify::VerifiedCapability>,
+    },
 }
 
 impl Parent<'_> {
     fn preserved_by(&self, descendant: &acyclic_auth::verify::VerifiedCapability) -> Result<bool> {
         match self {
             Self::Original(owner) => owner.caller.evidence.preserved_by(descendant),
-            Self::Descendant(parent) => parent.preserved_by(descendant),
+            Self::Descendant { capability, .. } => capability.preserved_by(descendant),
         }
         .map_err(workload::unauthorized)
+    }
+
+    fn scope(&self) -> &Scope {
+        match self {
+            Self::Original(owner) => &owner.caller.scope,
+            Self::Descendant { scope, .. } => scope,
+        }
+    }
+
+    fn changed(&self, owner: &AdmittedAuthority) -> Result<acyclic_auth::trust::Changed> {
+        let trust = &*owner.caller.verifier.public.trust;
+        match self {
+            Self::Original(owner) => Ok(owner.caller.evidence.changed(trust)),
+            Self::Descendant { capability, .. } => {
+                capability.changed(trust).map_err(workload::unauthorized)
+            }
+        }
+    }
+
+    fn check_current(&self, owner: &AdmittedAuthority) -> Result<()> {
+        owner.check_scope(self.scope())?;
+        if let Self::Descendant { capability, .. } = self {
+            capability
+                .check(
+                    &*owner.caller.verifier.public.trust,
+                    owner.caller.verifier.public.now(),
+                )
+                .map_err(workload::unauthorized)?;
+        }
+        Ok(())
+    }
+}
+
+struct AuthorityChanges {
+    selected: acyclic_auth::trust::Changed,
+    caller: Option<acyclic_auth::trust::Changed>,
+}
+
+impl AuthorityChanges {
+    fn register(
+        owner: &AdmittedAuthority,
+        parent: &Parent<'_>,
+        caller: Option<&acyclic_auth::verify::TrustEvidence>,
+    ) -> Result<Self> {
+        Ok(Self {
+            selected: parent.changed(owner)?,
+            caller: caller.map(|caller| caller.changed(&*owner.caller.verifier.public.trust)),
+        })
+    }
+
+    fn poll(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), acyclic_auth::trust::SourceClosed>> {
+        if let ready @ std::task::Poll::Ready(_) = self.selected.as_mut().poll(cx) {
+            return ready;
+        }
+        match &mut self.caller {
+            Some(caller) => caller.as_mut().poll(cx),
+            None => std::task::Poll::Pending,
+        }
     }
 }
 
@@ -324,16 +409,67 @@ impl AdmittedAuthority {
         &self,
         context: &Context,
         operation: OperationId,
+        parent: &Parent<'_>,
+        caller: Option<&acyclic_auth::verify::TrustEvidence>,
         work: impl std::future::Future<Output = Result<T>>,
     ) -> Result<T> {
+        let guarded = async {
+            // Native branches below perform no wait. Their original synchronous
+            // issuer and post-dispatch admission already fence publication.
+            if matches!(self.custody, Custody::Native(_)) {
+                return work.await;
+            }
+            futures::pin_mut!(work);
+            let check = || {
+                parent.check_current(self)?;
+                if let Some(caller) = caller {
+                    caller
+                        .check(
+                            &*self.caller.verifier.public.trust,
+                            self.caller.verifier.public.now(),
+                        )
+                        .map_err(workload::unauthorized)?;
+                }
+                Ok::<(), Error>(())
+            };
+            // Register both original sources before validating either. An
+            // event can be coalesced, but never missed between check/wait.
+            let mut changes = AuthorityChanges::register(self, parent, caller)?;
+            check()?;
+            let mut published = false;
+            std::future::poll_fn(|cx| {
+                let publication = if published {
+                    std::task::Poll::Ready(Ok(()))
+                } else {
+                    changes.poll(cx)
+                };
+                if let std::task::Poll::Ready(publication) = publication {
+                    publication.map_err(|_| Error::Indeterminate(operation))?;
+                    changes = AuthorityChanges::register(self, parent, caller)?;
+                    check().map_err(|error| Self::after_dispatch(error, operation))?;
+                    // Install the replacement wait's waker. Process at most one
+                    // publication per poll so updates cannot starve the issuer.
+                    published = match changes.poll(cx) {
+                        std::task::Poll::Ready(publication) => {
+                            publication.map_err(|_| Error::Indeterminate(operation))?;
+                            cx.waker().wake_by_ref();
+                            true
+                        }
+                        std::task::Poll::Pending => false,
+                    };
+                }
+                work.as_mut().poll(cx)
+            })
+            .await
+        };
         self.context
-            .run(context.run(work))
+            .run(context.run(guarded))
             .await
             .map_err(|_| Error::Indeterminate(operation))?
             .map_err(|_| Error::Indeterminate(operation))?
     }
 
-    fn parent<'a>(&'a self, parent: &Scope) -> Result<Parent<'a>> {
+    fn parent<'a>(&'a self, parent: &'a Scope) -> Result<Parent<'a>> {
         self.check_scope(parent)?;
         if std::ptr::eq(parent, &self.caller.scope) {
             return Ok(Parent::Original(self));
@@ -360,7 +496,10 @@ impl AdmittedAuthority {
                 "scope drops original admission dependencies".into(),
             ));
         }
-        Ok(Parent::Descendant(capability))
+        Ok(Parent::Descendant {
+            scope: parent,
+            capability,
+        })
     }
 
     /// Derive exactly the requested host-attested child without exporting custody.
@@ -402,7 +541,7 @@ impl AdmittedAuthority {
         let (capabilities, agent) = request.resolve(parent)?;
         let capabilities = capabilities.as_ref();
         let issued = self
-            .run(context, operation, async {
+            .run(context, operation, &authenticated, None, async {
                 match &self.custody {
                     Custody::Native(root) => {
                         if matches!(request, ScopeDerivation::Narrow { .. })
@@ -467,7 +606,7 @@ impl AdmittedAuthority {
         let verifier = &self.caller.verifier;
         let value = (&verifier.id, &verifier.audience, digest);
         let proof = self
-            .run(context, operation, async {
+            .run(context, operation, &Parent::Original(self), None, async {
                 match &self.custody {
                     Custody::Native(_) => {
                         verifier.canonical_proof(kind.domain(), &value, &mut None)
@@ -494,6 +633,14 @@ impl AuthorityOperations for AdmittedAuthority {
     fn check(&self, scope: &Scope) -> Result<()> {
         self.check_scope(scope)?;
         self.caller.verifier.verify(scope, &mut None)
+    }
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        Box::pin(Self::issue_resources(self, context, operation, request))
     }
     fn derive<'a>(
         &'a self,

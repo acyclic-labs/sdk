@@ -16,6 +16,7 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
+pub use call::SessionCredential;
 mod data;
 mod socket;
 use admissions::Admissions;
@@ -67,6 +68,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 #[derive(Clone)]
 pub struct Client {
     pool: PoolHandle,
+    credential: Option<SessionCredential>,
     /// Requirements owned by this operation, independently of the transport.
     revisions: Arc<crate::RevisionTracker>,
 }
@@ -88,6 +90,7 @@ impl PoolHandle {
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
             pool: self,
+            credential: None,
             revisions,
         }
     }
@@ -191,6 +194,7 @@ struct OpenCommand {
     kind: Kind,
     filter: Option<wire::SessionFilter>,
     credential: u32,
+    affinity: Option<u64>,
     raw: bool,
     progress: Arc<Progress>,
     records: mpsc::Sender<Result<Delivery, StreamError>>,
@@ -205,6 +209,7 @@ struct Route {
     kind: Kind,
     filter: Option<wire::SessionFilter>,
     credential: u32,
+    affinity: Option<u64>,
     raw: bool,
     watermark: Option<wire::SessionFrame>,
     buffered_data: u32,
@@ -237,7 +242,7 @@ struct Link {
     served: crate::RevisionCut,
 }
 struct Pool {
-    credentials: BTreeMap<u32, Bytes>,
+    credentials: BTreeMap<u32, CredentialSlot>,
     credential_bytes: usize,
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
@@ -261,6 +266,20 @@ struct Pool {
     released: ReleaseSender,
     release_sender: ReleaseSender,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CredentialSlot {
+    Portable(Bytes),
+    Enrolled(u64),
+}
+impl CredentialSlot {
+    fn bytes(&self) -> Option<&Bytes> {
+        match self {
+            Self::Portable(bytes) => Some(bytes),
+            Self::Enrolled(_) => None,
+        }
+    }
+}
 impl Route {
     fn live(&self) -> bool {
         !self.progress.cancelled() && !self.records.is_closed()
@@ -269,6 +288,9 @@ impl Route {
     /// reopen against a different snapshot; a children page is reissued only
     /// before its first fragment. An Actors call is never replayed.
     fn resumable(&self) -> bool {
+        if self.affinity.is_some() {
+            return false;
+        }
         match &self.kind {
             Kind::Follow(follow) => (follow.until == 0 && follow.key.is_none()) || !self.opened,
             Kind::ChildrenPage(_) | Kind::Heads(_) => self.received == 0,
@@ -285,6 +307,9 @@ impl Drop for Link {
     }
 }
 impl Client {
+    fn default_credential(&self) -> u32 {
+        self.credential.as_ref().map_or(0, SessionCredential::slot)
+    }
     /// Selects one implicit authority while sharing this pool, credentials,
     /// channels and observations. Explicit minima are retained unchanged.
     #[must_use]
@@ -500,8 +525,15 @@ impl Client {
         let (from, path) = (request.from, request.path.clone());
         Ok(super::runtime::boxed(
             data::Data::new(
-                self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                    .await?,
+                self.open_subscription(
+                    follow_kind(request),
+                    cursor(from),
+                    true,
+                    false,
+                    filter,
+                    self.default_credential(),
+                )
+                .await?,
             )
             .map(move |item| item?.into_record(&path)),
         ))
@@ -523,7 +555,7 @@ impl Client {
                 acknowledge,
                 progress,
                 filter,
-                0,
+                self.default_credential(),
             )
             .await?;
         Ok(source.flat_map(move |item| {
@@ -620,7 +652,7 @@ impl Client {
             acknowledge,
             false,
             filter,
-            0,
+            self.default_credential(),
         )
         .await
     }
@@ -664,22 +696,7 @@ impl Client {
         let operation = cursor.observation.operation.clone();
         Ok(
             operation.scope(stream::try_unfold(cursor, move |mut cursor| async move {
-                loop {
-                    let Some(mut delivery) = cursor.receive().await? else {
-                        return Ok(None);
-                    };
-                    if let Some(before) = delivery.consume_before(&cursor.progress)? {
-                        cursor.pending = Some(delivery);
-                        return Ok(Some((before, cursor)));
-                    }
-                    // Delivery disposal returns capacity on every exit, including
-                    // stale-generation suppression and cancellation of the cursor.
-                    let fresh = delivery.consume(&cursor.progress)?;
-                    drop(delivery.credit);
-                    if fresh {
-                        return Ok(Some((delivery.item, cursor)));
-                    }
-                }
+                Ok(cursor.frame().await?.map(|frame| (frame, cursor)))
             })),
         )
     }
@@ -692,6 +709,13 @@ impl Client {
         filter: Option<wire::SessionFilter>,
         credential: u32,
     ) -> Result<Cursor, StreamError> {
+        if self
+            .credential
+            .as_ref()
+            .is_some_and(|lease| lease.slot() != credential)
+        {
+            return Err(StreamError::AccessDenied);
+        }
         // One idle control slot; skipped cuts preceding data share that envelope.
         // The delivery window remains QUEUE even while a prefix is consumed.
         let (records, receiver) = mpsc::channel(QUEUE + 1);
@@ -729,6 +753,7 @@ impl Client {
                     kind,
                     filter,
                     credential,
+                    affinity: self.credential.as_ref().map(|lease| lease.0.cursor.id),
                     raw,
                     progress,
                     records,
@@ -794,6 +819,23 @@ struct Cursor {
     receiver: mpsc::Receiver<Result<Delivery, StreamError>>,
 }
 impl Cursor {
+    async fn frame(&mut self) -> Result<Option<Frame>, StreamError> {
+        loop {
+            let Some(mut delivery) = self.receive().await? else {
+                return Ok(None);
+            };
+            if let Some(before) = delivery.consume_before(&self.progress)? {
+                self.pending = Some(delivery);
+                return Ok(Some(before));
+            }
+            // Disposal returns capacity even for stale generations and cancellation.
+            let fresh = delivery.consume(&self.progress)?;
+            drop(delivery.credit);
+            if fresh {
+                return Ok(Some(delivery.item));
+            }
+        }
+    }
     /// Every blocked delivery of every session call and follow is a reported
     /// wait. A queued delivery is no wait and registers none.
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {

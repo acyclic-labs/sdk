@@ -53,7 +53,11 @@ impl Platform for Owner {
         &'a self,
         _: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
+        retain: bool,
+    ) -> BoxProviderFuture<'a, std::result::Result<CommandPolicy, StreamError>> {
+        if retain {
+            return Box::pin(async { Err(StreamError::Unsupported) });
+        }
         let denied = self.denied.load(Ordering::SeqCst);
         if (matches!(command, AgentCommand::Read { .. })
             && self.revoke_read.swap(false, Ordering::SeqCst))
@@ -62,11 +66,11 @@ impl Platform for Owner {
             self.denied.store(true, Ordering::SeqCst);
         }
         Box::pin(async move {
-            Ok(if denied {
+            Ok(CommandPolicy::once(if denied {
                 PolicyDecision::Deny
             } else {
                 PolicyDecision::Allow
-            })
+            }))
         })
     }
 

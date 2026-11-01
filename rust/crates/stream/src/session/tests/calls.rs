@@ -11,9 +11,12 @@ impl CallProvider for Calls {
         &self,
         _: Bytes,
         authorization: CallAuthorization,
-    ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+    ) -> crate::BoxProviderFuture<'static, Result<CallReply, StreamError>> {
         let calls = self.0.clone();
         Box::pin(async move {
+            if authorization.enrolling() {
+                return Err(StreamError::Unsupported);
+            }
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
                 .map_err(|_| StreamError::InvalidArgument)?;
             authorization.authorize(
@@ -23,7 +26,7 @@ impl CallProvider for Calls {
                 acyclic_auth::authority::PolicyDecision::Allow,
             )?;
             calls.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![9; crate::MAX_RECORD_BYTES + 7].into())
+            Ok(CallReply::new(vec![9; crate::MAX_RECORD_BYTES + 7].into()))
         })
     }
 }
@@ -116,5 +119,22 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         .await?;
     assert_eq!(response.as_ref(), vec![9; crate::MAX_RECORD_BYTES + 7]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        client
+            .actor_call_enrolling(
+                &Bytes::from_static(b"invocation"),
+                0,
+                1,
+                crate::MAX_RECORD_BYTES + 7
+            )
+            .await
+            .err(),
+        Some(StreamError::Unsupported)
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "unsupported enrollment must refuse before effects"
+    );
     Ok(())
 }

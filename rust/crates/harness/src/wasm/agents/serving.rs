@@ -25,7 +25,11 @@ impl hosting::Platform for Policy {
         &'a self,
         principal: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
+        retain: bool,
+    ) -> BoxProviderFuture<'a, std::result::Result<hosting::CommandPolicy, StreamError>> {
+        if retain {
+            return Box::pin(async { Err(StreamError::Unsupported) });
+        }
         Box::pin(async move {
             let cancel =
                 crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::Unavailable)?;
@@ -45,8 +49,8 @@ impl hosting::Platform for Policy {
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
             match result.as_bool() {
-                Some(true) => Ok(PolicyDecision::Allow),
-                Some(false) => Ok(PolicyDecision::Deny),
+                Some(true) => Ok(hosting::CommandPolicy::once(PolicyDecision::Allow)),
+                Some(false) => Ok(hosting::CommandPolicy::once(PolicyDecision::Deny)),
                 None => Err(StreamError::InvalidResponse),
             }
         })

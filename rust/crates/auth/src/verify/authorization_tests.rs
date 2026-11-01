@@ -4,6 +4,152 @@ use crate::{authority::*, testing as signed};
 use acyclic_test_support::differential::observe;
 
 #[test]
+fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
+    #[derive(Default)]
+    struct Domains {
+        selected: signed::Snapshot,
+        caller: signed::Snapshot,
+    }
+    impl Trust for Domains {
+        fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+            match environment {
+                "caller-environment" => self.caller.environment_keys("test"),
+                _ => self.selected.environment_keys(environment),
+            }
+        }
+        fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
+            match account {
+                "caller-account" => self.caller.account("account"),
+                _ => self.selected.account(account),
+            }
+        }
+        fn revoked(&self, account: &str, check: RevocationCheck<'_>) -> Result<bool, VerifyError> {
+            match account {
+                "caller-account" => self.caller.revoked("account", check),
+                _ => self.selected.revoked(account, check),
+            }
+        }
+    }
+    let selected = verify(&signed::root(|_| {}), &Domains::default(), signed::NOW).unwrap();
+    let caller = verify(
+        &signed::root(|block| {
+            let certificates = block.certificates.as_mut().unwrap();
+            certificates.birth.birth.environment = "caller-environment".into();
+            certificates.birth.birth.account_id = "caller-account".into();
+            for certificate in &mut certificates.keys {
+                certificate.key.account_id = "caller-account".into();
+                certificate.key.parent_revocation_ids.push(vec![12; 32]);
+                certificate.key.trust_requirements = selected.requirements().unwrap();
+            }
+        }),
+        &Domains::default(),
+        signed::NOW,
+    )
+    .unwrap()
+    .attenuate(
+        vec![Caveat {
+            kind: CaveatKind::ExpiresAtUnixSeconds(signed::NOW + 3),
+        }],
+        &[9; 32],
+    )
+    .unwrap();
+    let requirements = caller.requirements().unwrap();
+    assert_eq!(
+        requirements,
+        caller.trust_evidence().unwrap().requirements().unwrap()
+    );
+    let caller_evidence = caller.trust_evidence().unwrap();
+    let requirements = selected.requirements_with(&caller_evidence).unwrap();
+    let encoded = signed::root(|block| {
+        block.certificates.as_mut().unwrap().keys[0]
+            .key
+            .trust_requirements = requirements.clone();
+    });
+    let mut cache = CertificateVerifier::default();
+    let joined = cache
+        .verify(&encoded, &Domains::default(), signed::NOW)
+        .unwrap();
+    assert!(selected.contributed_to(&joined).unwrap());
+    assert!(caller.contributed_to(&joined).unwrap());
+    assert!(caller_evidence.contributed_to(&joined));
+    assert!(!caller.preserved_by(&joined).unwrap());
+    // Each altered result is still a real, currently authentic signed
+    // credential. Its issuer's validity alone cannot prove the contribution.
+    for omitted in ["caller", "parent", "inherited", "deadline"] {
+        let altered = signed::root(|block| {
+            let mut requirements = requirements.clone();
+            match omitted {
+                "caller" => {
+                    requirements.remove(1);
+                }
+                "parent" => {
+                    requirements[1]
+                        .blocks
+                        .retain(|id| id.as_slice() != [12; 32]);
+                }
+                "inherited" => {
+                    requirements.pop();
+                }
+                "deadline" => {
+                    requirements[1].validity.expires_at_unix_seconds += 1;
+                }
+                _ => unreachable!(),
+            }
+            block.certificates.as_mut().unwrap().keys[0]
+                .key
+                .trust_requirements = requirements;
+        });
+        let altered = verify(&altered, &Domains::default(), signed::NOW).unwrap();
+        assert!(selected.contributed_to(&altered).unwrap(), "{omitted}");
+        assert!(!caller.contributed_to(&altered).unwrap(), "{omitted}");
+        assert!(!caller_evidence.contributed_to(&altered), "{omitted}");
+    }
+    let compact = joined.trust_evidence().unwrap();
+    assert_eq!(
+        joined.effective().expires_at_unix_seconds(),
+        signed::NOW + 3,
+        "the original session alarm must include the dependency's expiry"
+    );
+    assert_eq!(
+        compact.owned_bytes().unwrap(),
+        joined.trust_evidence_storage().unwrap().owned_bytes
+    );
+    compact.check(&Domains::default(), signed::NOW).unwrap();
+    let reopened = joined.seal().unwrap().encode();
+    verify(&reopened, &Domains::default(), signed::NOW).unwrap();
+    for change in [
+        "block",
+        "parent",
+        "key",
+        "epoch",
+        "environment",
+        "issuer",
+        "unavailable",
+        "expiry",
+    ] {
+        let mut domains = Domains::default();
+        let mut now = signed::NOW;
+        match change {
+            "block" => domains.caller.revoked_blocks.push(caller.block_ids()[0]),
+            "parent" => domains.caller.revoked_blocks.push([12; 32]),
+            "key" => domains.caller.revoked_keys.push("key".into()),
+            "epoch" => domains.caller.minimum_epoch = 2,
+            "environment" => domains.caller.environments.clear(),
+            "issuer" => domains.caller.issuers.clear(),
+            "unavailable" => domains.caller.available = false,
+            "expiry" => now += 3,
+            _ => unreachable!(),
+        }
+        assert!(compact.check(&domains, now).is_err(), "{change}");
+        assert!(cache.verify(&encoded, &domains, now).is_err(), "{change}");
+        assert!(verify(&reopened, &domains, now).is_err(), "{change}");
+        // A valid selected issuer alone cannot detect loss of the original
+        // caller. Removing the signed dependency must expose this negative control.
+        verify(&signed::root(|_| {}), &domains, now).unwrap();
+    }
+}
+
+#[test]
 fn current_authorization_reuses_admission_and_preserves_every_request_dependency() {
     let mut trust = signed::Snapshot::default();
     let capability = verify(&signed::root(|_| {}), &trust, signed::NOW)

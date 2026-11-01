@@ -82,7 +82,15 @@ message SessionSubscription {
     ChildrenPageRequest children_page = 15;
     // One coherent snapshot, under the same finite-fragment rules.
     HeadsRequest heads = 16;
+    // One non-replayed Actors call transfers original live custody into an
+    // empty slot before exposing its reply. Unknown kinds are refused;
+    // ordinary actor_call cannot silently downgrade enrollment.
+    SessionActorEnrollment actor_enrollment = 17;
   }
+}
+message SessionActorEnrollment {
+  bytes invocation = 1;
+  uint32 credential_slot = 2;
 }
 enum SessionDelivery {
   SESSION_DELIVERY_UNSPECIFIED = 0; // rejected

@@ -120,6 +120,14 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Absent { path: path.clone() });
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
+            Out::SpawnResolved { sequence, outcome } => {
+                if sequence.checked_add(1) != Some(cursor) {
+                    return Err(Error::Record("spawn result differs from consumed input"));
+                }
+                let path = path.spawn_result(*sequence)?;
+                builder.condition(CommitCondition::Absent { path: path.clone() });
+                builder.append(path, outcome.encode()?);
+            }
             Out::Checkpoint | Out::Roster(_) | Out::Notices(_) => {}
             Out::Send { to, record } => {
                 if matches!(

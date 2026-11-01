@@ -217,6 +217,14 @@ impl VerifiedCapability {
                 self.expires_at = self
                     .expires_at
                     .min(cert.key.validity.expires_at_unix_seconds);
+                for requirement in &cert.key.trust_requirements {
+                    self.not_before = self
+                        .not_before
+                        .max(requirement.validity.not_before_unix_seconds);
+                    self.expires_at = self
+                        .expires_at
+                        .min(requirement.validity.expires_at_unix_seconds);
+                }
             }
         }
         for block in &self.blocks {

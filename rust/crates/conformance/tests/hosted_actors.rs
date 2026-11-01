@@ -46,9 +46,13 @@ impl acyclic_harness::hosting::Platform for Owner {
         &'a self,
         _: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>> {
+        retain: bool,
+    ) -> BoxProviderFuture<'a, Result<acyclic_harness::hosting::CommandPolicy, StreamError>> {
+        if retain {
+            return Box::pin(async { Err(StreamError::Unsupported) });
+        }
         let kind = match command {
-            AgentCommand::Bind {} => "bind",
+            AgentCommand::Bind { .. } => "bind",
             AgentCommand::Root {} => "root",
             AgentCommand::Children { .. } => "children",
             AgentCommand::Approvals { .. } => "approvals",
@@ -73,7 +77,9 @@ impl acyclic_harness::hosting::Platform for Owner {
                 let _ = gate.entered.send(());
                 gate.decision.await.map_err(|_| StreamError::Unavailable)?;
             }
-            Ok(PolicyDecision::Allow)
+            Ok(acyclic_harness::hosting::CommandPolicy::once(
+                PolicyDecision::Allow,
+            ))
         })
     }
 }

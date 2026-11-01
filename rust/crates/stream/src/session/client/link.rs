@@ -63,14 +63,25 @@ impl Pool {
         let opening_credentials = std::mem::take(&mut link.opening_credentials);
         let slots = opening_credentials
             .keys()
-            .chain(self.credentials.keys())
             .copied()
+            .chain(
+                self.credentials
+                    .iter()
+                    .filter_map(|(slot, credential)| credential.bytes().map(|_| *slot)),
+            )
             .collect::<BTreeSet<_>>();
         for slot in slots {
-            if opening_credentials.get(&slot) == self.credentials.get(&slot) {
+            if opening_credentials.get(&slot)
+                == self.credentials.get(&slot).and_then(CredentialSlot::bytes)
+            {
                 continue;
             }
-            let credential = self.credentials.get(&slot).cloned().unwrap_or_default();
+            let credential = self
+                .credentials
+                .get(&slot)
+                .and_then(CredentialSlot::bytes)
+                .cloned()
+                .unwrap_or_default();
             let value = frame(
                 0,
                 0,
@@ -91,7 +102,12 @@ impl Pool {
         }
         let connect = self.connect.clone();
         let identity = self.identity.clone();
-        let credentials = self.credentials.clone();
+        // Only portable registrations can cross a physical-session boundary.
+        let credentials: BTreeMap<_, _> = self
+            .credentials
+            .iter()
+            .filter_map(|(slot, credential)| credential.bytes().map(|bytes| (*slot, bytes.clone())))
+            .collect();
         let epoch = self.dial_epoch;
         let executor = self.executor.clone();
         // Capture only the subscriber. Neither a dial nor a shared Link owns
@@ -124,6 +140,7 @@ impl Pool {
                 let mut attempt = 0_u32;
                 let outcome = loop {
                     let mut observation = Observation::session(attempt);
+                    let mut terminal = None;
                     let result = observation
                         .operation
                         .clone()
@@ -132,14 +149,23 @@ impl Pool {
                                 Some(channel) => channel.clone(),
                                 None => connect(node.clone()).await?,
                             };
-                            handshake(
-                                endpoint,
+                            if let Err(error) = endpoint.check() {
+                                terminal = Some(error.clone());
+                                return Err(error);
+                            }
+                            let result = handshake(
+                                endpoint.clone(),
                                 &name,
                                 identity.clone(),
                                 credentials.clone(),
                                 interest.clone(),
                             )
-                            .await
+                            .await;
+                            if let Err(error) = endpoint.check() {
+                                terminal = Some(error.clone());
+                                return Err(error);
+                            }
+                            result
                         })
                         .await;
                     match result {
@@ -149,6 +175,9 @@ impl Pool {
                         }
                         Err(error) => {
                             observation.finish(Some(&error));
+                            if let Some(error) = terminal {
+                                break Err(error);
+                            }
                             // Admission carries the request. An effectful call
                             // may have committed before transport failed.
                             if error != StreamError::Unavailable || !replayable {
@@ -288,7 +317,7 @@ impl Pool {
         let Some(route) = self
             .routes
             .get_mut(&id)
-            .filter(|route| route.opened && route.live())
+            .filter(|route| route.opened && route.live() && !route.progress.ended())
         else {
             return Ok(());
         };
@@ -316,6 +345,7 @@ impl Pool {
         let Some(route) = self.routes.remove(&id) else {
             return Ok(());
         };
+        self.retire_enrollment(id, &route)?;
         let node = route.node.clone();
         self.cancel_subscription(
             &node,
@@ -358,6 +388,16 @@ impl Pool {
         )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
+        if let Err(error) = self
+            .links
+            .get(node)
+            .ok_or(StreamError::Unavailable)?
+            .channel
+            .check()
+        {
+            self.fail_link(node, &error);
+            return Ok(());
+        }
         let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
         if let Some(observation) = &mut link.observation {
             observation.finish(Some(&StreamError::Unavailable));

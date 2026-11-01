@@ -29,6 +29,7 @@ pub use acyclic_harness_core::filesystem::{
 mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
+mod custody;
 
 use crate::{
     agent::{
@@ -48,21 +49,69 @@ use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, HeadProjection, HeadsRequest,
     ProviderPlatform, RevisionCut, StreamError, StreamPath,
-    session::{CallAuthorization, CallProvider},
+    session::{
+        CallAuthorization, CallContribution, CallProvider, CallReply, CredentialCustody,
+        CredentialEnrollment,
+    },
 };
 use bytes::Bytes;
 use std::sync::Arc;
+
+/// One original command-policy admission. A finite decision cannot authorize
+/// continued observation after its call has ended. Retained admissions keep
+/// the same policy's live owner through issuance, enrollment and disclosure.
+pub struct CommandPolicy {
+    decision: PolicyDecision,
+    custody: Option<Arc<dyn CredentialCustody>>,
+}
+
+impl CommandPolicy {
+    /// A current decision for this dispatch only, with no continued authority.
+    pub fn once(decision: PolicyDecision) -> Self {
+        Self {
+            decision,
+            custody: None,
+        }
+    }
+
+    /// Retain the original policy for this exact principal and command. The
+    /// guard must recheck that policy synchronously and terminate on its real
+    /// invalidation/loss event. A separate notifier or policy copy cannot do so.
+    pub fn retained(decision: PolicyDecision, custody: Arc<dyn CredentialCustody>) -> Self {
+        Self {
+            decision,
+            custody: Some(custody),
+        }
+    }
+
+    /// The owner's current decision, consumed by canonical Auth authorization.
+    pub fn decision(&self) -> PolicyDecision {
+        self.decision
+    }
+
+    /// Transfer the original live policy owner. A one-dispatch decision refuses
+    /// enrollment before any selected-source issuance or disclosure.
+    pub fn into_custody(self) -> Result<Arc<dyn CredentialCustody>, StreamError> {
+        let custody = self.custody.ok_or(StreamError::Unsupported)?;
+        custody.check()?;
+        Ok(custody)
+    }
+}
 
 /// What a hosting platform decides at every dispatch: the owner's current
 /// policy for the verified principal's command. Identity comes only from the
 /// session credential; the platform never supplies a caller here.
 pub trait Platform: ProviderPlatform + 'static {
-    /// The current policy for `principal` issuing `command`.
+    /// The current policy for `principal` issuing `command`. With `retain`,
+    /// return its original live custody or refuse `Unsupported` before effects;
+    /// an ordinary finite policy result supplies no continuing source grant.
+    /// Without it, the original dispatch requires no lifetime allocation.
     fn policy<'a>(
         &'a self,
         principal: &'a Principal,
         command: &'a AgentCommand,
-    ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>>;
+        retain: bool,
+    ) -> BoxProviderFuture<'a, Result<CommandPolicy, StreamError>>;
 
     /// Whether this platform runs the children a spawn creates. One that runs
     /// none refuses every spawn command before it stages or commits anything.
@@ -375,6 +424,26 @@ where
         })
     }
 
+    /// Both ordinary discovery and enrollment use this original selection.
+    async fn bind(
+        &self,
+        agent: Option<&AgentPath>,
+        caller: Option<&CallContribution>,
+    ) -> Result<(AgentReply, Option<acyclic_auth::verify::VerifiedCapability>), Error> {
+        let agent = self.within_tree(agent.unwrap_or(&self.root))?;
+        let (tools, capability) = match caller {
+            Some(caller) => {
+                let (tools, capability) = self
+                    .bound
+                    .observation_credential(agent, &self.resource, caller)
+                    .await?;
+                (tools, Some(capability))
+            }
+            None => (self.bound.tool_resource(agent).await?, None),
+        };
+        Ok((AgentBinding::reply(&self.binding(), tools), capability))
+    }
+
     /// Runs `command` from `by`, who decides approvals as `approver`.
     async fn dispatch(
         &self,
@@ -385,13 +454,10 @@ where
     ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
-            AgentCommand::Bind { agent } => {
-                let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
-                Ok(AgentBinding::reply(
-                    &self.binding(),
-                    self.bound.tool_resource(agent).await?,
-                ))
-            }
+            AgentCommand::Bind { agent } => self
+                .bind(agent.as_ref(), None)
+                .await
+                .map(|(reply, _)| reply),
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
@@ -1030,94 +1096,176 @@ where
         &self,
         invocation: Bytes,
         authorization: CallAuthorization,
-    ) -> BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+    ) -> BoxProviderFuture<'static, Result<CallReply, StreamError>> {
         let admitted = self.admit(&invocation);
         let server = self.this.upgrade();
         Box::pin(async move {
             let call = admitted?;
             let server = server.ok_or(StreamError::Unavailable)?;
-            let principal = authorization.principal()?;
-            let by = Sender::User {
-                principal: principal.id.clone(),
+            let context = if authorization.enrolling() {
+                server.bound.issuer().operation_context()
+            } else {
+                None
             };
-            let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
-                .map_err(|_| StreamError::InvalidArgument)?;
-            let authorize = async |command: &AgentCommand| {
-                let policy = server.platform.policy(&principal, command).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)
-            };
-            // Every command, a staged head included, is authorized as it
-            // arrives: a head names its agent and kind, so a denied caller
-            // makes the host read no part.
-            authorize(call.command()).await?;
-            // A staged command is then run and answered as the whole command
-            // its parts assemble to, itself authorized like one frame.
-            let call = match call.command() {
-                AgentCommand::Staged {
-                    agent,
-                    digest,
-                    parts,
-                    bytes,
-                    ..
-                } => {
-                    let whole = server.assemble(agent, &by, digest, *parts, *bytes).await;
-                    match whole.and_then(|whole| {
-                        call.assembled(&whole)
-                            .map_err(|_| Error::Record("a staged command does not decode"))
-                    }) {
-                        Ok(whole) => {
-                            authorize(whole.command()).await?;
-                            whole
-                        }
-                        Err(error) => {
-                            return call
-                                .reply(&Err(error))
-                                .map_err(|_| StreamError::LimitExceeded);
+            let work = async {
+                // Only this original read-only selection contributes observation.
+                // Refuse staged heads and mutations before policy or storage work.
+                if authorization.enrolling() && !matches!(call.command(), AgentCommand::Bind { .. })
+                {
+                    return Err(StreamError::Unsupported);
+                }
+                let principal = authorization.principal()?;
+                let by = Sender::User {
+                    principal: principal.id.clone(),
+                };
+                let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                let policy = server
+                    .platform
+                    .policy(&principal, call.command(), authorization.enrolling())
+                    .await?;
+                let decision = policy.decision();
+                authorization.authorize(&server.resource, &[], &attributes, decision)?;
+                if authorization.enrolling() {
+                    let AgentCommand::Bind { agent } = call.command() else {
+                        return Err(StreamError::Unsupported);
+                    };
+                    let selected = custody::retain(policy, context)?;
+                    let caller = authorization.contribution()?;
+                    let (bytes, capability) = custody::run(selected.as_ref(), async {
+                        server.platform.admitted().await?;
+                        let (reply, capability) = server
+                            .bind(agent.as_ref(), Some(&caller))
+                            .await
+                            .map_err(enrollment_error)?;
+                        let capability = capability.ok_or(StreamError::InvalidResponse)?;
+                        caller.check()?;
+                        authorization.authorize(&server.resource, &[], &attributes, decision)?;
+                        let bytes = call
+                            .reply(&Ok(reply))
+                            .map_err(|_| StreamError::LimitExceeded)?;
+                        Ok((bytes, capability))
+                    })
+                    .await?;
+                    return Ok(CallReply::enrolled(
+                        bytes,
+                        CredentialEnrollment::new(capability, selected),
+                    ));
+                }
+                let authorize = async |command: &AgentCommand| {
+                    let policy = server.platform.policy(&principal, command, false).await?;
+                    authorization.authorize(&server.resource, &[], &attributes, policy.decision())
+                };
+                // Every command, a staged head included, is authorized as it
+                // arrives: a head names its agent and kind, so a denied caller
+                // makes the host read no part.
+                // A staged command is then run and answered as the whole command
+                // its parts assemble to, itself authorized like one frame.
+                let call = match call.command() {
+                    AgentCommand::Staged {
+                        agent,
+                        digest,
+                        parts,
+                        bytes,
+                        ..
+                    } => {
+                        let whole = server.assemble(agent, &by, digest, *parts, *bytes).await;
+                        match whole.and_then(|whole| {
+                            call.assembled(&whole)
+                                .map_err(|_| Error::Record("a staged command does not decode"))
+                        }) {
+                            Ok(whole) => {
+                                authorize(whole.command()).await?;
+                                whole
+                            }
+                            Err(error) => {
+                                return call
+                                    .reply(&Err(error))
+                                    .map(CallReply::new)
+                                    .map_err(|_| StreamError::LimitExceeded);
+                            }
                         }
                     }
+                    _ => call,
+                };
+                server.platform.admitted().await?;
+                let approver = server.platform.approver(&principal);
+                let result = server
+                    .dispatch(call.command(), &by, &approver, &authorization)
+                    .await;
+                let query = match call.command() {
+                    AgentCommand::Bind { .. }
+                    | AgentCommand::Root {}
+                    | AgentCommand::Children { .. }
+                    | AgentCommand::ProjectHeads { .. }
+                    | AgentCommand::History { .. }
+                    | AgentCommand::Approvals { .. }
+                    | AgentCommand::Reply { .. }
+                    | AgentCommand::Settlement { .. }
+                    | AgentCommand::Diff { .. }
+                    | AgentCommand::Usage { .. }
+                    | AgentCommand::Events { .. }
+                    | AgentCommand::Read { .. } => true,
+                    AgentCommand::Prompt { .. }
+                    | AgentCommand::Cancel { .. }
+                    | AgentCommand::Compact { .. }
+                    | AgentCommand::Rewind { .. }
+                    | AgentCommand::Restore { .. }
+                    | AgentCommand::ClearAll { .. }
+                    | AgentCommand::Spawn { .. }
+                    | AgentCommand::Fork { .. }
+                    | AgentCommand::Decide { .. }
+                    | AgentCommand::Stage { .. }
+                    | AgentCommand::Staged { .. } => false,
+                };
+                if query {
+                    // Reads may suspend during admission or source IO. Revalidate
+                    // before disclosing either their data or source errors. Effect
+                    // receipts retain their original commit outcome semantics.
+                    let principal = authorization.principal()?;
+                    let policy = server
+                        .platform
+                        .policy(&principal, call.command(), false)
+                        .await?;
+                    authorization.authorize(
+                        &server.resource,
+                        &[],
+                        &attributes,
+                        policy.decision(),
+                    )?;
                 }
-                _ => call,
+                call.reply(&result)
+                    .map(CallReply::new)
+                    .map_err(|_| StreamError::LimitExceeded)
             };
-            server.platform.admitted().await?;
-            let approver = server.platform.approver(&principal);
-            let result = server
-                .dispatch(call.command(), &by, &approver, &authorization)
-                .await;
-            let query = match call.command() {
-                AgentCommand::Bind {}
-                | AgentCommand::Root {}
-                | AgentCommand::Children { .. }
-                | AgentCommand::ProjectHeads { .. }
-                | AgentCommand::History { .. }
-                | AgentCommand::Approvals { .. }
-                | AgentCommand::Reply { .. }
-                | AgentCommand::Settlement { .. }
-                | AgentCommand::Diff { .. }
-                | AgentCommand::Usage { .. }
-                | AgentCommand::Events { .. }
-                | AgentCommand::Read { .. } => true,
-                AgentCommand::Prompt { .. }
-                | AgentCommand::Cancel { .. }
-                | AgentCommand::Compact { .. }
-                | AgentCommand::Rewind { .. }
-                | AgentCommand::Restore { .. }
-                | AgentCommand::ClearAll { .. }
-                | AgentCommand::Spawn { .. }
-                | AgentCommand::Fork { .. }
-                | AgentCommand::Decide { .. }
-                | AgentCommand::Stage { .. }
-                | AgentCommand::Staged { .. } => false,
-            };
-            if query {
-                // Reads may suspend during admission or source IO. Revalidate
-                // before disclosing either their data or source errors. Effect
-                // receipts retain their original commit outcome semantics.
-                let principal = authorization.principal()?;
-                let policy = server.platform.policy(&principal, call.command()).await?;
-                authorization.authorize(&server.resource, &[], &attributes, policy)?;
+            match context {
+                Some(context) => context.run(work).await.map_err(custody::stopped)?,
+                None => work.await,
             }
-            call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })
+    }
+}
+
+/// Enrollment failures precede slot installation and cannot be successful
+/// finite replies without the requested contribution. Keep the canonical
+/// transport refusal instead of inventing a second enrollment envelope.
+fn enrollment_error(error: Error) -> StreamError {
+    match error {
+        Error::Stream(error) => error,
+        Error::NoSuchAgent => StreamError::NotFound,
+        Error::Path(_) => StreamError::InvalidArgument,
+        Error::Record(_) => StreamError::InvalidResponse,
+        Error::IncompatibleCheckpointCodec | Error::UnsupportedRecordVersion(_) => {
+            StreamError::Unsupported
+        }
+        Error::Turn(error) => match *error {
+            crate::Error::Unauthorized(_) => StreamError::AccessDenied,
+            crate::Error::Unsupported(_) => StreamError::Unsupported,
+            crate::Error::NotFound(_) => StreamError::NotFound,
+            crate::Error::Invalid(_) => StreamError::InvalidArgument,
+            _ => StreamError::Unavailable,
+        },
+        _ => StreamError::Unavailable,
     }
 }
 

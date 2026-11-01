@@ -1,4 +1,119 @@
 use super::*;
+
+#[test]
+fn contributed_resource_issuance_preserves_caller_and_both_original_dependencies() -> Result<()> {
+    struct Clock;
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            1_800_000_000_000
+        }
+    }
+    let timestamp = 1_800_000_000;
+    for revoke_caller in [false, true] {
+        let issuer = AuthorityRoot::with_clock(
+            "owner",
+            [29; 32],
+            Authority {
+                kind: AggregateKind::Task,
+                id: "original".into(),
+            },
+            std::sync::Arc::new(Clock),
+        );
+        let trust = issuer.public_workload_trust()?;
+        let grants = Capabilities::new(["read"]);
+        let caller = issuer
+            .bootstrap_scope(
+                "caller",
+                &grants,
+                Some(AgentId::from_bytes([1; 16])),
+                &mut None,
+            )?
+            .with_workload_expiry(timestamp + 3, &trust, issuer.audience(), timestamp)?;
+        let selected = issuer.bootstrap_scope(
+            "selected",
+            &grants,
+            Some(AgentId::from_bytes([2; 16])),
+            &mut None,
+        )?;
+        let unrelated = issuer.bootstrap_scope(
+            "unrelated",
+            &grants,
+            Some(AgentId::from_bytes([3; 16])),
+            &mut None,
+        )?;
+        let capability = verify(
+            &issuer.verifier(&mut None)?,
+            issuer.audience(),
+            &caller,
+            timestamp,
+            &mut None,
+        )?;
+        let evidence = capability.trust_evidence().map_err(unauthorized)?;
+        let principal = capability.effective().principal();
+        assert!(!principal.lineage.is_empty());
+        let resources: &[(&str, bool, &[&str])] =
+            &[("streams:/selected", false, &["streams/follow"])];
+        let joined = issuer.resource_credential(
+            &selected,
+            resources,
+            Some((principal, &evidence)),
+            timestamp,
+        )?;
+        assert!(joined.is_sealed());
+        assert_eq!(joined.effective().principal(), principal);
+        assert_eq!(joined.effective().expires_at_unix_seconds(), timestamp + 3);
+        assert!(capability.contributed_to(&joined).map_err(unauthorized)?);
+        assert!(evidence.contributed_to(&joined));
+        let reopened = verify::verify(&joined.encode(), &trust, timestamp).map_err(unauthorized)?;
+        let negative = issuer.resource_credential(
+            if revoke_caller { &selected } else { &unrelated },
+            resources,
+            (!revoke_caller).then_some((principal, &evidence)),
+            timestamp,
+        )?;
+        assert_eq!(evidence.contributed_to(&negative), !revoke_caller);
+        let audience = issuer.audience_resource()?;
+        let authorize = |credential: &VerifiedCapability, resource, action, now| {
+            credential.authorize(
+                &trust,
+                &Request {
+                    target: Target::Resource { action, resource },
+                    audience: &audience,
+                    holder: None,
+                    now_unix_seconds: now,
+                    keys: &[],
+                    attributes: &RecordAttributes::default(),
+                    usage: &usage(),
+                    cpu_millis: 0,
+                    memory_bytes: 0,
+                },
+                PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Follow,
+            )
+        };
+        authorize(&reopened, "streams:/selected", "streams/follow", timestamp)
+            .map_err(unauthorized)?;
+        assert!(authorize(&reopened, "streams:/other", "streams/follow", timestamp).is_err());
+        assert!(authorize(&reopened, "streams:/selected", "streams/list", timestamp).is_err());
+        assert!(
+            authorize(
+                &reopened,
+                "streams:/selected",
+                "streams/follow",
+                timestamp + 3
+            )
+            .is_err()
+        );
+        issuer.revoke_workload(if revoke_caller { &caller } else { &selected })?;
+        assert!(authorize(&reopened, "streams:/selected", "streams/follow", timestamp).is_err());
+        // Removing exactly the lost dependency admits the same resource, so
+        // selected-issuer validity alone cannot establish the joined guarantee.
+        authorize(&negative, "streams:/selected", "streams/follow", timestamp)
+            .map_err(unauthorized)?;
+    }
+    Ok(())
+}
+
 fn fixture() -> AuthorityRoot {
     AuthorityRoot::new(
         "owner",

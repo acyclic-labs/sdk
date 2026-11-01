@@ -61,6 +61,7 @@ pub use agent_turns::{
 pub(crate) mod bounded_io;
 mod tool_resource;
 pub use tool_resource::TOOL_OUTPUT;
+mod observation;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod tool_output;
 #[doc(hidden)]

@@ -59,6 +59,32 @@ impl From<AuthorityRoot> for RuntimeAuthority {
 }
 
 impl RuntimeAuthority {
+    /// Trusted resource producers borrow their original selection and evidence.
+    /// The native branch adds no future allocation; the platform branch uses
+    /// the original admitted operation identity and cancellation producer.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn resource_credential(
+        &self,
+        request: &ResourceIssuance<'_>,
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
+        match &self.custody {
+            Custody::Native(root) => root.resource_credential(
+                request.parent,
+                request.grants,
+                request.caller,
+                request.now,
+            ),
+            Custody::Platform {
+                authority,
+                operation,
+            } => {
+                authority
+                    .issue_resources(&authority.context, *operation, request)
+                    .await
+            }
+        }
+    }
+
     /// Observe the same authenticated trust publications as the retained owner.
     #[cfg(all(target_os = "linux", feature = "native-execution"))]
     pub(crate) fn trust_changes(&self) -> Arc<dyn acyclic_auth::trust::ChangeSource> {

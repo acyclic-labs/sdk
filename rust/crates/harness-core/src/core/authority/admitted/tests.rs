@@ -79,11 +79,77 @@ struct Forward {
     checkpoint_calls: AtomicUsize,
     checkpoint_dropped: AtomicUsize,
     checkpoint_stop: std::sync::Mutex<Option<acyclic_actors::guest::CancellationToken>>,
+    pending_polls: AtomicUsize,
+    revoke_on_check: std::sync::Mutex<Option<Scope>>,
+}
+
+impl Forward {
+    async fn held(&self, dropped: &AtomicUsize) {
+        struct Held<'a>(&'a AtomicUsize);
+        impl Drop for Held<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let _held = Held(dropped);
+        std::future::poll_fn(|_| {
+            self.pending_polls.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::<()>::Pending
+        })
+        .await;
+    }
 }
 
 impl AuthorityOperations for Forward {
     fn check(&self, scope: &Scope) -> Result<()> {
-        AuthorityOperations::check(&self.native, scope)
+        AuthorityOperations::check(&self.native, scope)?;
+        if let Some(scope) = self.revoke_on_check.lock().expect("test check lock").take() {
+            let Custody::Native(root) = &self.native.custody else {
+                panic!("test source must retain actual native custody");
+            };
+            root.revoke_workload(&scope)?;
+        }
+        Ok(())
+    }
+    fn resource_credential<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        request: &'a ResourceIssuance<'a>,
+    ) -> BoxProviderFuture<'a, Result<acyclic_auth::verify::VerifiedCapability>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let changed = [("streams:/different", false, &["streams/follow"][..])];
+            let requested = ResourceIssuance {
+                parent: request.parent,
+                grants: if self.different_id {
+                    &changed
+                } else {
+                    request.grants
+                },
+                caller: if self.omit_parent.load(Ordering::SeqCst) {
+                    None
+                } else {
+                    request.caller
+                },
+                now: request.now,
+            };
+            let issued = self
+                .native
+                .issue_resources(context, operation, &requested)
+                .await?;
+            if self.revoke.load(Ordering::SeqCst) {
+                let Custody::Native(root) = &self.native.custody else {
+                    panic!("test source must retain actual native custody");
+                };
+                root.revoke_workload(self.native.caller().1)?;
+            }
+            self.close.lock().expect("test owner lock").take();
+            if self.hold {
+                self.held(&self.derive_dropped).await;
+            }
+            Ok(issued)
+        })
     }
     fn derive<'a>(
         &'a self,
@@ -149,14 +215,7 @@ impl AuthorityOperations for Forward {
                 stop.cancel();
             }
             if self.hold {
-                struct Held<'a>(&'a AtomicUsize);
-                impl Drop for Held<'_> {
-                    fn drop(&mut self) {
-                        self.0.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-                let _held = Held(&self.derive_dropped);
-                pending::<()>().await;
+                self.held(&self.derive_dropped).await;
             }
             Ok(scope)
         })
@@ -177,14 +236,7 @@ impl AuthorityOperations for Forward {
                 stop.cancel();
             }
             if self.checkpoint_hold.load(Ordering::SeqCst) {
-                struct Held<'a>(&'a AtomicUsize);
-                impl Drop for Held<'_> {
-                    fn drop(&mut self) {
-                        self.0.fetch_add(1, Ordering::SeqCst);
-                    }
-                }
-                let _held = Held(&self.checkpoint_dropped);
-                pending::<()>().await;
+                self.held(&self.checkpoint_dropped).await;
             }
             self.native
                 .checkpoint(context, operation, kind, digest)
@@ -221,6 +273,8 @@ fn forwarded(
         checkpoint_calls: AtomicUsize::new(0),
         checkpoint_dropped: AtomicUsize::new(0),
         checkpoint_stop: std::sync::Mutex::new(None),
+        pending_polls: AtomicUsize::new(0),
+        revoke_on_check: std::sync::Mutex::new(None),
     });
     let verifier = AuthorityVerifier::from_public(
         root.id.clone(),
@@ -238,6 +292,250 @@ fn forwarded(
         source,
         native_owner,
     ))
+}
+
+#[test]
+fn original_trust_publications_end_suspended_operations_without_issuer_starvation() -> Result<()> {
+    #[derive(Clone, Copy)]
+    enum Operation {
+        Resources,
+        ContributedResources,
+        Derive,
+        Checkpoint,
+    }
+    block_on(async {
+        for operation in [
+            Operation::Resources,
+            Operation::ContributedResources,
+            Operation::Derive,
+            Operation::Checkpoint,
+        ] {
+            for close in [false, true] {
+                let (root, selected) = fixture()?;
+                let grants = Capabilities::new(["read"]);
+                let descendant = root
+                    .attenuate(&selected, "selected-child", &grants)?
+                    .seal(&root.verifier(&mut None)?)?;
+                let caller = root.bootstrap_scope(
+                    "acting-caller",
+                    &grants,
+                    Some(AgentId::from_bytes([154; 16])),
+                    &mut None,
+                )?;
+                let capability = workload::verify(
+                    &root.verifier(&mut None)?,
+                    root.audience(),
+                    &caller,
+                    workload::now(),
+                    &mut None,
+                )?;
+                let evidence = capability
+                    .trust_evidence()
+                    .map_err(workload::unauthorized)?;
+                let unrelated = root.bootstrap_scope("unrelated", &grants, None, &mut None)?;
+                let during_check =
+                    root.bootstrap_scope("during-check", &grants, None, &mut None)?;
+                let (context, _owner) = lifetime(&root, &selected)?;
+                let (port, source, _native_owner) =
+                    forwarded(&root, &selected, context, false, None, true)?;
+                source.checkpoint_hold.store(true, Ordering::SeqCst);
+                let resources: &[(&str, bool, &[&str])] =
+                    &[("streams:/selected", false, &["streams/follow"])];
+                let selection = ResourceIssuance {
+                    parent: port.caller().1,
+                    grants: resources,
+                    caller: matches!(operation, Operation::ContributedResources)
+                        .then_some((capability.effective().principal(), &evidence)),
+                    now: workload::now(),
+                };
+                let id = OperationId::from_bytes([155; 16]);
+                let request = async {
+                    match operation {
+                        Operation::Resources | Operation::ContributedResources => port
+                            .issue_resources(&port.context, id, &selection)
+                            .await
+                            .map(|_| ()),
+                        Operation::Derive => port
+                            .derive(&port.context, id, &descendant, "child", &grants, None)
+                            .await
+                            .map(|_| ()),
+                        Operation::Checkpoint => port
+                            .checkpoint(&port.context, id, CheckpointKind::Execution, [156; 32])
+                            .await
+                            .map(|_| ()),
+                    }
+                };
+                futures::pin_mut!(request);
+                let wake = Arc::new(Wake::default());
+                let waker = futures::task::waker_ref(&wake);
+                let mut task = std::task::Context::from_waker(&waker);
+                assert!(request.as_mut().poll(&mut task).is_pending());
+                assert_eq!(source.pending_polls.load(Ordering::SeqCst), 1);
+
+                // Real signed publications unrelated to this operation must
+                // neither refuse it nor starve its original pending producer.
+                // The second publication arrives during the first recheck,
+                // after its replacement change future has been registered.
+                *source.revoke_on_check.lock().expect("test check lock") = Some(during_check);
+                wake.0.store(false, Ordering::SeqCst);
+                root.revoke_workload(&unrelated)?;
+                assert!(wake.0.load(Ordering::SeqCst));
+                wake.0.store(false, Ordering::SeqCst);
+                assert!(request.as_mut().poll(&mut task).is_pending());
+                assert_eq!(source.pending_polls.load(Ordering::SeqCst), 2);
+                assert!(wake.0.load(Ordering::SeqCst));
+                wake.0.store(false, Ordering::SeqCst);
+                assert!(request.as_mut().poll(&mut task).is_pending());
+                assert_eq!(source.pending_polls.load(Ordering::SeqCst), 3);
+
+                wake.0.store(false, Ordering::SeqCst);
+                if close {
+                    root.public_workload_trust()?
+                        .close(acyclic_auth::trust::FenceCause::Shutdown);
+                } else {
+                    root.revoke_workload(match operation {
+                        Operation::Resources | Operation::Checkpoint => &selected,
+                        Operation::ContributedResources => &caller,
+                        Operation::Derive => &descendant,
+                    })?;
+                    if matches!(
+                        operation,
+                        Operation::ContributedResources | Operation::Derive
+                    ) {
+                        port.check()?; // Losing this exact dependency leaves the base admission valid.
+                    }
+                }
+                assert!(wake.0.load(Ordering::SeqCst));
+                let result = request
+                    .now_or_never()
+                    .expect("original trust event must end the wait");
+                if close {
+                    assert!(
+                        matches!(result, Err(Error::Indeterminate(operation)) if operation == id)
+                    );
+                } else {
+                    assert!(matches!(result, Err(Error::Unauthorized(_))));
+                }
+                let (calls, dropped) = if matches!(operation, Operation::Checkpoint) {
+                    (&source.checkpoint_calls, &source.checkpoint_dropped)
+                } else {
+                    (&source.calls, &source.derive_dropped)
+                };
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(dropped.load(Ordering::SeqCst), 1);
+                assert_eq!(source.pending_polls.load(Ordering::SeqCst), 3);
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn resource_port_fences_signed_substitution_revocation_and_original_owner_loss() -> Result<()> {
+    block_on(async {
+        let grants: &[(&str, bool, &[&str])] = &[("streams:/selected", false, &["streams/follow"])];
+        let operation = OperationId::from_bytes([152; 16]);
+        for (changed, omitted, revoked) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let (root, selected) = fixture()?;
+            let caller = root.bootstrap_scope(
+                "acting-caller",
+                &Capabilities::new(["read"]),
+                Some(AgentId::from_bytes([153; 16])),
+                &mut None,
+            )?;
+            let capability = workload::verify(
+                &root.verifier(&mut None)?,
+                root.audience(),
+                &caller,
+                workload::now(),
+                &mut None,
+            )?;
+            let evidence = capability
+                .trust_evidence()
+                .map_err(workload::unauthorized)?;
+            let (context, _owner) = lifetime(&root, &selected)?;
+            let (port, source, _native_owner) =
+                forwarded(&root, &selected, context, changed, None, false)?;
+            source.omit_parent.store(omitted, Ordering::SeqCst);
+            source.revoke.store(revoked, Ordering::SeqCst);
+            let request = ResourceIssuance {
+                parent: port.caller().1,
+                grants,
+                caller: Some((capability.effective().principal(), &evidence)),
+                now: workload::now(),
+            };
+            let result = port
+                .issue_resources(&port.context, operation, &request)
+                .await;
+            if changed || omitted || revoked {
+                assert!(matches!(result, Err(Error::Unauthorized(_))));
+            } else {
+                let issued = result?;
+                assert!(evidence.contributed_to(&issued));
+                assert_eq!(
+                    issued.effective().principal(),
+                    capability.effective().principal()
+                );
+            }
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        }
+        for (hold, stop_request) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (root, selected) = fixture()?;
+            let (context, owner) = lifetime(&root, &selected)?;
+            let (request_context, request_owner) = lifetime(&root, &selected)?;
+            let (stopped, _remaining) = if stop_request {
+                (request_owner, owner)
+            } else {
+                (owner, request_owner)
+            };
+            let (port, source, _native_owner) =
+                forwarded(&root, &selected, context, false, Some(stopped), hold)?;
+            let selection = ResourceIssuance {
+                parent: port.caller().1,
+                grants,
+                caller: None,
+                now: workload::now(),
+            };
+            let request = port.issue_resources(&request_context, operation, &selection);
+            futures::pin_mut!(request);
+            let wake = Arc::new(Wake::default());
+            let waker = futures::task::waker_ref(&wake);
+            let mut task = std::task::Context::from_waker(&waker);
+            let first = request.as_mut().poll(&mut task);
+            let result = if hold {
+                assert!(first.is_pending());
+                assert!(wake.0.load(Ordering::SeqCst));
+                request
+                    .now_or_never()
+                    .expect("original owner event must settle resource issuance")
+            } else {
+                match first {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => {
+                        panic!("ready resource must observe same-poll owner loss")
+                    }
+                }
+            };
+            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                source.derive_dropped.load(Ordering::SeqCst),
+                usize::from(hold)
+            );
+            assert!(matches!(
+                port.issue_resources(&request_context, operation, &selection)
+                    .await,
+                Err(Error::Cancelled)
+            ));
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+        }
+        Ok(())
+    })
 }
 
 #[test]

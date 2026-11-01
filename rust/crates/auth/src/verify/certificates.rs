@@ -207,6 +207,7 @@ mod tests {
             },
             parent_key_id: None,
             parent_revocation_ids: vec![],
+            trust_requirements: vec![],
         };
         let mut message = Vec::new();
         // These two messages only encode fixture-owned bounded protobuf values.

@@ -112,6 +112,44 @@ pub struct CertifiedKey {
     /// All parent capability block ids at mint time; check every id.
     #[wire(tag = 9, bytes)]
     pub parent_revocation_ids: Vec<Vec<u8>>,
+    /// Complete current-trust dependencies in any account. These are signed
+    /// with this key's claims and checked on every use, including cached admission.
+    #[wire(tag = 10, message)]
+    pub trust_requirements: Vec<TrustRequirement>,
+}
+
+/// Public evidence whose continued validity is required by a certified key.
+/// It grants no authority and contains no bearer or signing secret.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::trust_requirement)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct TrustRequirement {
+    /// Exactly 1.
+    #[wire(tag = 1, uint32)]
+    pub version: u32,
+    /// Original environment, unchanged across account boundaries.
+    #[wire(tag = 2, string)]
+    pub environment: String,
+    /// Original account owning these key and block identities.
+    #[wire(tag = 3, string)]
+    pub account: String,
+    /// Every authenticated environment signer, including allowances.
+    #[wire(tag = 4, bytes)]
+    pub environment_issuers: Vec<Vec<u8>>,
+    /// Every authenticated account issuer.
+    #[wire(tag = 5, bytes)]
+    pub issuers: Vec<Vec<u8>>,
+    /// Every original capability and certificate-parent block identity.
+    #[wire(tag = 6, bytes)]
+    pub blocks: Vec<Vec<u8>>,
+    /// Every original certificate key identity and epoch.
+    #[wire(tag = 7, message)]
+    pub keys: Vec<CallerKeyRevocation>,
+    /// Workload append keys, which cannot become current trust roots.
+    #[wire(tag = 8, bytes)]
+    pub next_keys: Vec<Vec<u8>>,
+    /// Original half-open validity interval.
+    #[wire(tag = 9, message)]
+    pub validity: Validity,
 }
 
 /// Public certificate; cannot be presented as an account bearer.

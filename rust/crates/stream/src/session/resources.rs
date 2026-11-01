@@ -13,6 +13,7 @@ pub struct ResourceAuthorization {
     pub(super) resource: Arc<ResourcePattern>,
     capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
     pub(super) action: &'static str,
+    custody: Option<Arc<dyn CredentialCustody>>,
 }
 impl ResourceAuthorization {
     pub(super) fn new(
@@ -28,7 +29,17 @@ impl ResourceAuthorization {
             }),
             capability: Arc::new(std::sync::Mutex::new(capability)),
             action: "fs/list",
+            custody: None,
         }
+    }
+    pub(super) fn with_custody(mut self, custody: Option<Arc<dyn CredentialCustody>>) -> Self {
+        self.custody = custody;
+        self
+    }
+    pub(super) fn custody_terminal(
+        &self,
+    ) -> Option<crate::BoxProviderFuture<'static, StreamError>> {
+        self.custody.as_ref().map(|custody| custody.terminated())
     }
     /// The channel's current credential; `renew` replaces it in place.
     pub(super) fn current(&self) -> Result<Arc<VerifiedCapability>, StreamError> {
@@ -59,7 +70,6 @@ impl ResourceAuthorization {
     ) -> Result<(), StreamError> {
         self.authorize_account(resource, keys, attributes, policy, None)
     }
-
     pub(super) fn authorize_account(
         &self,
         resource: &str,
@@ -68,15 +78,6 @@ impl ResourceAuthorization {
         policy: PolicyDecision,
         account: Option<&[u8]>,
     ) -> Result<(), StreamError> {
-        if !acyclic_auth::valid_resource(resource)
-            || !acyclic_auth::authority::resource_matches(&self.resource, resource)
-        {
-            return Err(StreamError::AccessDenied);
-        }
-        let snapshot = self
-            .authority
-            .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
         let capability = self.current()?;
         if let Some(account) = account {
             let certified = capability
@@ -86,6 +87,38 @@ impl ResourceAuthorization {
                 return Err(StreamError::AccessDenied);
             }
         }
+        self.authorize_capability(&capability, resource, keys, attributes, policy)
+            .map(|_| ())
+    }
+    pub(super) fn change_source(&self) -> &dyn acyclic_auth::trust::ChangeSource {
+        self.authority.state.changes()
+    }
+    pub(super) fn expiry(
+        &self,
+        deadline: u64,
+    ) -> crate::BoxProviderFuture<'_, Result<(), acyclic_auth::trust::SourceClosed>> {
+        self.authority.state.expires_at(deadline)
+    }
+    pub(super) fn authorize_capability(
+        &self,
+        capability: &VerifiedCapability,
+        resource: &str,
+        keys: &[Vec<u8>],
+        attributes: &RecordAttributes,
+        policy: PolicyDecision,
+    ) -> Result<super::authority::TrustSnapshot, StreamError> {
+        if let Some(custody) = &self.custody {
+            custody.check()?;
+        }
+        if !acyclic_auth::valid_resource(resource)
+            || !acyclic_auth::authority::resource_matches(&self.resource, resource)
+        {
+            return Err(StreamError::AccessDenied);
+        }
+        let snapshot = self
+            .authority
+            .snapshot()
+            .map_err(|_| StreamError::AccessDenied)?;
         capability
             .authorize(
                 snapshot.trust.as_ref(),
@@ -115,7 +148,8 @@ impl ResourceAuthorization {
                 policy,
                 acyclic_auth::authority::Scope::Exact,
             )
-            .map_err(|_| StreamError::AccessDenied)
+            .map_err(|_| StreamError::AccessDenied)?;
+        Ok(snapshot)
     }
     /// Pushes semantic filesystem grant prefixes into the provider index. The
     /// full lossless path is still authorized per entry after indexed selection.
@@ -375,5 +409,7 @@ pub(super) fn terminal(
     terminal: crate::BoxProviderFuture<'static, StreamError>,
     identity: wire::SessionChannel,
 ) -> Source {
-    Box::pin(stream::once(async move { (identity, Err(terminal.await)) }))
+    Box::pin(stream::once(async move {
+        (identity, Ok(Event::Terminated(terminal.await)))
+    }))
 }

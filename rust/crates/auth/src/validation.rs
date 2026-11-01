@@ -107,6 +107,26 @@ pub(crate) fn certified_key(v: &CertifiedKey) -> Result<(), Error> {
 pub(crate) fn key_certificate(v: &KeyCertificate) -> Result<(), Error> {
     require(v.signature.len() == 64)
 }
+pub(crate) fn trust_requirement(v: &TrustRequirement) -> Result<(), Error> {
+    if v.version != 1 {
+        return Err(Error::UnsupportedVersion(v.version));
+    }
+    require(
+        !v.environment.is_empty()
+            && !v.account.is_empty()
+            && !v.environment_issuers.is_empty()
+            && !v.issuers.is_empty()
+            && !v.blocks.is_empty()
+            && !v.keys.is_empty()
+            && !v.next_keys.is_empty()
+            && v.environment_issuers
+                .iter()
+                .chain(&v.issuers)
+                .chain(&v.blocks)
+                .chain(&v.next_keys)
+                .all(|id| id.len() == 32),
+    )
+}
 pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
     require(!v.keys.is_empty())?;
     let mut key_ids = HashSet::with_capacity(v.keys.len());

@@ -47,8 +47,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         // Validate and stage the whole diff before changing the active set.
         // Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();
+        let mut enrollments = BTreeSet::new();
         for subscription in interest.upsert {
-            opened.push(self.open(subscription, self.channels.len() - removed + added)?);
+            let admission = self.open(subscription, self.channels.len() - removed + added)?;
+            if let Admission::Open(opened) = &admission
+                && let Some(slot) = opened
+                    .channel
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.enrollment)
+                && !enrollments.insert(slot)
+            {
+                return Err(StreamError::InvalidArgument);
+            }
+            opened.push(admission);
         }
         for remove in interest.remove {
             self.remove(remove.channel_id)?;
@@ -82,6 +94,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             } = *opened;
             channel.socket = socket;
             self.remove(identity.channel_id)?;
+            if let Some(slot) = channel
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.enrollment)
+            {
+                self.slots.reserve(slot, identity);
+            }
             let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
             self.sources.insert(identity, source, mode);
@@ -196,7 +215,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     (latest, source, None)
                 }
             }
-            Some(Kind::ActorCall(invocation)) => {
+            Some(kind @ (Kind::ActorCall(_) | Kind::ActorEnrollment(_))) => {
+                let (invocation, enrollment) = match kind {
+                    Kind::ActorCall(invocation) => (invocation, None),
+                    Kind::ActorEnrollment(request) => {
+                        if let Err(error) = self
+                            .slots
+                            .can_reserve(request.credential_slot, self.limits.channels)
+                        {
+                            return Ok(Admission::Failed(identity, error));
+                        }
+                        (request.invocation, Some(request.credential_slot))
+                    }
+                    _ => return Err(StreamError::InvalidArgument),
+                };
                 if invocation.is_empty()
                     || invocation.len() > crate::MAX_COMMAND_BYTES
                     || resume.next != 0
@@ -212,7 +244,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Ok(resource) => resource,
                     Err(error) => return Ok(Admission::Failed(identity, error)),
                 };
-                let (authorization, context) = match self.authority.bind_call(
+                let (mut authorization, mut context) = match self.authority.bind_call(
                     &self.slots,
                     subscription.credential,
                     resource,
@@ -221,13 +253,17 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     Ok(binding) => binding,
                     Err(reason) => return Ok(Admission::Denied(identity, reason)),
                 };
+                authorization.enrollment = enrollment;
+                context.4 = enrollment.is_some();
                 binding = Some(authorization);
                 opaque_cursor = true;
-                (
-                    false,
-                    calls::source(Arc::clone(provider), invocation, context, identity),
-                    None,
-                )
+                let (source, caller_terminal) =
+                    match calls::source(Arc::clone(provider), invocation, context, identity) {
+                        Ok(opened) => opened,
+                        Err(error) => return Ok(Admission::Failed(identity, error)),
+                    };
+                terminal = caller_terminal;
+                (false, source, None)
             }
             Some(Kind::ActorSocket(open)) => {
                 if open.is_empty()
@@ -306,6 +342,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             _ => return Err(StreamError::Unsupported),
         };
+        // Enrollment's original caller terminal already includes inherited
+        // custody. Other sources still attach their exact slot's terminal.
+        if let Some(custody) = binding
+            .as_ref()
+            .filter(|binding| binding.enrollment.is_none())
+            .and_then(|binding| binding.custody())
+        {
+            let custody = resources::terminal(custody.terminated(), identity);
+            terminal = Some(match terminal {
+                Some(terminal) => Box::pin(stream::select(terminal, custody)) as Source,
+                None => custody,
+            });
+        }
         Ok(Admission::Open(Box::new(Opened {
             identity,
             channel: Channel::opened(
@@ -327,6 +376,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         self.sources.remove(id);
         self.terminals.remove(id);
         if let Some(channel) = self.channels.remove(&id) {
+            if let Some(slot) = channel
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.enrollment)
+            {
+                self.slots.release(
+                    slot,
+                    wire::SessionChannel {
+                        channel_id: id,
+                        generation: channel.generation,
+                    },
+                );
+            }
             if let Some(length) = channel.indexed {
                 self.runnable.remove(&(length, id));
             }

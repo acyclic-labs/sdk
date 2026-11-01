@@ -12,11 +12,21 @@ struct Local<P: ?Sized> {
     lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
+    fn check(&self) -> Result<(), StreamError> {
+        if let Some(lifetime) = &self.lifetime {
+            lifetime
+                .has_changed()
+                .map_err(|_| StreamError::Unavailable)?;
+        }
+        Ok(())
+    }
+
     fn session(
         &self,
         source: transport::Requests,
     ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
         Box::pin(async move {
+            self.check()?;
             super::serve_on_with_products(
                 self.provider.clone(),
                 self.authority.clone(),

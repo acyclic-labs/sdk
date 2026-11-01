@@ -3,7 +3,9 @@ use super::*;
 mod admitted;
 mod runtime;
 mod runtime_signing;
-pub use admitted::{AdmittedAuthority, AuthorityOperations, CheckpointKind, ScopeDerivation};
+pub use admitted::{
+    AdmittedAuthority, AuthorityOperations, CheckpointKind, ResourceIssuance, ScopeDerivation,
+};
 pub use runtime::RuntimeAuthority;
 pub(crate) use runtime::until_turn_stopped;
 mod verified_scope;
@@ -535,14 +537,19 @@ impl AuthorityRoot {
     /// A credential for exactly `grants`, each `(resource, prefix, actions)`,
     /// under this root's audience, derived from `parent` at `now`: it lives
     /// no longer than `parent` and is revoked with it. Callers first check
-    /// that `parent` may reach everything `grants` names. Returns it with
-    /// the principal it authenticates.
+    /// that `parent` may reach everything `grants` names. With a contributed
+    /// caller, preserve its complete authenticated Principal and trust evidence.
+    /// The original live owners must be retained separately through enrollment.
     pub(crate) fn resource_credential(
         &self,
         parent: &Scope,
         grants: &[(&str, bool, &[&str])],
+        caller: Option<(
+            &acyclic_auth::contract::Principal,
+            &acyclic_auth::verify::TrustEvidence,
+        )>,
         now: u64,
-    ) -> Result<(Vec<u8>, String)> {
+    ) -> Result<acyclic_auth::verify::VerifiedCapability> {
         let capability = workload::verify(
             &self.verifier(&mut None)?,
             &self.audience,
@@ -550,7 +557,7 @@ impl AuthorityRoot {
             now,
             &mut None,
         )?;
-        workload::resource_credential(self, &capability, grants, now)
+        workload::resource_credential(self, &capability, grants, caller, now)
     }
 
     pub(in crate::core) fn issue_bound(
