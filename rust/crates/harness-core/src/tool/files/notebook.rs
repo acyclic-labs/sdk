@@ -232,7 +232,7 @@ fn encoded<T: Serialize>(
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let hold;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), false)?;
         hold = io.guard_bytes(&bytes)?;
         let mut allocation = edit::allocation(Some(work), std::mem::size_of::<String>())?;
         let mut text = String::new();
