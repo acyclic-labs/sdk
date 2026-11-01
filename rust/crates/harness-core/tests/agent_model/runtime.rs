@@ -51,6 +51,10 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 
 #[tokio::test]
 async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> Result {
+    use acyclic_harness_core::conversation::{FileDescriptor, FileRef};
+    use acyclic_stream::{ReadRequest, StreamProvider as _};
+    use futures::TryStreamExt as _;
+
     struct Frames(Vec<Out>, Option<(bool, usize, bool)>);
     impl TurnDriver for Frames {
         fn step<'a>(
@@ -238,6 +242,235 @@ async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> R
                 unreachable!()
             };
             assert_eq!(&InboxRecord::decode(&sent[1])?, record);
+        }
+    }
+    fn result_file(field: usize, bytes: usize) -> acyclic_harness_core::Result<FileRef> {
+        let original = super::driver::file("result")?;
+        FileRef::new(
+            original.volume().clone(),
+            if field == 0 {
+                "x".repeat(bytes)
+            } else {
+                "result".into()
+            },
+            if field == 3 {
+                "x".repeat(bytes)
+            } else {
+                original.version().into()
+            },
+            FileDescriptor::new(
+                [0; 32],
+                0,
+                if field == 2 {
+                    format!("application/{}", "x".repeat(bytes))
+                } else {
+                    "application/x".into()
+                },
+            )?,
+            if field == 1 {
+                "x".repeat(bytes)
+            } else {
+                "result".into()
+            },
+            &mut None,
+        )
+    }
+
+    struct Results {
+        field: usize,
+        bytes: usize,
+        children: bool,
+        parent_only: bool,
+    }
+    impl TurnDriver for Results {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            cursor: u64,
+            input: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                if self.children && agent.parent.is_none() {
+                    return Ok(TurnStep {
+                        checkpoint: None,
+                        outs: if matches!(
+                            input,
+                            Some(Queued {
+                                input: TurnInput::Brief { .. },
+                                ..
+                            })
+                        ) {
+                            vec![Out::Spawn {
+                                intent: intent("result"),
+                                brief: Some(
+                                    super::driver::file("child")
+                                        .map_err(|e| Error::Turn(Box::new(e)))?,
+                                ),
+                                volumes: Vec::new(),
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        wait: Wait::Input,
+                        drops: None,
+                    });
+                }
+                let outcome = |bytes| {
+                    result_file(self.field, bytes)
+                        .map(|file| AgentOutcome::Succeeded {
+                            result: Some(Box::new(file)),
+                        })
+                        .map_err(|error| Error::Turn(Box::new(error)))
+                };
+                let bytes = if self.parent_only {
+                    let envelope = InboxRecord::ChildDone(ChildDone {
+                        child: agent.path.clone(),
+                        outcome: outcome(1)?,
+                    })
+                    .encode()?
+                    .len()
+                        - 1;
+                    acyclic_stream::MAX_RECORD_BYTES + 1 - envelope
+                } else {
+                    self.bytes
+                };
+                let outcome = outcome(bytes)?;
+                if self.parent_only {
+                    assert!(
+                        StatusRecord {
+                            phase: Phase::Done {
+                                outcome: outcome.clone()
+                            },
+                            cursor,
+                            conversation: agent.conversation_tail + 1
+                        }
+                        .encode()?
+                        .len()
+                            <= acyclic_stream::MAX_RECORD_BYTES
+                    );
+                    assert_eq!(
+                        InboxRecord::ChildDone(ChildDone {
+                            child: agent.path.clone(),
+                            outcome: outcome.clone()
+                        })
+                        .encode()?
+                        .len(),
+                        acyclic_stream::MAX_RECORD_BYTES + 1
+                    );
+                }
+                Ok(TurnStep {
+                    checkpoint: Some(vec![7]),
+                    outs: vec![Out::Conversation(vec![b'x'])],
+                    wait: Wait::Done(outcome),
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    // Both generated envelopes matter: a child's notification can overflow
+    // while its own status fits. Exercise every unbounded FileRef text field.
+    for (children, field, bytes, parent_only) in [
+        (false, 0, maximum / 2, false),
+        (false, 0, maximum, false),
+        (false, 1, maximum / 2, false),
+        (false, 1, maximum, false),
+        (false, 2, maximum / 2, false),
+        (false, 2, maximum, false),
+        (false, 3, maximum / 2, false),
+        (false, 3, maximum, false),
+        (true, 0, maximum / 2, false),
+        (true, 0, maximum, false),
+        (true, 1, maximum / 2, false),
+        (true, 1, maximum, false),
+        (true, 2, maximum / 2, false),
+        (true, 2, maximum, false),
+        (true, 3, maximum / 2, false),
+        (true, 3, maximum, false),
+        (true, 2, 0, true),
+    ] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider.clone(),
+            Results {
+                field,
+                bytes,
+                children,
+                parent_only,
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let mut adoption = adopted(id(1));
+        adoption.brief = Some(super::driver::file("frames")?);
+        let root = host.create(&intent("create"), adoption).await?;
+        let failures = host.runtime().drain().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let target = if children {
+            root.child(&AgentId::derive(&root.id(), "result"))?
+        } else {
+            root.clone()
+        };
+        let admitted = bytes < maximum && !parent_only;
+        let outcome = if admitted {
+            AgentOutcome::Succeeded {
+                result: Some(Box::new(result_file(field, bytes)?)),
+            }
+        } else {
+            AgentOutcome::Failed {
+                message: INADMISSIBLE_EFFECT.into(),
+            }
+        };
+        let state = host.state(&target).await?;
+        assert_eq!(
+            state.phase,
+            Phase::Done {
+                outcome: outcome.clone()
+            }
+        );
+        assert!(state.turn.is_none());
+        assert_eq!(
+            values(&provider, target.conversation()?).await?.len(),
+            usize::from(admitted)
+        );
+        let status = provider
+            .read(ReadRequest {
+                path: target.status()?,
+                from: state.status_tail - 1,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or("missing result status")?;
+        assert_eq!(StatusRecord::decode(&status.value)?.phase, state.phase);
+        if children {
+            let records = provider
+                .read(ReadRequest {
+                    path: root.inbox()?,
+                    from: 1,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?
+                .try_next()
+                .await?
+                .ok_or("missing result notification")?;
+            assert_eq!(records.commit_id, status.commit_id);
+            assert_eq!(
+                InboxRecord::decode(&records.value)?,
+                InboxRecord::ChildDone(ChildDone {
+                    child: target,
+                    outcome
+                })
+            );
+            host.drain(&root).await?;
+            assert!(host.state(&root).await?.open_children.is_empty());
         }
     }
     Ok(())

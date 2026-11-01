@@ -741,16 +741,24 @@ fn valid_effect(out: &Out) -> bool {
     }
 }
 
-/// Admit the exact waiting status before accepting any of the driver's effects.
+/// Admit the exact status and generated completion before accepting driver effects.
 /// Move the original identity through the shared record codec, without copying it.
-fn admit_wait(wait: Wait, cursor: u64, conversation: u64) -> Option<Wait> {
+fn admit_wait(
+    wait: Wait,
+    state: &AgentState,
+    cursor: u64,
+    conversation: u64,
+) -> Option<(Wait, Option<Out>)> {
     let phase = match wait {
         Wait::Host(host) if super::records::check_text(&host).is_ok() => {
             Phase::WaitingHost { host }
         }
         Wait::Approval(id) => Phase::WaitingApproval { id },
+        Wait::Done(outcome @ AgentOutcome::Succeeded { result: Some(_) }) => {
+            Phase::Done { outcome }
+        }
         Wait::Host(_) | Wait::Done(AgentOutcome::FailedDiagnostic { .. }) => return None,
-        wait => return Some(wait),
+        wait => return Some((wait, None)),
     };
     let status = StatusRecord {
         phase,
@@ -761,8 +769,17 @@ fn admit_wait(wait: Wait, cursor: u64, conversation: u64) -> Option<Wait> {
         return None;
     }
     match status.phase {
-        Phase::WaitingHost { host } => Some(Wait::Host(host)),
-        Phase::WaitingApproval { id } => Some(Wait::Approval(id)),
+        Phase::WaitingHost { host } => Some((Wait::Host(host), None)),
+        Phase::WaitingApproval { id } => Some((Wait::Approval(id), None)),
+        Phase::Done { outcome } => {
+            // Retain the SAME notification for publication: its required clone
+            // happens once, before admission, rather than again at settlement.
+            let completion = report(state, &outcome);
+            if completion.as_ref().is_some_and(|out| !valid_effect(out)) {
+                return None;
+            }
+            Some((Wait::Done(outcome), completion))
+        }
         _ => unreachable!(),
     }
 }
@@ -839,10 +856,12 @@ async fn run<T: TurnDriver + ?Sized>(
         true
     });
     let wait = valid
-        .then(|| admit_wait(turn.wait, cursor, conversation))
+        .then(|| admit_wait(turn.wait, state, cursor, conversation))
         .flatten();
-    if let Some(wait) = wait {
+    let mut completion = None;
+    if let Some((wait, admitted_completion)) = wait {
         turn.wait = wait;
+        completion = admitted_completion;
     } else {
         turn = TurnStep {
             checkpoint: None,
@@ -937,7 +956,7 @@ async fn run<T: TurnDriver + ?Sized>(
         (Mode::Done, _, Some(outcome)) => {
             state.drop_queue();
             if send {
-                report(state, outcome.clone(), outs);
+                outs.extend(completion.or_else(|| report(state, &outcome)));
             }
             Phase::Done { outcome }
         }
@@ -965,22 +984,20 @@ async fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Erro
         state.phase = Phase::Done {
             outcome: AgentOutcome::Archived,
         };
-        report(state, AgentOutcome::Archived, outs);
+        outs.extend(report(state, &AgentOutcome::Archived));
     }
     Ok(())
 }
 
-/// Sends `ChildDone` to the parent; called only when the kernel reports.
-fn report(state: &AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
-    if let Some(parent) = &state.parent {
-        outs.push(Out::Send {
-            to: parent.clone(),
-            record: InboxRecord::ChildDone(ChildDone {
-                child: state.path.clone(),
-                outcome,
-            }),
-        });
-    }
+/// Builds the one parent notification, retained until the kernel reports.
+fn report(state: &AgentState, outcome: &AgentOutcome) -> Option<Out> {
+    state.parent.as_ref().map(|parent| Out::Send {
+        to: parent.clone(),
+        record: InboxRecord::ChildDone(ChildDone {
+            child: state.path.clone(),
+            outcome: outcome.clone(),
+        }),
+    })
 }
 
 /// The child that the `Spawn` request at `parent`'s inbox `sequence` names,
