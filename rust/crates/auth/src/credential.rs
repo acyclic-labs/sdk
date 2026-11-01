@@ -81,7 +81,7 @@ pub struct ResolvedCredential(Resolved);
 
 #[derive(Clone)]
 enum Resolved {
-    Raw(Zeroizing<String>),
+    Raw(Shared<Zeroizing<String>>),
     Cached {
         cache: CredentialCache,
         lease: CredentialLease,
@@ -247,7 +247,7 @@ impl CredentialProvider {
     }
 
     /// Resolve and validate before sending. Errors propagate without fallback;
-    /// the returned owned buffer is scrubbed when the request finishes using it.
+    /// clones retain the same buffer, scrubbed when its final request retires.
     pub async fn resolve(&self) -> Result<ResolvedCredential, CredentialError> {
         match &self.0 {
             Source::Raw(callback) => {
@@ -255,7 +255,7 @@ impl CredentialProvider {
                 if !valid_credential(&token) {
                     return Err(CredentialError::Invalid);
                 }
-                Ok(ResolvedCredential(Resolved::Raw(token)))
+                Ok(ResolvedCredential(Resolved::Raw(Shared::new(token))))
             }
             Source::Cached(cache) => {
                 let lease = cache.resolve().await.map_err(cache_error)?;
