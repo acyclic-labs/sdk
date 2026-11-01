@@ -210,8 +210,13 @@ pub(super) fn validate_version_entry(
             data_path.display()
         )));
     }
-    validate_document_shape(&data_bytes, &entry.version)?;
-    validate_schema_sidecar(output_dir, entry)?;
+    // Serde structs also accept positional arrays; the persisted format is an object.
+    if data_bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data file must be a JSON object",
+            entry.version
+        )));
+    }
     let data: DocsData = serde_json::from_slice(&data_bytes).map_err(|error| {
         Error::Invalid(format!(
             "version index entry {} data file is not valid DocsData: {error}",
@@ -224,6 +229,7 @@ pub(super) fn validate_version_entry(
             entry.version
         )));
     }
+    validate_schema_sidecar(output_dir, entry)?;
     if data.version != entry.version {
         return Err(Error::Invalid(format!(
             "version index entry {} data version is {}",
@@ -296,34 +302,6 @@ pub(super) fn validate_schema_sidecar(
             "version index entry {} schema sidecar does not match the pinned schema",
             entry.version
         )));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_document_shape(data_bytes: &[u8], version: &str) -> Result<(), Error> {
-    let value: serde_json::Value = serde_json::from_slice(data_bytes).map_err(|error| {
-        Error::Invalid(format!(
-            "version index entry {version} data file is not valid DocsData JSON: {error}"
-        ))
-    })?;
-    let object = value.as_object().ok_or_else(|| {
-        Error::Invalid(format!(
-            "version index entry {version} data file must be a JSON object"
-        ))
-    })?;
-    for key in ["schema", "schemaVersion"] {
-        if object.get(key).and_then(serde_json::Value::as_str) != Some(DATA_SCHEMA_VERSION) {
-            return Err(Error::Invalid(format!(
-                "version index entry {version} data file must set {key} to {DATA_SCHEMA_VERSION}"
-            )));
-        }
-    }
-    for key in ["packages", "search"] {
-        if !object.contains_key(key) {
-            return Err(Error::Invalid(format!(
-                "version index entry {version} data file requires {key}"
-            )));
-        }
     }
     Ok(())
 }

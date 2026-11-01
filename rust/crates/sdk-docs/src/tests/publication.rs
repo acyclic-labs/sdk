@@ -106,9 +106,11 @@ fn version_index_must_be_a_regular_non_reparse_file() {
     let data = publication_data("1.0.0", 'a');
     let error = write_bundle(&data, &output, false)
         .expect_err("directory at the index path must block publication");
-    assert!(error
-        .to_string()
-        .contains("version index is not a regular file"));
+    assert!(
+        error
+            .to_string()
+            .contains("version index is not a regular file")
+    );
     assert!(output.join("sdk-docs-versions.v1.json").is_dir());
     assert!(!output.join("releases").exists());
     directory.close().expect("test output should be removable");
@@ -219,104 +221,100 @@ fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
     let index_path = output.join("sdk-docs-versions.v1.json");
     let index_before_sidecar_failure =
         fs::read(&index_path).expect("index should be readable before sidecar checks");
-    fs::remove_file(&schema_path).expect("schema sidecar should be removable");
-    let error = write_bundle(&data, &output, false)
-        .expect_err("missing schema sidecar must block publication");
-    assert!(error.to_string().contains("missing schema sidecar"));
-    assert_eq!(
-        valid,
-        fs::read(&data_path).expect("data must remain unchanged")
-    );
-    assert_eq!(
-        index_before_sidecar_failure,
-        fs::read(&index_path).expect("index must remain unchanged")
-    );
-    fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
-    let error = write_bundle(&data, &output, false)
-        .expect_err("corrupt schema sidecar must block publication");
-    assert!(error
-        .to_string()
-        .contains("does not match the pinned schema"));
-    assert_eq!(
-        valid,
-        fs::read(&data_path).expect("data must remain unchanged")
-    );
-    assert_eq!(
-        index_before_sidecar_failure,
-        fs::read(&index_path).expect("index must remain unchanged")
-    );
+    for (replacement, expected) in [
+        (None, "missing schema sidecar"),
+        (Some(b"{}".as_slice()), "does not match the pinned schema"),
+    ] {
+        if let Some(bytes) = replacement {
+            fs::write(&schema_path, bytes).unwrap();
+        } else {
+            fs::remove_file(&schema_path).unwrap();
+        }
+        let error = write_bundle(&data, &output, false).unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)), "{error}");
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(fs::read(&data_path).unwrap(), valid);
+        assert_eq!(fs::read(&index_path).unwrap(), index_before_sidecar_failure);
+    }
     fs::write(&schema_path, schema).expect("valid schema sidecar should be restored");
-    let mut missing_packages: serde_json::Value =
-        serde_json::from_slice(&valid).expect("valid bundle should be JSON");
-    missing_packages
-        .as_object_mut()
-        .expect("bundle should be an object")
-        .remove("packages");
-    let missing_packages_bytes = serde_json::to_vec_pretty(&missing_packages)
-        .expect("missing-package bundle should serialize");
-    fs::write(&data_path, &missing_packages_bytes)
-        .expect("missing-package bundle should be writable");
-    let mut index: VersionIndex =
-        serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
-            .expect("index should parse");
-    let missing_digest = sha256_hex(&missing_packages_bytes);
-    for entry in &mut index.release_candidates {
-        entry.data_sha256 = missing_digest.clone();
+    let canonical: VersionIndex = serde_json::from_slice(&index_before_sidecar_failure).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+    let next = publication_data("2.0.0", 'b');
+    let mut malformed = vec![
+        (b"not DocsData".to_vec(), "must be a JSON object".to_owned()),
+        (b"[]".to_vec(), "must be a JSON object".to_owned()),
+        (b"{}".to_vec(), "not valid DocsData".to_owned()),
+    ];
+    // A complete positional struct representation must not widen the JSON format.
+    let positional: Vec<_> = [
+        "schema",
+        "schemaVersion",
+        "version",
+        "channel",
+        "source",
+        "navigation",
+        "packages",
+        "search",
+        "families",
+    ]
+    .into_iter()
+    .map(|key| document[key].clone())
+    .collect();
+    malformed.push((
+        serde_json::to_vec(&positional).unwrap(),
+        "must be a JSON object".into(),
+    ));
+    for key in ["schema", "schemaVersion", "packages", "search"] {
+        let mut missing = document.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        malformed.push((
+            serde_json::to_vec(&missing).unwrap(),
+            format!("missing field `{key}`"),
+        ));
     }
-    if let Some(latest) = &mut index.latest {
-        latest.data_sha256 = missing_digest;
+    for key in ["schema", "schemaVersion"] {
+        let mut wrong = document.clone();
+        wrong[key] = "unsupported-sdk-docs-data".into();
+        malformed.push((
+            serde_json::to_vec(&wrong).unwrap(),
+            "unsupported docs schema".into(),
+        ));
     }
-    fs::write(
-        &index_path,
-        serde_json::to_vec_pretty(&index).expect("index should serialize"),
-    )
-    .expect("index should be writable");
-    let before_missing = fs::read(&index_path).expect("index should remain readable");
-    let error = write_bundle(&data, &output, false)
-        .expect_err("bundle without packages must block publication");
-    assert!(error.to_string().contains("requires packages"));
+    // Preserve the original typed decoder's duplicate-field refusal. Decoding
+    // through a generic JSON map would silently keep only the final value.
+    malformed.push((
+        format!(
+            "{{\"schema\":\"{DATA_SCHEMA_VERSION}\",{}",
+            std::str::from_utf8(&valid)
+                .unwrap()
+                .strip_prefix('{')
+                .unwrap()
+        )
+        .into_bytes(),
+        "duplicate field `schema`".into(),
+    ));
+    for (bytes, expected) in malformed {
+        fs::write(&data_path, &bytes).unwrap();
+        let mut index = canonical.clone();
+        index.release_candidates[0].data_sha256 = sha256_hex(&bytes);
+        let before = serde_json::to_vec_pretty(&index).unwrap();
+        fs::write(&index_path, &before).unwrap();
+        let error = write_bundle(&next, &output, false).unwrap_err();
+        assert!(matches!(error, Error::Invalid(_)), "{error}");
+        assert!(error.to_string().contains(&expected), "{expected}: {error}");
+        assert_eq!(fs::read(&index_path).unwrap(), before);
+        assert_eq!(fs::read(&data_path).unwrap(), bytes);
+        assert!(!output.join("release-candidates/2.0.0").exists());
+    }
+    fs::write(&data_path, valid).unwrap();
+    fs::write(&index_path, index_before_sidecar_failure).unwrap();
+    write_bundle(&next, &output, false).unwrap();
     assert_eq!(
-        before_missing,
-        fs::read(&index_path).expect("index should be unchanged")
-    );
-    fs::write(&data_path, &valid).expect("valid bundle should be restored");
-    let valid_digest = sha256_hex(&valid);
-    for entry in &mut index.release_candidates {
-        entry.data_sha256 = valid_digest.clone();
-    }
-    if let Some(latest) = &mut index.latest {
-        latest.data_sha256 = valid_digest;
-    }
-    fs::write(
-        &index_path,
-        serde_json::to_vec_pretty(&index).expect("index should serialize"),
-    )
-    .expect("index should be restored");
-    let invalid = b"not DocsData";
-    fs::write(&data_path, invalid).expect("invalid bundle should be writable");
-    let index_path = output.join("sdk-docs-versions.v1.json");
-    let mut index: VersionIndex =
-        serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
-            .expect("index should parse");
-    let digest = sha256_hex(invalid);
-    for entry in &mut index.release_candidates {
-        entry.data_sha256 = digest.clone();
-    }
-    if let Some(latest) = &mut index.latest {
-        latest.data_sha256 = digest;
-    }
-    fs::write(
-        &index_path,
-        serde_json::to_vec_pretty(&index).expect("index should serialize"),
-    )
-    .expect("index should be writable");
-    let before = fs::read(&index_path).expect("index should remain readable");
-    let error = write_bundle(&data, &output, false)
-        .expect_err("hash-valid invalid JSON must block publication");
-    assert!(error.to_string().contains("not valid DocsData"));
-    assert_eq!(
-        before,
-        fs::read(&index_path).expect("index should be unchanged")
+        load_version_index(&output)
+            .unwrap()
+            .release_candidates
+            .len(),
+        2
     );
     directory.close().expect("test output should be removable");
 }
@@ -345,9 +343,11 @@ fn version_index_rejects_bundle_revision_mismatch() {
     let before = fs::read(&index_path).expect("index should remain readable");
     let error = write_bundle(&data, &output, false)
         .expect_err("bundle revision mismatch must block publication");
-    assert!(error
-        .to_string()
-        .contains("data revision does not match the index"));
+    assert!(
+        error
+            .to_string()
+            .contains("data revision does not match the index")
+    );
     assert_eq!(
         before,
         fs::read(&index_path).expect("index should be unchanged")
@@ -423,12 +423,16 @@ fn version_index_advances_candidates_and_preview_without_rewriting_data() {
         index.preview.as_ref().map(|entry| entry.version.as_str()),
         Some("branch_ABC")
     );
-    assert!(output
-        .join("preview/branch_abc/sdk-docs-data.v1.json")
-        .is_file());
-    assert!(output
-        .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
-        .is_file());
+    assert!(
+        output
+            .join("preview/branch_abc/sdk-docs-data.v1.json")
+            .is_file()
+    );
+    assert!(
+        output
+            .join("preview/~6272616e63685f414243/sdk-docs-data.v1.json")
+            .is_file()
+    );
     directory.close().expect("test output should be removable");
 }
 
