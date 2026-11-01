@@ -49,7 +49,7 @@ test('stdio identity MCP completes device login and shares session operations', 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const child = spawn(binary, ['identity-mcp', '--endpoint',
     `http://127.0.0.1:${server.address().port}`, '--credentials', join(directory, 'identity.json')],
-    { stdio: ['pipe', 'pipe', 'pipe'], timeout: 20_000 });
+    { stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = once(child, 'close');
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   let id = 0;
@@ -104,7 +104,7 @@ test('dispatched identity exchanges drain into private credentials before reopen
     for (const tool of ['identity_login_complete', 'identity_refresh', 'identity_whoami', 'identity_orgs'])
     for (const disconnect of [false, true]) {
       checks.push(t.test(`dispatched ${tool} exchange survives ${disconnect ? 'EOF' : 'cancellation'} before its response`,
-        { timeout: 20_000 }, async () => {
+        async () => {
           const directory = await mkdtemp(join(tmpdir(), 'acyclic-mcp-exchange-'));
           const credentials = join(directory, 'identity.json');
           let consume, release, exchanges = 0;
@@ -142,7 +142,7 @@ test('dispatched identity exchanges drain into private credentials before reopen
             JSON.stringify({ endpoint, session: { access_token: 'expired-access',
               refresh_token: 'original-refresh', expires_at: 0 } }));
           const child = spawn(binary, ['identity-mcp', '--endpoint', endpoint, '--credentials', credentials],
-            { stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 });
+            { stdio: ['pipe', 'pipe', 'pipe'] });
           const closed = once(child, 'close');
           const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
           const send = (id, method, params = {}) => child.stdin.write(

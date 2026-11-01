@@ -4,15 +4,21 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { McpClient } from "../../shared/mcp-client.mjs";
 
-test("native MCP cancellation during encoding retains the next request producer", { timeout: 10_000 }, async () => {
+function beforeFailure(event, failure) {
+  return Promise.race([event, failure.then(error => { throw error; })]);
+}
+
+test("native MCP cancellation during encoding retains the next request producer", async () => {
   const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
   const closed = once(child, "close");
   child.stderr.resume();
   const initialization = once(child, "message");
+  const failed = Promise.withResolvers();
   const client = new McpClient(child, { name: "transport-conformance", version: "1",
-    recovery: "node --test --test-name-pattern 'native MCP cancellation during encoding' plugin/tests/hosts/mcp-client.test.mjs" });
+    recovery: "node --test --test-name-pattern 'native MCP cancellation during encoding' plugin/tests/hosts/mcp-client.test.mjs",
+    onFailure: failed.resolve });
   try {
-    await initialization;
+    await beforeFailure(initialization, failed.promise);
     const abort = new AbortController();
     const cancelled = client.request("wait", { toJSON() {
       abort.abort();
@@ -31,7 +37,7 @@ test("native MCP cancellation during encoding retains the next request producer"
   }
 });
 
-test("native MCP pipe credits retain cancellation and terminals for queued callers", { timeout: 10_000 }, async () => {
+test("native MCP pipe credits retain cancellation and terminals for queued callers", async () => {
   const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
   const closed = once(child, "close");
   child.stderr.resume();
@@ -55,7 +61,7 @@ test("native MCP pipe credits retain cancellation and terminals for queued calle
     recovery: "node --test plugin/tests/hosts/mcp-client.test.mjs",
     onInitialized: ready.resolve, onFailure: failed.resolve });
   try {
-    const [{ request }] = await initialization;
+    const [{ request }] = await beforeFailure(initialization, failed.promise);
     assert.equal(request.method, "initialize");
     const initialWrites = writes;
     const text = "x".repeat(4 * 1024 * 1024);
@@ -68,13 +74,11 @@ test("native MCP pipe credits retain cancellation and terminals for queued calle
     assert.match((await calls.at(-1)).error.message, /cancelled/);
     assert.equal(writes, initialWrites, "queued cancellation sends no frame");
     child.send("initialize");
-    await ready.promise;
-    await stalled.promise;
+    await beforeFailure(ready.promise, failed.promise);
+    await beforeFailure(stalled.promise, failed.promise);
     assert(blocked, "the real unread native pipe must exhaust its write credit");
     assert(child.stdin.writableLength <= child.stdin.writableHighWaterMark);
-    const stalledWrites = writes;
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(writes, stalledWrites, "a scheduler continuation cannot replace drain readiness");
+    // The write guard remains armed until the original drain event.
     child.send("resume");
     assert.deepEqual((await calls[0]).value, { received: text.length });
     const failure = await failed.promise;
@@ -91,7 +95,7 @@ test("native MCP pipe credits retain cancellation and terminals for queued calle
   }
 });
 
-test("native MCP rejected initialization and partial frames retain exact terminal ownership", { timeout: 10_000 }, async () => {
+test("native MCP rejected initialization and partial frames retain exact terminal ownership", async () => {
   const recovery = "node --test plugin/tests/hosts/mcp-client.test.mjs";
   for (const command of ["eof", "malformed"]) {
     const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
@@ -103,7 +107,7 @@ test("native MCP rejected initialization and partial frames retain exact termina
       recovery, onFailure: failed.resolve });
     try {
       const request = client.request("wait", {}).catch(error => error);
-      await initialization;
+      await beforeFailure(initialization, failed.promise);
       child.send(command);
       const failure = await failed.promise;
       assert.equal(await request, failure, "loss before initialize must settle the original gated request");
@@ -140,17 +144,19 @@ test("native MCP rejected initialization and partial frames retain exact termina
   const client = new McpClient(child, { name: "transport-conformance", version: "1",
     recovery, onFailure: failed.resolve });
   try {
-    await initialization;
+    await beforeFailure(initialization, failed.promise);
     const abort = new AbortController();
     const text = "💠".repeat(1024 * 1024);
     const partial = client.request("wait", { text }, abort.signal).catch(error => error);
     const next = client.request("wait", { text: "next" }).catch(error => error);
     child.send("initialize");
-    await stalled.promise;
+    await beforeFailure(stalled.promise, failed.promise);
     abort.abort();
     assert.match((await partial).message, /cancelled/);
     child.send("resume");
-    const cancellation = await cancelledOnWire.promise;
+    const cancellation = await beforeFailure(cancelledOnWire.promise,
+      closed.then(([code, signal]) => new Error(
+        `step=observe original cancellation: child closed (${code}, ${signal}); recovery=${recovery}`)));
     assert.deepEqual(observed, [{ phase: "request", id: 1, received: text.length }],
       "the original complete Unicode frame must precede its cancellation");
     assert.deepEqual(cancellation, { phase: "cancelled", id: 1, requests: 1 },

@@ -15,7 +15,7 @@ assert.ok(binary, 'set ACYCLIC_TEST_BINARY to the built native acyclic binary');
 
 function run(args, cwd, executable = binary) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 });
+    const child = spawn(executable, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
@@ -139,7 +139,7 @@ test('native JSON login, reads and explicit refresh share rotated credentials', 
   }
 });
 
-test('killing refresh after server rotation cannot replay the spent token', { timeout: 20_000 }, async () => {
+test('killing refresh after server rotation cannot replay the spent token', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'acyclic-interrupted-refresh-'));
   const credentials = join(directory, 'identity.json');
   let received, requests = 0, child;
@@ -157,7 +157,7 @@ test('killing refresh after server rotation cannot replay the spent token', { ti
   try {
     await identityCredentials(binary, credentials, JSON.stringify({ endpoint, session: {
       access_token: 'access', refresh_token: 'spent-refresh', expires_at: 0 } }));
-    child = spawn(binary, ['refresh', ...args], { stdio: 'ignore', timeout: 15_000 });
+    child = spawn(binary, ['refresh', ...args], { stdio: 'ignore' });
     const closed = once(child, 'close');
     await Promise.race([rotated, closed.then(([code]) => {
       assert.fail(`refresh exited before HTTP admission: ${code}`);
@@ -263,7 +263,7 @@ test('credential sidecar names cannot replace another store or its held lock', a
     assert.equal(JSON.parse(refused.stdout).error, 'configuration_error');
     assert.equal(await readFile(other, 'utf8'), saved);
     child = spawn(binary, ['refresh', ...args, '--credentials', credentials],
-      { stdio: 'ignore', timeout: 15_000 });
+      { stdio: 'ignore' });
     const closed = once(child, 'close');
     await Promise.race([consumed, closed.then(([code]) => {
       assert.fail(`refresh exited before HTTP admission: ${code}`);
@@ -289,7 +289,7 @@ test('credential sidecar names cannot replace another store or its held lock', a
 });
 
 test('Windows short-name credentials share the long-name refresh lock',
-  { skip: process.platform !== 'win32', timeout: 20_000 }, async t => {
+  { skip: process.platform !== 'win32' }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'acyclic-shortname-'));
     const credentials = join(directory, 'identity-credentials-long-name.json');
     let consume, release, requests = 0, child;
@@ -319,7 +319,7 @@ test('Windows short-name credentials share the long-name refresh lock',
       }
       assert.deepEqual(await readFile(alias), await readFile(credentials));
       child = spawn(binary, ['refresh', ...args, '--credentials', alias],
-        { stdio: 'ignore', timeout: 15_000 });
+        { stdio: 'ignore' });
       const closed = once(child, 'close');
       await Promise.race([consumed, closed.then(([code]) => {
         assert.fail(`refresh exited before HTTP admission: ${code}`);

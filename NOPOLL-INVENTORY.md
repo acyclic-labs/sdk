@@ -4402,3 +4402,29 @@ The retained real descendant control uses one explicit PID pipe record and an OS
 | `scripts/test-plan-qualification.mjs:408` | Deleted watchdog cancellation on close | Retain original real close and all command-overlap/join/negative-result assertions. | Actioned; source only |
 
 This existing shell control already has the producer event and stdin release; it needs no second readiness mechanism. The fixed watchdog and its two cleanup calls are deleted, retaining all six original foreground/background failure combinations and actual join/status/file assertions. Timer allocation/registration/cancellation per case 1 -> 0; added processes, channels, tasks, output copies, requests or barriers: zero. Existing output accumulation and matching remain proportional to output and are not a whole-control constant-work claim. The separate Linux/browser embedded shell readiness loops and synchronous execution windows are still pending. Source-only; this control has not run for the deletion.
+
+### Identity and native pipe tests observe their original terminals
+
+| Site at preceding source | Kind | Replacement event | State |
+|---|---|---|---|
+| `plugin/tests/identity.test.mjs:18` | Implicit twenty-second command window | Original command output/error and physical close. | Actioned; source only |
+| `plugin/tests/identity.test.mjs:142` | Implicit refresh test window | Actual HTTP token consumption, explicit cancellation and original process close. | Actioned; source only |
+| `plugin/tests/identity.test.mjs:160` | Implicit refresh process window | Same original HTTP admission and physical exit; early close fails the existing admission race. | Actioned; source only |
+| `plugin/tests/identity.test.mjs:266` | Implicit held-lock process window | Original consumed/released HTTP barriers, credential commit and process close. | Actioned; source only |
+| `plugin/tests/identity.test.mjs:292` | Implicit Windows test window | Original HTTP admission, long/short-name lock refusal and committed refresh result. | Actioned; source only |
+| `plugin/tests/identity.test.mjs:322` | Implicit Windows refresh window | Same original admission/close race and explicit HTTP release. | Actioned; source only |
+| `plugin/tests/identity-mcp.test.mjs:52` | Implicit MCP process window | Original response framing, stdout EOF/error and physical close. | Actioned; source only |
+| `plugin/tests/identity-mcp.test.mjs:107` | Implicit exchange test window | Same HTTP consumption/release, cancellation or EOF, credential commit and original process close. | Actioned; source only |
+| `plugin/tests/identity-mcp.test.mjs:145` | Implicit exchange process window | Same original protocol and physical terminals. | Actioned; source only |
+| `plugin/tests/identity-contract.test.mjs:22` | Implicit command window | Original output/error and close; retain actual captured protocol provenance and wire assertions. | Actioned; source only |
+| `plugin/tests/identity-contract.test.mjs:97` | Implicit device/session/org test window | Original command results and actual HTTP request sequence. | Actioned; source only |
+| `plugin/tests/identity-contract.test.mjs:142` | Implicit registration test window | Original command result and actual challenge/registration requests. | Actioned; source only |
+| `plugin/tests/identity-contract.test.mjs:184` | Implicit denial test window | Original rejected command result and absent credential commit. | Actioned; source only |
+| `plugin/tests/hosts/mcp-client.test.mjs:7` | Implicit transport test window | Original initialization IPC record or retained client failure, then original response/cancel/close. | Actioned; source only |
+| `plugin/tests/hosts/mcp-client.test.mjs:34` | Implicit pipe-credit test window | Original initialization, write(false), drain, response and retained EOF; missing readiness producer fails through the original client failure. | Actioned; source only |
+| `plugin/tests/hosts/mcp-client.test.mjs:75` | Scheduler-turn quiet assertion | Delete the redundant quiet wait; the existing write guard rejects every write between write(false) and the actual drain throughout the original exchange. | Actioned; source only |
+| `plugin/tests/hosts/mcp-client.test.mjs:94` | Implicit initialization/framing test window | Original partial-frame/cancellation IPC and retained error terminals. Cancellation IPC races child close, since the deliberately produced stdout EOF may precede delivery of that independent IPC record. | Actioned; source only |
+
+The identity fixtures retain their real HTTP, rotation, cancellation, credential-alias, wire-contract and no-secret controls. Only implicit command/test windows are deleted. Their existing HTTP-consumption races still reject an original child that exits before admission; held requests are released by the same test-owned channel. Product device-authorization polling remains a separate owner obligation and is not qualified by these test deletions.
+
+The native pipe control uses its original retained client failure to terminate initialization and backpressure waits if their producer is lost. The cancellation IPC observation instead joins the original child close, preserving independent pipe/IPC delivery order. Original active/late retained-error, partial Unicode frame, queued cancellation and write-credit controls remain. Per command/test, each removed timer goes from one to zero; the redundant quiet-turn scheduling operation goes from one to zero. Added child processes, OS calls, payload copies, provider requests and durability barriers: zero. Each finite observation adds a fixed Promise race against an existing terminal, with no second producer. Existing pressure population, response-map work and output collection are not a whole-fixture constant-work claim. Source-only; these controls and their producer-loss negatives have not executed for this change.

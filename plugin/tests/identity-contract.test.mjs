@@ -19,7 +19,7 @@ function run(args, directory) {
   assert.ok(process.env.ACYCLIC_TEST_BINARY, 'Cargo supplies ACYCLIC_TEST_BINARY');
   return new Promise((resolve, reject) => {
     const child = spawn(process.env.ACYCLIC_TEST_BINARY, args, {
-      cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+      cwd: directory, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -65,7 +65,7 @@ async function fixture(t, handle) {
 }
 
 // Every case owns its HTTP listener, credentials, child processes and directory.
-// Their real protocol polling delays can progress independently.
+// Their requests and original child-exit events progress independently.
 describe('independent native identity processes', { concurrency: true }, () => {
 
 test('golden fixtures identify the immutable Cloud handler tests for every operation', () => {
@@ -94,7 +94,7 @@ test('signup challenge stays live after the recorded expiry without changing the
   assert.deepEqual(recorded, original);
 });
 
-test('login, whoami and orgs preserve Global device/session/org JSON', { timeout: 30_000 }, async t => {
+test('login, whoami and orgs preserve Global device/session/org JSON', async t => {
   const { device, token, whoami, orgs } = golden.cases;
   let challenge;
   const f = await fixture(t, (request, fields) => {
@@ -139,7 +139,7 @@ test('login, whoami and orgs preserve Global device/session/org JSON', { timeout
     [device, token, whoami, orgs].map(({ method, path }) => ({ method, path })));
 });
 
-test('signup --agent sends the Global hashcash request and preserves its registration JSON', { timeout: 70_000 }, async t => {
+test('signup --agent sends the Global hashcash request and preserves its registration JSON', async t => {
   const { challenge, signup } = golden.cases;
   let registration;
   const f = await fixture(t, (request, fields) => {
@@ -181,7 +181,7 @@ test('signup --agent sends the Global hashcash request and preserves its registr
     [challenge, signup].map(({ method, path }) => ({ method, path })));
 });
 
-test('login preserves the Global device-denial error without saving a session', { timeout: 20_000 }, async t => {
+test('login preserves the Global device-denial error without saving a session', async t => {
   const { device, token, errors } = golden.cases;
   const denied = errors.responses.find(value => value.error === 'access_denied');
   assert.ok(denied);
