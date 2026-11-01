@@ -201,7 +201,7 @@ pub(crate) fn finish(
         let arguments = if call.freeform {
             state
                 .budget
-                .add(std::mem::size_of::<(String, Value)>() + "input".len(), 1)?;
+                .add(std::mem::size_of::<(String, Value)>() + "input".len())?;
             let mut fields = serde_json::Map::new();
             fields.insert("input".into(), Value::String(call.arguments));
             Value::Object(fields)
@@ -224,7 +224,6 @@ pub(crate) fn finish(
                 + "id".len()
                 + family(adapter).len()
                 + if call.freeform { "freeform".len() } else { 0 },
-            3 + usize::from(call.freeform),
         )?;
         let mut binding = serde_json::Map::new();
         binding.insert("provider".into(), Value::String(family(adapter).into()));
@@ -350,7 +349,7 @@ impl<'work> State<'work> {
         let call = match self.calls.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                self.budget.add(std::mem::size_of::<(u64, Call)>(), 1)?;
+                self.budget.add(std::mem::size_of::<(u64, Call)>())?;
                 entry.insert(Call::default())
             }
         };
@@ -361,7 +360,7 @@ impl<'work> State<'work> {
         let part = match self.texts.entry(index) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                self.budget.add(std::mem::size_of::<(u64, Text)>(), 1)?;
+                self.budget.add(std::mem::size_of::<(u64, Text)>())?;
                 entry.insert(Text::default())
             }
         };
