@@ -304,6 +304,18 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         self.inner.find_operation(authority, operation, work).await
     }
 
+    async fn first_generation(
+        &self,
+        authority: AuthorityId,
+        generation: crate::GenerationId,
+        through: Sequence,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<Sequence>, AuthorityStoreError> {
+        self.inner
+            .first_generation(authority, generation, through, work)
+            .await
+    }
+
     async fn replay(
         &self,
         authority: AuthorityId,

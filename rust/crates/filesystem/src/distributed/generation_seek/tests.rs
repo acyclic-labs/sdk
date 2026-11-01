@@ -5,6 +5,16 @@ use crate::{EmbeddedCapabilities, Fs, MemoryAuthorityStore, MemoryObjectStore};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
+fn assert_read_only(counts: WorkCounters) {
+    assert_eq!(counts.authority_records_appended, 0);
+    assert_eq!(counts.authority_bytes_written, 0);
+    assert_eq!(counts.backend_write_operations, 0);
+    assert_eq!(counts.durability_operations, 0);
+    assert_eq!(counts.page_writes, 0);
+    assert_eq!(counts.object_bytes_written, 0);
+    assert_eq!(counts.materializations, 0);
+}
+
 async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     store: A,
     stream_backend: bool,
@@ -122,13 +132,19 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                     .await?,
                 Some(first)
             );
-            if !native {
-                let counts = (
-                    work.spent().backend_read_operations,
-                    work.spent().authority_records_read,
-                );
-                assert_eq!(counts, if stream_backend { (3, 1) } else { (1, 0) });
-            }
+            let counts = if native {
+                original.receipt()
+            } else {
+                work.spent()
+            };
+            assert_eq!(
+                (
+                    counts.backend_read_operations,
+                    counts.authority_records_read
+                ),
+                if stream_backend { (3, 1) } else { (1, 0) }
+            );
+            assert_read_only(counts);
             let mut absent = generation.object_id();
             absent.storage = Some(crate::ObjectStorage {
                 locator: Digest::from_bytes([91; 32]),
@@ -146,12 +162,22 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                     .await?,
                 None
             );
+            assert_read_only(if native {
+                original.receipt()
+            } else {
+                work.spent()
+            });
             assert_eq!(
                 store
                     .first_generation(authority, generation, Sequence::new(1), &mut work)
                     .await?,
                 None
             );
+            assert_read_only(if native {
+                original.receipt()
+            } else {
+                work.spent()
+            });
             assert!(
                 store
                     .first_generation(
@@ -163,6 +189,11 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
                     .await
                     .is_err()
             );
+            assert_read_only(if native {
+                original.receipt()
+            } else {
+                work.spent()
+            });
             drop(work);
         }
     }
@@ -286,11 +317,23 @@ async fn forged_header_is_not_publication_evidence() -> TestResult {
 async fn first_generation_seek_retains_identity_prefix_and_original_funding() -> TestResult {
     crate::initialize_test_native_io();
     first_occurrence(MemoryAuthorityStore::default(), false).await?;
+    let simulated = crate::Simulation::wrap(
+        MemoryAuthorityStore::default(),
+        MemoryObjectStore::default(),
+        Default::default(),
+    )?;
+    first_occurrence(simulated.stores().0, false).await?;
     first_occurrence(
         StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
         true,
     )
     .await?;
+    let simulated = crate::Simulation::wrap(
+        StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
+        MemoryObjectStore::default(),
+        Default::default(),
+    )?;
+    first_occurrence(simulated.stores().0, true).await?;
     forged_header_is_not_publication_evidence().await?;
     #[cfg(feature = "local")]
     {
