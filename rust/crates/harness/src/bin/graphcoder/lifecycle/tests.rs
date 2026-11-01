@@ -16,7 +16,11 @@ fn request() -> ReportRequest {
 fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (owner, child) = tokio::io::duplex(4096);
@@ -75,7 +79,11 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
 fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (producer, completion) = tokio::sync::oneshot::channel::<()>();
@@ -99,6 +107,110 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
         );
         assert!(report.snapshot().is_empty());
     });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<()> {
+    use std::{future::poll_fn, os::fd::AsFd as _, pin::Pin, task::Poll};
+    use tokio::io::AsyncWrite as _;
+
+    struct FailedFormatter;
+    impl fmt::Debug for FailedFormatter {
+        fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
+            Err(fmt::Error)
+        }
+    }
+
+    let runtime = acyclic_native_runtime::coordination_runtime()?;
+    runtime.block_on(async {
+        for field in ["record", "capacity", "formatter"] {
+            for operation_error in [false, true] {
+                let (reader, original) = io::pipe()?;
+                let mut output = InheritedOutput::from_file(
+                    original.as_fd().try_clone_to_owned()?.into(),
+                )?;
+                let chunk = [b'x'; 8192];
+                output.write_all(&chunk).await?;
+                loop {
+                    let written = poll_fn(|cx| {
+                        Poll::Ready(match Pin::new(&mut output).poll_write(cx, &chunk) {
+                            Poll::Ready(result) => Some(result),
+                            Poll::Pending => None,
+                        })
+                    })
+                    .await;
+                    let Some(written) = written else { break };
+                    assert_ne!(written?, 0);
+                }
+                // The old post-terminal summary would wait on this actual
+                // full pipe, even though the original result is already ready.
+                let old_writer = InheritedOutput::from_file(
+                    original.as_fd().try_clone_to_owned()?.into(),
+                )?;
+                let mut old_summary = Box::pin(old_writer.write_owned(b"final error\n"));
+                poll_fn(|cx| {
+                    assert!(old_summary.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                drop(old_summary);
+
+                let report = WaitReport::default();
+                let (subscriber, receiver) = subscriber(&report, Some("info".into()), || {
+                    Ok(Some(vec![vec![0; 64].into_boxed_slice()]))
+                })
+                .unwrap();
+                let dispatch = tracing::Dispatch::new(subscriber);
+                let _subscriber = tracing::dispatcher::set_default(&dispatch);
+                let operation = async {
+                    match field {
+                        "capacity" => tracing::info!(field = "a field exceeding the original admitted sixty-four-byte record storage without any native write"),
+                        "formatter" => tracing::info!(field = ?FailedFormatter),
+                        _ => tracing::info!("terminal"),
+                    }
+                    if operation_error {
+                        Err(Box::new(io::Error::from(io::ErrorKind::PermissionDenied)) as Failure)
+                    } else {
+                        Ok(19)
+                    }
+                };
+                let original = observe(
+                    &report,
+                    Ok(None),
+                    std::future::pending().boxed().shared(),
+                    false,
+                    operation,
+                );
+                let mut host = Box::pin(diagnostics(
+                    original,
+                    Some((receiver.unwrap(), output)),
+                ));
+                let ((result, report_result), failure) = poll_fn(|cx| {
+                    let Poll::Ready(result) = host.as_mut().poll(cx) else {
+                        panic!("diagnostic output held the completed original result")
+                    };
+                    Poll::Ready(result)
+                })
+                .await;
+                report_result.unwrap();
+                if operation_error {
+                    assert_eq!(
+                        result.unwrap_err().downcast::<io::Error>().unwrap().kind(),
+                        io::ErrorKind::PermissionDenied
+                    );
+                } else {
+                    assert_eq!(result.unwrap(), 19);
+                }
+                assert_eq!(
+                    matches!(failure, Some(OutputFailure::Formatting)),
+                    field == "formatter"
+                );
+                drop(reader);
+            }
+        }
+        Ok(())
+    })
 }
 
 #[test]
@@ -156,7 +268,11 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
 fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer() {
     let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
     let report = WaitReport::default();
-    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let dispatch = tracing::Dispatch::new(
+        subscriber(&report, Some("off".into()), || Ok(None))
+            .unwrap()
+            .0,
+    );
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
         let (owner, child) = tokio::io::duplex(256);

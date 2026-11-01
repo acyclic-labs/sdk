@@ -14,14 +14,14 @@ struct Counters {
     closed: AtomicU64,
 }
 
-fn increment(counter: &AtomicU64) {
+pub(crate) fn increment(counter: &AtomicU64) {
     // Saturation is explicit unknown evidence, never a wrapped zero.
     let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         value.checked_add(1)
     });
 }
 
-fn count(counter: &AtomicU64) -> Option<u64> {
+pub(crate) fn count(counter: &AtomicU64) -> Option<u64> {
     let value = counter.load(Ordering::Relaxed);
     (value != u64::MAX).then_some(value)
 }
@@ -31,9 +31,7 @@ fn count(counter: &AtomicU64) -> Option<u64> {
 /// this adapter creates no task, thread, timer or second operation lifecycle.
 #[derive(Clone)]
 pub struct Export {
-    sender: mpsc::UnboundedSender<ExportRecord>,
-    credit: Arc<Semaphore>,
-    counters: Arc<Counters>,
+    delivery: Delivery<OwnedSample>,
     details: bool,
 }
 
@@ -62,53 +60,21 @@ impl Export {
     /// `work.*` totals. Paths, payloads, resource identities and error text must
     /// never be supplied as failure categories.
     pub fn channel(credit: Arc<Semaphore>, details: bool) -> (Self, ExportReceiver) {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let export = Self {
-            sender,
-            credit,
-            counters: Arc::default(),
-            details,
-        };
+        let (delivery, receiver) = Delivery::channel(credit);
+        let export = Self { delivery, details };
         (export, ExportReceiver(receiver))
     }
 
     /// Returns event-fed accounting without examining queued records.
     pub fn stats(&self) -> ExportStats {
-        ExportStats {
-            retained: self.counters.retained.load(Ordering::Relaxed),
-            high_water: self.counters.high_water.load(Ordering::Relaxed),
-            full: count(&self.counters.full),
-            closed: count(&self.counters.closed),
-        }
+        self.delivery.stats()
     }
 }
 
 impl Export {
     fn publish(&self, make_sample: impl FnOnce() -> OwnedSample) {
-        if self.sender.is_closed() {
-            increment(&self.counters.closed);
+        let Ok(admission) = self.delivery.admit() else {
             return;
-        }
-        let permit = match Arc::clone(&self.credit).try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(TryAcquireError::NoPermits) => {
-                increment(&self.counters.full);
-                return;
-            }
-            Err(TryAcquireError::Closed) => {
-                increment(&self.counters.closed);
-                return;
-            }
-        };
-        let retained = self.counters.retained.fetch_add(1, Ordering::Relaxed) + 1;
-        self.counters
-            .high_water
-            .fetch_max(retained, Ordering::Relaxed);
-        // This owner exists before any copying, so unwinding cannot strand
-        // credit or its retained count while a record is being constructed.
-        let admission = Admission {
-            _permit: permit,
-            counters: Arc::clone(&self.counters),
         };
         let mut sample = make_sample();
         if !self.details {
@@ -119,13 +85,7 @@ impl Export {
             sample.capture_retirement = None;
             sample.binding = None;
         }
-        let record = ExportRecord {
-            sample,
-            _admission: admission,
-        };
-        if self.sender.send(record).is_err() {
-            increment(&self.counters.closed);
-        }
+        let _ = self.delivery.publish(admission, sample);
     }
 }
 
@@ -179,20 +139,16 @@ impl Sink for Export {
 
 /// One original terminal sample, with its output credit retained through drop.
 /// It cannot be cloned into uncredited retained output.
-pub struct ExportRecord {
-    sample: OwnedSample,
-    // Fields drop in declaration order: owned evidence precedes its credit.
-    _admission: Admission,
-}
+pub struct ExportRecord(DeliveryRecord<OwnedSample>);
 
 impl ExportRecord {
     /// Borrows the original evidence while retaining its credit.
     pub fn sample(&self) -> Sample<'_> {
-        self.sample.sample()
+        self.0.value.sample()
     }
 }
 
-struct Admission {
+pub(crate) struct Admission {
     _permit: OwnedSemaphorePermit,
     counters: Arc<Counters>,
 }
@@ -206,11 +162,111 @@ impl Drop for Admission {
 
 /// Host-owned delivery end. Dropping it rejects future exports immediately;
 /// dropping all exporters ends `recv` even when a consumer retains old records.
-pub struct ExportReceiver(mpsc::UnboundedReceiver<ExportRecord>);
+pub struct ExportReceiver(mpsc::UnboundedReceiver<DeliveryRecord<OwnedSample>>);
 
 impl ExportReceiver {
     /// Waits on the original channel producer event; `None` is producer closure.
     pub async fn recv(&mut self) -> Option<ExportRecord> {
-        self.0.recv().await
+        self.0.recv().await.map(ExportRecord)
+    }
+}
+
+// Typed samples and text use this same record admission and retirement path.
+pub(crate) struct Delivery<T> {
+    sender: mpsc::UnboundedSender<DeliveryRecord<T>>,
+    credit: Arc<Semaphore>,
+    counters: Arc<Counters>,
+}
+
+impl<T> Clone for Delivery<T> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            credit: self.credit.clone(),
+            counters: self.counters.clone(),
+        }
+    }
+}
+
+pub(crate) enum Refusal {
+    Full,
+    Closed,
+}
+
+pub(crate) struct DeliveryRecord<T> {
+    // Payload retires before credit, including on failed publication.
+    pub(crate) value: T,
+    _admission: Admission,
+}
+
+impl<T> Delivery<T> {
+    pub(crate) fn channel(
+        credit: Arc<Semaphore>,
+    ) -> (Self, mpsc::UnboundedReceiver<DeliveryRecord<T>>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                sender,
+                credit,
+                counters: Arc::default(),
+            },
+            receiver,
+        )
+    }
+
+    pub(crate) fn stats(&self) -> ExportStats {
+        ExportStats {
+            retained: self.counters.retained.load(Ordering::Relaxed),
+            high_water: self.counters.high_water.load(Ordering::Relaxed),
+            full: count(&self.counters.full),
+            closed: count(&self.counters.closed),
+        }
+    }
+
+    pub(crate) fn full(&self) {
+        increment(&self.counters.full);
+    }
+
+    pub(crate) fn closed(&self) {
+        increment(&self.counters.closed);
+    }
+
+    pub(crate) fn admit(&self) -> Result<Admission, Refusal> {
+        if self.sender.is_closed() {
+            increment(&self.counters.closed);
+            return Err(Refusal::Closed);
+        }
+        let permit = match self.credit.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(TryAcquireError::NoPermits) => {
+                self.full();
+                return Err(Refusal::Full);
+            }
+            Err(TryAcquireError::Closed) => {
+                increment(&self.counters.closed);
+                return Err(Refusal::Closed);
+            }
+        };
+        let retained = self.counters.retained.fetch_add(1, Ordering::Relaxed) + 1;
+        self.counters
+            .high_water
+            .fetch_max(retained, Ordering::Relaxed);
+        Ok(Admission {
+            _permit: permit,
+            counters: self.counters.clone(),
+        })
+    }
+
+    pub(crate) fn publish(&self, admission: Admission, value: T) -> Result<(), DeliveryRecord<T>> {
+        match self.sender.send(DeliveryRecord {
+            value,
+            _admission: admission,
+        }) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                increment(&self.counters.closed);
+                Err(error.0)
+            }
+        }
     }
 }

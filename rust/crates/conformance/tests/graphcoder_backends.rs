@@ -280,7 +280,7 @@ impl Home {
             .env("LOCALAPPDATA", &settings)
             .env("XDG_DATA_HOME", &settings)
             .env("TERM", "dumb")
-            .env("GRAPHCODER_LOG", "warn")
+            .env("GRAPHCODER_LOG", "off")
             .env_remove("GRAPHCODER_MODEL")
             .env_remove("ACYCLIC_ENDPOINT")
             .env_remove("ACYCLIC_API_KEY")

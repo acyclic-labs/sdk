@@ -12,6 +12,8 @@ mod lifecycle;
 mod usage_export;
 mod view;
 
+pub use lifecycle::DiagnosticConfigurationError;
+
 use acyclic_harness::{
     OperationId,
     local::{
@@ -40,42 +42,54 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// `GraphCoder` on argv, its server (`graphcoder serve`) through the seams
 /// `seams` makes of the self-deployed defaults: the one entry point a
 /// self-deployed and a managed server share.
-pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
+/// Enabled diagnostics require caller-owned text buffers or an explicit paired
+/// CLI reservation. Logging off constructs no text delivery or storage pool.
+/// Errors are returned to the caller without starting a terminal output write.
+/// Diagnostic delivery ends with the original operation, report and shutdown
+/// owner; its best-effort failure never replaces the original operation result.
+pub fn main_with(
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    diagnostic_storage: Option<Vec<Box<[u8]>>>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
         args.model = None;
     }
-    let report = acyclic_native_runtime::obs::WaitReport::default();
-    if let Err(error) =
-        lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok()).try_init()
-    {
-        eprintln!("graphcoder: diagnostics initialization failed: {error}");
-        return ExitCode::FAILURE;
-    }
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
-    let result = acyclic_native_runtime::coordination_runtime()
+    acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
             let result = runtime.block_on(phase(|| async {
+                let report = acyclic_native_runtime::obs::WaitReport::default();
+                let (subscriber, receiver) =
+                    lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok(), || {
+                        lifecycle::storage(
+                            diagnostic_storage,
+                            args.diagnostic_records,
+                            args.diagnostic_record_bytes,
+                        )
+                    })?;
+                subscriber.try_init()?;
+                let diagnostics = receiver
+                    .map(|receiver| {
+                        acyclic_native_runtime::InheritedOutput::stderr()
+                            .map(|writer| (receiver, writer))
+                    })
+                    .transpose()?;
                 let shutdown = lifecycle::shutdown();
                 let port = acyclic_native_runtime::obs::ReportPort::from_environment();
                 let operation = phase(|| run(args, seams, shutdown.clone()));
-                let (result, _) =
-                    lifecycle::observe(&report, port, shutdown, graceful, operation).await;
+                let original = lifecycle::observe(&report, port, shutdown, graceful, operation);
+                let ((result, _report_result), _diagnostic_failure) =
+                    lifecycle::diagnostics(original, diagnostics).await;
                 result
             }));
             runtime.shutdown_background();
             result
-        });
-    match result {
-        Ok(code) => ExitCode::from(code),
-        Err(error) => {
-            eprintln!("graphcoder: {error}");
-            ExitCode::FAILURE
-        }
-    }
+        })
+        .map(ExitCode::from)
 }
 
 /// The `GraphCoder` preset with argv's overrides for the local harness: the

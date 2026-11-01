@@ -33,8 +33,12 @@ impl Verifier for Witnessed {
 }
 
 fn main() -> std::process::ExitCode {
-    graphcoder::main_with(|config| ServerConfig {
-        verifier: Arc::new(Witnessed),
-        ..config
-    })
+    graphcoder::main_with(
+        |config| ServerConfig {
+            verifier: Arc::new(Witnessed),
+            ..config
+        },
+        None,
+    )
+    .unwrap_or(std::process::ExitCode::FAILURE)
 }

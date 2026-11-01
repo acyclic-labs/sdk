@@ -3591,6 +3591,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-stream",
  "acyclic-test-support",
  "axum",

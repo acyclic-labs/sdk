@@ -14,7 +14,7 @@ serde.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
-tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "io-util", "macros"] }
 futures.workspace = true
 
 [dev-dependencies]
