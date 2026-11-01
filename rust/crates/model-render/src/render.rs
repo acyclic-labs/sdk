@@ -11,7 +11,7 @@ use std::{
 pub enum RenderError {
     /// The immutable item violates its durable contract.
     InvalidItem(&'static str),
-    /// A foreign message has no admitted projection for the target family.
+    /// The selected message has no admitted visible projection for the target family.
     MissingProjection(Family),
     /// Model JSON encoding failed.
     Json(serde_json::Error),
@@ -129,7 +129,9 @@ impl Tail {
 
 /// Pure per-item projection. Reasoning requires the original provider, endpoint
 /// and known credential ownership scope. It survives a model change unchanged;
-/// foreign or unowned reasoning is dropped, never displayed as text.
+/// foreign or unowned reasoning is dropped, never displayed as text. A guarded
+/// message instead selects its admitted visible projection, including when the
+/// protocol is unchanged. Its message grouping remains one segment.
 ///
 /// # Errors
 /// A foreign message without its write-time capability projection refuses.
@@ -139,16 +141,16 @@ pub fn seg<'a>(
 ) -> Result<Option<&'a RawValue>, RenderError> {
     let origin = item.provenance();
     let same_family = origin.family == target.family;
-    let same_provider = item.kind() != ItemKind::Reasoning
+    let same_owner = item.kind() == ItemKind::Message
         || (same_family
             && origin.provider == target.provider
             && origin.endpoint == target.endpoint
             && origin.credential_scope.is_some()
             && origin.credential_scope == target.credential_scope);
-    match select(item.kind(), same_family, same_provider) {
+    match select(item.kind(), same_family, same_owner) {
         Selection::Native => Ok(Some(item.wire())),
         Selection::Drop => Ok(None),
-        Selection::Foreign => item
+        Selection::Projection => item
             .projection(target.family)
             .map(Some)
             .ok_or(RenderError::MissingProjection(target.family)),
@@ -213,7 +215,7 @@ fn render_request<'a>(
     let mut last_gemini_model = None;
     for item in items {
         if let Some(raw) = seg(&header.target, item)? {
-            last_gemini_model = Some(item.gemini_model_turn());
+            last_gemini_model = Some(item.gemini_model_turn(raw));
             writer.write_all(separator).map_err(RenderError::Write)?;
             writer
                 .write_all(raw.get().as_bytes())

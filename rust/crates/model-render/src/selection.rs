@@ -5,15 +5,16 @@ use crate::ItemKind;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Selection {
     Native,
-    Foreign,
+    Projection,
     Drop,
 }
 
-pub(crate) fn select(kind: ItemKind, same_family: bool, same_provider: bool) -> Selection {
+pub(crate) fn select(kind: ItemKind, same_family: bool, same_owner: bool) -> Selection {
     match kind {
-        ItemKind::Reasoning if !same_family || !same_provider => Selection::Drop,
+        ItemKind::Reasoning if !same_family || !same_owner => Selection::Drop,
+        ItemKind::GuardedMessage if !same_family || !same_owner => Selection::Projection,
         _ if same_family => Selection::Native,
-        _ => Selection::Foreign,
+        _ => Selection::Projection,
     }
 }
 
@@ -30,7 +31,7 @@ mod proofs {
         let same_family: bool = kani::any();
         let same_provider: bool = kani::any();
         let selection = select(ItemKind::Reasoning, same_family, same_provider);
-        assert_ne!(selection, Selection::Foreign);
+        assert_ne!(selection, Selection::Projection);
         assert_eq!(selection == Selection::Native, same_family && same_provider);
         kani::cover!(selection == Selection::Native);
         kani::cover!(!same_provider && same_family && selection == Selection::Drop);
@@ -44,8 +45,22 @@ mod proofs {
         let selection = select(ItemKind::Message, same_family, same_provider);
         assert_ne!(selection, Selection::Drop);
         assert_eq!(selection == Selection::Native, same_family);
-        assert_eq!(selection == Selection::Foreign, !same_family);
+        assert_eq!(selection == Selection::Projection, !same_family);
         kani::cover!(selection == Selection::Native && !same_provider);
-        kani::cover!(selection == Selection::Foreign);
+        kani::cover!(selection == Selection::Projection);
+    }
+
+    #[kani::proof]
+    fn guarded_messages_select_visible_projection_outside_original_ownership() {
+        let same_family: bool = kani::any();
+        let same_owner: bool = kani::any();
+        let selection = select(ItemKind::GuardedMessage, same_family, same_owner);
+        assert_ne!(selection, Selection::Drop);
+        assert_eq!(selection == Selection::Native, same_family && same_owner);
+        assert_eq!(
+            selection == Selection::Projection,
+            !same_family || !same_owner
+        );
+        kani::cover!(same_family && !same_owner && selection == Selection::Projection);
     }
 }
