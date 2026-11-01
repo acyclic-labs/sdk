@@ -42,7 +42,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // The cut itself is request storage. Admit it through the same original
         // frame before constructing the finite sparse read.
         let mut revisions = work.vec(1)?;
-        revisions.push(heads.snapshot);
+        revisions.push(heads.snapshot.clone());
         let at_least = acyclic_stream::RevisionCut::new(revisions).map_err(map_stream_error)?;
         let reference = generation.to_bytes();
         let key = work.stream_bytes(GENERATION_INDEX_DOMAIN, &[reference.as_slice()])?;

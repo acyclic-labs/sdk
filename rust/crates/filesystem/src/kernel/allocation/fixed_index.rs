@@ -1,6 +1,8 @@
 //! Filesystem custody for the shared fixed-width index.
 mod recent;
 pub(crate) use recent::RecentIndex;
+mod persistent;
+pub(crate) use persistent::PersistentIndex;
 
 use crate::FsError;
 use crate::kernel::KernelAccounting;

@@ -115,12 +115,9 @@ impl MemoryAuthorityStore {
         let mut operations = HashMap::new();
         reserve(&mut operations, accounting)?;
         let durable = self.durable(authority, expected, commit.clone(), accounting)?;
-        let mut generations = HashMap::new();
-        if let Some((generation, custody)) =
-            prepare_generation(&mut generations, authority, &durable, accounting)?
-        {
-            generations.insert(generation, (durable.sequence, custody));
-        }
+        let generations =
+            prepare_generation(&GenerationIndex::default(), authority, &durable, accounting)?
+                .unwrap_or_default();
         operations.insert(durable.operation_id, (0, operation));
         accounting.charge(copy_work(1, size_of::<DurableCommit>())?)?;
         commits.0.push(durable);
@@ -282,7 +279,7 @@ impl MemoryAuthorityStore {
             accounting,
         )?;
         let generation = prepare_generation(
-            &mut state.generations,
+            &state.generations,
             request.authority_id,
             &durable,
             accounting,
@@ -353,11 +350,8 @@ impl MemoryAuthorityStore {
         state
             .operations
             .insert(durable.operation_id, (index, operation));
-        if let Some((generation, custody)) = generation {
-            state
-                .generations
-                .entry(generation)
-                .or_insert((durable.sequence, custody));
+        if let Some(generation) = generation {
+            state.generations = generation;
         }
         state.commits.push(durable.clone());
         accounting.record_completed(copied)?;
@@ -366,11 +360,11 @@ impl MemoryAuthorityStore {
 }
 
 fn prepare_generation(
-    generations: &mut HashMap<crate::GenerationId, (Sequence, KernelOwnedAllocation)>,
+    generations: &GenerationIndex,
     authority: AuthorityId,
     durable: &DurableCommit,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<(crate::GenerationId, KernelOwnedAllocation)>, FsError> {
+) -> Result<Option<GenerationIndex>, FsError> {
     let Some(generation) = crate::async_storage::generation_fact(
         authority,
         durable.sequence,
@@ -380,14 +374,11 @@ fn prepare_generation(
     else {
         return Ok(None);
     };
-    examine(accounting)?;
-    if generations.contains_key(&generation) {
+    let key = generation_key(generation);
+    if generations.get(key, accounting)?.is_some() {
         return Ok(None);
     }
-    let custody = accounting.claim_owned(
-        size_of::<(crate::GenerationId, (Sequence, KernelOwnedAllocation))>() as u64,
-        0,
-    )?;
-    reserve(generations, accounting)?;
-    Ok(Some((generation, custody)))
+    generations
+        .insert(key, durable.sequence, accounting)
+        .map(Some)
 }

@@ -28,8 +28,8 @@ impl MemoryAuthorityStore {
         examine(accounting)?;
         Ok(state
             .generations
-            .get(&generation)
-            .map(|(sequence, _)| *sequence)
+            .get(generation_key(generation), accounting)?
+            .copied()
             .filter(|sequence| *sequence <= through))
     }
 

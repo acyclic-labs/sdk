@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::{CheckoutMode, GenerationSelector};
 use crate::{EmbeddedCapabilities, Fs, MemoryAuthorityStore, MemoryObjectStore};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -36,8 +37,8 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
     assert_eq!(first, Sequence::new(2));
     let old = workspace
         .checkout(
-            crate::GenerationSelector::Head,
-            crate::CheckoutMode::read_only_pinned(),
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
             BUDGET,
             &cancel,
         )
@@ -142,8 +143,8 @@ async fn first_occurrence<A: AsyncAuthorityStore + 'static>(
         old,
         workspace
             .checkout(
-                crate::GenerationSelector::Head,
-                crate::CheckoutMode::read_only_pinned(),
+                GenerationSelector::Head,
+                CheckoutMode::read_only_pinned(),
                 BUDGET,
                 &cancel,
             )
