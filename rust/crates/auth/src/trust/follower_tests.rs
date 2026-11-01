@@ -11,6 +11,15 @@ const NOW: u64 = 1_000;
 thread_local! {
     static VERIFYING_KEYRING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static VERIFYING_ENVIRONMENT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn environment_verifying() {
+    let interleave = VERIFYING_ENVIRONMENT.with(|slot| slot.borrow_mut().take());
+    if let Some(interleave) = interleave {
+        interleave();
+    }
 }
 
 pub(super) fn keyring_verifying() {
@@ -513,6 +522,43 @@ fn environment_rotation_replays_and_refuses_retired_signers() {
     assert!(EnvironmentFrontier::resume("test", successor.anchor(), &[&first]).is_err());
     let (_, genesis) = issuer.genesis("account", key(2), NOW).unwrap();
     assert!(EnvironmentFrontier::resume("test", issuer.anchor(), &[&genesis[0]]).is_err());
+
+    // Real follower admission must release its environment guard before the
+    // canonical signature check. An independently signed successor can win
+    // there; the obsolete proof cannot replace its current frontier afterward.
+    let trust = Arc::new(Follower::new("test", issuer.anchor()));
+    trust.apply(&first, NOW + 1).unwrap();
+    trust.resume();
+    let mut competing = EnvironmentFrontier::resume("test", issuer.anchor(), &[&first]).unwrap();
+    let winner = successor
+        .environment_keyring(
+            &mut competing,
+            &[key(7).verifying_key().to_bytes()],
+            NOW + 1,
+        )
+        .unwrap();
+    let verifying = trust.clone();
+    VERIFYING_ENVIRONMENT.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            // Fail on a lock regression before an independent read/write could
+            // hang. The real check still uses its original captured signers.
+            assert!(verifying.environment.try_write().is_ok());
+            assert!(verifying.accounts.try_write().is_ok());
+            assert!(verifying.environment_keys("test").is_ok());
+            assert_eq!(verifying.apply(&winner, NOW + 1), Ok(Applied::Changed));
+        }));
+    });
+    assert_eq!(trust.apply(&second, NOW + 1), Err(VerifyError::Unavailable));
+    VERIFYING_ENVIRONMENT.with(|slot| assert!(slot.borrow().is_none()));
+    {
+        let current = trust.environment.read().unwrap();
+        assert_eq!(current.frontier(), competing.frontier());
+        assert_eq!(current.keys(), competing.keys());
+    }
+    assert_eq!(trust.check_open(), Err(SourceClosed));
+    trust.resume();
+    assert_eq!(trust.apply(&second, NOW + 1), Ok(Applied::Duplicate));
+    assert_eq!(trust.environment.read().unwrap().keys(), competing.keys());
 }
 
 #[test]

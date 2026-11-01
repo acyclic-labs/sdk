@@ -30,6 +30,8 @@
 //! No task per account; one hash lookup per trust read. Publication wakes still
 //! reach all subscribers. Record verification holds only its own account lock;
 //! keyring publication also checks the environment revision it authenticated.
+//! Environment signatures hold no publication lock and must extend the same
+//! retained environment revision when they publish.
 use super::{ChangeSource, Changed, SourceClosed};
 use crate::{
     ENVIRONMENT_DOMAIN, KEYRING_DOMAIN,
@@ -82,6 +84,11 @@ pub enum Applied {
 #[derive(Clone)]
 pub struct EnvironmentFrontier {
     name: String,
+    revision: EnvironmentRevision,
+}
+
+#[derive(Clone)]
+struct EnvironmentRevision {
     keys: Arc<[BlockId]>,
     sequence: u64,
     digest: BlockId,
@@ -94,10 +101,12 @@ impl EnvironmentFrontier {
     pub fn genesis(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
         Self {
             name: environment.into(),
-            keys: anchor.into(),
-            sequence: 0,
-            digest: [0; 32],
-            issued_at: 0,
+            revision: EnvironmentRevision {
+                keys: anchor.into(),
+                sequence: 0,
+                digest: [0; 32],
+                issued_at: 0,
+            },
         }
     }
 
@@ -130,19 +139,19 @@ impl EnvironmentFrontier {
     /// The current environment keys.
     #[must_use]
     pub fn keys(&self) -> &[BlockId] {
-        &self.keys
+        &self.revision.keys
     }
 
     /// Last applied sequence (0 before keyring 1) and its digest.
     #[must_use]
     pub const fn frontier(&self) -> (u64, BlockId) {
-        (self.sequence, self.digest)
+        (self.revision.sequence, self.revision.digest)
     }
 
     /// Last applied publication time.
     #[must_use]
     pub const fn issued_at(&self) -> u64 {
-        self.issued_at
+        self.revision.issued_at
     }
 
     /// Authenticates and applies the next environment keyring at `now`. A
@@ -152,10 +161,20 @@ impl EnvironmentFrontier {
         signed: &SignedEnvironmentKeyring,
         now: u64,
     ) -> Result<(Applied, u64), VerifyError> {
-        let next = &signed.keyring;
-        if next.environment != self.name {
+        if signed.keyring.environment != self.name {
             return Err(VerifyError::Trust);
         }
+        self.revision.apply(signed, now)
+    }
+}
+
+impl EnvironmentRevision {
+    fn apply(
+        &mut self,
+        signed: &SignedEnvironmentKeyring,
+        now: u64,
+    ) -> Result<(Applied, u64), VerifyError> {
+        let next = &signed.keyring;
         if next.sequence <= self.sequence {
             return Ok((Applied::Duplicate, self.issued_at));
         }
@@ -175,6 +194,8 @@ impl EnvironmentFrontier {
             ENVIRONMENT_DOMAIN,
             &EnvironmentKeyringProto::from(next.clone()),
         )?;
+        #[cfg(test)]
+        tests::environment_verifying();
         signed_by(&self.keys, &message, &signed.signature)?;
         let keys = next
             .keys
@@ -186,7 +207,6 @@ impl EnvironmentFrontier {
             })
             .collect::<Result<Vec<BlockId>, _>>()?;
         *self = Self {
-            name: next.environment.clone(),
             keys: keys.into(),
             sequence: next.sequence,
             digest: block_id(&message, &signed.signature),
@@ -399,11 +419,7 @@ impl Follower {
         }
         let result = match &record {
             TrustRecordKind::Environment(signed) => {
-                let result = self
-                    .environment
-                    .write()
-                    .map_err(|_| VerifyError::Unavailable)
-                    .and_then(|mut environment| environment.apply(signed, now));
+                let result = self.environment_record(signed, now);
                 if result.is_err() {
                     self.fence(FenceCause::Refused);
                     return result.map(|(applied, _)| applied);
@@ -431,6 +447,42 @@ impl Follower {
         result.map(|(applied, _)| applied)
     }
 
+    fn environment_record(
+        &self,
+        signed: &SignedEnvironmentKeyring,
+        now: u64,
+    ) -> Result<(Applied, u64), VerifyError> {
+        let mut prepared = {
+            let environment = self
+                .environment
+                .read()
+                .map_err(|_| VerifyError::Unavailable)?;
+            if signed.keyring.environment != environment.name {
+                return Err(VerifyError::Trust);
+            }
+            environment.revision.clone()
+        };
+        let sequence = prepared.sequence;
+        let result = prepared.apply(signed, now)?;
+        if result.0 == Applied::Duplicate {
+            return Ok(result);
+        }
+        let retired = {
+            let mut environment = self
+                .environment
+                .write()
+                .map_err(|_| VerifyError::Unavailable)?;
+            if environment.revision.sequence != sequence {
+                return Err(VerifyError::Unavailable);
+            }
+            std::mem::replace(&mut environment.revision, prepared)
+        };
+        // The same signature proof can publish only against its captured
+        // frontier. Retiring the replaced key owner holds no publication lock.
+        drop(retired);
+        Ok(result)
+    }
+
     fn account_record(
         &self,
         id: &str,
@@ -447,7 +499,10 @@ impl Follower {
                         .environment
                         .read()
                         .map_err(|_| VerifyError::Unavailable)?;
-                    (environment.keys.clone(), environment.sequence)
+                    (
+                        environment.revision.keys.clone(),
+                        environment.revision.sequence,
+                    )
                 };
                 prepare_keyring(&account, signed, &keys, now)
                     .and_then(|prepared| self.publish_keyring(&mut account, revision, prepared))
@@ -473,7 +528,7 @@ impl Follower {
             .environment
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
-        if environment.sequence != revision {
+        if environment.revision.sequence != revision {
             return Err(VerifyError::Unavailable);
         }
         let retired = prepared.next.and_then(|next| account.keyring.replace(next));
@@ -642,7 +697,7 @@ impl Follower {
                 .environment
                 .read()
                 .map_err(|_| VerifyError::Unavailable)?;
-            (current.name.clone(), current.keys.to_vec())
+            (current.name.clone(), current.revision.keys.to_vec())
         };
         self.with_account(account, |keyring, revocations| {
             let (keys, blocks, floor) = revocations.revoked();
@@ -864,7 +919,7 @@ impl Trust for Follower {
             .read()
             .map_err(|_| VerifyError::Unavailable)?;
         if current.name == environment {
-            Ok(Keys::Shared(current.keys.clone()))
+            Ok(Keys::Shared(current.revision.keys.clone()))
         } else {
             Err(VerifyError::Trust)
         }
