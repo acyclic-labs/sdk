@@ -62,6 +62,8 @@ fn contributed_resource_issuance_preserves_caller_and_both_original_dependencies
         assert!(joined.is_sealed());
         assert_eq!(joined.effective().principal(), principal);
         assert_eq!(joined.effective().expires_at_unix_seconds(), timestamp + 3);
+        assert!(capability.contributed_to(&joined).map_err(unauthorized)?);
+        assert!(evidence.contributed_to(&joined));
         let reopened = verify::verify(&joined.encode(), &trust, timestamp).map_err(unauthorized)?;
         let negative = issuer.resource_credential(
             if revoke_caller { &selected } else { &unrelated },
@@ -69,6 +71,7 @@ fn contributed_resource_issuance_preserves_caller_and_both_original_dependencies
             (!revoke_caller).then_some((principal, &evidence)),
             timestamp,
         )?;
+        assert_eq!(evidence.contributed_to(&negative), !revoke_caller);
         let audience = issuer.audience_resource()?;
         let authorize = |credential: &VerifiedCapability, resource, action, now| {
             credential.authorize(

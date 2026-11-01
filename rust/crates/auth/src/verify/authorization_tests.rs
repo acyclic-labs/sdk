@@ -30,6 +30,7 @@ fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
             }
         }
     }
+    let selected = verify(&signed::root(|_| {}), &Domains::default(), signed::NOW).unwrap();
     let caller = verify(
         &signed::root(|block| {
             let certificates = block.certificates.as_mut().unwrap();
@@ -38,6 +39,7 @@ fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
             for certificate in &mut certificates.keys {
                 certificate.key.account_id = "caller-account".into();
                 certificate.key.parent_revocation_ids.push(vec![12; 32]);
+                certificate.key.trust_requirements = selected.requirements().unwrap();
             }
         }),
         &Domains::default(),
@@ -56,10 +58,8 @@ fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
         requirements,
         caller.trust_evidence().unwrap().requirements().unwrap()
     );
-    let selected = verify(&signed::root(|_| {}), &Domains::default(), signed::NOW).unwrap();
-    let requirements = selected
-        .requirements_with(&caller.trust_evidence().unwrap())
-        .unwrap();
+    let caller_evidence = caller.trust_evidence().unwrap();
+    let requirements = selected.requirements_with(&caller_evidence).unwrap();
     let encoded = signed::root(|block| {
         block.certificates.as_mut().unwrap().keys[0]
             .key
@@ -69,6 +69,41 @@ fn signed_cross_account_requirements_fence_cached_and_compact_authority() {
     let joined = cache
         .verify(&encoded, &Domains::default(), signed::NOW)
         .unwrap();
+    assert!(selected.contributed_to(&joined).unwrap());
+    assert!(caller.contributed_to(&joined).unwrap());
+    assert!(caller_evidence.contributed_to(&joined));
+    assert!(!caller.preserved_by(&joined).unwrap());
+    // Each altered result is still a real, currently authentic signed
+    // credential. Its issuer's validity alone cannot prove the contribution.
+    for omitted in ["caller", "parent", "inherited", "deadline"] {
+        let altered = signed::root(|block| {
+            let mut requirements = requirements.clone();
+            match omitted {
+                "caller" => {
+                    requirements.remove(1);
+                }
+                "parent" => {
+                    requirements[1]
+                        .blocks
+                        .retain(|id| id.as_slice() != [12; 32]);
+                }
+                "inherited" => {
+                    requirements.pop();
+                }
+                "deadline" => {
+                    requirements[1].validity.expires_at_unix_seconds += 1;
+                }
+                _ => unreachable!(),
+            }
+            block.certificates.as_mut().unwrap().keys[0]
+                .key
+                .trust_requirements = requirements;
+        });
+        let altered = verify(&altered, &Domains::default(), signed::NOW).unwrap();
+        assert!(selected.contributed_to(&altered).unwrap(), "{omitted}");
+        assert!(!caller.contributed_to(&altered).unwrap(), "{omitted}");
+        assert!(!caller_evidence.contributed_to(&altered), "{omitted}");
+    }
     let compact = joined.trust_evidence().unwrap();
     assert_eq!(
         joined.effective().expires_at_unix_seconds(),

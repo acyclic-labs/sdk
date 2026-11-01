@@ -104,6 +104,63 @@ where
     C: Iterator<Item = Certificate<'a>>,
     N: Iterator<Item = &'a [u8]>,
 {
+    fn matches_requirement(&self, actual: &TrustRequirement) -> bool
+    where
+        C: Clone,
+        N: Clone,
+    {
+        actual.version == 1
+            && self.environment == actual.environment
+            && self.account == actual.account
+            && self
+                .environment_issuers
+                .iter()
+                .eq(actual.environment_issuers.iter().map(Vec::as_slice))
+            && self
+                .issuers
+                .iter()
+                .eq(actual.issuers.iter().map(Vec::as_slice))
+            && self
+                .ids
+                .iter()
+                .chain(
+                    self.certificates
+                        .clone()
+                        .flat_map(|key| key.parents.iter().map(Vec::as_slice)),
+                )
+                .eq(actual.blocks.iter().map(Vec::as_slice))
+            && self
+                .certificates
+                .clone()
+                .map(|key| (key.id, key.epoch))
+                .eq(actual
+                    .keys
+                    .iter()
+                    .map(|key| (key.key_id.as_str(), key.key_epoch)))
+            && self
+                .next_keys
+                .clone()
+                .eq(actual.next_keys.iter().map(Vec::as_slice))
+            && self.not_before == actual.validity.not_before_unix_seconds
+            && self.expires_at == actual.validity.expires_at_unix_seconds
+    }
+
+    fn contributed_to(
+        &self,
+        mut inherited: impl Iterator<Item = &'a TrustRequirement>,
+        recipient: &VerifiedCapability,
+    ) -> bool
+    where
+        C: Clone,
+        N: Clone,
+    {
+        let mut actual = recipient.trust_requirements();
+        actual
+            .by_ref()
+            .any(|requirement| self.matches_requirement(requirement))
+            && inherited.all(|requirement| actual.by_ref().any(|value| value == requirement))
+    }
+
     fn requirement(self) -> Result<TrustRequirement, VerifyError>
     where
         C: Clone + ExactSizeIterator,
@@ -364,6 +421,20 @@ impl VerifiedCapability {
                 .all(|requirement| inherited.by_ref().any(|actual| actual == requirement)))
     }
 
+    /// Whether another issuer retained this authority's complete canonical
+    /// signed requirements, in their original order. This permits a different
+    /// signing account; it compares the contribution from `requirements_with`,
+    /// without allocating another evidence graph. Work is linear in the signed
+    /// facts inspected, independent of sessions, agents and history.
+    ///
+    /// This transfers no grants, acting identity or live custody. The recipient
+    /// still requires its original current-trust and authorization checks.
+    pub fn contributed_to(&self, recipient: &Self) -> Result<bool, VerifyError> {
+        Ok(self
+            .trust_view()?
+            .contributed_to(self.trust_requirements(), recipient))
+    }
+
     fn trust_requirements(&self) -> impl Iterator<Item = &TrustRequirement> + Clone {
         self.blocks
             .first()
@@ -386,7 +457,7 @@ impl VerifiedCapability {
         View<
             '_,
             impl ExactSizeIterator<Item = Certificate<'_>> + Clone,
-            impl Iterator<Item = &[u8]>,
+            impl Iterator<Item = &[u8]> + Clone,
         >,
         VerifyError,
     > {
@@ -572,6 +643,16 @@ where
 }
 
 impl TrustEvidence {
+    /// Whether a newly signed credential retains this original authority's
+    /// complete canonical contribution, including inherited requirements.
+    /// Uses the same borrowed comparison as `VerifiedCapability::contributed_to`;
+    /// no bearer, signatures or public-evidence graph are copied. This grants
+    /// no authority and does not retain either original live owner.
+    pub fn contributed_to(&self, recipient: &VerifiedCapability) -> bool {
+        self.view()
+            .contributed_to(self.requirements.iter(), recipient)
+    }
+
     /// The original authenticated half-open deadline, including inherited
     /// signed requirements. Live owners use it on their original clock.
     #[must_use]
@@ -621,8 +702,11 @@ impl TrustEvidence {
 
     fn view(
         &self,
-    ) -> View<'_, impl ExactSizeIterator<Item = Certificate<'_>> + Clone, impl Iterator<Item = &[u8]>>
-    {
+    ) -> View<
+        '_,
+        impl ExactSizeIterator<Item = Certificate<'_>> + Clone,
+        impl Iterator<Item = &[u8]> + Clone,
+    > {
         View {
             environment: &self.environment,
             account: &self.account,
