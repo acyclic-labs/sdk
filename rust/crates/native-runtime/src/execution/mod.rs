@@ -231,7 +231,8 @@ impl ExecutionGrant {
 
     /// Checks authority attenuation before returning another immutable grant.
     /// Read-only roles cannot reacquire writes through a child grant; network
-    /// and read roots can only narrow. No approvals occur in this method.
+    /// and read roots can only narrow. Write and network ceilings are checked
+    /// before resolving paths or consuming read roots. No approvals occur here.
     pub fn attenuate(
         &self,
         workspace: &Path,
@@ -239,12 +240,13 @@ impl ExecutionGrant {
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
-        let requested = Self::new(workspace, access, read, network)?;
-        if (self.0.access == ExecutionAccess::ReadOnly
-            && requested.0.access == ExecutionAccess::WorkspaceWrite)
-            || !self.0.network.permits(&requested.0.network)
-            || !self.0.workspace.contains(&requested.0.workspace)?
+        if (self.0.access == ExecutionAccess::ReadOnly && access == ExecutionAccess::WorkspaceWrite)
+            || !self.0.network.permits(&network)
         {
+            return Err(refused("execution grant exceeds its authority ceiling"));
+        }
+        let requested = Self::new(workspace, access, read, network)?;
+        if !self.0.workspace.contains(&requested.0.workspace)? {
             return Err(refused("execution grant exceeds its authority ceiling"));
         }
         for path in &requested.0.read {

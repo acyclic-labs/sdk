@@ -32,7 +32,7 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
     // Retaining explicit roots must not first require subtree support from an
     // overlapping read root or workspace. Keep this before the subtree case,
     // which may correctly refuse on platforms without rooted resolution.
-    parent
+    let readonly = parent
         .attenuate(
             &workspace,
             ExecutionAccess::ReadOnly,
@@ -40,6 +40,46 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
             ExecutionNetwork::Off,
         )
         .unwrap();
+    // A rejected authority increase must not bind even one requested root.
+    // A missing workspace detects path resolution before the same refusal;
+    // a real workspace detects consumption of the supplied read roots.
+    let missing = root.path().join("missing");
+    for (access, network) in [
+        (ExecutionAccess::WorkspaceWrite, ExecutionNetwork::Off),
+        (ExecutionAccess::ReadOnly, ExecutionNetwork::On),
+        (
+            ExecutionAccess::ReadOnly,
+            ExecutionNetwork::TcpPorts(BTreeSet::from([443])),
+        ),
+    ] {
+        for workspace in [&workspace, &missing] {
+            let visited = std::cell::Cell::new(0);
+            let read = std::iter::once(nested.clone()).inspect(|_| visited.set(visited.get() + 1));
+            let error = readonly
+                .attenuate(workspace, access, read, network.clone())
+                .unwrap_err();
+            assert_eq!(visited.get(), 0);
+            assert_eq!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<ExecutionRefusal>()
+                    .unwrap()
+                    .reason(),
+                "execution grant exceeds its authority ceiling"
+            );
+        }
+    }
+    let visited = std::cell::Cell::new(0);
+    readonly
+        .attenuate(
+            &workspace,
+            ExecutionAccess::ReadOnly,
+            std::iter::once(nested.clone()).inspect(|_| visited.set(visited.get() + 1)),
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+    assert_eq!(visited.get(), 1);
     let child = match parent.attenuate(
         &nested,
         ExecutionAccess::ReadOnly,
