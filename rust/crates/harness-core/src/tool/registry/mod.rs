@@ -18,6 +18,22 @@ enum ModelSelection {
     Revision(String),
     Ambiguous,
     Hidden,
+    /// A capability the model sees as these native declarations, each
+    /// selected under its own name. Its grant still names the capability.
+    Native(Vec<String>),
+}
+
+impl ModelSelection {
+    fn owned_bytes(&self) -> u64 {
+        match self {
+            Self::Revision(revision) => revision.capacity() as u64,
+            Self::Native(names) => names.iter().fold(
+                (names.capacity() * std::mem::size_of::<String>()) as u64,
+                |bytes, name| bytes.saturating_add(name.capacity() as u64),
+            ),
+            Self::Ambiguous | Self::Hidden => 0,
+        }
+    }
 }
 
 /// Immutable shared snapshots of pinned revisions and the model selection.

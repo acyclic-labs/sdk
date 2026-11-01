@@ -17,6 +17,15 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     fn is_code_mode(&self) -> bool {
         false
     }
+    /// The canonical capability a native declaration stands for. Grants,
+    /// policy and approval match it, never the model's spelling.
+    fn capability(&self) -> Option<&Tool> {
+        None
+    }
+    /// That capability's call for `invocation`, when this is a native declaration.
+    fn canonical(&self, _invocation: &ToolInvocation) -> Result<Option<ToolInvocation>> {
+        Ok(None)
+    }
     /// Resolves an already validated content path in this exact workspace.
     /// Selection and read policy do not require a publication binding. The
     /// task's original reader still authenticates the selected volume/grants.

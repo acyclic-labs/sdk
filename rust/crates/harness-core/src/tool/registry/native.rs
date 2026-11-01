@@ -15,10 +15,7 @@ impl ToolRegistry {
                 .ok_or(OWNERSHIP_OVERFLOW)?;
         }
         for (name, selection) in &self.data.selected {
-            let deep = match selection {
-                ModelSelection::Revision(revision) => revision.capacity() as u64,
-                _ => 0,
-            };
+            let deep = selection.owned_bytes();
             bytes = bytes
                 .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
                 .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
@@ -70,6 +67,12 @@ impl ToolRegistry {
                 ),
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
+                ModelSelection::Native(names) => ModelSelection::Native(
+                    names
+                        .iter()
+                        .map(|name| crate::executor::stock_string_copy(name, Some(&io)))
+                        .collect::<Result<_>>()?,
+                ),
             };
             data.selected.insert(name, selection);
         }

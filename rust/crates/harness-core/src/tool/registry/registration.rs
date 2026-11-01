@@ -196,10 +196,7 @@ impl ToolRegistry {
             Some((name, selected)) => [
                 std::mem::size_of::<(String, ModelSelection)>() as u64,
                 name.capacity() as u64,
-                match selected {
-                    ModelSelection::Revision(revision) => revision.capacity() as u64,
-                    _ => 0,
-                },
+                selected.owned_bytes(),
             ]
             .into_iter()
             .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
@@ -216,10 +213,10 @@ impl ToolRegistry {
         .try_fold(0_u64, |total, bytes| total.checked_add(bytes))
         .ok_or(OWNERSHIP_OVERFLOW)?;
         let released = if previous && selection.is_none() {
-            match self.data.selected.get(&key.0) {
-                Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,
-                _ => 0,
-            }
+            self.data
+                .selected
+                .get(&key.0)
+                .map_or(0, ModelSelection::owned_bytes)
         } else {
             0
         };
