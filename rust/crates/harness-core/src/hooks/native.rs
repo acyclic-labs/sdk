@@ -120,7 +120,7 @@ pub(super) async fn run_hook(
     // The spawned capture keeps ownership of the tree until its cleanup
     // finishes, even if this hook's caller is cancelled.
     let outcome = acyclic_native_runtime::spawn(tree.capture(
-        CaptureSchedule::new(timeout),
+        timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
         maximum_bytes,
         Some(OwnedCaptureInput::Literal(input)),
         handler,

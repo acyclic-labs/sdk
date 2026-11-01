@@ -23,11 +23,11 @@ pub(super) fn compat_error(error: GitCompatError<acyclic_fs::LocalCoreStateStore
         GitCompatError::RequestObservation(error) => {
             acyclic_fs::LazyWorkspaceError::NativeRecordIo(error, None).into()
         }
-        GitCompatError::Scheduling(error) => Error::from(error),
         GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
             Error::Storage(error.to_string())
         }
         GitCompatError::WorkspaceMismatch
+        | GitCompatError::Contended
         | GitCompatError::UnbornHead
         | GitCompatError::NothingToCommit
         | GitCompatError::TransitionPending(_)

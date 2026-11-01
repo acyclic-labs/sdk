@@ -34,7 +34,7 @@ pub(super) async fn response(
     });
     let events = crate::sse::frames(
         bounded,
-        maximum_bytes as usize,
+        maximum_bytes.map(|maximum| maximum as usize),
         crate::sse::Decoder::default(),
     );
     futures::pin_mut!(events);

@@ -98,8 +98,8 @@ impl PreparationIo {
     pub(crate) fn encoded_matches<T: Serialize>(&self, value: &T, bytes: &[u8]) -> Result<bool> {
         let remaining = self.remaining()?;
         let bounds = JsonBounds {
-            maximum_bytes: (bytes.len() as u64).min(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined,
+            maximum_bytes: Some((bytes.len() as u64).min(remaining.bytes_encoded)),
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let code = self
