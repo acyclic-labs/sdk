@@ -202,59 +202,76 @@ async fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
 }
 
 #[tokio::test]
-async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
+async fn blob_batch_retains_completed_write_on_withdrawal_and_producer_loss()
 -> Result<(), Box<dyn std::error::Error>> {
-    let store = PeakRecordingStore {
-        calls: AtomicU64::new(0),
-        peak: 1,
-    };
-    let retained_per_object = 3_u64;
-    let vector_bytes =
-        u64::try_from(BLOB_BATCH_OBJECTS)? * u64::try_from(size_of::<HashedObject>())?;
-    let total_live = vector_bytes + retained_per_object * u64::try_from(BLOB_BATCH_OBJECTS)?;
-    let total_budget = WorkBudget {
-        peak_allocation_bytes: total_live + store.peak,
-        ..WorkBudget::UNBOUNDED
-    };
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(total_budget, &cancellation);
-    let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
-    for value in 0..BLOB_BATCH_OBJECTS {
-        let bytes = acyclic_stream::OwnedBytes::from(vec![
-            u8::try_from(value)?;
-            usize::try_from(retained_per_object)?
-        ]);
-        let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
-        let _custody = accounting.claim_owned(retained_per_object, 0)?;
-        (batch.put(object, retained_per_object, &mut accounting, &cancellation)).await?;
+    enum Finish {
+        Withdraw,
+        LoseProducer,
+        Complete,
     }
-    assert_eq!(store.calls.load(Ordering::Relaxed), 1);
-    batch.release(&mut accounting)?;
-
-    let final_store = PeakRecordingStore {
-        calls: AtomicU64::new(0),
-        peak: 1,
-    };
-    let final_live = vector_bytes + retained_per_object;
-    let final_budget = WorkBudget {
-        peak_allocation_bytes: final_live + final_store.peak,
-        ..WorkBudget::UNBOUNDED
-    };
-    let mut final_accounting = KernelAccounting::standalone(final_budget, &cancellation);
-    let mut final_batch = BlobBatchStore::new(&final_store, &mut final_accounting)?;
-    let object = HashedObject::new(ObjectKind::BlobChunk, vec![b'o', b'n', b'e'].into());
-    let _custody = final_accounting.claim_owned(retained_per_object, 0)?;
-    (final_batch.put(
-        object,
-        retained_per_object,
-        &mut final_accounting,
-        &cancellation,
-    ))
-    .await?;
-    assert_eq!(final_store.calls.load(Ordering::Relaxed), 0);
-    (final_batch.flush(&mut final_accounting, &cancellation)).await?;
-    assert_eq!(final_store.calls.load(Ordering::Relaxed), 1);
-    final_batch.release(&mut final_accounting)?;
+    for finish in [Finish::Withdraw, Finish::LoseProducer, Finish::Complete] {
+        let inner = std::sync::Arc::new(MemoryObjectStore::default());
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        let store = crate::test_support::PausedStore {
+            inner: std::sync::Arc::clone(&inner),
+            release: std::sync::Mutex::new(Some(receiver)),
+        };
+        let cancellation = CancellationToken::new();
+        let budget = WorkBudget {
+            backend_write_operations: 1,
+            object_bytes_written: 7,
+            ..crate::performance::BOUNDARY_BUDGET
+        };
+        let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+        accounting.charge_items(1)?;
+        let mut batch = BlobBatchStore::new(&store, &mut accounting)?;
+        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"payload"));
+        let id = batch.put(object, 0, &mut accounting, &cancellation).await?;
+        let mut write = Box::pin(batch.flush(&mut accounting, &cancellation));
+        // The real store writes before the original completion event pauses.
+        assert!(futures::poll!(write.as_mut()).is_pending());
+        match finish {
+            Finish::Withdraw => {
+                cancellation.cancel();
+                drop(write);
+                drop(release);
+            }
+            Finish::LoseProducer => {
+                drop(release);
+                assert!(matches!(
+                    write.await,
+                    Err(FsError::Object(ObjectStoreError::Rejected(message)))
+                        if message == "cache fill producer lost"
+                ));
+            }
+            Finish::Complete => {
+                assert!(release.send(()).is_ok());
+                write.await?;
+            }
+        }
+        // The replaced remaining-budget frame loses the completed write here.
+        assert_eq!(accounting.spent().backend_write_operations, 1);
+        assert_eq!(accounting.spent().object_bytes_written, 7);
+        assert_eq!(
+            accounting
+                .spent()
+                .remaining(budget)?
+                .backend_write_operations,
+            0
+        );
+        batch.release(&mut accounting)?;
+        let inspection = CancellationToken::new();
+        let read = inner
+            .read(id, 7, &mut crate::AuthorityWork::new(budget, &inspection))
+            .await?;
+        assert_eq!(read.bytes.as_ref(), b"payload");
+        drop(read);
+        drop(store);
+        let retained = accounting.standalone_parts().unwrap().0.live_bytes();
+        assert!(retained > 0, "the original frame funds the stored index");
+        drop(inner);
+        assert!(accounting.standalone_parts().unwrap().0.live_bytes() < retained);
+    }
     Ok(())
 }
 

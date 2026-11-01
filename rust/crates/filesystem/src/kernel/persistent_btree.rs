@@ -1223,21 +1223,14 @@ where
             return Ok(object);
         }
         self.accounting.charge(PAGE_WRITE)?;
-        let remaining = self.accounting.remaining()?;
-        let res = {
-            let mut work = crate::AuthorityWork::new(remaining, self.cancellation);
+        let result = {
+            let mut work = crate::async_storage::AuthorityFrame::borrow(self.accounting)?;
             let result = crate::AsyncObjectStore::put_hashed(self.store, hashed, &mut work).await;
-            work.receipt(result)
+            work.spent().verify(work.budget)?;
+            result
         };
-        match res {
-            Ok(receipt) => self.accounting.charge(receipt.work)?,
-            Err(failure) => {
-                self.accounting.charge(*failure.work)?;
-                encoded.retire(self.accounting)?;
-                return Err(storage_error(failure.error));
-            }
-        }
         encoded.retire(self.accounting)?;
+        result.map_err(storage_error)?;
         self.last_written = Some(object);
         Ok(object)
     }
