@@ -281,17 +281,19 @@ pub(crate) fn body_named<'a>(
 
             map.insert("generationConfig".into(), json!({"maxOutputTokens":max}));
             if !system.is_empty() {
+                let mut part = serde_json::Map::new();
+                part.insert(
+                    "text".into(),
+                    serde_json::Value::String(text::join(system, "\n\n")),
+                );
+                let mut instruction = serde_json::Map::new();
+                instruction.insert(
+                    "parts".into(),
+                    serde_json::Value::Array(vec![serde_json::Value::Object(part)]),
+                );
                 map.insert(
                     "systemInstruction".into(),
-                    serde_json::Value::Object(serde_json::Map::from_iter([(
-                        "parts".into(),
-                        serde_json::Value::Array(vec![serde_json::Value::Object(
-                            serde_json::Map::from_iter([(
-                                "text".into(),
-                                serde_json::Value::String(text::join(system, "\n\n")),
-                            )]),
-                        )]),
-                    )])),
+                    serde_json::Value::Object(instruction),
                 );
             }
         }
