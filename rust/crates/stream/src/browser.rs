@@ -338,7 +338,8 @@ impl StreamProvider for BrowserStream {
     {
         Box::pin(async move {
             let deadline = match &request {
-                crate::WriteRequest::Commit(request) => request.deadline_unix_millis,
+                crate::WriteRequest::Commit(request)
+                | crate::WriteRequest::CommitAccepted(request) => request.deadline_unix_millis,
                 _ => None,
             };
             self.execute(request, deadline).await

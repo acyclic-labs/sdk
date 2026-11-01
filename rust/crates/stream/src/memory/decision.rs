@@ -83,7 +83,9 @@ impl MemoryStream {
         use crate::journal::CanonicalCommand;
         let mut command = command.validated()?;
         let digest = match &mut command {
-            WriteRequest::Commit(request) => Some(self.commit_request_digest(request)?),
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                Some(self.commit_request_digest(request)?)
+            }
             _ => None,
         };
         Ok(CanonicalCommand { command, digest })
@@ -122,15 +124,21 @@ impl MemoryStream {
                         outcome: WriteOutcome::Fork(result),
                         allocation: None,
                     }),
-                WriteRequest::Commit(request) => {
+                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
                     let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
-                    self.plan_commit_locked(&mut state, request, digest, deadline)?
-                        .durable(self, state, persist.as_mut())
-                        .await
-                        .map(|(result, allocation)| Execution {
-                            outcome: WriteOutcome::Commit(result),
-                            allocation,
-                        })
+                    self.plan_commit_locked(
+                        &mut state,
+                        request,
+                        digest,
+                        deadline,
+                        matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
+                    )?
+                    .durable(self, state, persist.as_mut())
+                    .await
+                    .map(|(result, allocation)| Execution {
+                        outcome: result,
+                        allocation,
+                    })
                 }
             }
         }

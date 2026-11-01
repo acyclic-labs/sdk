@@ -276,6 +276,9 @@ impl StreamProvider for TcpDropProbe {
                     acyclic_stream::WriteOutcome::Commit,
                 ))
             }
+            acyclic_stream::WriteRequest::CommitAccepted(_request) => {
+                Box::pin(async move { Err(StreamError::Unsupported) })
+            }
         }
     }
 

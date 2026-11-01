@@ -80,7 +80,9 @@ pub trait NativeStreamProvider: StreamProvider {
         let span = match &request {
             WriteRequest::Append(_) => crate::native::span!("acyclic.stream.append"),
             WriteRequest::Fork(_) => crate::native::span!("acyclic.stream.fork"),
-            WriteRequest::Commit(_) => crate::native::span!("acyclic.stream.commit"),
+            WriteRequest::Commit(_) | WriteRequest::CommitAccepted(_) => {
+                crate::native::span!("acyclic.stream.commit")
+            }
         };
         let _ = request;
         NativeProviderFuture::ready_observed(

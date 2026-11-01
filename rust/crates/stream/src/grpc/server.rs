@@ -209,13 +209,19 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         unary(serve_span!("commit"), async {
             check_command_size(&request)?;
             let request = request.into_inner();
+            let accepted = request.include_envelope;
             let request = commit_from_wire(request).map_err(|error| error_status(&error))?;
+            let request = if accepted {
+                crate::WriteRequest::CommitAccepted(request)
+            } else {
+                crate::WriteRequest::Commit(request)
+            };
             let outcome = self
                 .provider
-                .commit(request)
+                .write(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            Ok(commit_outcome_to_wire(outcome))
+            wire_codec::commit_write_outcome_to_wire(outcome).map_err(|error| error_status(&error))
         })
         .await
     }

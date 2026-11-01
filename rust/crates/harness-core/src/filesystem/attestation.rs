@@ -177,7 +177,8 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
                 acyclic_stream::WriteRequest::Fork(request) => {
                     acyclic_stream::request::fork_digest(request)
                 }
-                acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+                acyclic_stream::WriteRequest::Commit(request)
+                | acyclic_stream::WriteRequest::CommitAccepted(request) => commit_digest(request),
             })
             .await?
             .write(request)
@@ -258,7 +259,10 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
                     acyclic_stream::WriteRequest::Fork(request) => {
                         acyclic_stream::request::fork_digest(request)
                     }
-                    acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+                    acyclic_stream::WriteRequest::Commit(request)
+                    | acyclic_stream::WriteRequest::CommitAccepted(request) => {
+                        commit_digest(request)
+                    }
                 })
                 .await;
             match target {
@@ -403,6 +407,9 @@ mod tests {
             std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
         > {
             match request {
+                acyclic_stream::WriteRequest::CommitAccepted(_) => {
+                    Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
+                }
                 acyclic_stream::WriteRequest::Append(request) => {
                     Box::pin(futures::TryFutureExt::map_ok(
                         async move {
@@ -462,7 +469,10 @@ mod tests {
                 acyclic_stream::WriteRequest::Fork(request) => {
                     acyclic_stream::request::fork_digest(request)
                 }
-                acyclic_stream::WriteRequest::Commit(request) => super::commit_digest(request),
+                acyclic_stream::WriteRequest::Commit(request)
+                | acyclic_stream::WriteRequest::CommitAccepted(request) => {
+                    super::commit_digest(request)
+                }
             };
             let result = digest.map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))

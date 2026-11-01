@@ -253,7 +253,9 @@ impl PostgresStream {
         let span = match &command {
             WriteRequest::Append(_) => crate::native::span!("acyclic.stream.append"),
             WriteRequest::Fork(_) => crate::native::span!("acyclic.stream.fork"),
-            WriteRequest::Commit(_) => crate::native::span!("acyclic.stream.commit"),
+            WriteRequest::Commit(_) | WriteRequest::CommitAccepted(_) => {
+                crate::native::span!("acyclic.stream.commit")
+            }
         };
         let completion = acyclic_observability::Completion::new(&span);
         let command = match command.validated() {
@@ -364,7 +366,8 @@ impl StreamProvider for PostgresStream {
     {
         Box::pin(async move {
             let deadline = match &request {
-                crate::WriteRequest::Commit(request) => request.deadline_unix_millis,
+                crate::WriteRequest::Commit(request)
+                | crate::WriteRequest::CommitAccepted(request) => request.deadline_unix_millis,
                 _ => None,
             };
             self.publish(request, deadline).await

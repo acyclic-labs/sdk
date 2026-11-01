@@ -122,7 +122,9 @@ impl StreamProvider for LocalStream {
                     format!("append {} {:?}", request.path, request.idempotency_key)
                 })
             }
-            crate::WriteRequest::Commit(request) => describe_commit(request),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                describe_commit(request)
+            }
             crate::WriteRequest::Fork(_) => {}
         }
         let span = obs::OperationSpan::new(match &request {
@@ -141,12 +143,14 @@ impl StreamProvider for LocalStream {
             crate::WriteRequest::Fork(_) => {
                 tracing::info_span!("acyclic.stream.fork", outcome = Empty, error.kind = Empty,)
             }
-            crate::WriteRequest::Commit(request) => tracing::info_span!(
-                "acyclic.stream.commit",
-                items = request.mutations.len(),
-                outcome = Empty,
-                error.kind = Empty,
-            ),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                tracing::info_span!(
+                    "acyclic.stream.commit",
+                    items = request.mutations.len(),
+                    outcome = Empty,
+                    error.kind = Empty,
+                )
+            }
         });
         let operation = span.clone();
         let caller = span.clone();
@@ -363,17 +367,21 @@ impl crate::NativeStreamProvider for LocalStream {
         request: crate::WriteRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => {
                 self.append_funded(request, meter, crate::WriteOutcome::Append)
             }
-            crate::WriteRequest::Commit(request) => self.guarded_commit(
-                request,
-                None,
-                meter,
-                || futures::future::ready(Ok(())),
-                crate::WriteOutcome::Commit,
-            ),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                self.guarded_commit(
+                    request,
+                    None,
+                    meter,
+                    || futures::future::ready(Ok(())),
+                    accepted,
+                    Ok,
+                )
+            }
             crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
                 crate::native::span!("acyclic.stream.fork"),
                 Ok(Err(StreamError::Unsupported)),
@@ -399,7 +407,8 @@ impl crate::NativeStreamProvider for LocalStream {
             deadline,
             meter,
             before,
-            std::convert::identity,
+            false,
+            crate::WriteOutcome::into_commit,
         )
     }
     fn native_prepare_commit(

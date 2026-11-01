@@ -43,9 +43,17 @@ fn check_command_size(input: &[u8]) -> Result<(), JsValue> {
 
 async fn dispatch_commit(provider: &dyn StreamProvider, input: &[u8]) -> Result<Vec<u8>, JsValue> {
     let request = decode::<wire::CommitRequest>(input)?;
+    let accepted = request.include_envelope;
     let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
-    let response = provider.commit(request).await.map_err(js_error)?;
-    Ok(wire_codec::commit_outcome_to_wire(response).encode_to_vec())
+    let request = if accepted {
+        crate::WriteRequest::CommitAccepted(request)
+    } else {
+        crate::WriteRequest::Commit(request)
+    };
+    let response = provider.write(request).await.map_err(js_error)?;
+    Ok(wire_codec::commit_write_outcome_to_wire(response)
+        .map_err(js_error)?
+        .encode_to_vec())
 }
 
 fn bytes_array(values: Vec<Vec<u8>>) -> JsValue {
@@ -99,12 +107,14 @@ fn normalize_commit_bytes(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     }
     let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
     let deadline_unix_millis = request.deadline_unix_millis;
+    let include_envelope = request.include_envelope;
     let mut request =
         wire_codec::commit_from_wire(request).map_err(|error| error_code_str(&error))?;
     crate::request::normalize_commit(&mut request).map_err(|error| error_code_str(&error))?;
     crate::request::validate_commit_shape(&request).map_err(|error| error_code_str(&error))?;
     let mut normalized = wire_codec::commit_to_wire(&request);
     normalized.deadline_unix_millis = deadline_unix_millis;
+    normalized.include_envelope = include_envelope;
     Ok(normalized.encode_to_vec())
 }
 

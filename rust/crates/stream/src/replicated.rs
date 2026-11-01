@@ -376,7 +376,9 @@ impl<J: CommandJournal> Replicated<J> {
             let deadline = deadline
                 .into_iter()
                 .chain(match command {
-                    WriteRequest::Commit(request) => request.deadline_unix_millis,
+                    WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                        request.deadline_unix_millis
+                    }
                     _ => None,
                 })
                 .min();
@@ -384,7 +386,7 @@ impl<J: CommandJournal> Replicated<J> {
             let changes = match command {
                 WriteRequest::Append(request) => vec![(request.path.clone(), false)],
                 WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-                WriteRequest::Commit(request) => request
+                WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => request
                     .mutations
                     .iter()
                     .map(|mutation| {
@@ -424,7 +426,10 @@ impl<J: CommandJournal> Replicated<J> {
                     Ok(Execution {
                         outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
                             | WriteOutcome::Fork(_)
-                            | WriteOutcome::Commit(CommitOutcome::Committed(_)),
+                            | WriteOutcome::Commit(CommitOutcome::Committed(_))
+                            | WriteOutcome::CommitAccepted(
+                                crate::AcceptedCommitOutcome::Committed { .. }
+                            ),
                         ..
                     }) | Err(StreamError::IdempotencyMismatch)
                 );

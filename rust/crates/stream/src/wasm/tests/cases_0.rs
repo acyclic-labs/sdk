@@ -103,6 +103,7 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
     assert_eq!(normalized, wire.encode_to_vec());
 
     let invalid = wire::CommitRequest {
+        include_envelope: false,
         conditions: Vec::new(),
         ..wire
     };

@@ -279,11 +279,11 @@ async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_dea
 async fn funded_publications_need_no_allocation_admission_after_durability()
 -> Result<(), Box<dyn std::error::Error>> {
     for (family, at_millis) in
-        (0..3).flat_map(|family| [None, Some(7)].map(|stamp| (family, stamp)))
+        (0..4).flat_map(|family| [None, Some(7)].map(|stamp| (family, stamp)))
     {
         let meter = Arc::new(crate::test_meter::Meter::default());
         let work = Work::new(meter.original())?;
-        work.reserve_write(if family == 2 { 21 } else { 8 })?;
+        work.reserve_write(if family >= 2 { 21 } else { 8 })?;
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
             Arc::new(TestClock::default()),
@@ -330,8 +330,35 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
                 idempotency_key: IdempotencyKey::unique(),
             }),
         };
+        let command = if family == 3 {
+            let WriteRequest::Commit(request) = command else {
+                return Err(StreamError::InvalidResponse.into());
+            };
+            WriteRequest::CommitAccepted(request)
+        } else {
+            command
+        };
         let core = core.with_context(work);
+        let key = match &command {
+            WriteRequest::CommitAccepted(request) => Some(request.idempotency_key.clone()),
+            _ => None,
+        };
         let canonical = core.canonicalize(command)?;
+        if let Some(key) = key {
+            let (send, receive) = tokio::sync::oneshot::channel();
+            let persist =
+                std::pin::pin!(async { receive.await.map_err(|_| StreamError::Unavailable) });
+            let pending = core.apply_durable(&canonical, None, persist);
+            let mut pending = std::pin::pin!(pending);
+            assert!(futures::poll!(pending.as_mut()).is_pending());
+            drop(send);
+            assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+            assert!(core.inspect_idempotency(key).await?.is_none());
+            assert_eq!(
+                core.tail(destination.clone()).await,
+                Err(StreamError::NotFound)
+            );
+        }
         let persist = std::pin::pin!(async {
             // A completed durable action owns its completion. New allocation
             // admission must not determine whether its state can be installed.
@@ -346,6 +373,15 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
                 WriteOutcome::Append(AppendOutcome::Committed(receipt)) => receipt.commit_id,
                 WriteOutcome::Fork(receipt) => receipt.commit_id,
                 WriteOutcome::Commit(CommitOutcome::Committed(receipt)) => {
+                    assert_eq!(receipt.committed_at_micros, at_millis * 1000);
+                    receipt.commit_id
+                }
+                WriteOutcome::CommitAccepted(crate::AcceptedCommitOutcome::Committed {
+                    receipt,
+                    envelope,
+                }) => {
+                    assert!(receipt.matches_envelope(&envelope));
+                    assert_eq!(envelope, core.read_commit(receipt.commit_id).await?);
                     assert_eq!(receipt.committed_at_micros, at_millis * 1000);
                     receipt.commit_id
                 }

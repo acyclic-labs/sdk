@@ -90,6 +90,9 @@ impl acyclic_stream::StreamProvider for CutStream {
         std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
+            acyclic_stream::WriteRequest::CommitAccepted(_) => {
+                Box::pin(async { Err(acyclic_stream::StreamError::Unsupported) })
+            }
             acyclic_stream::WriteRequest::Append(request) => {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {

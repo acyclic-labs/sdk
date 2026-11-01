@@ -144,6 +144,7 @@ impl StreamProvider for Client {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
@@ -195,22 +196,30 @@ impl StreamProvider for Client {
                 },
                 crate::WriteOutcome::Fork,
             )),
-            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
-                async move {
-                    let body = commit_to_wire(&request);
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                Box::pin(async move {
+                    let mut body = commit_to_wire(&request);
+                    body.include_envelope = accepted;
+                    let maximum = accepted
+                        .then(|| crate::wire_codec::requests::accepted_response_limit(&body))
+                        .transpose()?;
                     let response = self
                         .unary(body, |mut service, request| {
+                            if let Some(maximum) = maximum {
+                                service = service.max_decoding_message_size(maximum);
+                            }
                             Box::pin(async move { service.commit(request).await })
                         })
                         .await?;
-                    let outcome = decode_response(response, commit_outcome_from_wire)?;
-                    if let CommitOutcome::Committed(receipt) = &outcome {
+                    let outcome = decode_response(response, |response| {
+                        crate::wire_codec::commit_write_outcome_from_wire(response, accepted)
+                    })?;
+                    if let Some(receipt) = outcome.commit_receipt() {
                         self.revisions.observe(&receipt.revision);
                     }
                     Ok(outcome)
-                },
-                crate::WriteOutcome::Commit,
-            )),
+                })
+            }
         }
     }
 

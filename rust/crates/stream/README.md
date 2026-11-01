@@ -56,6 +56,25 @@ the same identity. Absence of a receipt, including an empty inspection while an
 operation may still be in flight, never proves nonexecution. Retiring receipts
 must not make a previously accepted identity executable again.
 
+`StreamProviderExt::commit_accepted` selects the original accepted envelope
+alongside the compact receipt on the same keyed Commit. Exact replay may select
+either projection; the retry digest and journal command are identical. The
+provider funds selected result metadata before durability, shares immutable
+record byte owners, and returns it only after the original publication fence.
+This costs O(returned mutations and records), independent of unrelated history.
+It adds no write, read, flush, registration or task. Native memory/local,
+Postgres, browser journal and the existing gRPC Commit route preserve this
+selection. The JSON HTTP adapter refuses it with `Unsupported` before effects;
+it never reconstructs an accepted result from caller bytes or a later read.
+The envelope observes a publication and grants no execution authority.
+Both browser adapters and the native gRPC client admit accepted replies using
+the original compact reply budget plus one command budget and the request's
+added envelope metadata. A
+valid command can therefore return its full accepted result even when record
+sequence numbers, commit IDs and timestamps make the reply larger than the
+command. Computing that budget reads only mutation vector lengths and adds no
+allocation, record traversal or payload copy.
+
 An actor fork is `CommitMutation::Fork` plus its activation append in one
 `CommitRequest`, guarded by destination absence and the required source head.
 The fork mutation's `records` append to the inherited root; a separate activation

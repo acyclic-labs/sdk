@@ -33,6 +33,7 @@ fn envelope() -> wire::CommittedEnvelope {
 #[test]
 fn commit_encoder_emits_compact_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let response = wire::CommitResponse {
+        envelope: None,
         outcome: Some(wire::commit_response::Outcome::Committed(
             wire::CommitReceipt {
                 commit_id: Bytes::from(vec![1; 32]),

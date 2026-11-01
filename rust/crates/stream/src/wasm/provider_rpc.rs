@@ -46,10 +46,9 @@ async fn reply(promise: Result<Promise, JsValue>) -> Result<JsValue, StreamError
     }
     Reflect::get(&reply, &"value".into()).map_err(failed)
 }
-fn snapshot(value: JsValue) -> Result<Vec<u8>, StreamError> {
+fn snapshot(value: JsValue, maximum: usize) -> Result<Vec<u8>, StreamError> {
     let bytes: Uint8Array = value.dyn_into().map_err(|_| StreamError::InvalidResponse)?;
-    if usize::try_from(bytes.length()).map_err(|_| StreamError::LimitExceeded)? > MAX_COMMAND_BYTES
-    {
+    if usize::try_from(bytes.length()).map_err(|_| StreamError::LimitExceeded)? > maximum {
         return Err(StreamError::LimitExceeded);
     }
     Ok(bytes.to_vec())
@@ -110,12 +109,23 @@ impl InjectedStream {
         operation: &str,
         input: impl Message,
     ) -> Result<R, StreamError> {
+        self.call_with_limit(operation, input, MAX_COMMAND_BYTES)
+            .await
+    }
+    async fn call_with_limit<R: Message + Default>(
+        &self,
+        operation: &str,
+        input: impl Message,
+        maximum: usize,
+    ) -> Result<R, StreamError> {
         let input = input.encode_to_vec();
         if input.len() > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        let bytes =
-            snapshot(reply(self.port.dispatch(operation, &Uint8Array::from(&input[..]))).await?)?;
+        let bytes = snapshot(
+            reply(self.port.dispatch(operation, &Uint8Array::from(&input[..]))).await?,
+            maximum,
+        )?;
         R::decode(bytes.as_slice()).map_err(|_| StreamError::InvalidResponse)
     }
     async fn cursor(
@@ -267,6 +277,7 @@ impl StreamProvider for InjectedStream {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
+        let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
@@ -306,13 +317,21 @@ impl StreamProvider for InjectedStream {
                 },
                 crate::WriteOutcome::Fork,
             )),
-            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
-                async move {
-                    let input = wire_codec::commit_to_wire(&request);
-                    wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-                },
-                crate::WriteOutcome::Commit,
-            )),
+            crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
+                Box::pin(async move {
+                    let mut input = wire_codec::commit_to_wire(&request);
+                    input.include_envelope = accepted;
+                    let maximum = if accepted {
+                        wire_codec::requests::accepted_response_limit(&input)?
+                    } else {
+                        MAX_COMMAND_BYTES
+                    };
+                    wire_codec::commit_write_outcome_from_wire(
+                        self.call_with_limit("commit", input, maximum).await?,
+                        accepted,
+                    )
+                })
+            }
         }
     }
 

@@ -5,11 +5,12 @@ impl LocalStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
+        accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
     where
         T: Send + 'static,
-        C: FnOnce(CommitOutcome) -> T + Send + 'static,
+        C: FnOnce(crate::WriteOutcome) -> Result<T, StreamError> + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -64,13 +65,13 @@ impl LocalStream {
                         let publication = stream.inner.publication.write().await;
                         let mut result = async {
                             stream.check_available()?;
-                            let execution = stream
-                                .execute(WriteRequest::Commit(request), deadline)
-                                .await?;
-                            let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
-                                return Err(StreamError::InvalidResponse);
+                            let command = if accepted {
+                                WriteRequest::CommitAccepted(request)
+                            } else {
+                                WriteRequest::Commit(request)
                             };
-                            Ok((outcome, execution.allocation))
+                            let execution = stream.execute(command, deadline).await?;
+                            Ok((execution.outcome, execution.allocation))
                         }
                         .await;
                         stream.inner.commit_clock.unpin();
@@ -90,8 +91,11 @@ impl LocalStream {
                     };
                     // Keep the callback's captured lease through the physical terminal.
                     drop(before);
-                    work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
-                        .map(|result| result.map_err(E::from))
+                    work.finish(
+                        result
+                            .and_then(|(outcome, allocation)| Ok((convert(outcome)?, allocation))),
+                    )
+                    .map(|result| result.map_err(E::from))
                 }),
                 |result| crate::native::outcome(result, |_| "guarded"),
             ));

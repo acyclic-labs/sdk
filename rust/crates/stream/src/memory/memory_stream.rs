@@ -95,16 +95,6 @@ impl MemoryStream {
         #[cfg(target_arch = "wasm32")]
         commit_digest(request)
     }
-
-    pub(crate) async fn commit_inner(
-        &self,
-        mut request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        let digest = self.commit_request_digest(&mut request)?;
-        let _publication = self.publication.lock().await;
-        self.commit_locked(&mut *self.state.write().await, request, digest, deadline)
-    }
 }
 
 #[cfg(loom)]
