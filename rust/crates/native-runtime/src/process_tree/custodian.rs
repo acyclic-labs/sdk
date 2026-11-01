@@ -22,7 +22,9 @@ use indexmap::IndexMap;
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Write as _};
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{
+    AsHandle as _, AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle,
+};
 use std::os::windows::process::CommandExt as _;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -104,7 +106,9 @@ fn poisoned() -> io::Error {
 /// has exited.
 pub(super) fn current() -> io::Result<Arc<Custodian>> {
     let mut current = CURRENT.lock().map_err(|_| poisoned())?;
-    if let Some(custodian) = current.as_ref().filter(|custodian| custodian.running()) {
+    if let Some(custodian) = current.as_ref()
+        && process_running(custodian.child.as_handle())?
+    {
         return Ok(Arc::clone(custodian));
     }
     let custodian = Arc::new(launch()?);
@@ -172,13 +176,22 @@ fn hand_over(custodian: &mut Child) -> io::Result<(ChildStdin, String)> {
     Ok((input, endpoint.to_owned()))
 }
 
-impl Custodian {
-    fn running(&self) -> bool {
-        // SAFETY: the owned custodian process handle; a zero wait only reads
-        // whether it has exited.
-        unsafe { WaitForSingleObject(self.child.as_raw_handle().cast(), 0) == WAIT_TIMEOUT }
+/// Observes the original process once. A refused wait cannot admit a new
+/// custodian as though the retained producer had exited.
+fn process_running(process: BorrowedHandle<'_>) -> io::Result<bool> {
+    // SAFETY: the caller retains this process handle through the observation.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        status => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected custodian process wait status {status}"),
+        )),
     }
+}
 
+impl Custodian {
     /// The PID and creation time that name this custodian in each record.
     pub(super) fn identity(&self) -> &str {
         &self.identity
@@ -970,7 +983,7 @@ fn active_processes(job: HANDLE) -> io::Result<u32> {
 mod handoff_tests {
     use super::*;
     use std::os::windows::io::IntoRawHandle as _;
-    use windows_sys::Win32::Foundation::GetHandleInformation;
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetHandleInformation};
     use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
@@ -982,6 +995,30 @@ mod handoff_tests {
         getrandom::fill(&mut random).map_err(io::Error::other)?;
         // SAFETY: the current-process pseudo-handle is borrowed for identity.
         let producer = identity(unsafe { GetCurrentProcess() })?;
+        // SAFETY: the running current process retains its pseudo-handle.
+        assert!(process_running(unsafe {
+            BorrowedHandle::borrow_raw(GetCurrentProcess())
+        })?);
+        // Retain a real process handle without SYNCHRONIZE. Its refused wait
+        // must remain the native error, not a false producer-exit observation.
+        // SAFETY: both pseudo-handles are live and duplication transfers the
+        // deliberately restricted handle to this same process.
+        let restricted = unsafe {
+            duplicate(
+                GetCurrentProcess(),
+                GetCurrentProcess(),
+                PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+            )?
+        };
+        // SAFETY: the successful duplication transferred one owned handle.
+        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
+        assert_eq!(
+            process_running(restricted.as_handle())
+                .unwrap_err()
+                .raw_os_error(),
+            Some(ERROR_ACCESS_DENIED.cast_signed()),
+        );
         let name = format!(
             "acyclic-process-tree-{}-{:016x}",
             producer,
@@ -1056,6 +1093,8 @@ mod handoff_tests {
             .spawn()?;
         let lost = identity(child.as_raw_handle().cast())?;
         assert!(child.wait()?.success());
+        // Query the same retained process handle, never a replacement PID.
+        assert!(!process_running(child.as_handle())?);
         assert_eq!(
             await_tree(&unrelated_done, &lost).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
