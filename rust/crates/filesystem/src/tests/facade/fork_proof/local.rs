@@ -13,6 +13,10 @@ async fn retained_source_fork_work<
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancel: &CancellationToken,
 ) -> Result<crate::WorkCounters, Box<dyn Error>> {
+    // Each probe starts with the same empty disposable proof cache. The source
+    // must carry its own original witness rather than inherit an earlier probe's slot.
+    let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
+    drop(discarded);
     let name = crate::WorkspaceName::new(name, &WorkBudget::UNBOUNDED, cancel)?.value;
     let destination = fs.workspace_id_for_name(&name, accounting, cancel)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
@@ -90,8 +94,6 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
         }
         // A new observation after the epoch changed cannot inherit the stale summary.
         let late = workspace.head(B, &cancel).await?.value;
-        let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
-        drop(discarded);
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
         let held =
