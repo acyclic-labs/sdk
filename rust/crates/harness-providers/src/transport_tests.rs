@@ -10,8 +10,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 enum Reply {
     /// A complete response with this status and body.
     Full(u16, &'static str),
-    /// A 200 response declaring the whole body but sending only `usize` bytes before closing.
-    Cut(&'static str, usize),
+    /// A response declaring the whole body but sending only `usize` bytes before closing.
+    Cut(u16, &'static str, usize),
     /// The server reads the request, then closes without returning headers.
     Lost,
     /// Bytes that are not a TLS record.
@@ -83,8 +83,8 @@ async fn serve(replies: Vec<Reply>) -> Result<(u16, Arc<AtomicUsize>)> {
                     "HTTP/1.1 {status} S\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 ),
-                Reply::Cut(body, sent) => format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                Reply::Cut(status, body, sent) => format!(
+                    "HTTP/1.1 {status} S\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     body.len(),
                     &body[..sent]
                 ),
@@ -194,12 +194,38 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
 
 #[tokio::test]
 async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
-    let (port, accepted) = serve(vec![Reply::Full(503, "busy"), Reply::Full(200, CHAT)]).await?;
-    let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
-    let events = generate(&provider).await?;
-    assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
-    assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
-    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+    for native in [false, true] {
+        for first in [
+            Reply::Full(503, "busy"),
+            Reply::Cut(503, CHAT, 0),
+            Reply::Cut(503, CHAT, 12),
+        ] {
+            let (port, accepted) = serve(vec![first, Reply::Full(200, CHAT)]).await?;
+            let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            if native {
+                let (prepared, dispatch) = super::request(&provider)?;
+                let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                let baseline = work.live_allocation_bytes();
+                let mut stream = provider
+                    .generate_with_native_work(&prepared, dispatch, &work)?
+                    .await?;
+                let mut completed = false;
+                while let Some(event) = stream.next().await {
+                    let (event, custody) = event?;
+                    completed |= matches!(event, ModelEvent::Completed { .. });
+                    drop((event, custody));
+                }
+                assert!(completed);
+                drop(stream);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            } else {
+                let events = generate(&provider).await?;
+                assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+            }
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 2);
+            assert_eq!(accepted.load(Ordering::SeqCst), 2);
+        }
+    }
     // Negative control: a 400 is final on the first attempt.
     let (port, accepted) = serve(vec![Reply::Full(400, "bad"), Reply::Full(200, CHAT)]).await?;
     let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
@@ -217,16 +243,28 @@ async fn refusal_then_success_redelivers_exactly_once() -> Result<()> {
 }
 
 #[tokio::test]
-async fn accepted_response_keeps_its_original_interruption_before_and_after_output() -> Result<()> {
+async fn response_status_keeps_its_original_interruption_before_and_after_output() -> Result<()> {
     // Reuse the existing shared Chat response, cutting before any bytes,
     // inside its first event and after one event. Also lose all response headers
     // after the server reads the request. A second response would let the former
     // before-output redelivery hide the original run's failure.
     let first = CHAT.find("\n\n").map_or(0, |end| end + 2);
     for native in [false, true] {
-        for cut in [None, Some(0), Some(12), Some(first + 8)] {
+        // A diagnostic body can lose its producer too. Mutate the status of
+        // the original cut response; a final refusal must retain that boundary
+        // even when its body ends with the same transport interruption.
+        for (status, cut) in [
+            (200, None),
+            (200, Some(0)),
+            (200, Some(12)),
+            (200, Some(first + 8)),
+            (400, Some(0)),
+            (400, Some(12)),
+            (413, Some(0)),
+            (413, Some(12)),
+        ] {
             let (port, accepted) = serve(vec![
-                cut.map_or(Reply::Lost, |cut| Reply::Cut(CHAT, cut)),
+                cut.map_or(Reply::Lost, |cut| Reply::Cut(status, CHAT, cut)),
                 Reply::Full(200, CHAT),
             ])
             .await?;
@@ -266,7 +304,7 @@ async fn accepted_response_keeps_its_original_interruption_before_and_after_outp
             assert_eq!(
                 output > 0,
                 cut.is_some_and(|cut| cut > first),
-                "native={native}, cut={cut:?}"
+                "native={native}, status={status}, cut={cut:?}"
             );
             assert_eq!(
                 failure(&error),

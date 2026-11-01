@@ -247,7 +247,8 @@ proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
     #[test]
     fn recovery_is_never_replenished_after_acceptance_or_failure(
-        trace in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..64),
+        trace in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY,
+            proptest::sample::select(vec![400u16, 401, 403, 408, 413, 429, 503])), 0..64),
     ) {
         let mut attempt = crate::dispatch::GenerationAttempt::new(crate::RetrySpec::DEFAULT,
             acyclic_harness_core::model::ModelDispatch {
@@ -261,12 +262,12 @@ proptest::proptest! {
             let error = crate::transport_failure(true, failure, "fixture");
             proptest::prop_assert_eq!(attempt.redeliver(&error, None), None);
         }
-        for (admitted, unauthorized) in trace {
+        for (admitted, unauthorized, status) in trace {
             accepted |= admitted;
             if admitted { attempt.accept(); }
-            if unauthorized { attempt.refuse(); }
+            if unauthorized { attempt.refuse(status); }
             let error = if unauthorized { Error::Unauthorized("fixture".into()) } else { Error::Invalid("fixture".into()) };
-            let expected = unauthorized && !accepted && !spent;
+            let expected = unauthorized && status == 401 && !accepted && !spent;
             proptest::prop_assert_eq!(attempt.refresh(&error), expected);
             let interruption = crate::transport_failure(true,
                 acyclic_harness_core::ModelTransportFailure::Interrupted, "fixture");

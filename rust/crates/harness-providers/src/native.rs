@@ -242,7 +242,7 @@ pub(crate) fn generate<'a>(
                         let (failure, retry_after) = match response {
                             Err(error) => (Some(error), None),
                             Ok(response) if !(200..300).contains(&response.status) => {
-                                attempt.refuse();
+                                attempt.refuse(response.status);
                                 let retry_after = response.retry_after;
                                 (Some(crate::http_failure(response, provider.config.max_event_bytes, Some(work)).await), retry_after)
                             }
