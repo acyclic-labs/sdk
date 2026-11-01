@@ -9,7 +9,7 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
     publication_domain: Arc<PublicationDomain>,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
     #[cfg(test)]
-    publication_pause:
+    pub(in crate::filesystem) publication_pause:
         Option<Arc<dyn Fn() -> acyclic_stream::BoxProviderFuture<'static, ()> + Send + Sync>>,
     #[cfg(all(
         feature = "filesystem-local",
