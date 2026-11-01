@@ -17,8 +17,9 @@ pub struct Target {
 /// Resolves each call's target. One resolver serves an agent's whole turn;
 /// it never falls back from the named target to another one.
 pub trait TargetResolver: acyclic_stream::ProviderPlatform {
-    /// Every target visible to the agent, and its home.
-    fn roster(&self) -> &Arc<Roster>;
+    /// A retained snapshot of every target visible to the agent, and its home.
+    /// Later presence changes do not change this snapshot.
+    fn roster(&self) -> Arc<Roster>;
 
     /// The target `target` names ([`Roster::select`]); its executor.
     ///
@@ -128,8 +129,8 @@ impl TargetResolver for InProcessTargets {
         self.targets[0].executor.read_path(path, work)
     }
 
-    fn roster(&self) -> &Arc<Roster> {
-        &self.roster
+    fn roster(&self) -> Arc<Roster> {
+        Arc::clone(&self.roster)
     }
 
     fn resolve(&self, target: Option<&str>) -> Result<Arc<Target>> {
