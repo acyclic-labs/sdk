@@ -1,6 +1,7 @@
 //! Bounded immutable namespace selection.
 
 use super::*;
+use crate::kernel::allocation::fixed_index::FixedIndex;
 use crate::kernel::{
     FileTableMutation, FileTablePage, TreeEntry, TreeMutation,
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
@@ -326,69 +327,48 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
+        let mut replacements = FixedIndex::default();
+        for record in &overrides.value {
+            replacements.get_or_try_insert_with(
+                record.file_id.into_bytes(),
+                accounting,
+                |work| {
+                    work.charge(WorkCounters {
+                        bytes_copied: size_of::<FileRecord>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    Ok(*record)
+                },
+            )?;
+        }
+        overrides.retire(accounting)?;
+        if maximum == 0 {
+            return Err(WorkspaceError::JoinLimit);
+        }
+        let original = self
+            .selected_fork_record(
+                root,
+                root.root_file_id,
+                &replacements,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        let mut records = FixedIndex::default();
+        let selected =
+            records.get_or_try_insert_with(root.root_file_id.into_bytes(), accounting, |work| {
+                original.select_bindings_with_accounting(work)
+            })?;
+        selected.record.link_count = 1;
+        let mut record_count = 1;
         let mut pending = Owned::<Vec<FileId>>::allocate(0, accounting)?;
         selection_push(&mut pending, root.root_file_id, maximum, accounting)?;
-        let mut records = Owned::<Vec<FileRecord>>::allocate(0, accounting)?;
         while let Some(id) = pending.value.pop() {
-            let position = crate::kernel::binary_search_with_accounting(
-                &records.value,
-                accounting,
-                |entry| entry.file_id.cmp(&id),
-            )?;
-            let position = match position {
-                Ok(position) => {
-                    let record = records
-                        .value
-                        .get_mut(position)
-                        .ok_or(WorkspaceError::JoinLimit)?;
-                    record.link_count = record
-                        .link_count
-                        .checked_add(1)
-                        .ok_or(WorkspaceError::JoinLimit)?;
-                    continue;
-                }
-                Err(position) => position,
-            };
-            let mut record = None;
-            for entry in &overrides.value {
-                accounting.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                if entry.file_id == id {
-                    record = Some(*entry);
-                    break;
-                }
-            }
-            let mut record = if let Some(record) = record {
-                record
-            } else {
-                let record = {
-                    let (record, _allocation) = lookup_file_record_async_with_accounting(
-                        &self.inner.objects,
-                        root.file_table,
-                        id,
-                        limits,
-                        accounting,
-                        cancellation,
-                        None,
-                    )
-                    .await?;
-                    record
-                };
-                record.ok_or(WorkspaceError::NotFound)?
-            };
-            record.link_count = 1;
-            selection_push(&mut records, record, maximum, accounting)?;
-            accounting.charge(WorkCounters {
-                bytes_copied: ((records.value.len() - position) * size_of::<FileRecord>()) as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            records
-                .value
-                .get_mut(position..)
-                .ok_or(WorkspaceError::JoinLimit)?
-                .rotate_right(1);
+            let record = records
+                .get(id.into_bytes(), accounting)?
+                .ok_or(WorkspaceError::NotFound)?
+                .record;
             if let FilePayload::Directory { entries } = record.payload {
                 let mut cursor: Option<Owned<LogicalName>> = None;
                 loop {
@@ -416,7 +396,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         },
                     )?;
                     for entry in &page.value.entries {
-                        selection_push(&mut pending, entry.file_id, maximum, accounting)?;
+                        if let Some(selected) =
+                            records.get_mut(entry.file_id.into_bytes(), accounting)?
+                        {
+                            selected.record.link_count = selected
+                                .record
+                                .link_count
+                                .checked_add(1)
+                                .ok_or(WorkspaceError::JoinLimit)?;
+                            selected.add_binding(id, &entry.name, limits, accounting)?;
+                            continue;
+                        }
+                        if record_count >= maximum {
+                            return Err(WorkspaceError::JoinLimit);
+                        }
+                        let original = self
+                            .selected_fork_record(
+                                root,
+                                entry.file_id,
+                                &replacements,
+                                limits,
+                                accounting,
+                                cancellation,
+                            )
+                            .await?;
+                        let selected = records.get_or_try_insert_with(
+                            entry.file_id.into_bytes(),
+                            accounting,
+                            |work| original.select_bindings_with_accounting(work),
+                        )?;
+                        selected.record.link_count = 1;
+                        selected.add_binding(id, &entry.name, limits, accounting)?;
+                        record_count += 1;
+                        if original.kind == FileKind::Directory {
+                            selection_push(&mut pending, entry.file_id, maximum, accounting)?;
+                        }
                     }
                     let has_more = page.value.has_more;
                     let next = if has_more {
@@ -446,17 +460,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
         }
         pending.retire(accounting)?;
-        overrides.retire(accounting)?;
-        let mut mutations = Owned::<Vec<FileTableMutation>>::allocate(0, accounting)?;
-        for record in &records.value {
+        drop(replacements);
+        let mut mutations = Owned::<Vec<FileTableMutation>>::allocate(record_count, accounting)?;
+        // Emit canonical FileId order once; the writer's existing ordered-input
+        // check then needs no comparison sort or record relocation.
+        let mut entry = records.first(accounting)?;
+        while let Some((key, selected)) = entry {
+            let record = selected
+                .finish(&self.inner.objects, limits, accounting, cancellation)
+                .await?;
             selection_push(
                 &mut mutations,
-                FileTableMutation::Insert(*record),
+                FileTableMutation::Insert(record),
                 maximum,
                 accounting,
             )?;
+            entry = records.seek_after(*key, accounting)?;
         }
-        records.retire(accounting)?;
+        drop(records);
         let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
             encode_file_table_page(
                 &FileTablePage::Leaf(Vec::new()),
@@ -485,5 +506,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await?;
         mutations.retire(accounting)?;
         Ok(table.value)
+    }
+
+    async fn selected_fork_record(
+        &self,
+        root: &GenerationRoot,
+        id: FileId,
+        replacements: &FixedIndex<FileRecord>,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<FileRecord, WorkspaceError> {
+        if let Some(record) = replacements.get(id.into_bytes(), accounting)? {
+            return Ok(*record);
+        }
+        let (record, _allocation) = lookup_file_record_async_with_accounting(
+            &self.inner.objects,
+            root.file_table,
+            id,
+            limits,
+            accounting,
+            cancellation,
+            None,
+        )
+        .await?;
+        record.ok_or(WorkspaceError::NotFound)
     }
 }

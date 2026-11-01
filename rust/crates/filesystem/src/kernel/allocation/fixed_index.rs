@@ -72,6 +72,14 @@ impl<V, const N: usize> FixedIndex<V, N> {
             .get_or_try_insert_with(key, &mut IndexAccounting(accounting), |work| create(work.0))
     }
 
+    pub(crate) fn get_mut(
+        &mut self,
+        key: [u8; N],
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&mut V>, FsError> {
+        self.0.get_mut(key, &mut IndexAccounting(accounting))
+    }
+
     pub(crate) fn retire_if(&mut self, key: [u8; N], matches: impl FnOnce(&V) -> bool) -> bool {
         self.0.retire_if(key, matches)
     }

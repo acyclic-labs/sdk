@@ -66,6 +66,87 @@ pub(crate) struct FileBindingEdit {
     mutation: BindingMutation,
 }
 
+/// Selects an authenticated subset of a record's original direct edges.
+/// Callers retain the same file identities, parent identities and names.
+pub(crate) struct SelectedFileRecord {
+    pub(crate) record: super::FileRecord,
+    original_links: u64,
+    edits: super::Owned<Vec<FileBindingEdit>>,
+}
+
+impl super::FileRecord {
+    pub(crate) fn select_bindings_with_accounting(
+        self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<SelectedFileRecord, FsError> {
+        accounting.charge(WorkCounters {
+            bytes_copied: std::mem::size_of::<Self>() as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        Ok(SelectedFileRecord {
+            record: Self {
+                link_count: 0,
+                ..self
+            },
+            original_links: self.link_count,
+            edits: super::Owned::allocate(0, accounting)?,
+        })
+    }
+}
+
+impl SelectedFileRecord {
+    pub(crate) fn add_binding(
+        &mut self,
+        parent: FileId,
+        name: &LogicalName,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        // A sole source edge is necessarily unchanged if its record survives.
+        if self.original_links == 1 {
+            return Ok(());
+        }
+        push_edit(
+            &mut self.edits,
+            self.record.file_id,
+            0,
+            parent,
+            name,
+            true,
+            limits.maximum_name_bytes,
+            accounting,
+        )
+    }
+
+    pub(crate) async fn finish<S: crate::AsyncObjectStore>(
+        &self,
+        store: &S,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<super::FileRecord, FsError> {
+        let mut record = self.record;
+        // Equal cardinality of an authenticated subset proves that every
+        // original edge survives, so its existing binding tree can be reused.
+        if record.link_count != self.original_links {
+            record.bindings = Some(
+                apply_with_accounting(
+                    store,
+                    None,
+                    &self.edits.value,
+                    u32::try_from(self.edits.value.len())
+                        .map_err(|_| crate::WorkError::Overflow)?,
+                    limits,
+                    accounting,
+                    cancellation,
+                )
+                .await?,
+            );
+        }
+        Ok(record)
+    }
+}
+
 impl super::persistent_btree::Mutation<BindingFormat> for FileBindingEdit {
     type Error = super::TreeMutationError;
 

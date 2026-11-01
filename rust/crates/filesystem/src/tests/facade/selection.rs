@@ -70,30 +70,54 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
 #[tokio::test]
 async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    selected_record_membership_cost_and_custody()?;
     let cancel = CancellationToken::new();
     use crate::workspace::ForkOptions;
     let fs = Fs::memory();
     let workspace = fs
         .create_workspace("selected-fork-closure-controls", B, &cancel)
-        .await?
+        .await
+        .map_err(|error| format!("create selected-fork source: {error:?}"))?
         .value;
     let mut transaction = workspace
         .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
-        .await?
+        .await
+        .map_err(|error| format!("begin selected-fork source transaction: {error:?}"))?
         .value;
     transaction
         .create_dir_all("/tree/nested", B, &cancel)
-        .await?;
+        .await
+        .map_err(|error| format!("create selected source directories: {error:?}"))?;
     transaction
         .write_text("/tree/nested/file", "linked body")
-        .await?;
+        .await
+        .map_err(|error| format!("write selected source file: {error:?}"))?;
     transaction
         .hard_link("/tree/nested/file", "/tree/nested/alias", B, &cancel)
-        .await?;
+        .await
+        .map_err(|error| format!("link selected source alias: {error:?}"))?;
     transaction
         .hard_link("/tree/nested/file", "/outside-alias", B, &cancel)
-        .await?;
-    transaction.write_text("/omitted", "not inherited").await?;
+        .await
+        .map_err(|error| format!("link omitted source alias: {error:?}"))?;
+    transaction
+        .write_text("/tree/nested/retained", "all links retained")
+        .await
+        .map_err(|error| format!("write fully selected source file: {error:?}"))?;
+    transaction
+        .hard_link(
+            "/tree/nested/retained",
+            "/tree/nested/retained-alias",
+            B,
+            &cancel,
+        )
+        .await
+        .map_err(|error| format!("link fully selected source file: {error:?}"))?;
+    transaction
+        .write_text("/omitted", "not inherited")
+        .await
+        .map_err(|error| format!("write omitted source file: {error:?}"))?;
     transaction
         .commit(
             None,
@@ -107,7 +131,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 })
             },
         )
-        .await?;
+        .await
+        .map_err(|error| format!("commit selected-fork source: {error:?}"))?;
     let source = workspace.head(B, &cancel).await?.value;
     let paths = vec![
         "/tree".to_owned(),
@@ -129,7 +154,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 }))
             },
         )
-        .await?
+        .await
+        .map_err(|error| format!("fork selected source paths: {error:?}"))?
         .value;
     let initial = child.head(B, &cancel).await?.value;
     assert_eq!(
@@ -146,6 +172,16 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     let alias = initial.stat("/tree/nested/alias", B, &cancel).await?.value;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
+    let retained = initial
+        .stat("/tree/nested/retained", B, &cancel)
+        .await?
+        .value;
+    let retained_alias = initial
+        .stat("/tree/nested/retained-alias", B, &cancel)
+        .await?
+        .value;
+    assert_eq!(retained.file_id, retained_alias.file_id);
+    assert_eq!(retained.link_count, 2);
     assert!(
         initial
             .matches_fork_selection(&source, Some(paths.clone()), B, &cancel)
@@ -207,6 +243,206 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             .matches_fork_selection(&source, Some(vec!["/".to_owned()]), B, &cancel)
             .await?
             .value
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn selected_record_membership_cost_and_custody() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::fixed_index::FixedIndex;
+    use crate::kernel::allocation::retained::RetainedAllocation;
+    use crate::kernel::{FilePayload, FileRecord, KernelAccounting};
+    let own = FileRecord {
+        file_id: crate::FileId::from_bytes([255; 16]),
+        kind: crate::kernel::FileKind::Fifo,
+        link_count: 1,
+        metadata: ObjectId {
+            kind: ObjectKind::Metadata,
+            digest: crate::Digest::from_bytes([7; 32]),
+            storage: None,
+        },
+        bindings: None,
+        payload: FilePayload::Empty,
+    };
+    // The same original ordinary ledger can gain independently retained
+    // provider/index owners during a read. Cleanup owns only call scratch.
+    let cancel = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
+    let caller = crate::kernel::Owned::<Vec<u8>>::allocate(97, &mut accounting)?;
+    let independent = RetainedAllocation::claim(61, 1, &mut accounting)?;
+    let before = crate::facade::readonly_standalone_live(&accounting);
+    let initial_live = accounting
+        .standalone_parts()
+        .ok_or("ordinary ledger missing")?
+        .0
+        .live_bytes();
+    let mut retained = FixedIndex::default();
+    retained.get_or_try_insert_with(own.file_id.into_bytes(), &mut accounting, |_| Ok(own))?;
+    let retained_live = accounting
+        .standalone_parts()
+        .ok_or("ordinary ledger missing")?
+        .0
+        .live_bytes();
+    let discarded = crate::kernel::Owned::<Vec<u8>>::allocate(37, &mut accounting)?;
+    drop(discarded);
+    let ledger = accounting
+        .standalone_parts()
+        .ok_or("ordinary ledger missing")?
+        .0;
+    // The original all-live calculation attempts to refund the new retained
+    // node. The original ledger must refuse it, without changing any credit.
+    let old_retired = ledger
+        .live_bytes()
+        .checked_sub(initial_live)
+        .ok_or("ordinary live count underflow")?;
+    assert!(ledger.release(old_retired).is_err());
+    crate::facade::readonly_cleanup_standalone(&mut accounting, before, 0)?;
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("ordinary ledger missing")?
+            .0
+            .live_bytes(),
+        retained_live
+    );
+    assert_eq!(
+        retained.get(own.file_id.into_bytes(), &mut accounting)?,
+        Some(&own)
+    );
+    let output = crate::kernel::Owned::<Vec<u8>>::allocate(43, &mut accounting)?;
+    crate::facade::readonly_cleanup_standalone(&mut accounting, before, output.bytes)?;
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("ordinary ledger missing")?
+            .0
+            .scratch_bytes(),
+        caller.bytes + output.bytes
+    );
+    output.retire(&mut accounting)?;
+    drop(retained);
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("ordinary ledger missing")?
+            .0
+            .live_bytes(),
+        initial_live
+    );
+    drop(independent);
+    caller.retire(&mut accounting)?;
+    assert_eq!(
+        accounting
+            .standalone_parts()
+            .ok_or("ordinary ledger missing")?
+            .0
+            .scratch_bytes(),
+        0
+    );
+    let mut visits = Vec::new();
+    let mut censuses = Vec::new();
+    let mut moved = Vec::new();
+    for population in [1_u64, 100_000] {
+        let bound =
+            acyclic_collections::FixedIndex::<FileRecord, RetainedAllocation, 16>::insertion_bound(
+                population + 2,
+            )
+            .ok_or("selected record bound overflow")?;
+        let budget = WorkBudget {
+            items_examined: bound.examined_items + 4096,
+            allocation_operations: 2 * population + 8,
+            peak_allocation_bytes: bound.allocation_bytes + 65_536,
+            ..B
+        };
+        let cancel = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = KernelAccounting::native(&original, &cancel);
+        let mut records = FixedIndex::default();
+        let mut old = Vec::new();
+        for ordinal in (1..=population).rev() {
+            let mut bytes = [0; 16];
+            bytes[8..].copy_from_slice(&ordinal.to_be_bytes());
+            let record = FileRecord {
+                file_id: crate::FileId::from_bytes(bytes),
+                ..own
+            };
+            records.get_or_try_insert_with(bytes, &mut accounting, |_| Ok(record))?;
+            old.push(record);
+        }
+        records.get_or_try_insert_with(own.file_id.into_bytes(), &mut accounting, |_| Ok(own))?;
+        old.reverse();
+        old.push(own);
+        let before = accounting.spent();
+        let record = records
+            .get_mut(own.file_id.into_bytes(), &mut accounting)?
+            .ok_or("selected hard link disappeared")?;
+        record.link_count += 1;
+        visits.push(accounting.spent().items_examined - before.items_examined);
+        assert_eq!(
+            accounting.spent().allocation_operations,
+            before.allocation_operations
+        );
+        assert_eq!(accounting.spent().bytes_copied, before.bytes_copied);
+        assert_eq!(
+            records
+                .get(own.file_id.into_bytes(), &mut accounting)?
+                .map(|record| record.link_count),
+            Some(2)
+        );
+
+        // Restore the original override census and sorted insertion on the
+        // same exact identities. Their counts must expose the forbidden slope.
+        let mut examined = 0;
+        assert!(
+            old.iter()
+                .find(|record| {
+                    examined += 1;
+                    record.file_id == own.file_id
+                })
+                .is_some()
+        );
+        censuses.push(examined);
+        old.last_mut()
+            .ok_or("original selected record disappeared")?
+            .link_count = 2;
+        let first = FileRecord {
+            file_id: crate::FileId::from_bytes([0; 16]),
+            ..own
+        };
+        let position = old
+            .binary_search_by_key(&first.file_id, |record| record.file_id)
+            .unwrap_err();
+        old.push(first);
+        moved.push((old.len() - position) * std::mem::size_of::<FileRecord>());
+        old[position..].rotate_right(1);
+        records
+            .get_or_try_insert_with(first.file_id.into_bytes(), &mut accounting, |_| Ok(first))?;
+        let mut entry = records.first(&mut accounting)?;
+        for expected in &old {
+            let (key, record) = entry.ok_or("selected record order ended early")?;
+            assert_eq!(*key, expected.file_id.into_bytes());
+            assert_eq!(record, expected);
+            entry = records.seek_after(*key, &mut accounting)?;
+        }
+        assert!(entry.is_none());
+        cancel.cancel();
+        assert!(
+            records
+                .get_mut(own.file_id.into_bytes(), &mut accounting)
+                .is_err()
+        );
+        drop(records);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        original.receipt().verify(budget)?;
+    }
+    assert_eq!(visits[0], visits[1]);
+    assert!(visits[0] <= 145);
+    assert_eq!(censuses, [2, 100_001]);
+    assert!(moved[1] > moved[0]);
+    println!(
+        "selected record visits={visits:?}; original override census={censuses:?}; original sorted moved bytes={moved:?}"
     );
     Ok(())
 }

@@ -13,9 +13,13 @@ pub(super) fn native_pinned_allocation(
 }
 
 pub(crate) fn readonly_standalone_live(accounting: &KernelAccounting<'_>) -> Option<u64> {
+    // Only temporary scratch belongs to a read's cleanup boundary. Retained
+    // provider/index backing may be created or retired by independent owners.
     match accounting {
-        KernelAccounting::Standalone { allocations, .. } => Some(allocations.live_bytes()),
-        KernelAccounting::BorrowedStandalone { allocations, .. } => Some(allocations.live_bytes()),
+        KernelAccounting::Standalone { allocations, .. } => Some(allocations.scratch_bytes()),
+        KernelAccounting::BorrowedStandalone { allocations, .. } => {
+            Some(allocations.scratch_bytes())
+        }
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { .. } => None,
     }
@@ -33,11 +37,5 @@ pub(crate) fn readonly_cleanup_standalone(
         return Ok(());
     };
     let keep = before.checked_add(retained).ok_or(WorkError::Overflow)?;
-    let retired = allocations
-        .live_bytes()
-        .checked_sub(keep)
-        .ok_or(WorkError::Overflow)?;
-    allocations
-        .release(retired)
-        .map_err(|error| error.into_work_or(FsError::HandleAllocationFailed))
+    allocations.release_scratch_to(keep)
 }
