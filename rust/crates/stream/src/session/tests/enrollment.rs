@@ -288,7 +288,7 @@ async fn caller_loss_fences_suspended_issuance_before_enrollment_without_credit(
                 assert_eq!(dropped.load(Ordering::SeqCst), 0);
                 assert_eq!(
                     session.slots.can_reserve(1, session.limits.channels),
-                    Err(StreamError::Conflict)
+                    Err(StreamError::AlreadyExists)
                 );
                 session.remove(1)?;
             } else {
@@ -472,7 +472,7 @@ async fn enrollment_requires_sealed_original_identity_and_an_exclusive_slot() ->
     })?;
     assert_eq!(
         session.slots.can_reserve(1, session.limits.channels),
-        Err(StreamError::Conflict)
+        Err(StreamError::AlreadyExists)
     );
     assert_eq!(
         session.authority.register(
@@ -481,7 +481,7 @@ async fn enrollment_requires_sealed_original_identity_and_an_exclusive_slot() ->
             &token(false),
             session.limits.channels
         ),
-        Err(StreamError::Conflict)
+        Err(StreamError::AlreadyExists)
     );
     session.remove(1)?;
     session.slots.can_reserve(1, session.limits.channels)?;
@@ -515,7 +515,7 @@ async fn completed_call_does_not_own_enrollment_and_new_session_cannot_replay_it
             &token(false),
             session.limits.channels
         ),
-        Err(StreamError::Conflict)
+        Err(StreamError::AlreadyExists)
     );
     let (replacement, _replacement_owner, _) = fixture(false);
     assert!(

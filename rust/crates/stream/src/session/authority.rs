@@ -113,7 +113,7 @@ impl Slots {
             return Err(StreamError::Capacity);
         }
         if self.entries.contains_key(&slot) {
-            return Err(StreamError::Conflict);
+            return Err(StreamError::AlreadyExists);
         }
         Ok(())
     }
@@ -220,7 +220,7 @@ impl Authority {
             .get(&slot)
             .is_some_and(|entry| entry.reservation == Some(owner))
         {
-            return Err(StreamError::Conflict);
+            return Err(StreamError::InvalidArgument);
         }
         let snapshot = self.snapshot().map_err(|reason| match reason {
             Rejection::Unavailable => StreamError::Unavailable,
@@ -314,7 +314,7 @@ impl Authority {
                 .get(&slot)
                 .is_some_and(|entry| entry.custody.is_some() || entry.reservation.is_some())
         {
-            return Err(StreamError::Conflict);
+            return Err(StreamError::AlreadyExists);
         }
         let credential_bytes = slots.credential_bytes(slot, bytes.len())?;
         if bytes.is_empty() {
