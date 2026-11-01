@@ -121,9 +121,15 @@ if prompt=='resumed':
    with selectors.DefaultSelector() as ready:
     ready.register(barrier,selectors.EVENT_READ,'ready')
     ready.register(bridge.stdout,selectors.EVENT_READ,'terminal')
-    observed=ready.select()
-    if any(key.data=='terminal' for key,_ in observed):
-     raise RuntimeError(f'step=observe native readiness: child settled before readiness: {response(waiter)}; recovery command: {recovery}')
+    while True:
+     if mcp.responses[waiter] is not None:
+      raise RuntimeError(f'step=observe native readiness: child settled before readiness: {response(waiter)}; recovery command: {recovery}')
+     observed=ready.select()
+     if any(key.data=='terminal' for key,_ in observed):
+      mcp.receive()
+      if mcp.responses[waiter] is not None:
+       raise RuntimeError(f'step=observe native readiness: child settled before readiness: {response(waiter)}; recovery command: {recovery}')
+     if any(key.data=='ready' for key,_ in observed):break
    gate,_=barrier.accept();gates.append(gate)
    with gate.makefile('rb') as messages:event=json.loads(messages.readline())
   except (OSError,ValueError) as error:

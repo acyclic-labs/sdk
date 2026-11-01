@@ -105,8 +105,9 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                 )
                 results.append({"host": host, "case": case, "passed": True})
             finally:
-                if process.poll() is None:
+                try:
                     process.kill()
+                finally:
                     process.wait()
                 for pipe in (process.stdin, process.stdout, process.stderr):
                     try:

@@ -46,31 +46,7 @@ class McpClient:
     def response(self, identifier):
         self.responses.setdefault(identifier, None)
         while self.responses[identifier] is None:
-            if b"\n" not in self.pending:
-                try:
-                    chunk = os.read(self.process.stdout.fileno(), 65536)
-                except (OSError, ValueError) as error:
-                    raise McpFailure("read MCP output", str(error), self.recovery) from error
-                if not chunk:
-                    raise McpFailure("read MCP response", "producer closed before response", self.recovery)
-                self.pending += chunk
-            while b"\n" in self.pending:
-                line, self.pending = self.pending.split(b"\n", 1)
-                try:
-                    message = json.loads(line)
-                except ValueError as error:
-                    raise McpFailure("decode MCP response", str(error), self.recovery) from error
-                if not isinstance(message, dict):
-                    raise McpFailure("decode MCP response", "expected an object", self.recovery)
-                if message.get("id") is None and "error" in message:
-                    raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
-                if "id" in message:
-                    key = message["id"]
-                    if type(key) is not int or key not in self.responses:
-                        raise McpFailure("decode MCP response ID", "request is not outstanding", self.recovery)
-                    if self.responses[key] is not None:
-                        raise McpFailure("decode MCP response ID", "duplicate response", self.recovery)
-                    self.responses[key] = message
+            self.receive()
         message = self.responses.pop(identifier)
         if "error" in message:
             raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
@@ -80,6 +56,32 @@ class McpClient:
         if not isinstance(result, dict):
             raise McpFailure("decode MCP result", "expected an object", self.recovery)
         return result
+
+    def receive(self):
+        try:
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+        except (OSError, ValueError) as error:
+            raise McpFailure("read MCP output", str(error), self.recovery) from error
+        if not chunk:
+            raise McpFailure("read MCP response", "producer closed before response", self.recovery)
+        self.pending += chunk
+        while b"\n" in self.pending:
+            line, self.pending = self.pending.split(b"\n", 1)
+            try:
+                message = json.loads(line)
+            except ValueError as error:
+                raise McpFailure("decode MCP response", str(error), self.recovery) from error
+            if not isinstance(message, dict):
+                raise McpFailure("decode MCP response", "expected an object", self.recovery)
+            if message.get("id") is None and "error" in message:
+                raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
+            if "id" in message:
+                key = message["id"]
+                if type(key) is not int or key not in self.responses:
+                    raise McpFailure("decode MCP response ID", "request is not outstanding", self.recovery)
+                if self.responses[key] is not None:
+                    raise McpFailure("decode MCP response ID", "duplicate response", self.recovery)
+                self.responses[key] = message
 
     def result(self, identifier):
         result = self.response(identifier)
