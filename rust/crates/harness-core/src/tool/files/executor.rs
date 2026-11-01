@@ -426,21 +426,19 @@ impl ToolExecutor for FileTool {
                     Some(work),
                 )?
             };
-            let receipt =
-                context
-                    .observe_tool_source_file_once(
-                        invocation.operation_id,
-                        source.0.as_ref(),
-                        if matches!(self, Self::Write) {
-                            None
-                        } else {
-                            source.0.as_ref().map(FileRef::path).or_else(|| {
-                                invocation.arguments.get("path").and_then(Value::as_str)
-                            })
-                        },
-                        Some(&io),
-                    )
-                    .await?;
+            let receipt = context
+                .observe_tool_source_file_once(
+                    invocation.operation_id,
+                    matches!(self, Self::Write),
+                    source.0.as_ref(),
+                    source
+                        .0
+                        .as_ref()
+                        .map(FileRef::path)
+                        .or_else(|| invocation.arguments.get("path").and_then(Value::as_str)),
+                    Some(&io),
+                )
+                .await?;
             match receipt.0 {
                 Some(file) => {
                     let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
@@ -509,6 +507,7 @@ impl ToolExecutor for FileTool {
                 let receipt = context
                     .observe_tool_source_file_once(
                         invocation.operation_id,
+                        false,
                         source.0.as_ref(),
                         invocation.arguments.get("path").and_then(Value::as_str),
                         None,

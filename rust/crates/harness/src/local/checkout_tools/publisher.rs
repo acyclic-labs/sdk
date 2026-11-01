@@ -1,7 +1,8 @@
 //! File publication shares the selected checkout and its command lock.
 use super::*;
 use crate::conversation::{
-    BoundedContentFuture, ContentHold, ContentIo, ContentPublisher, FileRef,
+    BoundedContentFuture, ContentHold, ContentIo, ContentPublicationQuery, ContentPublisher,
+    FileRef,
 };
 
 mod batch;
@@ -134,7 +135,7 @@ impl CheckoutPublisher {
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, None, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
+                Publication::Once { .. } => writer.observe_staged_once(operation, Some(ContentPublicationQuery::Operation { volume: &mount.view.volume, path: &relative }), self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };
@@ -406,7 +407,7 @@ impl ContentPublisher for CheckoutPublisher {
     fn observe_staged_once<'a>(
         &'a self,
         operation: OperationId,
-        replacement: Option<(&'a VolumeRef, &'a str)>,
+        query: Option<ContentPublicationQuery<'a>>,
         maximum: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
@@ -428,10 +429,13 @@ impl ContentPublisher for CheckoutPublisher {
                 // reach no mount is refused.
                 let mut refused = None;
                 let mut admitted = false;
-                let selected = replacement
-                    .map(|(volume, path)| physical.mounts.file(Some(volume), path))
+                let selected = query
+                    .map(|query| {
+                        let (volume, path) = query.destination();
+                        physical.mounts.file(Some(volume), path)
+                    })
                     .transpose()?;
-                let mounts = replacement.is_none().then(|| physical.mounts.mounts());
+                let mounts = query.is_none().then(|| physical.mounts.mounts());
                 for mount in selected
                     .as_ref()
                     .map(|(mount, _)| *mount)
@@ -470,7 +474,7 @@ impl ContentPublisher for CheckoutPublisher {
                         .writer_for(&mount.view.volume, workspace, None)?
                         .observe_staged_once(
                             operation,
-                            replacement,
+                            query,
                             maximum,
                             crate::conversation::ContentAccess { ceiling, io: None },
                         )?

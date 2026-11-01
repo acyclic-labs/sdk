@@ -4,8 +4,8 @@ use crate::executor::stock_boundary;
 use crate::{
     IdempotencyKey, OperationId, Result,
     conversation::{
-        BoundedContentFuture, ContentChanges, ContentGrant, ContentHold, ContentPublisher, FileRef,
-        VolumeOperation, VolumeRef,
+        BoundedContentFuture, ContentChanges, ContentGrant, ContentHold, ContentPublicationQuery,
+        ContentPublisher, FileRef, VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, Scope},
 };
@@ -205,7 +205,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     fn observe_staged_once<'a>(
         &'a self,
         operation: OperationId,
-        replacement: Option<(&'a VolumeRef, &'a str)>,
+        query: Option<ContentPublicationQuery<'a>>,
         maximum: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
@@ -213,7 +213,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 
         BoundedContentFuture::new(io, || async move {
             let file = self
-                .observe_publication(operation, replacement, maximum, ceiling, io)
+                .observe_publication(operation, query, maximum, ceiling, io)
                 .await?;
             let bytes = file
                 .as_ref()
@@ -272,23 +272,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
-        replacement: Option<(&VolumeRef, &str)>,
+        query: Option<ContentPublicationQuery<'_>>,
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        let retry = match replacement {
-            Some((volume, path)) => {
-                if volume != &self.volume {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Unauthorized,
-                        "replacement observation belongs to another writer volume",
-                    ));
-                }
+        if let Some(query) = query {
+            let (volume, _) = query.destination();
+            if volume != &self.volume {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "publication observation belongs to another writer volume",
+                ));
+            }
+        }
+        let retry = match query {
+            Some(ContentPublicationQuery::Replacement { path, .. }) => {
                 replacement_key(operation, path, io)?
             }
-            None => once_key(operation, io)?,
+            Some(ContentPublicationQuery::Operation { .. }) | None => once_key(operation, io)?,
         };
         let hold = io
             .map(|io| io.guard_owned(retry.as_str().len() as u64))
@@ -301,10 +304,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 super::PublicationLookup {
                     volume: &self.volume,
                     key: &retry,
-                    expected_path: replacement.map(|(_, path)| path),
+                    expected_path: query.map(|query| query.destination().1),
                     maximum_bytes: maximum.min(self.maximum_bytes),
                     internal_class: None,
-                    purpose: if replacement.is_some() {
+                    purpose: if query.is_some() {
                         super::PublicationPurpose::WriteReceipt
                     } else {
                         super::PublicationPurpose::Metadata
@@ -527,7 +530,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<Option<FileRef>> {
         self.observe_publication(
             operation,
-            Some((source.volume(), source.path())),
+            Some(ContentPublicationQuery::Replacement {
+                volume: source.volume(),
+                path: source.path(),
+            }),
             maximum,
             ceiling,
             None,

@@ -678,7 +678,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
         let operation = invocation.operation_id;
         assert_eq!(edit.executor.reconcile(invocation, Some(context.clone())).await?, Some(result));
-        assert!(context.observe_tool_source_file_once(operation, None, Some("notes/other.txt"), None).await?.0.is_none());
+        assert!(context.observe_tool_source_file_once(operation, false, None, Some("notes/other.txt"), None).await?.0.is_none());
         assert!(context.observe_tool_file_once(operation, None).await?.0.is_none());
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "later");
         task.stage_file(None, OperationId::new(), "notes/one.txt", b"one one", "text/plain", "one.txt").await?;

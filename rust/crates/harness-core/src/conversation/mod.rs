@@ -264,7 +264,7 @@ pub use content::require_owner_reader;
 pub use content::{
     BoundedContentFuture, CompositeContentVerifier, ContentAccess, ContentChange,
     ContentChangeResult, ContentChanges, ContentHold, ContentIo, ContentMountResolver,
-    ContentPublisher, ContentResidencyVerifier,
+    ContentPublicationQuery, ContentPublisher, ContentResidencyVerifier,
 };
 pub use directory::{
     MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,

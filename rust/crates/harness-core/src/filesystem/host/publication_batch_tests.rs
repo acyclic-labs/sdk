@@ -333,6 +333,81 @@ async fn creation_retains_its_authorized_cut_before_transaction_start() -> Resul
                 .await?
                 .is_none()
         );
+        // Exercise the actual publisher boundary: a known operation path is a
+        // write receipt, while discovery of its unknown path needs List.
+        use crate::conversation::{ContentPublicationQuery, ContentPublisher};
+        let creator = crate::filesystem::FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &issuer.verifier(&mut None)?,
+            &scope,
+            64,
+            io.as_ref(),
+        )?;
+        let writer = crate::filesystem::FilesystemContentPublisher::new(
+            host.clone(),
+            &volume,
+            &_broad_issuer.verifier(&mut None)?,
+            broad.policy_scope(),
+            64,
+            io.as_ref(),
+        )?;
+        let operation = crate::OperationId::new();
+        let (first, _first_hold) = creator
+            .stage_once(
+                operation,
+                "published",
+                b"first",
+                "text/plain",
+                "published",
+                access,
+            )?
+            .await?;
+        let overwritten = crate::OperationId::new();
+        let (_second, _second_hold) = writer
+            .stage_once(
+                overwritten,
+                "published",
+                b"second",
+                "text/plain",
+                "published",
+                access,
+            )?
+            .await?;
+        let query = Some(ContentPublicationQuery::Operation {
+            volume: &volume,
+            path: "published",
+        });
+        let (recovered, _recovered_hold) = creator
+            .observe_staged_once(operation, query, 64, access)?
+            .await?;
+        assert_eq!(recovered, Some(first));
+        assert!(
+            matches!(creator.observe_staged_once(operation, None, 64, access)?.await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+        );
+        assert!(
+            matches!(creator.observe_staged_once(overwritten, query, 64, access)?.await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+        );
+        assert!(matches!(creator.observe_staged_once(operation,
+            Some(ContentPublicationQuery::Operation { volume: &volume, path: "other" }), 64, access)?.await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
+        assert!(
+            creator
+                .observe_staged_once(
+                    operation,
+                    Some(ContentPublicationQuery::Replacement {
+                        volume: &volume,
+                        path: "published"
+                    }),
+                    64,
+                    access
+                )?
+                .await?
+                .0
+                .is_none()
+        );
     }
     Ok(())
 }

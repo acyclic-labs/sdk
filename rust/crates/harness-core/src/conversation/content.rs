@@ -470,6 +470,34 @@ impl serde::Serialize for ContentChanges {
     }
 }
 
+/// An authenticated invocation's exact original publication destination.
+#[derive(Clone, Copy)]
+pub enum ContentPublicationQuery<'a> {
+    /// One complete file request bound to the operation, including its path.
+    Operation {
+        /// Selected writable volume.
+        volume: &'a VolumeRef,
+        /// Original path relative to that volume.
+        path: &'a str,
+    },
+    /// A conditional replacement bound to the operation and original path.
+    Replacement {
+        /// Selected writable volume.
+        volume: &'a VolumeRef,
+        /// Original path relative to that volume.
+        path: &'a str,
+    },
+}
+
+impl<'a> ContentPublicationQuery<'a> {
+    /// The original selected volume and relative path.
+    pub const fn destination(self) -> (&'a VolumeRef, &'a str) {
+        match self {
+            Self::Operation { volume, path } | Self::Replacement { volume, path } => (volume, path),
+        }
+    }
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 /// A supplied caller ceiling only restricts the authenticated writer. Filesystem
 /// providers intersect it with persisted policy through their shared decision.
@@ -571,12 +599,13 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         ))
     }
     /// Observes the original publication without substituting a mutable head.
-    /// A replacement supplies its destination volume and relative path;
-    /// `None` selects the operation's original `stage_once` publication.
+    /// An exact query checks the original write action at its original path.
+    /// `None` discovers the operation's `stage_once` path and requires directory
+    /// disclosure authority.
     fn observe_staged_once<'a>(
         &'a self,
         _operation_id: OperationId,
-        _replacement: Option<(&'a VolumeRef, &'a str)>,
+        _query: Option<ContentPublicationQuery<'a>>,
         _maximum_bytes: u64,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {

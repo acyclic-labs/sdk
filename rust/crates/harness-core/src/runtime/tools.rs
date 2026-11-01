@@ -466,22 +466,37 @@ impl ToolContext {
     pub(crate) async fn observe_tool_source_file_once(
         &self,
         operation_id: OperationId,
+        operation_bound: bool,
         source: Option<&FileRef>,
-        replacement_path: Option<&str>,
+        path: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
         let binding = self.task().tool_content(source.map(FileRef::volume));
         let writer = super::content_write::content_writer(binding, io)?;
-        let destination = replacement_path
-            .map(|path| writer.destination(source.map(FileRef::volume), path, io))
-            .transpose()?;
+        let path = path.ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "file publication recovery requires its original path",
+            )
+        })?;
+        let (volume, relative) = writer.destination(source.map(FileRef::volume), path, io)?;
+        let query = if operation_bound {
+            crate::conversation::ContentPublicationQuery::Operation {
+                volume,
+                path: relative.as_ref(),
+            }
+        } else {
+            crate::conversation::ContentPublicationQuery::Replacement {
+                volume,
+                path: relative.as_ref(),
+            }
+        };
         self.task()
             .observe_bound_file_once(
                 binding,
                 operation_id,
-                destination
-                    .as_ref()
-                    .map(|(volume, path)| (*volume, path.as_ref())),
+                Some(query),
                 io,
                 self.effective_scope(),
             )

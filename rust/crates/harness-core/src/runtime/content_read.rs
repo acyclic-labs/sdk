@@ -399,7 +399,7 @@ impl TaskContext {
         &self,
         binding: Option<&ContentBindings>,
         operation_id: OperationId,
-        replacement: Option<(&VolumeRef, &str)>,
+        query: Option<crate::conversation::ContentPublicationQuery<'_>>,
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
@@ -407,7 +407,7 @@ impl TaskContext {
         let (file, hold) = writer
             .observe_staged_once(
                 operation_id,
-                replacement,
+                query,
                 scope.limits.file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
