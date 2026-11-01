@@ -1,11 +1,12 @@
 //! Canonical native preparation evidence, not a public transport or grant.
 
-use super::codec::Encoder;
+use super::codec::{Decoder, Encoder};
 use super::{
     CanonicalDecodeError, GenerationExportManifest, GenerationExportManifestError, GenerationProof,
     PublishGenerationRequest, decode_published_generation, encode_generation_export_manifest,
     encode_generation_root, generation_root_id,
 };
+use crate::foundation::{AuthorityId, Digest, Epoch, Head, OperationId, Sequence};
 use crate::model::VolumeConfig;
 use crate::{GuardedAppend, PublicationPermit};
 use bytes::Bytes;
@@ -51,6 +52,32 @@ pub enum PublicationEvidenceError {
     /// Evidence exceeds the caller's explicit byte bound.
     #[error("generation publication evidence exceeds its byte bound")]
     TooLarge,
+}
+
+pub(super) struct OriginalAppendHeader {
+    pub(super) authority_id: AuthorityId,
+    pub(super) epoch: Epoch,
+    pub(super) expected: Head,
+    pub(super) operation_id: OperationId,
+    pub(super) fingerprint: Digest,
+}
+
+pub(super) fn decode_original_append_header(
+    decoder: &mut Decoder<'_>,
+) -> Result<OriginalAppendHeader, PublicationEvidenceError> {
+    let mut observe = |_| Ok::<_, CanonicalDecodeError>(());
+    let epoch = |value| Epoch::new(value).map_err(|_| PublicationEvidenceError::Mismatch);
+    Ok(OriginalAppendHeader {
+        authority_id: AuthorityId::from_bytes(decoder.fixed(&mut observe)?),
+        epoch: epoch(decoder.u64(&mut observe)?)?,
+        expected: Head {
+            epoch: epoch(decoder.u64(&mut observe)?)?,
+            sequence: Sequence::new(decoder.u64(&mut observe)?),
+            digest: Digest::from_bytes(decoder.fixed(&mut observe)?),
+        },
+        operation_id: OperationId::from_bytes(decoder.fixed(&mut observe)?),
+        fingerprint: Digest::from_bytes(decoder.fixed(&mut observe)?),
+    })
 }
 
 /// Encodes original preparation using the admitted volume configuration, excluding runtime counters.
@@ -184,73 +211,45 @@ pub fn decode_generation_publication_evidence(
     maximum_bytes: u64,
     maximum_objects: u64,
 ) -> Result<GenerationPublicationProjection, PublicationEvidenceError> {
-    use super::codec::Decoder;
-    use crate::foundation::{
-        AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, Sequence, VolumeId,
-    };
+    use crate::foundation::{ProposedCommit, VolumeId};
     if bytes.len() as u64 > maximum_bytes || maximum_bytes == 0 {
         return Err(PublicationEvidenceError::TooLarge);
     }
     if <[u8; 32]>::from(Sha256::digest(bytes)) != *expected_sha256 {
         return Err(PublicationEvidenceError::Mismatch);
     }
+    let mut observe = |_| Ok::<_, CanonicalDecodeError>(());
     let mut decoder = Decoder::new(
         bytes,
         b"acyclic-fs-generation-publication-evidence-v1\0",
         1,
         maximum_bytes,
-        &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        &mut observe,
     )?;
-    let epoch = |value| Epoch::new(value).map_err(|_| PublicationEvidenceError::Mismatch);
-    let authority_id = AuthorityId::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let writer_epoch =
-        epoch(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?;
-    let expected = Head {
-        epoch: epoch(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)?,
-        sequence: Sequence::new(
-            decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        ),
-        digest: Digest::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        ),
-    };
-    let operation_id = OperationId::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let fingerprint = Digest::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let volume_id = VolumeId::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let logical_file_bytes = u128::from_le_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
+    let OriginalAppendHeader {
+        authority_id,
+        epoch: writer_epoch,
+        expected,
+        operation_id,
+        fingerprint,
+    } = decode_original_append_header(&mut decoder)?;
+    let volume_id = VolumeId::from_bytes(decoder.fixed(&mut observe)?);
+    let logical_file_bytes = u128::from_le_bytes(decoder.fixed(&mut observe)?);
     let field_bound = u32::try_from(maximum_bytes).unwrap_or(u32::MAX);
-    let manifest_bytes = decoder.bounded_slice(field_bound, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?;
+    let manifest_bytes = decoder.bounded_slice(field_bound, &mut observe)?;
     let manifest =
         super::decode_generation_export_manifest(manifest_bytes, maximum_bytes, maximum_objects)?;
-    let root_bytes = decoder.bounded_slice(field_bound, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?;
+    let root_bytes = decoder.bounded_slice(field_bound, &mut observe)?;
     let root = super::decode_generation_root(
         root_bytes,
         super::DecodeLimits {
             maximum_object_bytes: maximum_bytes,
             ..super::DecodeLimits::default()
         },
-        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        &mut observe,
     )?;
-    let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?);
-    let permit_bytes = decoder.bounded_slice(field_bound, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?;
+    let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut observe)?);
+    let permit_bytes = decoder.bounded_slice(field_bound, &mut observe)?;
     decoder.finish()?;
     let permit = decode_publication_permit(permit_bytes, maximum_bytes)?;
     let request = PublishGenerationRequest {

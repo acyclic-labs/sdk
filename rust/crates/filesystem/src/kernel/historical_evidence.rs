@@ -1,7 +1,10 @@
 //! Provider-owned original generation preparation projected against exact settlement.
 
 use super::codec::{Decoder, Encoder};
-use super::publication_evidence::{decode_publication_permit, encode_publication_permit};
+use super::publication_evidence::{
+    OriginalAppendHeader, decode_original_append_header, decode_publication_permit,
+    encode_publication_permit,
+};
 use super::{
     DecodeLimits, GenerationExportManifest, GenerationProof, GenerationRoot,
     PublicationEvidenceError, decode_generation_export_manifest,
@@ -9,9 +12,7 @@ use super::{
     decode_volume_created, encode_generation_export_manifest, encode_generation_root,
     generation_root_id, retention_authority_id, volume_authority_id,
 };
-use crate::foundation::{
-    AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
-};
+use crate::foundation::{AuthorityId, Digest, DurableCommit, ProposedCommit, Sequence};
 use crate::model::VolumeConfig;
 use crate::storage::GuardedAppend;
 use bytes::Bytes;
@@ -115,61 +116,33 @@ pub fn decode_historical_generation_evidence(
         if <[u8; 32]>::from(Sha256::digest(&evidence.bytes)) != evidence.sha256 {
             return Err(PublicationEvidenceError::Mismatch);
         }
-        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes, &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        })?;
-        let authority_id = AuthorityId::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        );
-        let epoch =
-            Epoch::new(decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)
-                .map_err(|_| PublicationEvidenceError::Mismatch)?;
-        let expected = Head {
-            epoch: Epoch::new(
-                decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            )
-            .map_err(|_| PublicationEvidenceError::Mismatch)?,
-            sequence: Sequence::new(
-                decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            ),
-            digest: Digest::from_bytes(
-                decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            ),
-        };
-        let operation_id = OperationId::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        );
-        let fingerprint = Digest::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        );
-        let logical_file_bytes = u128::from_le_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        );
+        let mut observe = |_| Ok::<_, crate::kernel::CanonicalDecodeError>(());
+        let mut decoder = Decoder::new(&evidence.bytes, DOMAIN, 1, maximum_bytes, &mut observe)?;
+        let OriginalAppendHeader {
+            authority_id,
+            epoch,
+            expected,
+            operation_id,
+            fingerprint,
+        } = decode_original_append_header(&mut decoder)?;
+        let logical_file_bytes = u128::from_le_bytes(decoder.fixed(&mut observe)?);
         let field_bound = u32::try_from(maximum_bytes).unwrap_or(u32::MAX);
         let manifest = decode_generation_export_manifest(
-            decoder.bounded_slice(field_bound, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            })?,
+            decoder.bounded_slice(field_bound, &mut observe)?,
             maximum_bytes,
             maximum_objects,
         )?;
         let root = decode_generation_root(
-            decoder.bounded_slice(field_bound, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            })?,
+            decoder.bounded_slice(field_bound, &mut observe)?,
             DecodeLimits {
                 maximum_object_bytes: maximum_bytes,
                 ..DecodeLimits::default()
             },
-            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            &mut observe,
         )?;
-        let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        })?);
+        let payload = Bytes::copy_from_slice(decoder.bounded_slice(field_bound, &mut observe)?);
         let permit = decode_publication_permit(
-            decoder.bounded_slice(field_bound, &mut |_| {
-                Ok::<_, crate::kernel::CanonicalDecodeError>(())
-            })?,
+            decoder.bounded_slice(field_bound, &mut observe)?,
             maximum_bytes,
         )?;
         decoder.finish()?;
