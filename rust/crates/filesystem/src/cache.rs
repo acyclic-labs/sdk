@@ -9,9 +9,8 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::kernel::allocation::retained::RetainedArc;
 use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::materializer::{NativeAllocation, NativeMaterializationWork};
 use crate::performance::WorkCounters;
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
@@ -94,6 +93,9 @@ pub struct ObjectCacheStats {
 
 mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
+mod flights;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use flights::verify_original_flight_admission_and_retirement;
 
 enum FlightState {
     Running,
@@ -104,8 +106,6 @@ struct Flight {
     state: Mutex<FlightState>,
     epoch: u64,
     ready: tokio::sync::Notify,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<NativeAllocation>,
 }
 
 impl Flight {
@@ -114,8 +114,6 @@ impl Flight {
             epoch,
             state: Mutex::new(FlightState::Running),
             ready: tokio::sync::Notify::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
         }
     }
 
@@ -156,7 +154,7 @@ impl Flight {
 struct ActiveFlightGuard<'a, S> {
     store: &'a CachedObjectStore<S>,
     object_id: ObjectId,
-    flight: Option<Arc<Flight>>,
+    flight: Option<RetainedArc<Flight>>,
 }
 
 impl<S> ActiveFlightGuard<'_, S> {
@@ -178,20 +176,20 @@ impl<S> Drop for ActiveFlightGuard<'_, S> {
 
 enum ReadPlan {
     Hit(OwnedBytes),
-    Leader(Arc<Flight>),
-    Follower(Arc<Flight>),
+    Leader(RetainedArc<Flight>),
+    Follower(RetainedArc<Flight>),
 }
 
 enum BatchSlot {
     Hit(OwnedBytes),
     LocalLeader(usize),
-    ExternalFollower(Arc<Flight>),
+    ExternalFollower(RetainedArc<Flight>),
 }
 
 struct BatchLeader {
     object_id: ObjectId,
     maximum_bytes: u64,
-    flight: Arc<Flight>,
+    flight: RetainedArc<Flight>,
 }
 
 struct PreparedBatch {
@@ -204,14 +202,7 @@ impl Drop for PreparedBatch {
     fn drop(&mut self) {
         for leader in &self.leaders.value {
             leader.flight.finish(None);
-            if let Ok(mut state) = self.shared.pool.state.lock()
-                && state
-                    .flights
-                    .get(&self.shared.key(leader.object_id))
-                    .is_some_and(|flight| Arc::ptr_eq(flight, &leader.flight))
-            {
-                state.flights.remove(&self.shared.key(leader.object_id));
-            }
+            let _ = flights::remove(&self.shared, leader.object_id, &leader.flight);
         }
     }
 }
@@ -330,48 +321,35 @@ impl<S> CachedObjectStore<S> {
     fn read_plan(
         &self,
         object_id: ObjectId,
-        #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<ReadPlan, ObjectStoreError> {
         let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
-        let tick = next_tick(&mut state)?;
-        if let Some(entry) = state.entries.get_mut(&object_id) {
-            let prior = entry.touched;
-            entry.touched = tick;
-            let bytes = entry.bytes.clone();
-            state
-                .recency
-                .remove(&(prior, RecencyKey::Canonical(object_id)));
-            state
-                .recency
-                .insert((tick, RecencyKey::Canonical(object_id)));
-            state.hits = increment(state.hits)?;
+        if let Some(bytes) = cached_read(&mut state, object_id)? {
             return Ok(ReadPlan::Hit(bytes));
         }
-        state.misses = increment(state.misses)?;
-        if let Some(flight) = state.flights.get(&object_id) {
-            return Ok(ReadPlan::Follower(Arc::clone(flight)));
+        drop(state);
+        let mut lookup = flights::read_work(accounting)?;
+        {
+            let mut state = self.lock_state()?;
+            if let Some(flight) = state.flights.get(object_id, &mut lookup)? {
+                state.misses = increment(state.misses)?;
+                return Ok(ReadPlan::Follower(flight));
+            }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = work
-            .map(|work| {
-                let claim_bytes = size_of::<Flight>() as u64;
-                work.claim(
-                    claim_bytes,
-                    u64::from(claim_bytes != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )
-            })
-            .transpose()?;
-        let flight = Flight::new(self.shared.fill_epoch());
-        #[cfg(not(target_arch = "wasm32"))]
-        let flight = Flight {
-            _allocation: allocation,
-            ..flight
-        };
-        let flight = Arc::new(flight);
-        state.flights.insert(object_id, Arc::clone(&flight));
-        Ok(ReadPlan::Leader(flight))
+        // Funding and its possible callbacks precede the owner lock. A racing
+        // installer is joined once, without a retry or another producer.
+        let mut insertion = flights::insertion_work(accounting)?;
+        let flight = RetainedArc::new(Flight::new(self.shared.fill_epoch()), accounting)
+            .map_err(crate::async_storage::object_error)?;
+        let mut state = self.lock_state()?;
+        if let Some(bytes) = cached_read(&mut state, object_id)? {
+            return Ok(ReadPlan::Hit(bytes));
+        }
+        let misses = increment(state.misses)?;
+        let plan = state.flights.install(object_id, &flight, &mut insertion)?;
+        state.misses = misses;
+        Ok(plan)
     }
 
     fn cached_contains(&self, object_id: ObjectId) -> Result<bool, ObjectStoreError> {
@@ -587,18 +565,9 @@ impl<S> CachedObjectStore<S> {
     fn remove_flight(
         &self,
         object_id: ObjectId,
-        flight: &Arc<Flight>,
+        flight: &RetainedArc<Flight>,
     ) -> Result<(), ObjectStoreError> {
-        let object_id = self.shared.key(object_id);
-        let mut state = self.lock_state()?;
-        if state
-            .flights
-            .get(&object_id)
-            .is_some_and(|active| Arc::ptr_eq(active, flight))
-        {
-            state.flights.remove(&object_id);
-        }
-        Ok(())
+        flights::remove(&self.shared, object_id, flight)
     }
 
     fn record_coalesced(&self) -> Result<(), ObjectStoreError> {
@@ -606,6 +575,25 @@ impl<S> CachedObjectStore<S> {
         state.coalesced_reads = increment(state.coalesced_reads)?;
         Ok(())
     }
+}
+
+fn cached_read(
+    state: &mut CacheState,
+    object: (u64, ObjectId),
+) -> Result<Option<OwnedBytes>, ObjectStoreError> {
+    let tick = next_tick(state)?;
+    let Some(entry) = state.entries.get_mut(&object) else {
+        return Ok(None);
+    };
+    let prior = entry.touched;
+    entry.touched = tick;
+    let bytes = entry.bytes.clone();
+    state
+        .recency
+        .remove(&(prior, RecencyKey::Canonical(object)));
+    state.recency.insert((tick, RecencyKey::Canonical(object)));
+    state.hits = increment(state.hits)?;
+    Ok(Some(bytes))
 }
 
 fn increment(value: u64) -> Result<u64, ObjectStoreError> {

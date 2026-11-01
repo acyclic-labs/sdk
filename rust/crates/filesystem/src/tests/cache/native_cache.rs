@@ -1,6 +1,6 @@
 use super::*;
-use crate::AuthorityWork;
 use crate::materializer::NativeTreeMaterializationError;
+use crate::{AuthorityWork, NativeMaterializationWork};
 use futures::FutureExt as _;
 
 fn budget() -> WorkBudget {
@@ -11,7 +11,9 @@ fn budget() -> WorkBudget {
         bytes_hashed: 65_536,
         bytes_copied: 65_536,
         source_bytes_read: 65_536,
-        items_examined: 256,
+        // Both synchronous index admissions cover the complete canonical
+        // namespace/object width before acquiring the cache owner lock.
+        items_examined: 256 + 4 * (35 * (8 + ObjectId::ENCODED_LEN) as u64 + 4),
         items_returned: 256,
         allocation_operations: 128,
         peak_allocation_bytes: 1_048_576,
@@ -155,6 +157,7 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
 #[tokio::test]
 async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocations()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::cache::verify_original_flight_admission_and_retirement()?;
     for batch in [false, true] {
         for finish in [Finish::Error, Finish::Panic, Finish::Pending] {
             let cancel = CancellationToken::new();
@@ -200,7 +203,20 @@ async fn failed_and_abandoned_scalar_and_batch_reads_release_flights_and_allocat
                             .is_pending()
                     );
                     assert!(original.live_allocation_bytes() > baseline);
+                    let mut follower_work = AuthorityWork::native(&original, &cancel);
+                    let mut follower = Box::pin(cached.read(id, 5, &mut follower_work));
+                    assert!(
+                        follower
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop()))
+                            .is_pending()
+                    );
                     drop(future);
+                    assert!(original.live_allocation_bytes() > baseline);
+                    assert!(matches!(
+                        follower.await,
+                        Err(ObjectStoreError::SharedReadUnavailable)
+                    ));
                 }
                 Finish::Return => unreachable!(),
             }

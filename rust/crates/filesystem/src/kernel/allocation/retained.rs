@@ -290,6 +290,22 @@ impl Drop for StandaloneLease {
 }
 
 impl RetainedAllocation {
+    /// Splits original admitted backing without another admission or allocation.
+    pub(crate) fn split_off(&mut self, bytes: u64) -> Result<Self, crate::FsError> {
+        match self {
+            Self::Standalone { _lease } => {
+                let remaining = _lease.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+                let result = Self::standalone(Arc::clone(&_lease.ledger), bytes);
+                _lease.bytes = remaining;
+                Ok(result)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { _allocation } => Ok(Self::Native {
+                _allocation: _allocation.split_off(bytes)?,
+            }),
+        }
+    }
+
     pub(super) fn standalone(ledger: Arc<Mutex<SharedAllocationBytes>>, bytes: u64) -> Self {
         Self::Standalone {
             _lease: StandaloneLease { ledger, bytes },
