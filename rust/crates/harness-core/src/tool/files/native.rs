@@ -40,17 +40,28 @@ record!(
     self.old_text.capacity(),
     self.new_text.capacity(),
     self.notebook.as_ref().map_or(0, |edit| match edit {
-        NotebookEdit::Replace { id, source, .. } =>
-            id.as_ref().map_or(0, String::capacity) + source.capacity(),
+        NotebookEdit::Replace {
+            cell,
+            source,
+            cell_type,
+        } => cell_bytes(cell) + source.capacity() + cell_type.as_ref().map_or(0, String::capacity),
         NotebookEdit::Insert {
+            cell,
             id,
             cell_type,
             source,
             ..
-        } => id.capacity() + cell_type.capacity() + source.capacity(),
-        NotebookEdit::Delete { id, .. } => id.as_ref().map_or(0, String::capacity),
+        } => cell_bytes(cell) + id.capacity() + cell_type.capacity() + source.capacity(),
+        NotebookEdit::Delete { cell } => cell_bytes(cell),
     })
 );
+
+fn cell_bytes(cell: &NotebookCell) -> usize {
+    match cell {
+        NotebookCell::Index { id, .. } => id.as_ref().map_or(0, String::capacity),
+        NotebookCell::Id { id } => id.capacity(),
+    }
+}
 record!(
     PatchFileInput,
     self,

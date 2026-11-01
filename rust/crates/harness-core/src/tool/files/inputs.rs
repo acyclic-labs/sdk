@@ -113,6 +113,28 @@ pub struct EditFileInput {
     pub notebook: Option<NotebookEdit>,
 }
 
+/// One notebook cell, selected by position or by an unambiguous stable ID.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NotebookCell {
+    /// Zero-based position, optionally fenced by its expected stable ID.
+    Index {
+        /// Zero-based position.
+        index: u64,
+        /// Expected stable ID at this position.
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Exactly one cell must carry this ID.
+    Id {
+        /// Stable nbformat cell ID.
+        id: String,
+    },
+}
+
 /// A cell operation on an nbformat v4 notebook; metadata and other cells survive.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(
@@ -120,19 +142,23 @@ pub struct EditFileInput {
 )]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NotebookEdit {
-    /// Replace the source of a cell identified by index and optionally stable ID.
+    /// Replace the source of the selected cell.
     Replace {
-        /// Zero-based position.
-        index: u64,
-        /// Expected stable ID, when the caller has one.
-        id: Option<String>,
+        /// Exact cell selection.
+        cell: NotebookCell,
         /// New cell source; code outputs and execution count are cleared.
         source: String,
+        /// New cell type; omission preserves the current type.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_type: Option<String>,
     },
-    /// Insert before `index` (the cell count appends).
+    /// Insert beside a selected cell, or before the zero-based cell count to append.
     Insert {
-        /// Zero-based insertion position; the cell count appends.
-        index: u64,
+        /// Anchor cell; index zero in an empty notebook inserts at the start.
+        cell: NotebookCell,
+        /// Insert after the anchor; omission inserts before it.
+        #[serde(default)]
+        after: bool,
         /// New nbformat cell ID, unique within this notebook.
         id: String,
         /// One of `code`, `markdown`, or `raw`.
@@ -142,10 +168,8 @@ pub enum NotebookEdit {
     },
     /// Delete exactly the selected cell.
     Delete {
-        /// Zero-based position.
-        index: u64,
-        /// Expected stable ID, when the caller has one.
-        id: Option<String>,
+        /// Exact cell selection.
+        cell: NotebookCell,
     },
 }
 

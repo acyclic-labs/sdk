@@ -18,24 +18,74 @@ proptest! {
         let original = json!({"nbformat":4,"nbformat_minor":5,"cells":cells,"metadata":{"keep":true},"extra":"retain"});
         let source = serde_json::to_string(&original).unwrap();
         let id = format!("cell-{index}");
-        let replace = NotebookEdit::Replace { index:index as u64, id:Some(id.clone()), source:new_source.clone() };
+        let replace = NotebookEdit::Replace { cell:NotebookCell::Index {index:index as u64, id:Some(id.clone())}, source:new_source.clone(), cell_type:None };
         let (edited, _hold) = edit(&source, &replace, None).unwrap();
         let actual: Value = serde_json::from_str(&edited).unwrap();
         let mut expected = original.clone();
         expected["cells"][index]["source"] = json!(new_source);
         expected["cells"][index]["outputs"] = json!([]);
         expected["cells"][index]["execution_count"] = Value::Null;
-        prop_assert_eq!(actual, expected);
-        prop_assert!(edit(&source, &NotebookEdit::Delete {index:index as u64,id:Some("stale".into())}, None).is_err(), "stale cell id accepted");
+        prop_assert_eq!(actual, expected.clone());
+        let by_id = NotebookEdit::Replace {
+            cell: NotebookCell::Id { id: id.clone() }, source:new_source.clone(), cell_type:None,
+        };
+        let (edited, _hold) = edit(&source, &by_id, None).unwrap();
+        prop_assert_eq!(serde_json::from_str::<Value>(&edited).unwrap(), expected);
+        prop_assert!(edit(&source, &NotebookEdit::Delete {cell:NotebookCell::Index {index:index as u64,id:Some("stale".into())}}, None).is_err(), "stale cell id accepted");
 
         // Inserting and deleting at every boundary exercises both comma
         // directions, including the formerly empty notebook.
         let insert_at = position % (sources.len() + 1);
-        let insert = NotebookEdit::Insert { index:insert_at as u64,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
+        let insert = NotebookEdit::Insert { cell:NotebookCell::Index {index:insert_at as u64,id:None},after:false,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
         let (inserted, _insert_hold) = edit(&source, &insert, None).unwrap();
-        let (removed, _remove_hold) = edit(&inserted, &NotebookEdit::Delete {index:insert_at as u64,id:Some("inserted".into())}, None).unwrap();
+        let (removed, _remove_hold) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
         prop_assert_eq!(serde_json::from_str::<Value>(&removed).unwrap(), original);
-        prop_assert!(edit(&source, &NotebookEdit::Insert {index:0,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
+        prop_assert!(edit(&source, &NotebookEdit::Insert {cell:NotebookCell::Index {index:0,id:None},after:false,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
+
+        let after = NotebookEdit::Insert {
+            cell: NotebookCell::Id {id:format!("cell-{index}")}, after:true,
+            id:"after".into(),cell_type:"code".into(),source:"inserted".into(),
+        };
+        let (inserted, _hold) = edit(&source, &after, None).unwrap();
+        let inserted: Value = serde_json::from_str(&inserted).unwrap();
+        prop_assert_eq!(&inserted["cells"][index + 1]["id"], &json!("after"));
+        let mut expected = original.clone();
+        expected["cells"].as_array_mut().unwrap().insert(index + 1, json!({
+            "id":"after","cell_type":"code","source":"inserted","metadata":{},
+            "outputs":[],"execution_count":null,
+        }));
+        prop_assert_eq!(inserted, expected);
+
+        let convert = NotebookEdit::Replace {
+            cell: NotebookCell::Id {id:format!("cell-{index}")},
+            source:"markdown".into(),cell_type:Some("markdown".into()),
+        };
+        let (converted, _hold) = edit(&source, &convert, None).unwrap();
+        let mut expected = original.clone();
+        let selected = expected["cells"][index].as_object_mut().unwrap();
+        selected.insert("source".into(), json!("markdown"));
+        selected.insert("cell_type".into(), json!("markdown"));
+        selected.remove("outputs");
+        selected.remove("execution_count");
+        prop_assert_eq!(serde_json::from_str::<Value>(&converted).unwrap(), expected.clone());
+        let restore = NotebookEdit::Replace {
+            cell: NotebookCell::Id {id:format!("cell-{index}")},
+            source:"code".into(),cell_type:Some("code".into()),
+        };
+        let (restored, _hold) = edit(&converted, &restore, None).unwrap();
+        let selected = expected["cells"][index].as_object_mut().unwrap();
+        selected.insert("source".into(), json!("code"));
+        selected.insert("cell_type".into(), json!("code"));
+        selected.insert("outputs".into(), json!([]));
+        selected.insert("execution_count".into(), Value::Null);
+        prop_assert_eq!(serde_json::from_str::<Value>(&restored).unwrap(), expected);
+
+        // A stable ID must select exactly one cell, never the first duplicate.
+        let mut duplicate = original;
+        let selected = duplicate["cells"][index].clone();
+        duplicate["cells"].as_array_mut().unwrap().push(selected);
+        prop_assert!(edit(&serde_json::to_string(&duplicate).unwrap(), &by_id, None).is_err(), "ambiguous cell id accepted");
+        prop_assert!(edit(&source, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"absent".into()}}, None).is_err(), "missing cell id accepted");
     }
 }
 
@@ -45,7 +95,8 @@ fn empty_notebook_insert_delete_retains_metadata() {
     let (inserted, _hold) = edit(
         source,
         &NotebookEdit::Insert {
-            index: 0,
+            cell: NotebookCell::Index { index: 0, id: None },
+            after: false,
             id: "first".into(),
             cell_type: "code".into(),
             source: "print(1)".into(),
@@ -59,8 +110,7 @@ fn empty_notebook_insert_delete_retains_metadata() {
     let (removed, _hold) = edit(
         &inserted,
         &NotebookEdit::Delete {
-            index: 0,
-            id: Some("first".into()),
+            cell: NotebookCell::Id { id: "first".into() },
         },
         None,
     )
@@ -86,9 +136,9 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     let (text, hold) = edit(
         source,
         &NotebookEdit::Replace {
-            index: 0,
-            id: Some("a".into()),
+            cell: NotebookCell::Id { id: "a".into() },
             source: "\"\\\nλ".into(),
+            cell_type: None,
         },
         Some(&native),
     )
@@ -101,11 +151,52 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     drop(hold);
     assert_eq!(native.live_allocation_bytes(), baseline);
 
+    for (source, kind) in [
+        (source, "markdown"),
+        // A removed final field shares its comma with a removed neighbor.
+        (
+            r#"{"nbformat":4,"cells":[{"outputs":[],"execution_count":1,"source":[],"cell_type":"code","id":"a"}]}"#,
+            "raw",
+        ),
+        // Escaped type/attachment labels use the same borrowed codec and spans.
+        (
+            r#"{"nbformat":4,"cells":[{"id":"a","cell_type":"markdown","source":[],"att\u0061chments":{"x":{"image/png":"ignored"}}}]}"#,
+            "code",
+        ),
+    ] {
+        let (text, hold) = edit(
+            source,
+            &NotebookEdit::Replace {
+                cell: NotebookCell::Id { id: "a".into() },
+                source: "converted".into(),
+                cell_type: Some(kind.into()),
+            },
+            Some(&native),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&text).unwrap();
+        let cell = &value["cells"][0];
+        assert_eq!(cell["cell_type"], kind);
+        assert_eq!(cell["source"], "converted");
+        if kind == "code" {
+            assert_eq!(cell["outputs"], json!([]));
+            assert_eq!(cell["execution_count"], Value::Null);
+            assert!(cell.get("attachments").is_none());
+        } else {
+            assert!(cell.get("outputs").is_none());
+            assert!(cell.get("execution_count").is_none());
+        }
+        drop(text);
+        drop(hold);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+
     // A differently encoded spelling of the same stable ID must conflict.
     let error = edit(
         source,
         &NotebookEdit::Insert {
-            index: 0,
+            cell: NotebookCell::Index { index: 0, id: None },
+            after: false,
             id: "a".into(),
             cell_type: "raw".into(),
             source: String::new(),
@@ -130,9 +221,9 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
         let error = edit(
             malformed,
             &NotebookEdit::Replace {
-                index: 0,
-                id: None,
+                cell: NotebookCell::Index { index: 0, id: None },
                 source: "new".into(),
+                cell_type: None,
             },
             Some(&native),
         )
@@ -149,7 +240,9 @@ fn borrowed_cell_decode_keeps_original_credit_through_publication_bytes() {
     assert!(
         edit(
             source,
-            &NotebookEdit::Delete { index: 0, id: None },
+            &NotebookEdit::Delete {
+                cell: NotebookCell::Index { index: 0, id: None }
+            },
             Some(&native)
         )
         .is_err()

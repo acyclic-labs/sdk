@@ -693,7 +693,7 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let (nb_call, nb_read) = call(&task, &read, json!({"path":"notes/book.ipynb","selection":{"kind":"cells","offset":0,"limit":1}})).await?;
         let nb_projection = read.projection.project(&nb_call, &nb_read, None)?.0;
         let nb_version = nb_projection["value"]["version"].as_str().expect("notebook version");
-        let cell_edit = json!({"kind":"replace","index":0,"id":"first","source":"two"});
+        let cell_edit = json!({"kind":"replace","cell":{"kind":"id","id":"first"},"source":"two"});
         for extra in [json!({"replace_all":true}), json!({"old_text":"one"}), json!({"new_text":"two"})] {
             let mut arguments = json!({"path":"notes/book.ipynb","version":nb_version,"notebook":cell_edit});
             arguments.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
