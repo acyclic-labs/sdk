@@ -271,6 +271,14 @@ impl ModelProvider for ResolvedModel {
         Ok(self.profile)
     }
 
+    fn native_tool_profile(
+        &self,
+        model: &Model,
+    ) -> Result<Option<acyclic_harness_core::model::NativeToolProfile>> {
+        self.validate(model)?;
+        Ok(self.tool_profile)
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
         Ok(self.admitted_capacity())

@@ -132,6 +132,8 @@ pub struct StockExecutors {
     model: Model,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
+    /// `tools` as the model's family sees them, bound on the first turn.
+    native: std::sync::OnceLock<ToolRegistry>,
     limits: Limits,
     compaction: CompactionPolicy,
     agent_tools: Vec<String>,
@@ -222,6 +224,7 @@ impl StockExecutors {
             model,
             provider,
             tools,
+            native: std::sync::OnceLock::new(),
             limits,
             compaction,
             agent_tools: Vec::new(),
@@ -278,8 +281,17 @@ impl TurnExecutors for StockExecutors {
                 .provider
                 .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .unwrap_or_else(|| Arc::clone(&self.provider));
+            let mut tools = match self.native.get() {
+                Some(tools) => tools.clone(),
+                None => {
+                    let mut tools = self.tools.clone();
+                    if let Some(profile) = self.provider.native_tool_profile(&self.model)? {
+                        crate::tools::native::bind(&mut tools, profile)?;
+                    }
+                    self.native.get_or_init(|| tools).clone()
+                }
+            };
             // The agent tools act for this turn: their effects commit with it.
-            let mut tools = self.tools.clone();
             if let Some(effects) = &authority.effects
                 && !self.agent_tools.is_empty()
             {

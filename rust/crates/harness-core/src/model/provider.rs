@@ -211,6 +211,11 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
         Ok(None)
     }
+    /// The tool family the exact model selection was trained on. Stock turns
+    /// offer the tools it maps under that family's declarations.
+    fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
+        Ok(None)
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(

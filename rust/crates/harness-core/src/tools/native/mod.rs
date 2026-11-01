@@ -3,9 +3,18 @@
 //! The family profile layer (`profile/native/*.md`) pins each declaration's
 //! capability, variant name and revision; these files pin the exact public
 //! names, descriptions and input schemas a model of that family was trained on.
-use crate::{Error, Result, model::NativeToolProfile, tool::ToolDefinition};
+use crate::{
+    Error, Result,
+    model::NativeToolProfile,
+    tool::{Tool, ToolDefinition, ToolRegistry},
+};
 use serde_json::Value;
+use std::sync::Arc;
 
+mod adapter;
+mod arguments;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod arguments_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 
@@ -54,6 +63,59 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
             })
         })
         .collect()
+}
+
+/// Offers each capability in `tools` that `profile` maps as that family's
+/// native declarations, in the layer's order. Each declaration runs the
+/// canonical tool through its layer template; its grant, policy and approval
+/// are the capability's. Unmapped declarations, and capabilities `tools` does
+/// not select, stay as they are.
+pub fn bind(tools: &mut ToolRegistry, profile: NativeToolProfile) -> Result<()> {
+    let mut presented: Vec<(String, Vec<String>)> = Vec::new();
+    for (revision, mut definition) in profile.tools()?.into_iter().zip(definitions(profile)?) {
+        let Some(template) = revision.arguments else {
+            continue;
+        };
+        let Some(original) = tools.get(&revision.capability, None, None)? else {
+            continue;
+        };
+        let original = Arc::new(original.clone());
+        // Results are the capability's, so their contracts are too.
+        definition
+            .output_schema
+            .clone_from(&original.definition.output_schema);
+        definition
+            .projection_schema
+            .clone_from(&original.definition.projection_schema);
+        let name = definition.name.clone();
+        let adapter = Arc::new(adapter::Adapter {
+            arguments: arguments::Arguments::new(template, revision.refuse)?,
+            original,
+        });
+        tools.register(
+            (
+                Tool {
+                    hook_names: adapter.original.hook_names,
+                    definition,
+                    executor: adapter.clone(),
+                    projection: adapter,
+                },
+                None,
+            ),
+            &mut None,
+            None,
+        )?;
+        match presented
+            .iter_mut()
+            .find(|(capability, _)| *capability == revision.capability)
+        {
+            Some((_, natives)) => natives.push(name),
+            None => presented.push((revision.capability, vec![name])),
+        }
+    }
+    presented
+        .into_iter()
+        .try_for_each(|(capability, natives)| tools.present_natively(&capability, natives))
 }
 
 fn take_string(value: &mut Value, key: &str) -> Result<String> {
