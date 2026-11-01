@@ -109,6 +109,10 @@ fn result(model: &ScriptedModelProvider) -> Value {
 }
 
 fn logs(journal: &Journal) -> Value {
+    log_entries(journal, "code.call")
+}
+
+fn log_entries(journal: &Journal, kind: &str) -> Value {
     let mut entries = journal
         .1
         .lock()
@@ -116,7 +120,7 @@ fn logs(journal: &Journal) -> Value {
         .values()
         .filter_map(|(_, bytes)| {
             let value: Value = serde_json::from_slice(bytes).ok()?;
-            (value["kind"] == "code.call").then_some(value)
+            (value["kind"] == kind).then_some(value)
         })
         .collect::<Vec<_>>();
     entries.sort_unstable_by_key(|entry| entry["ordinal"].as_u64().unwrap());
@@ -350,11 +354,8 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
 #[tokio::test]
 async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_log() -> Result<()> {
     for approved in [false, true] {
-        let (executor, model, echo) = executor(
-            "await tools['example.echo']({value: 42})",
-            Arc::new(InnerApproval),
-            true,
-        )?;
+        let code = "await console.log('before approval'); await tools['example.echo']({value: 42})";
+        let (executor, model, echo) = executor(code, Arc::new(InnerApproval), true)?;
         let input = input();
         let journal = Journal::default();
         assert!(matches!(
@@ -362,6 +363,10 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             ExecutionProgress::Pending(_)
         ));
         assert_eq!(echo.0.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            log_entries(&journal, "code.log").as_array().unwrap().len(),
+            1
+        );
         let mut approvals = journal.2.lock().unwrap();
         assert_eq!(approvals.len(), 1);
         approvals.values_mut().next().unwrap().1 = Some(if approved {
@@ -391,7 +396,7 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             0,
             "program".into(),
             "code".into(),
-            json!({"code":"await tools['example.echo']({value: 42})"}),
+            json!({"code":code}),
             None,
         )?;
         let loads = journal.4.load(Ordering::SeqCst);
@@ -407,6 +412,10 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             panic!("settled inner call did not return its original receipt");
         };
         assert_eq!(crate::tools::code_mode::output(&replayed.value)?, &value);
+        assert_eq!(
+            log_entries(&journal, "code.log").as_array().unwrap().len(),
+            1
+        );
         // Invocation, result and projection are each loaded once. Restoring
         // the post-settlement result lookup fails this real-engine control.
         assert_eq!(
@@ -437,6 +446,9 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
                 assert_eq!(observed[0]["ok"], true);
                 assert_eq!(observed[0]["call_id"], "program");
                 assert!(observed[0].get("value").is_none());
+                let printed = log_entries(&self.0, "code.log");
+                assert_eq!(printed.as_array().unwrap().len(), 1);
+                assert_eq!(printed[0]["values"], json!(["before", {"value":42}]));
                 assert!(!self.0.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "program")));
                 Ok(ToolResult { value: json!({}) })
             })
@@ -450,7 +462,7 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
         }
     }
     let (mut executor, model, _) = executor(
-        "await tools['example.echo']({value:42}); await tools.observe({}); 7",
+        "await console.log('before', {value:42}); await tools['example.echo']({value:42}); await tools.observe({}); console.log('after'); 7",
         allowed()?,
         true,
     )?;
@@ -478,6 +490,10 @@ async fn logs_publish_before_the_next_call_and_the_parent_result() -> Result<()>
     executor.execute(input(), journal.as_ref()).await?;
     assert_eq!(result(&model), 7);
     assert_eq!(logs(&journal).as_array().unwrap().len(), 2);
+    let printed = log_entries(&journal, "code.log");
+    assert_eq!(printed.as_array().unwrap().len(), 2);
+    assert_eq!(printed[1]["values"], json!(["after"]));
+    assert_eq!(printed[1]["call_id"], "program");
     Ok(())
 }
 
@@ -599,8 +615,8 @@ async fn retained_inner_context_survives_both_replay_entry_points_without_runnin
 #[tokio::test]
 async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() -> Result<()> {
     for code in [
-        "({toJSON() { tools['example.echo']({value:42}); return 1; }})",
-        "throw {toString() { tools['example.echo']({value:42}); return 'failed'; }}",
+        "({toJSON() { console.log('encoding'); tools['example.echo']({value:42}); return 1; }})",
+        "throw {toString() { console.log('diagnostic'); tools['example.echo']({value:42}); return 'failed'; }}",
     ] {
         let (executor, model, echo) = executor(code, allowed()?, true)?;
         let journal = Journal::default();
@@ -609,6 +625,10 @@ async fn value_encoding_and_exception_formatting_cannot_abandon_inner_calls() ->
         assert_eq!(echo.0.load(Ordering::SeqCst), 1);
         assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
         assert_eq!(logs(&journal)[0]["ok"], true);
+        assert_eq!(
+            log_entries(&journal, "code.log").as_array().unwrap().len(),
+            1
+        );
         assert_eq!(journal.0.lock().unwrap().iter().filter(|record| matches!(&record.event, ExecutionEvent::ToolCompleted { call_id, .. } if call_id != "program")).count(), 1);
         if code.starts_with('(') {
             assert_eq!(value, 1);
