@@ -32,7 +32,10 @@ A prompt's delivery identity is `operation:id`; exact retries return its origina
 committed result. A changed request under the same identity is a conflict.
 
 With a positional task and `--input-format jsonl`, stdin can supply approval
-decisions or cancellation.
+decisions or cancellation. Without `--output-format jsonl`, each pending
+approval prints `{"approval":ID,"binding":BINDING}` to answer it with. A
+reconnecting text-input run answers the agent's current pending approval even
+when its saved event cursor is already past the announcing status.
 With JSONL input, EOF ends input admission and waits for accepted prompts to
 settle. Completion also drains the finite opening cuts of the selected follows;
 later appends do not extend those cuts. Exit status is zero only when every
@@ -51,7 +54,7 @@ on `kind`; stream control observations remain observable alongside records.
 | `execution` | Original `agent`, inbox `input`, canonical execution `record` and exclusive execution `after`. The record retains its original turn operation and sequence. |
 | `execution_payload` | Original agent, input, turn, sequence, payload field and immutable file reference, with byte `offset`, standard padded base64 `data` and execution `after`. |
 | `approval_payload` | Original status `resource` and `sequence`, complete request `length`, byte `offset`, standard padded base64 `data` and status `after`. |
-| `result` | Prompt `id`, accepted `inbox` when available, and its settled output or error. |
+| `result` | Prompt `id`, accepted `inbox` when available, and its settled output or error. A cancelled turn is an error; its partial output never becomes a result or final artifact. |
 | `approval` | Identity of a request requiring a decision. Its complete request arrives through the original status and bounded approval payloads. |
 | `completed` | Final `success` after accepted input and the selected finite cuts settle. |
 | `error` | Terminal `code`, failing `step`, diagnostic `error` and `recovery` command. Argument-parser failures precede this protocol; a lost stdout reader may prevent delivery of the final diagnostic. |

@@ -438,6 +438,7 @@ async fn drive(
     };
     let result = if let Some(prompt) = &args.prompt
         && projection.is_none()
+        && args.input_format == InputFormat::Text
     {
         phase(|| headless::prompt(&conversation, &operation, prompt, output)).await
     } else {
