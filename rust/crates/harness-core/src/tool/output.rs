@@ -65,7 +65,8 @@ pub(crate) fn is_spill(value: &Value) -> bool {
 #[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct SpillPreview<'a> {
-    #[serde(borrow)]
+    #[serde(borrow, deserialize_with = "crate::executor::json::deserialize_object")]
+    #[heap_layout(as = SpillIdentity<'a>)]
     output_spill: SpillIdentity<'a>,
     #[serde(borrow)]
     text: &'a serde_json::value::RawValue,
@@ -107,7 +108,7 @@ pub(super) fn check_preview(
     else {
         return Ok(());
     };
-    let seed = std::marker::PhantomData::<SpillPreview<'_>>;
+    let seed = crate::executor::json::JsonObject(std::marker::PhantomData::<SpillPreview<'_>>);
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let decoded = io.decode_seed(
@@ -383,6 +384,7 @@ mod checks {
             for invalid in [
                 r#"{"output_spill":"#,
                 r#"{"output_spill":null}"#,
+                r#"{"output_spill":["p","v"],"text":"","omitted_bytes":0}"#,
                 r#"{"output_spill":{"path":"p","version":"v"},"text":[],"omitted_bytes":0}"#,
                 r#"{"output_spill":{"path":"","version":"v"},"text":"","omitted_bytes":0}"#,
                 r#"{"output_spill":{"path":"p","version":null},"text":"","omitted_bytes":0}"#,
@@ -418,6 +420,19 @@ mod checks {
             };
             check_preview(&value, Some(&io))?;
             assert_eq!(io.owned_bytes()?, 0);
+            for invalid in [
+                r#"[["p","v"],"",0]"#,
+                r#"{"output_spill":["p","v"],"text":"","omitted_bytes":0}"#,
+            ] {
+                let mut broken = value.clone();
+                broken["parts"][0]["text"] = Value::String(invalid.into());
+                assert!(check_preview(&broken, None).is_err());
+                let error = check_preview(&broken, Some(&io)).unwrap_err();
+                assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+                assert!(error.is_tool_failure(), "{error:?}");
+                drop(error);
+                assert_eq!(io.owned_bytes()?, 0);
+            }
             cancellation.cancel();
             assert!(check_preview(&value, Some(&io)).is_err());
             drop(io);
