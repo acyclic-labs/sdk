@@ -40,3 +40,8 @@ goldens, not observations of a provider stream or a private harness prompt.
 The Claude Grep `head_limit` description adapts the upstream default to the
 harness contract: omission and zero mean unlimited output. Explicit positive
 limits still select the original stdout before tail retention.
+
+The Gemini grep_search description and total_max_matches description likewise
+adapt the upstream 100-match default: omission means unlimited matches. A
+supplied total limit remains refused until the original capture can select
+complete matches before truncation.
