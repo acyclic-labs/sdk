@@ -1076,6 +1076,10 @@ where
             if matches!(
                 &result,
                 Ok(AgentReply::Diff { .. }
+                    | AgentReply::Children { .. }
+                    | AgentReply::ProjectHeads { .. }
+                    | AgentReply::History { .. }
+                    | AgentReply::Approvals { .. }
                     | AgentReply::Usage { .. }
                     | AgentReply::Events { .. }
                     | AgentReply::Content { .. })

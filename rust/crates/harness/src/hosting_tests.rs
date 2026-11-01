@@ -37,6 +37,7 @@ impl TurnExecutors for Never {
 struct Owner {
     denied: AtomicBool,
     revoke_read: AtomicBool,
+    revoke_query: AtomicBool,
     childless: AtomicBool,
     diff: std::sync::Mutex<Option<DiffPause>>,
 }
@@ -53,8 +54,9 @@ impl Platform for Owner {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         let denied = self.denied.load(Ordering::SeqCst);
-        if matches!(command, AgentCommand::Read { .. })
-            && self.revoke_read.swap(false, Ordering::SeqCst)
+        if (matches!(command, AgentCommand::Read { .. })
+            && self.revoke_read.swap(false, Ordering::SeqCst))
+            || self.revoke_query.swap(false, Ordering::SeqCst)
         {
             self.denied.store(true, Ordering::SeqCst);
         }
@@ -672,6 +674,30 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
+    for query in [
+        children.clone(),
+        AgentCommand::History {
+            agent: root.clone(),
+            page: Default::default(),
+        },
+        AgentCommand::Approvals {
+            agent: root.clone(),
+            page: Default::default(),
+        },
+    ] {
+        call(&client, "agents", &query).await??;
+        // Admission succeeds, then policy changes before the query's source
+        // can return. Even an empty page cannot leave on the stale grant.
+        owner.revoke_query.store(true, Ordering::SeqCst);
+        let refused = call(&client, "agents", &query)
+            .await
+            .expect_err("session page disclosed after owner revocation");
+        assert!(matches!(
+            refused.downcast_ref::<StreamError>(),
+            Some(StreamError::AccessDenied)
+        ));
+        owner.denied.store(false, Ordering::SeqCst);
+    }
     let spawn = AgentCommand::Spawn {
         parent: root.clone(),
         id: IntentId::try_from("s1")?,
