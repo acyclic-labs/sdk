@@ -222,7 +222,7 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        let (recorded, notify) = self.record_deferred(change, carrier)?;
+        let (_, recorded, notify) = self.record_deferred(change, carrier)?;
         notify();
         recorded
     }
@@ -231,8 +231,14 @@ impl ViewLedger {
         &self,
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
-    ) -> Result<(Result<(), MountSourceError>, impl FnOnce() + Send + use<>), MountSourceError>
-    {
+    ) -> Result<
+        (
+            ViewStamp,
+            Result<(), MountSourceError>,
+            impl FnOnce() + Send + use<>,
+        ),
+        MountSourceError,
+    > {
         let position = ViewStamp::next();
         let observers = self
             .observers
@@ -327,7 +333,7 @@ impl ViewLedger {
                 }
             }
         };
-        Ok((recorded, notify))
+        Ok((position, recorded, notify))
     }
 
     fn rebound(

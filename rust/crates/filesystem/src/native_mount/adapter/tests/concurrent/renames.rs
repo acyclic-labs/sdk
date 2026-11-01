@@ -70,6 +70,7 @@ fn concurrent_directory_moves_preserve_reachability() -> Result<(), Box<dyn std:
                             moved: ids[index],
                             replaced: None,
                         },
+                        None,
                         &work,
                         source.cancellation(),
                         None,

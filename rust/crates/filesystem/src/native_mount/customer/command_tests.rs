@@ -72,6 +72,7 @@ async fn publish_command(
             acyclic_stream::OwnedBytes::from_static(b"updated!"),
             0,
         ),
+        false,
         &work,
     )?;
     take_trace();

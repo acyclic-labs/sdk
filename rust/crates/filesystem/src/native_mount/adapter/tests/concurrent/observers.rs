@@ -36,6 +36,7 @@ fn observer_can_write_the_file_that_triggered_it() -> Result<(), Box<dyn std::er
                         },
                         false,
                         ContentChangeContext {
+                            facts: false,
                             deadline: None,
                             work: &work,
                             lifetime: self.source.cancellation(),

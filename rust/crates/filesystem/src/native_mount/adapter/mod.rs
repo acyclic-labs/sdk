@@ -6,7 +6,8 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenAccess,
     MountOpenFile, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountSparseRange, NativeMountError, ViewObserver, capture_root_identity,
+    MountSourceError, MountSparseRange, MountWriteResult, NativeMountError, ViewObserver,
+    capture_root_identity,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,

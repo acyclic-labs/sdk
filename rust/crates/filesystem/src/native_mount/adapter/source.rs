@@ -186,6 +186,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .install_change(
                 candidate,
                 ViewChange::Node(lookup.node.file_id),
+                None,
                 work,
                 &self.cancellation,
                 self.native_callback_guard.clone(),
@@ -698,6 +699,7 @@ where
                     change,
                     append_only,
                     ContentChangeContext {
+                        facts: false,
                         work,
                         deadline: view.valid_until(),
                         lifetime: &self.cancellation,
@@ -706,6 +708,7 @@ where
                     },
                 )
                 .await
+                .map(drop)
         })
     }
 }

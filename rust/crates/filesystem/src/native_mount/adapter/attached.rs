@@ -65,6 +65,7 @@ where
             .install_change(
                 candidate,
                 ViewChange::Node(self.file_id),
+                None,
                 work,
                 &self.cancellation,
                 self.native_callback_guard.clone(),
@@ -78,15 +79,16 @@ where
         change: ContentChange<FileId>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.change_content_at(change, false, work)
+        self.change_content_at(change, false, false, work).map(drop)
     }
 
     fn change_content_at(
         &self,
         change: ContentChange<FileId>,
         append_only: bool,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<super::MountWriteResult, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.checkout.change_file_content(
                 self.file_id,
@@ -94,6 +96,7 @@ where
                 append_only,
                 ContentChangeContext {
                     work,
+                    facts,
                     deadline: self.deadline,
                     lifetime: &self.cancellation,
                     clock: &self.runtime.clock,
@@ -315,6 +318,7 @@ where
                 .install_change(
                     candidate,
                     ViewChange::Node(self.file_id),
+                    None,
                     work,
                     &self.cancellation,
                     self.native_callback_guard.clone(),
@@ -355,6 +359,7 @@ where
                 .install_change(
                     candidate,
                     ViewChange::Node(self.file_id),
+                    None,
                     work,
                     &self.cancellation,
                     self.native_callback_guard.clone(),

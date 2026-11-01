@@ -36,13 +36,13 @@ macro_rules! ordinary_file_callbacks {
 
         fn write_range(&$this, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
             $crate::native_mount::adapter::boundary($cancellation, |work| {
-                $this.write_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), work)
+                $this.write_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), false, work).map(drop)
             })
         }
 
         fn append_range(&$this, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
             $crate::native_mount::adapter::boundary($cancellation, |work| {
-                $this.append_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), work)
+                $this.append_range_with_meter(offset, crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0), false, work).map(drop)
             })
         }
 
@@ -85,13 +85,16 @@ macro_rules! checkout_file_callbacks {
             &self,
             offset: u64,
             bytes: crate::kernel::OwnedSourceChunk,
+            facts: bool,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<(), MountSourceError> {
-            self.change_content(
+        ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
+            self.change_content_at(
                 ContentChange::Write {
                     offset,
                     bytes: bytes.bytes,
                 },
+                false,
+                facts,
                 work,
             )
         }
@@ -100,14 +103,16 @@ macro_rules! checkout_file_callbacks {
             &self,
             offset: u64,
             bytes: crate::kernel::OwnedSourceChunk,
+            facts: bool,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<(), MountSourceError> {
+        ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
             self.change_content_at(
                 ContentChange::Write {
                     offset,
                     bytes: bytes.bytes,
                 },
                 true,
+                facts,
                 work,
             )
         }

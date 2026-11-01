@@ -275,6 +275,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
         let install = source.checkout.install_change(
             candidate,
             ViewChange::Everything,
+            None,
             &work,
             &source.cancellation,
             source.native_callback_guard.clone(),

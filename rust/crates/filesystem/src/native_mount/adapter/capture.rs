@@ -131,7 +131,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         let publication = self
             .checkout
             .install_candidate(
-                (candidate, None),
+                (candidate, None, None),
                 carrier,
                 cancellation,
                 Some(&self.cancellation),
@@ -144,11 +144,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     if !self.checkout.ledger.enumerated_since(stamp, carrier)? {
                         return Err(MountSourceError::Stale);
                     }
-                    let (recorded, notify) = self
+                    let (stamp, recorded, notify) = self
                         .checkout
                         .ledger
                         .record_deferred(&ViewChange::Effect(&effect), carrier)?;
-                    Ok((recorded, move || {
+                    Ok((stamp, recorded, move || {
                         self.with_capture_observer_dispatch(notify)
                     }))
                 },
@@ -172,7 +172,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 },
             )
             .await?;
-        let Some(publication) = publication else {
+        let Some((publication, _)) = publication else {
             return Ok(false);
         };
         if publication != MountPublication::Manual {

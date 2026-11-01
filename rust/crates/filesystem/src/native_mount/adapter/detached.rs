@@ -11,7 +11,7 @@ impl<A: 'static, O: 'static> DetachedMountState<A, O> {
         ledger: &Arc<ViewLedger>,
         clock: &super::clock::Clock,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>
+    ) -> Result<ViewStamp, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -31,7 +31,7 @@ impl<A: 'static, O: 'static> DetachedMountState<A, O> {
         &mut self,
         ledger: &Arc<ViewLedger>,
         carrier: &mut NativeDemandCarrier<'_>,
-    ) -> Result<(), MountSourceError>
+    ) -> Result<ViewStamp, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -40,7 +40,11 @@ impl<A: 'static, O: 'static> DetachedMountState<A, O> {
             .mutation_epoch
             .checked_add(1)
             .ok_or(MountSourceError::Stale)?;
-        record_view_change(ledger, &ViewChange::Node(self.file.file_id()), carrier)
+        let (stamp, recorded, notify) =
+            ledger.record_deferred(&ViewChange::Node(self.file.file_id()), carrier)?;
+        notify();
+        recorded?;
+        Ok(stamp)
     }
 }
 
@@ -117,7 +121,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
             .file
             .change_named_attribute(&name, value, work, cancellation)
             .await?;
-        state.record_change(&self.ledger, inputs.carrier)
+        state.record_change(&self.ledger, inputs.carrier).map(drop)
     }
 
     pub(super) async fn snapshot(
@@ -156,15 +160,16 @@ where
         change: ContentChange<std::convert::Infallible>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.change_content_at(change, false, work)
+        self.change_content_at(change, false, false, work).map(drop)
     }
 
     fn change_content_at(
         &self,
         change: ContentChange<std::convert::Infallible>,
         append_only: bool,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<super::MountWriteResult, MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut state = await_lock(
                 self.state.lock(),
@@ -178,9 +183,26 @@ where
             {
                 return Err(MountSourceError::AccessDenied);
             }
-            state
+            let written = match &change {
+                ContentChange::Write { bytes, .. } => bytes.len() as u64,
+                _ => 0,
+            };
+            let stamp = state
                 .change_content(change, &self.ledger, &self.runtime.clock, work)
-                .await
+                .await?;
+            let mut node = mount_node(state.file.record());
+            node.link_count = 0;
+            Ok(super::MountWriteResult {
+                file_id: node.file_id,
+                written,
+                facts: facts.then_some(super::MountWriteFacts {
+                    lookup: MountLookup {
+                        node,
+                        metadata: state.metadata,
+                    },
+                    stamp,
+                }),
+            })
         })
     }
 }
@@ -398,7 +420,7 @@ where
                 .set_attributes(metadata, logical_bytes, work, cancellation)
                 .await?;
             state.metadata = metadata;
-            state.record_change(&self.ledger, &mut carrier)
+            state.record_change(&self.ledger, &mut carrier).map(drop)
         })
     }
 

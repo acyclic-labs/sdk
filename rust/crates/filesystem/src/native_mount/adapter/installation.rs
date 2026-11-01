@@ -3,10 +3,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         &self,
         candidate: CheckoutCandidate<'_, A, O>,
         change: ViewChange<'_>,
+        facts: Option<FileId>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<Option<super::MountWriteFacts>, MountSourceError> {
         let cancellation = work.cancellation();
         let rename = match &change {
             ViewChange::Moved { from, to, .. } => Some([*from, *to]),
@@ -14,7 +15,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         };
         let publication = self
             .install_candidate(
-                (candidate, rename),
+                (candidate, rename, facts),
                 &mut NativeDemandCarrier::Native(work),
                 cancellation,
                 Some(lifetime),
@@ -33,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             )
             .await?
             .ok_or(MountSourceError::Stale)?;
-        if publication == MountPublication::PerMutation {
+        if publication.0 == MountPublication::PerMutation {
             self.publish(
                 crate::PublicationPermit::Unrestricted,
                 crate::kernel::KernelAccounting::native(work, cancellation),
@@ -45,30 +46,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .await
             .map_err(|(error, _)| error)?;
         }
-        Ok(())
+        Ok(publication.1)
     }
 
     pub(super) async fn install_candidate<'a, N: FnOnce()>(
         &self,
-        (candidate, rename): (CheckoutCandidate<'a, A, O>, Option<[&NamespacePath; 2]>),
+        (candidate, rename, facts): (
+            CheckoutCandidate<'a, A, O>,
+            Option<[&NamespacePath; 2]>,
+            Option<FileId>,
+        ),
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
         record: impl FnOnce(
             &mut NativeDemandCarrier<'_>,
             ViewStamp,
-        ) -> Result<(Result<(), MountSourceError>, N), MountSourceError>,
+        )
+            -> Result<(ViewStamp, Result<(), MountSourceError>, N), MountSourceError>,
         commit: impl FnOnce(
             &mut Checkout<A, O>,
             CheckoutCandidate<'a, A, O>,
             crate::facade::PreparedCandidateAdoption,
         ) -> Result<bool, MountSourceError>,
-    ) -> Result<Option<MountPublication>, MountSourceError> {
+    ) -> Result<Option<(MountPublication, Option<super::MountWriteFacts>)>, MountSourceError> {
         carrier.check(cancellation, lifetime)?;
         if self.view_gate.generation() != candidate.epoch {
             return Ok(None);
         }
-        let (recorded, notify) = record(carrier, candidate.stamp)?;
+        let (recorded_stamp, recorded, notify) = record(carrier, candidate.stamp)?;
         // Record invalidation before adoption, then dispatch only after every lease drops.
         let result = async move {
             recorded?;
@@ -111,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             else {
                 return Ok(None);
             };
-            let candidate = CheckoutCandidate {
+            let mut candidate = CheckoutCandidate {
                 base,
                 checkout,
                 operation,
@@ -120,6 +126,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 deadline,
                 _publication,
                 _file_mutation,
+            };
+            let facts = if let Some(file_id) = facts {
+                // The final candidate owns its root and original mutation lease.
+                // Select its facts without retaining shared checkout guards.
+                drop(state);
+                let record = candidate
+                    .checkout
+                    .read_file_record_by_id(file_id, &original, cancellation)
+                    .await?;
+                let metadata = candidate
+                    .checkout
+                    .read_metadata(file_id, &original, cancellation)
+                    .await?;
+                state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
+                if self.view_gate.generation() != candidate.epoch
+                    || state.publication_operation.is_some()
+                        && state.publication_operation != candidate.operation
+                {
+                    return Ok(None);
+                }
+                Some(super::MountWriteFacts {
+                    lookup: MountLookup {
+                        node: mount_node(record),
+                        metadata,
+                    },
+                    stamp: recorded_stamp,
+                })
+            } else {
+                None
             };
             let prepared = state.checkout.prepare_candidate_adoption(
                 &candidate.base,
@@ -141,7 +176,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 state.retain_operation_id(operation)?;
             }
             state.recorded_view = state.checkout.root().file_table;
-            Ok(Some(state.publication))
+            Ok(Some((state.publication, facts)))
         }
         .await;
         notify();

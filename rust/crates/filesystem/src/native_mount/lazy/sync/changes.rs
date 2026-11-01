@@ -246,7 +246,7 @@ where
             .authored
             .shared_checkout()
             .install_candidate(
-                (candidate, None),
+                (candidate, None, None),
                 carrier,
                 cancellation,
                 Some(self.authored.cancellation()),

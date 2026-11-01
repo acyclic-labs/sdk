@@ -169,20 +169,22 @@ where
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
         self.with_mutation(work, |file| {
-            file.write_range_with_meter(offset, bytes, work)
+            file.write_range_with_meter(offset, bytes, facts, work)
         })
     }
     fn append_range_with_meter(
         &self,
         offset: u64,
         bytes: crate::kernel::OwnedSourceChunk,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<crate::native_mount::MountWriteResult, MountSourceError> {
         self.with_mutation(work, |file| {
-            file.append_range_with_meter(offset, bytes, work)
+            file.append_range_with_meter(offset, bytes, facts, work)
         })
     }
 
