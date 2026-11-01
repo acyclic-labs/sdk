@@ -90,9 +90,13 @@ test("MCP WASM rejects lossy unsigned catalog and search allowances", () => {
   for (const invalid of [undefined, null, -1, 0, 0.5, 2 ** 32, NaN, Infinity, "3", true]) {
     assert.throws(() => searchMcpCatalog(catalog, "", undefined, invalid, undefined, undefined));
   }
-  validateMcpCatalog(catalog, undefined, undefined);
-  assert.equal(mcpModelDefinitions(catalog, null, null).length, 3);
-  assert.equal(searchMcpCatalog(catalog, "", undefined, 1, undefined, null).length, 1);
+  for (const maximumTools of [undefined, null]) {
+    for (const maximumBytes of [undefined, null]) {
+      validateMcpCatalog(catalog, maximumTools, maximumBytes);
+      assert.equal(mcpModelDefinitions(catalog, maximumTools, maximumBytes).length, 3);
+      assert.equal(searchMcpCatalog(catalog, "", undefined, 1, maximumTools, maximumBytes).length, 1);
+    }
+  }
   const maximum = 2 ** 32 - 1;
   validateMcpCatalog(catalog, maximum, maximum);
   assert.equal(mcpModelDefinitions(catalog, maximum, maximum).length, 3);

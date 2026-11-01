@@ -45,7 +45,7 @@ pub const POWERSHELL: ShellSpec = ShellSpec {
     name: "shell",
     language: "powershell",
     windows_paths: true,
-    description: "Run PowerShell in your workspace, using PowerShell 7 when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths; profiles are disabled. An optional positive timeout is in seconds; omission waits for exit or cancellation. Returns the exit code and output under the configured presentation allowance; complete overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
+    description: "Run PowerShell in your workspace, using PowerShell 7 when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths; profiles are disabled. An optional positive timeout_ms is in milliseconds; omission waits for exit or cancellation. Returns the exit code and output under the configured presentation allowance; complete overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: POWERSHELL_ARGUMENTS,
     stdin_bootstrap: Some(
@@ -62,7 +62,7 @@ pub const BASH: ShellSpec = ShellSpec {
     name: "shell",
     language: "bash",
     windows_paths: false,
-    description: "Run bash in your workspace, without profile or rc files. Use bash syntax and Unix paths. An optional positive timeout is in seconds; omission waits for exit or cancellation. Returns the exit code and output under the configured presentation allowance; complete overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
+    description: "Run bash in your workspace, without profile or rc files. Use bash syntax and Unix paths. An optional positive timeout_ms is in milliseconds; omission waits for exit or cancellation. Returns the exit code and output under the configured presentation allowance; complete overflow is saved in .volumes/scratch. Writes outside the workspace are not captured",
     executables: &["bash"],
     arguments: BASH_ARGUMENTS,
     stdin_bootstrap: None,

@@ -20,7 +20,7 @@ function corrupt(): never {
  * visit one path; subtree changes visit only that prefix's registered nodes.
  * Pending links survive owner loss without enumerating unrelated Actors. */
 export class WakeIndex {
-  private durable: Promise<void> = Promise.resolve();
+  private durable: Promise<void> | undefined;
   constructor(private readonly storage: EventStorage, private readonly maximumActors?: number) {
     if (maximumActors !== undefined && (!Number.isSafeInteger(maximumActors) || maximumActors <= 0)) {
       throw { code: "invalid_argument", step: "actor-wake-open", recovery: "omit capacity or supply a positive safe integer" };
@@ -196,7 +196,10 @@ export class WakeIndex {
       changed = true;
       return { admitted: true };
     });
-    if (changed) {
+    // A reopened index has not observed this owner's outstanding save. Its
+    // first successful replay joins storage durability once; later unchanged
+    // registrations retain that same completion or failure without a barrier.
+    if (changed || ("admitted" in result && this.durable === undefined)) {
       try { this.durable = this.storage.flush(); }
       catch (error) { this.durable = Promise.reject(error); }
     }

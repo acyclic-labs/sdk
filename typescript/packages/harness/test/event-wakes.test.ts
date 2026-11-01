@@ -39,6 +39,53 @@ test("durable wakes retain exact generations and visit only selected membership"
     assert.deepEqual(await index.register("root", ["tree/root/inbox", "tree/root/control"]), { admitted: true });
     assert.deepEqual(await index.register("child", ["tree/child/inbox", "tree/child/control"]), { admitted: true });
     assert.deepEqual(await index.register("leaf", ["tree/child/leaf/inbox", "tree/child/leaf/control"]), { admitted: true });
+    // A duplicate joins the same outstanding durability result. Avoiding a
+    // second barrier must never report admission before the original one ends.
+    const barrier = Promise.withResolvers<void>();
+    durability = barrier.promise;
+    const admission = index.register("custody", ["retained/durable"]);
+    const flushing = flushes;
+    let replayed = false;
+    const replay = index.register("custody", ["retained/durable"]).then(result => {
+      replayed = true; return result;
+    });
+    await Promise.resolve();
+    assert.equal(replayed, false);
+    assert.equal(flushes, flushing);
+    // A new index sees the original uncommitted rows, but has not yet joined
+    // their storage owner's completion. Its first replay must wait too.
+    const reopened = open();
+    const reopenedReplay = reopened.register("custody", ["retained/durable"]);
+    const firstReplayFlushes = flushes;
+    barrier.resolve();
+    assert.deepEqual(await admission, { admitted: true });
+    assert.deepEqual(await replay, { admitted: true });
+    assert.deepEqual(await reopenedReplay, { admitted: true });
+    const reopenedFlushed = flushes;
+    assert.deepEqual(await reopened.register("custody", ["retained/durable"]), { admitted: true });
+    assert.equal(flushes, reopenedFlushed, "subsequent replay retains the original completion");
+    durability = undefined;
+    assert.deepEqual(await index.register("custody", [], "0"), { admitted: true });
+    const lost = new Error("original storage durability producer lost");
+    const source = Promise.withResolvers<void>();
+    durability = source.promise;
+    const failure = index.register("custody", ["lost/source"], "1");
+    const reopenedFailed = open();
+    const reopenedFailure = reopenedFailed.register("custody", ["lost/source"], "1");
+    const failures = Promise.all([
+      assert.rejects(failure, error => error === lost),
+      assert.rejects(reopenedFailure, error => error === lost),
+    ]);
+    source.reject(lost);
+    await failures;
+    const failedFlushes = flushes;
+    await assert.rejects(index.register("custody", ["lost/source"], "1"), error => error === lost);
+    assert.equal(flushes, failedFlushes, "late replay retains original durability failure");
+    await assert.rejects(reopenedFailed.register("custody", ["lost/source"], "1"), error => error === lost);
+    assert.equal(flushes, failedFlushes, "reopened failure remains terminal without another barrier");
+    assert.equal(firstReplayFlushes, flushing + 1, "first replay joins storage durability once");
+    durability = undefined;
+    assert.deepEqual(await index.register("custody", [], "2"), { admitted: true });
     const costs: { register: number; exact: number; subtree: number; pending: number }[] = [];
     let population = 0;
     for (const total of [1, 16, 1001]) {
@@ -140,31 +187,6 @@ test("durable wakes retain exact generations and visit only selected membership"
     assert.equal(storage.get("path:many/"), undefined, "empty subscription retires all original membership prefixes");
     change(index, "root", [["many", true], ["replacement", true]]);
     assert.equal(index.pendingCount(), 0);
-    // A duplicate joins the same outstanding durability result. Avoiding a
-    // second barrier must never report admission before the original one ends.
-    const barrier = Promise.withResolvers<void>();
-    durability = barrier.promise;
-    const admission = index.register("foreign", ["retained/durable"], "68");
-    const flushing = flushes;
-    let replayed = false;
-    const replay = index.register("foreign", ["retained/durable"], "68").then(result => {
-      replayed = true; return result;
-    });
-    await Promise.resolve();
-    assert.equal(replayed, false);
-    assert.equal(flushes, flushing);
-    barrier.resolve();
-    assert.deepEqual(await admission, { admitted: true });
-    assert.deepEqual(await replay, { admitted: true });
-    durability = undefined;
-    assert.deepEqual(await index.register("foreign", [], "69"), { admitted: true });
-    const lost = new Error("original storage durability producer lost");
-    durability = Promise.reject(lost);
-    await assert.rejects(index.register("foreign", ["lost/source"], "70"), error => error === lost);
-    const failedFlushes = flushes;
-    await assert.rejects(index.register("foreign", ["lost/source"], "70"), error => error === lost);
-    assert.equal(flushes, failedFlushes, "late replay retains original durability failure");
-    durability = undefined;
     // Path segments remain exact, including prefixes ending at an empty segment.
     await index.register("slash", ["/inbox", "/control"]);
     change(index, "root", [["", true], ["tree/childish", true]]);

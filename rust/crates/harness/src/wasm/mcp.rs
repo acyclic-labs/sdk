@@ -1,6 +1,6 @@
 //! Generated portable MCP contract facade; all semantics remain in Rust.
 
-use super::{from_js, js_error};
+use super::{from_js, js_error, optional_from_js};
 use crate::mcp::McpCatalog;
 use serde::Serialize as _;
 use wasm_bindgen::prelude::*;
@@ -47,7 +47,10 @@ pub fn validate_mcp_catalog(
     #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_bytes: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<McpCatalog>(catalog)?
-        .validate(from_js(maximum_tools)?, from_js(maximum_bytes)?)
+        .validate(
+            optional_from_js(maximum_tools)?,
+            optional_from_js(maximum_bytes)?,
+        )
         .map_err(js_error)
 }
 
@@ -64,7 +67,10 @@ pub fn mcp_model_definitions(
     let catalog: McpCatalog = from_js(catalog)?;
     definitions_to_js(
         catalog
-            .model_definitions(from_js(maximum_tools)?, from_js(maximum_bytes)?)
+            .model_definitions(
+                optional_from_js(maximum_tools)?,
+                optional_from_js(maximum_bytes)?,
+            )
             .map_err(js_error)?,
     )
 }
@@ -85,8 +91,8 @@ pub fn search_mcp_catalog(
             &query,
             after.as_deref(),
             from_js(maximum_results)?,
-            from_js(maximum_tools)?,
-            from_js(maximum_bytes)?,
+            optional_from_js(maximum_tools)?,
+            optional_from_js(maximum_bytes)?,
         )
         .map_err(js_error)?;
     definitions_to_js(definitions)
