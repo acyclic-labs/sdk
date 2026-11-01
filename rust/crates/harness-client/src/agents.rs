@@ -111,7 +111,7 @@ pub struct AgentClient {
     agent: AgentPath,
     conversation: StreamPath,
     selected: Vec<AgentPath>,
-    streams: BTreeMap<StreamPath, (AgentPath, bool)>,
+    streams: BTreeMap<String, (AgentPath, bool, StreamPath)>,
     credential: u32,
     all: bool,
 }
@@ -254,12 +254,16 @@ impl AgentClient {
                 ),
                 (true, selection.agent.status()?, selection.status_from),
             ] {
-                let mut request = subscription(&path, from, self.credential, is_status && !self.all);
+                let mut request =
+                    subscription(&path, from, self.credential, is_status && !self.all);
                 if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
                     follow.opening_cut = self.all;
+                    streams.insert(
+                        follow.resource.clone(),
+                        (selection.agent.clone(), is_status, path.clone()),
+                    );
                 }
-                subscriptions.push((path.clone(), request));
-                streams.insert(path, (selection.agent.clone(), is_status));
+                subscriptions.push((path, request));
             }
             ordered.push(selection.agent);
         }
@@ -421,7 +425,9 @@ impl AgentClient {
             Ok(None) => {
                 return Poll::Ready(Err(match interest {
                     Interest::Stream(path) => AgentClientError::Closed(path),
-                    Interest::Resource(resource) => AgentClientError::ResourceClosed(resource.to_string()),
+                    Interest::Resource(resource) => {
+                        AgentClientError::ResourceClosed(resource.to_string())
+                    }
                 }));
             }
         };
@@ -459,14 +465,7 @@ impl AgentClient {
                 detail: closed.message.clone(),
             });
         }
-        let selected = if delivery.resource.starts_with("streams:/") {
-            let path = wire_codec::session::stream_path(&delivery.resource)
-                .map_err(WireSessionError::Stream)?;
-            self.streams.get_key_value(&path)
-        } else {
-            None
-        };
-        let Some((path, (agent, status))) = selected else {
+        let Some((agent, status, path)) = self.streams.get(&delivery.resource) else {
             if matches!(
                 delivery.frame.body,
                 Some(wire::session_frame::Body::Closed(_))
