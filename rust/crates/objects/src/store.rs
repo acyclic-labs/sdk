@@ -521,6 +521,12 @@ impl<M> Account<M> {
         Arc::clone(&self.medium)
     }
 
+    /// Transfers the original medium owner while retiring account-local state.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) fn into_medium(self) -> Arc<M> {
+        self.medium
+    }
+
     /// The same account, sharing its state, over `medium`.
     pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
         Account {
