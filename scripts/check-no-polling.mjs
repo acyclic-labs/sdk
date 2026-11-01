@@ -52,10 +52,10 @@ try {
    throw new Error('remove each new wait/retry, or record its exact producer, terminal and negative control under the repository rule');
   }
   console.log('No new unclassified polling sites');
-  }
- } catch (error) {
+ }
+} catch (error) {
  const command = error.code === 'ERR_MODULE_NOT_FOUND' ? 'bun install --frozen-lockfile'
   : error.code === 'EEXIST' && inventory ? 'node scripts/check-no-polling.mjs --inventory ' + JSON.stringify(output + '.next') : recovery;
  console.error(`step=no-polling ${error.message}; recovery command: ${command}`);
-  process.exitCode = 1;
- }
+ process.exitCode = 1;
+}
