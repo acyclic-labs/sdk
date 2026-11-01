@@ -2,8 +2,8 @@ use crate::RetrySpec;
 use acyclic_harness_core::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 
-/// One exchange's redelivery budget. Only a request the endpoint refused before any output is
-/// redelivered, so no caller-visible event can repeat.
+/// One exchange's redelivery schedule. Its owner supplies the operation's
+/// completion fence; generation additionally requires refusal or connection failure.
 pub(crate) struct Redelivery {
     spec: RetrySpec,
     /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.

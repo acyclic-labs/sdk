@@ -97,23 +97,17 @@ async fn credential_read_failures_never_become_terminal_model_refusals() -> Resu
 }
 
 #[tokio::test]
-async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_sse() -> Result<()> {
+async fn ordinary_and_native_refresh_only_before_successful_response_admission() -> Result<()> {
     for native in [false, true] {
         for (first, second, succeeds, expected) in [
             (
                 (200, AUTH_ERROR.to_owned()),
                 (200, RESPONSE.to_owned()),
-                true,
-                3,
-            ),
-            (
-                (200, AUTH_ERROR.to_owned()),
-                (200, AUTH_ERROR.to_owned()),
                 false,
-                3,
+                1,
             ),
+            ((401, String::new()), (200, RESPONSE.to_owned()), true, 3),
             ((401, String::new()), (200, AUTH_ERROR.to_owned()), false, 3),
-            ((200, AUTH_ERROR.to_owned()), (401, String::new()), false, 3),
             (
                 (200, format!("{TEXT}{AUTH_ERROR}")),
                 (200, RESPONSE.to_owned()),
@@ -203,17 +197,31 @@ async fn ordinary_and_native_share_one_retry_budget_for_headers_and_preoutput_ss
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
     #[test]
-    fn retry_budget_is_never_replenished_after_output_or_failure(
+    fn recovery_is_never_replenished_after_acceptance_or_failure(
         trace in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..64),
     ) {
-        let mut recovery = crate::dispatch::Recovery::default();
-        let (mut output, mut spent) = (false, false);
-        for (emitted, unauthorized) in trace {
-            output |= emitted;
-            recovery.output |= emitted;
+        let mut attempt = crate::dispatch::GenerationAttempt::new(crate::RetrySpec::DEFAULT,
+            acyclic_harness_core::model::ModelDispatch {
+                operation_id: acyclic_harness_core::OperationId::from_bytes([3; 16]),
+                step: 1,
+                request_digest: [0; 32],
+            });
+        let (mut accepted, mut spent) = (false, false);
+        for failure in [acyclic_harness_core::ModelTransportFailure::Interrupted,
+            acyclic_harness_core::ModelTransportFailure::Timeout] {
+            let error = crate::transport_failure(true, failure, "fixture");
+            proptest::prop_assert_eq!(attempt.redeliver(&error, None), None);
+        }
+        for (admitted, unauthorized) in trace {
+            accepted |= admitted;
+            if admitted { attempt.accept(); }
+            if unauthorized { attempt.refuse(); }
             let error = if unauthorized { Error::Unauthorized("fixture".into()) } else { Error::Invalid("fixture".into()) };
-            let expected = unauthorized && !output && !spent;
-            proptest::prop_assert_eq!(recovery.retry(&error), expected);
+            let expected = unauthorized && !accepted && !spent;
+            proptest::prop_assert_eq!(attempt.refresh(&error), expected);
+            let interruption = crate::transport_failure(true,
+                acyclic_harness_core::ModelTransportFailure::Interrupted, "fixture");
+            if accepted { proptest::prop_assert_eq!(attempt.redeliver(&interruption, None), None); }
             spent |= expected;
         }
     }
@@ -221,7 +229,6 @@ proptest::proptest! {
 
 struct CancelRefresh {
     cancel: CancellationToken,
-    first: (u16, &'static str),
 }
 impl HttpTransport for CancelRefresh {
     fn delay(
@@ -257,11 +264,7 @@ impl HttpTransport for CancelRefresh {
                 std::future::pending().await
             } else {
                 drop(request);
-                HttpResponse::with_native_body(
-                    self.first.0,
-                    futures::stream::iter([Ok(Bytes::from_static(self.first.1.as_bytes()))]),
-                    work,
-                )
+                HttpResponse::with_native_body(401, futures::stream::iter([Ok(Bytes::new())]), work)
             }
         })
     }
@@ -269,34 +272,32 @@ impl HttpTransport for CancelRefresh {
 #[tokio::test]
 async fn cancellation_during_authentication_recovery_releases_the_guard_and_all_custody()
 -> Result<()> {
-    for first in [(401, ""), (200, AUTH_ERROR)] {
-        let (_root, login, _, _) = fixture(Vec::new())?;
-        let cancel = CancellationToken::new();
-        let work = NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
-            &cancel,
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
-        let provider = Registry::with_transport(
-            Credentials::explicit(BTreeMap::new()),
-            Arc::new(CancelRefresh { cancel, first }),
-        )
-        .with_codex_login(login)
-        .resolve("openai/gpt-5")?;
-        let (request, dispatch) = crate::tests::request(&provider)?;
-        {
-            let mut events = provider
-                .generate_with_native_work(&request, dispatch, &work)?
-                .await?;
-            let error = events
-                .next()
-                .await
-                .expect("cancellation observed")
-                .expect_err("cancelled recovery");
-            assert!(error.to_string().contains("cancel"));
-        }
-        assert_eq!(work.live_allocation_bytes(), baseline);
+    let (_root, login, _, _) = fixture(Vec::new())?;
+    let cancel = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let provider = Registry::with_transport(
+        Credentials::explicit(BTreeMap::new()),
+        Arc::new(CancelRefresh { cancel }),
+    )
+    .with_codex_login(login)
+    .resolve("openai/gpt-5")?;
+    let (request, dispatch) = crate::tests::request(&provider)?;
+    {
+        let mut events = provider
+            .generate_with_native_work(&request, dispatch, &work)?
+            .await?;
+        let error = events
+            .next()
+            .await
+            .expect("cancellation observed")
+            .expect_err("cancelled recovery");
+        assert!(error.to_string().contains("cancel"));
     }
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
