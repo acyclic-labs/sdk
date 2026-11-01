@@ -16,8 +16,8 @@ use acyclic_harness_core::{
     runtime::{InProcessTargets, Target},
 };
 use acyclic_stream::{
-    AppendRecord, CommitMutation, CommitOutcome, CommitRequest, FollowRequest, FollowUpdate,
-    IdempotencyKey, MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitMutation, CommitRequest, FollowRequest, FollowUpdate, IdempotencyKey,
+    MemoryStream, StreamPath, StreamProvider, StreamProviderExt as _,
     runtime::PlatformExecutor,
     session::{Client, SocketProvider as _, testing},
 };

@@ -285,7 +285,6 @@ impl<P: StreamProvider + ?Sized + 'static> TargetResolver for TargetDirectory<P>
                     .store
                     .activation_record(&self.paths.actor(&record.name)?),
                 grant: Arc::clone(&self.grant),
-                home: self.home.record.clone(),
                 devices: self.devices.subscribe(),
             }),
         }))
@@ -304,7 +303,6 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
     wake: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
     grant: Arc<DeviceGrant>,
     devices: watch::Receiver<Devices>,
-    home: crate::agent::TargetRecord,
 }
 
 impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
