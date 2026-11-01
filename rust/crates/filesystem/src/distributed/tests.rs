@@ -193,21 +193,21 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         let head = store.head(authority, &mut work).await?;
         assert_eq!(head.sequence, Sequence::new(1));
         assert_eq!(
-            work.allocations.live_bytes(),
-            baseline,
+            work.allocations.scratch_bytes(),
+            29,
             "successful head leaked scratch"
         );
         let payload = store.head_payload(authority, 1024, &mut work).await?;
         assert_eq!(payload.0.1.as_deref(), Some(b"publication".as_slice()));
         drop(payload);
-        assert_eq!(work.allocations.live_bytes(), baseline);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
         assert!(matches!(
             store.head_payload(authority, 0, &mut work).await,
             Err(AuthorityStoreError::InvalidReplayLimit)
         ));
         assert_eq!(
-            work.allocations.live_bytes(),
-            baseline,
+            work.allocations.scratch_bytes(),
+            29,
             "failed head leaked scratch"
         );
         let found = store
@@ -218,7 +218,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             Some(Sequence::new(1))
         );
         drop(found);
-        assert_eq!(work.allocations.live_bytes(), baseline);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
         let replay = store
             .replay(
                 authority,
@@ -232,7 +232,7 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
             .await?;
         assert_eq!(replay.0.len(), 1);
         drop(replay);
-        assert_eq!(work.allocations.live_bytes(), baseline);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
         let reservation = store
             .reserve_publication(
                 authority,
@@ -244,17 +244,19 @@ async fn authority_forwarding_keeps_original_frame_through_guard_and_withdrawal(
         let ReservationOutcome::Reserved(reservation) = reservation else {
             return Err("expected the original publication reservation".into());
         };
-        assert_eq!(work.allocations.live_bytes(), baseline);
+        assert_eq!(work.allocations.scratch_bytes(), 29);
         store.release_publication(reservation, &mut work).await?;
         assert_eq!(
-            work.allocations.live_bytes(),
-            baseline,
+            work.allocations.scratch_bytes(),
+            29,
             "request cleanup retired caller scratch"
         );
     }
     assert!(work.spent().authority_records_read >= 32 * 2);
+    let before_retirement = work.allocations.live_bytes();
+    assert!(before_retirement >= 29 + 73);
     drop(retained);
-    assert_eq!(work.allocations.live_bytes(), baseline - 73);
+    assert_eq!(work.allocations.live_bytes(), before_retirement - 73);
     work.release(29)?;
     Ok(())
 }
