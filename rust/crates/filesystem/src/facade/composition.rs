@@ -130,13 +130,13 @@ where
                 )
                 .await
                 .map_err(WorkspaceError::engine)?;
-                let mut authority = authority_work(&mut accounting, cancellation)?;
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
                 let contributed = self
                     .inner
                     .authority
                     .contribute_publication(guard.commit(), prepared, &mut authority)
                     .await;
-                record_authority_work(&mut accounting, &authority)?;
+                finish_authority_work(authority)?;
                 if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
                     return Err(WorkspaceError::StaleGeneration);
                 }

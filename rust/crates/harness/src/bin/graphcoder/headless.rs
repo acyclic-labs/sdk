@@ -475,6 +475,10 @@ impl Output {
         Self(Some(output))
     }
 
+    pub(super) fn available(&self) -> bool {
+        self.0.is_some()
+    }
+
     async fn write<B: AsRef<[u8]> + Send + 'static>(
         &mut self,
         task: OperationId,
@@ -1404,11 +1408,15 @@ mod tests {
                     )
                     .await
                 } else {
-                    let mut framed = EventOutput {
-                        writer: &mut output,
-                        task,
-                    };
-                    emit(&mut framed, &line, None).await
+                    let recovery = Recovery::capture(None)?;
+                    terminal_error(
+                        &mut output,
+                        "original-operation",
+                        "original output write did not complete",
+                        "write_output",
+                        &recovery,
+                    )
+                    .await
                 };
                 assert_eq!(
                     unavailable.unwrap_err().kind(),

@@ -44,7 +44,8 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// self-deployed and a managed server share.
 /// Enabled diagnostics require caller-owned text buffers or an explicit paired
 /// CLI reservation. Logging off constructs no text delivery or storage pool.
-/// Errors are returned to the caller without starting a terminal output write.
+/// Diagnostic configuration errors return before execution. JSONL execution
+/// errors use the original output owner before their result returns.
 /// Diagnostic delivery ends with the original operation, report and shutdown
 /// owner; its best-effort failure never replaces the original operation result.
 pub fn main_with(
@@ -96,7 +97,14 @@ pub fn main_with(
                 let port = acyclic_native_runtime::obs::ReportPort::from_environment();
                 let run_shutdown = shutdown.clone();
                 let operation = phase(|| async move {
-                    let result = run(args, seams, run_shutdown).await;
+                    let mut event_output = event_failure
+                        .as_ref()
+                        .map(|_| {
+                            acyclic_native_runtime::InheritedOutput::stdout()
+                                .map(headless::Output::new)
+                        })
+                        .transpose()?;
+                    let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
                     if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
                         let recovery =
                             headless::Recovery::capture(generated.then_some(operation.as_str()))?;
@@ -105,17 +113,22 @@ pub fn main_with(
                         } else {
                             "execute"
                         };
-                        let mut output = headless::Output::new(
-                            acyclic_native_runtime::InheritedOutput::stdout()?,
-                        );
-                        headless::terminal_error(
-                            &mut output,
-                            operation,
-                            &error.to_string(),
-                            step,
-                            &recovery,
-                        )
-                        .await?;
+                        let output = event_output.as_mut().ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::NotConnected,
+                                "original event output owner is absent",
+                            )
+                        })?;
+                        if output.available() {
+                            headless::terminal_error(
+                                output,
+                                operation,
+                                &error.to_string(),
+                                step,
+                                &recovery,
+                            )
+                            .await?;
+                        }
                     }
                     result
                 });
@@ -169,6 +182,7 @@ async fn run(
     args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     shutdown: lifecycle::Shutdown,
+    event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
     // A server is this machine's harness alone: refuse every client mode
@@ -220,7 +234,7 @@ async fn run(
     // is opened.
     if let Some(endpoint) = &args.endpoint {
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
-        return connected(&args, connection, output).await;
+        return connected(&args, connection, output, event_output).await;
     }
     let credentials = if args.default_config {
         let configured = args
@@ -282,13 +296,14 @@ async fn run(
     }
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
-    connected(&args, connection, output).await
+    connected(&args, connection, output, event_output).await
 }
 
 async fn connected(
     args: &Args,
     connection: Connection,
     output: headless::Prepared,
+    event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let connection = match &args.agent {
         Some(agent) => {
@@ -320,7 +335,7 @@ async fn connected(
         .await?;
         return Ok(0);
     }
-    drive(args, Conversation::open(connection)?, output).await
+    drive(args, Conversation::open(connection)?, output, event_output).await
 }
 
 /// Drives `conversation` headless (`-p`, JSONL) or through the terminal view.
@@ -328,6 +343,7 @@ async fn drive(
     args: &Args,
     conversation: Arc<Conversation>,
     prepared: headless::Prepared,
+    event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
     let interactive = args.prompt.is_none()
@@ -355,21 +371,28 @@ async fn drive(
         .as_deref()
         .map(usage_export::Output::open)
         .transpose()?;
-    let mut output = headless::Output::new(if usage_stdout {
-        acyclic_native_runtime::InheritedOutput::stderr()?
-    } else {
-        acyclic_native_runtime::InheritedOutput::stdout()?
-    });
+    let mut local_output;
+    let output = match event_output {
+        Some(output) => output,
+        None => {
+            local_output = headless::Output::new(if usage_stdout {
+                acyclic_native_runtime::InheritedOutput::stderr()?
+            } else {
+                acyclic_native_runtime::InheritedOutput::stdout()?
+            });
+            &mut local_output
+        }
+    };
     let result = if let Some(prompt) = &args.prompt
         && projection.is_none()
     {
-        phase(|| headless::prompt(&conversation, &operation, prompt, &mut output)).await
+        phase(|| headless::prompt(&conversation, &operation, prompt, output)).await
     } else {
         phase(|| {
             headless::jsonl(
                 &conversation,
                 &operation,
-                &mut output,
+                output,
                 projection,
                 args.prompt.as_deref(),
                 schema,
