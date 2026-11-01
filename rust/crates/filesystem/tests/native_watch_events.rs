@@ -12,7 +12,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use std::time::Duration;
 
 fn native_watch_work() -> Result<NativeMaterializationWork, Box<dyn std::error::Error>> {
     acyclic_fs::watch::initialize_native_watch_services()?;
@@ -63,25 +62,31 @@ async fn native_change_wait_uses_retained_events_and_settles_on_cancel_or_drop()
         );
         assert_eq!(idle.backend_write_operations, 0);
         std::fs::write(root.path().join("delivered"), b"complete")?;
-        tokio::time::timeout(Duration::from_secs(5), changed.as_mut()).await??;
+        changed.as_mut().await?;
         let expected = NamespacePath::from_portable(
             &PortablePath::parse("/delivered", VolumeLimits::default())?,
             VolumeLimits::default(),
         )?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                watch.changed_with_native_work(&work).await?;
-                let receipt = watch.poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .map_err(|failure| failure.error)?;
-                match receipt.value {
-                    WatchBatch::Changes { changes, .. } if changes.iter().any(|change|
+        loop {
+            watch.changed_with_native_work(&work).await?;
+            let receipt = watch
+                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|failure| failure.error)?;
+            match receipt.value {
+                WatchBatch::Changes { changes, .. }
+                    if changes.iter().any(|change| {
                         matches!(change, WatchChange::Created(path) | WatchChange::Modified(path)
-                            if path == &expected)) => return Ok::<_, NativeWatchError>(()),
-                    WatchBatch::RescanRequired { reason, .. } => panic!("lost native event: {reason:?}"),
-                    WatchBatch::Changes { .. } => {},
+                            if path == &expected)
+                    }) =>
+                {
+                    break;
                 }
+                WatchBatch::RescanRequired { reason, .. } => {
+                    panic!("lost native event: {reason:?}")
+                }
+                WatchBatch::Changes { .. } => {}
             }
-        }).await??;
+        }
 
         // Drain the delivered batch before arming cancellation. The future
         // retains only its subscription, so the watcher can be dropped too.

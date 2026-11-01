@@ -20,7 +20,7 @@ fn native_root_identity_encoding_is_exact_and_round_trips() {
 }
 use crate::kernel::NameEncoding;
 use notify::event::EventAttributes;
-use notify::event::{CreateKind, DataChange, ModifyKind};
+use notify::event::{DataChange, ModifyKind};
 use std::path::PathBuf;
 
 fn event(kind: EventKind, paths: Vec<PathBuf>) -> Event {

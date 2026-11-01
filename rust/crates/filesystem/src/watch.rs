@@ -3895,6 +3895,15 @@ impl NativeWatch {
         }
     }
 
+    /// Waits for retained hints, invalidation or loss of this native source.
+    /// The future retains only the subscription and may outlive the watcher.
+    pub fn changed_with_native_work(
+        &self,
+        original: &crate::NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        self.subscription().changed_with_native_work(original)
+    }
+
     pub(crate) fn subscription(&self) -> NativeWatchSubscription {
         NativeWatchSubscription {
             shared: Arc::clone(&self.shared),
