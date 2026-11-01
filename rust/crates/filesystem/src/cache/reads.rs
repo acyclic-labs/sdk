@@ -1,5 +1,8 @@
 use super::*;
 
+pub(super) type BatchLeaders =
+    crate::kernel::allocation::fixed_index::FixedIndex<usize, { ObjectId::ENCODED_LEN }>;
+
 impl<S: AsyncObjectStore> CachedObjectStore<S> {
     pub(super) async fn load_leader(
         &self,
@@ -64,7 +67,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             leaders,
             shared: self.shared.clone(),
         };
-        let mut local_leaders = BTreeMap::<ObjectId, usize>::new();
+        let mut local_leaders = BatchLeaders::default();
         for request in requests {
             let slot = match self.read_plan(request.object_id, &mut work.accounting())? {
                 ReadPlan::Hit(bytes) => BatchSlot::Hit(bytes),
@@ -75,11 +78,19 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                         maximum_bytes: request.maximum_bytes,
                         flight,
                     });
-                    local_leaders.insert(request.object_id, index);
+                    local_leaders
+                        .get_or_try_insert_with(
+                            request.object_id.index_key(),
+                            &mut work.accounting(),
+                            |_| Ok(index),
+                        )
+                        .map_err(crate::async_storage::object_error)?;
                     BatchSlot::LocalLeader(index)
                 }
                 ReadPlan::Follower(flight) => {
-                    if let Some(&index) = local_leaders.get(&request.object_id)
+                    if let Some(&index) = local_leaders
+                        .get(request.object_id.index_key(), &mut work.accounting())
+                        .map_err(crate::async_storage::object_error)?
                         && let Some(leader) = prepared.leaders.value.get_mut(index)
                         && flights::same_flight(&leader.flight, &flight)
                     {
