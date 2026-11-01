@@ -53,7 +53,8 @@ pub struct Invocation {
     pub schedule: acyclic_native_runtime::CaptureSchedule,
     pub control_timeout_ms: u32,
     pub maximum_output_bytes: usize,
-    pub standard_input: Option<Vec<u8>>,
+    /// The original owned literal, exchange or interactive input allowance.
+    pub standard_input: Option<acyclic_native_runtime::OwnedCaptureInput>,
     /// Owner custody that ties the process tree to this host and fences it
     /// on reopen; `None` spawns an ordinary owned tree.
     pub process_custody: Option<std::sync::Arc<acyclic_native_runtime::ProcessCustody>>,

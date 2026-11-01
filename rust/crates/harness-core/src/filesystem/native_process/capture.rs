@@ -75,8 +75,8 @@ type CaptureResult = std::io::Result<
 >;
 
 /// What the spawn turn left: a finished result, or a running capture.
-enum Started<T, H: acyclic_native_runtime::CaptureHandler> {
-    Finished(CaptureResult, T),
+enum Started<H: acyclic_native_runtime::CaptureHandler> {
+    Finished(CaptureResult, H),
     Running(
         acyclic_native_runtime::TaskHandle<
             std::io::Result<acyclic_native_runtime::CaptureOutcome<H>>,
@@ -134,6 +134,38 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
 ) -> Result<
     impl std::future::Future<Output = Result<(Option<NativeProcessResult>, T)>> + Send + 'static,
 > {
+    let completion = start_capture(
+        invocation,
+        Handler {
+            custody,
+            observer,
+            check,
+            wake,
+        },
+        retention,
+    )
+    .await?;
+    Ok(async move {
+        let (result, handler) = completion.await?;
+        Ok((result, handler.custody))
+    })
+}
+
+/// Starts capture with its original native handler and returns owned completion.
+/// The handler retains input production, wake signals, output observation and
+/// retirement in one owner. No callback is wrapped or copied. Interactive input
+/// uses the invocation's original allowance and the handler's native wake;
+/// producer loss must wake that source and return a typed error from `input`.
+/// The caller retains the same authority and background-admission obligations
+/// as [`start_capture_with_custody`].
+#[doc(hidden)]
+pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
+    invocation: Invocation,
+    mut handler: H,
+    retention: OutputRetention,
+) -> Result<
+    impl std::future::Future<Output = Result<(Option<NativeProcessResult>, H)>> + Send + 'static,
+> {
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so they run on main's independent native host service.
     // Spawning runs there too; the running child then holds no worker: the
@@ -142,12 +174,6 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
     let started =
         acyclic_native_runtime::run_blocking_io(
             move || {
-                let mut handler = Handler {
-                    custody,
-                    observer,
-                    check,
-                    wake,
-                };
                 let schedule = invocation.schedule;
                 let maximum_output_bytes = invocation.maximum_output_bytes;
                 match start(invocation, &mut handler) {
@@ -167,8 +193,8 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
                             )),
                         }
                     }
-                    Ok(Err(output)) => Started::Finished(Ok(output), handler.custody),
-                    Err(error) => Started::Finished(Err(error), handler.custody),
+                    Ok(Err(output)) => Started::Finished(Ok(output), handler),
+                    Err(error) => Started::Finished(Err(error), handler),
                 }
             },
             None,
@@ -177,25 +203,25 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
         .await
         .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
     Ok(async move {
-        let (output, custody) = match started {
-            Started::Finished(output, custody) => (output, custody),
+        let (output, handler) = match started {
+            Started::Finished(output, handler) => (output, handler),
             Started::Running(capture) => {
                 // Ownership stays with the spawned capture until process cleanup
                 // finishes, even if its awaiting task is cancelled.
                 let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
                     Error::Storage(format!("native process observer interrupted: {error}"))
                 })?;
-                (Ok(outcome.result), outcome.handler.custody)
+                (Ok(outcome.result), outcome.handler)
             }
             Started::Streaming(mut stream) => {
                 while stream.recv().await.is_some() {}
                 let outcome = stream.finish().await.map_err(|error| {
                 Error::Storage(format!("native process stream interrupted: {error}; recovery: reconcile the original command"))
             })?;
-                (Ok(outcome.result), outcome.handler.custody)
+                (Ok(outcome.result), outcome.handler)
             }
         };
-        Ok((result(output), custody))
+        Ok((result(output), handler))
     })
 }
 
@@ -210,13 +236,9 @@ type Spawned = std::result::Result<
 >;
 
 /// Checks intent and spawns the tree.
-fn start<T>(
+fn start(
     invocation: Invocation,
-    handler: &mut Handler<
-        T,
-        impl FnMut(&mut T, acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
-        impl Fn() -> std::io::Result<()>,
-    >,
+    handler: &mut impl acyclic_native_runtime::CaptureHandler,
 ) -> std::io::Result<Spawned> {
     let mut command = ProcessCommand::new(&invocation.executable);
     if !invocation.inherit_environment {
@@ -233,38 +255,26 @@ fn start<T>(
         })
         .stdout(ProcessStdio::piped())
         .stderr(ProcessStdio::piped());
-    (handler.check)()?;
+    handler.check()?;
     #[cfg(feature = "test-support")]
     {
-        let input = invocation
-            .standard_input
-            .as_deref()
-            .map(acyclic_native_runtime::CaptureInput::Literal);
-        let Handler {
-            custody,
-            observer,
-            check,
-            ..
-        } = handler;
-        let mut observe = |chunk: acyclic_native_runtime::ProcessOutput<'_>| {
-            observer(custody, chunk).map(|()| Default::default())
-        };
+        // The installed provider calls these sequentially on this worker.
+        // Borrow the same handler for each callback without another owner.
+        let handler = std::cell::RefCell::new(&mut *handler);
         if let Some(output) = acyclic_native_runtime::testing::capture_process(
             acyclic_native_runtime::testing::ProcessCapture {
                 command: &command,
                 schedule: invocation.schedule,
                 maximum: invocation.maximum_output_bytes,
-                input,
+                input: invocation.standard_input.as_ref(),
             },
-            &mut || check(),
-            &mut observe,
+            &mut || handler.borrow_mut().check(),
+            &mut |chunk| handler.borrow_mut().observe(chunk),
         ) {
             return Ok(Err(output));
         }
     }
-    let input = invocation
-        .standard_input
-        .map(acyclic_native_runtime::OwnedCaptureInput::Literal);
+    let input = invocation.standard_input;
     let tree = match &invocation.process_custody {
         Some(custody) => {
             acyclic_native_runtime::ProcessTree::spawn_in_custody(&mut command, custody)?

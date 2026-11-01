@@ -100,7 +100,8 @@ pub fn prepare<T>(
     );
     let (arguments, standard_input) = crate::tools::shell::PLATFORM.prepare(input.command);
     invocation.argv = arguments.collect();
-    invocation.standard_input = standard_input;
+    invocation.standard_input =
+        standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     super::invocation::validate(
         &invocation.executable,
         &invocation.cwd,
