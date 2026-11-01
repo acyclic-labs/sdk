@@ -44,7 +44,7 @@ pub struct Recovery {
 }
 
 impl Recovery {
-    pub fn capture(operation: Option<&str>) -> Self {
+    pub fn capture(operation: Option<&str>) -> Result<Self, std::fmt::Error> {
         let mut arguments = std::env::args_os();
         let mut command = String::new();
         #[cfg(windows)]
@@ -58,18 +58,18 @@ impl Recovery {
             if !command.is_empty() && !command.ends_with(' ') {
                 command.push(' ');
             }
-            quote_argument(&mut command, &argument);
+            quote_argument(&mut command, &argument)?;
         }
-        Self {
+        Ok(Self {
             shell: if cfg!(windows) { "pwsh" } else { "bash" },
             command,
             stdin: "replay the original JSONL input, if any",
-        }
+        })
     }
 }
 
 #[cfg(unix)]
-fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) {
+fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) -> std::fmt::Result {
     use std::{fmt::Write as _, os::unix::ffi::OsStrExt as _};
     if let Some(argument) = argument.to_str() {
         output.push('\'');
@@ -81,18 +81,19 @@ fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) {
             }
         }
         output.push('\'');
-        return;
+        return Ok(());
     }
     // Bash's byte escapes preserve non-UTF-8 paths and trailing newlines too.
     output.push_str("$'");
     for byte in argument.as_bytes() {
-        write!(output, "\\x{byte:02x}").expect("writing to String");
+        write!(output, "\\x{byte:02x}")?;
     }
     output.push('\'');
+    Ok(())
 }
 
 #[cfg(windows)]
-fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) {
+fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) -> std::fmt::Result {
     use std::{fmt::Write as _, os::windows::ffi::OsStrExt as _};
     if let Some(argument) = argument.to_str() {
         output.push('\'');
@@ -105,10 +106,11 @@ fn quote_argument(output: &mut String, argument: &std::ffi::OsStr) {
             if index != 0 {
                 output.push(',');
             }
-            write!(output, "{unit}").expect("writing to String");
+            write!(output, "{unit}")?;
         }
         output.push_str("))");
     }
+    Ok(())
 }
 
 #[derive(Debug)]

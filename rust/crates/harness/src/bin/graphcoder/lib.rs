@@ -80,7 +80,7 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
                     let result = run(args, seams, run_shutdown).await;
                     if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
                         let recovery =
-                            headless::Recovery::capture(generated.then_some(operation.as_str()));
+                            headless::Recovery::capture(generated.then_some(operation.as_str()))?;
                         let step = if error.is::<headless::PreparationFailure>() {
                             "prepare_output"
                         } else {
