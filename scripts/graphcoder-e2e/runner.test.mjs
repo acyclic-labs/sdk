@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFileSync, close as fsClose, createWriteStream, mkdtempSync, open as fsOpen, readFileSync } from "node:fs";
+import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtempSync, open as fsOpen, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -251,14 +251,40 @@ test("a source closed without ending still ends the spool and its transcript", a
   await assert.rejects(waiting, error => error.kind === "eof");
 });
 
-test("a transcript failure while the child runs ends it with the spool cause and reaps the child", async () => {
-  const processes = new Processes({ transcripts: join(tmpdir(), `missing-transcripts-${process.pid}`, "nested") });
-  // The child would run until its stdin ends; nothing here ends it.
-  const running = processes.start(process.execPath, ["-e", "process.stdin.resume()"]);
-  await assert.rejects(running.closed, error => error instanceof SpoolEnded && error.kind === "spool" && error.detail.code === "ENOENT");
-  await processes.close();
-  assert.equal(processes.children.size, 0);
-  assert.ok(running.child.exitCode !== null || running.child.signalCode !== null, "the child was reaped");
+test("transcript admission refuses before the executable starts", async t => {
+  const root = mkdtempSync(join(tmpdir(), "transcript-admission-"));
+  const second = join(root, "second");
+  mkdirSync(second); mkdirSync(join(second, "0.stderr"));
+  for (const transcripts of [join(root, "missing"), second]) await t.test(transcripts, async () => {
+    const processes = new Processes({ transcripts });
+    try {
+      // A real executable would wait forever if launched without input custody.
+      await assert.rejects(processes.run(process.execPath, ["-e", "process.stdin.resume()"]),
+        error => error instanceof SpoolEnded && error.kind === "spool" && /ENOENT|EEXIST/.test(error.detail.code));
+      assert.equal(processes.started, 0);
+      assert.equal(processes.children.size, 0);
+      if (transcripts.endsWith("missing")) mkdirSync(transcripts);
+      const recovered = await processes.run(process.execPath, ["-e", "process.stdout.write('recovered')"]);
+      assert.equal(recovered.code, 0);
+      assert.equal(recovered.stdout, "recovered");
+      assert.equal(processes.started, 1);
+    } finally { await processes.close(); }
+  });
+});
+
+test("a synchronous launch refusal preserves transcripts and allows a corrected launch", async () => {
+  const processes = new Processes();
+  try {
+    assert.throws(() => processes.start(process.execPath, ["\0"]), { code: "ERR_INVALID_ARG_VALUE" });
+    assert.equal(processes.started, 0);
+    assert.equal(processes.children.size, 0);
+    const recovered = await processes.run(process.execPath, ["-e", "process.stdout.write('recovered')"]);
+    assert.equal(recovered.code, 0);
+    assert.equal(recovered.stdout, "recovered");
+    assert.equal(readFileSync(join(processes.transcripts, "0.stdout"), "utf8"), "");
+    assert.equal(readFileSync(join(processes.transcripts, "0.stderr"), "utf8"), "");
+    assert.equal(processes.started, 1);
+  } finally { await processes.close(); }
 });
 
 test("a slow transcript holds the source back, so queued bytes stay bounded by a chunk", async () => {

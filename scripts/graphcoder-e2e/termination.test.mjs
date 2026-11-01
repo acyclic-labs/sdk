@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
-import { execFileSync } from "node:child_process";
-import { createReadStream, mkdtempSync } from "node:fs";
+import fs, { mkdtempSync, readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Processes, ProcessObservationFailed } from "./process.mjs";
@@ -98,10 +98,26 @@ test("original process phase observer loss is typed only after the same physical
   } finally { await late.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); }); }
 });
 
-test("original process phase cleanup joins a blocked transcript after physical reap", { skip: process.platform === "win32" }, async () => {
+test("original process phase cleanup joins a blocked transcript after physical reap", async t => {
   const transcripts = mkdtempSync(join(tmpdir(), "process-phase-pipe-"));
   const path = join(transcripts, "0.stdout");
-  execFileSync("mkfifo", [path]);
+  // Hold the acknowledgement of a REAL file write. The original callback
+  // remains the sole producer; the child and transcript still use real IO.
+  const originalWrite = fs.write;
+  let release, held;
+  const pendingWrite = new Promise(resolve => { held = resolve; });
+  t.mock.method(fs, "write", (...args) => {
+    const callback = args.pop();
+    return originalWrite(...args, (...result) => {
+      if (!release) {
+        let completed = false;
+        release = () => { if (!completed) { completed = true; callback(...result); } };
+        held();
+      }
+      else callback(...result);
+    });
+  });
+  syncBuiltinESMExports();
   const cause = new Error("original final observer failed");
   let reaped;
   const physical = new Promise(resolve => { reaped = resolve; });
@@ -109,26 +125,20 @@ test("original process phase cleanup joins a blocked transcript after physical r
     if (event.phase === "reaped") reaped();
     if (event.phase === "closed") throw cause;
   } });
-  let drain;
-  const readOriginal = () => drain ??= (async () => {
-    const bytes = [];
-    for await (const chunk of createReadStream(path)) bytes.push(chunk);
-    return Buffer.concat(bytes).toString();
-  })();
   try {
     const running = scope.start(process.execPath, ["-e", "process.stdout.write('phase-output')"]);
     running.input.end();
-    await physical;
+    await Promise.all([physical, pendingWrite]);
     assert.equal(scope.children.size, 0, "the original child is already physically retired");
     let completed = false;
     const closing = scope.close();
     const observed = closing.then(() => { completed = true; }, error => { completed = true; return error; });
     assert.equal(scope.close(), closing, "cleanup retains the original terminal join");
     // One scheduler turn lets all already-runnable close continuations finish.
-    // The original FIFO write remains blocked on the reader below.
+    // The original write callback remains held until released below.
     await new Promise(setImmediate);
     const completedBeforeDrain = completed;
-    assert.equal(await readOriginal(), "phase-output");
+    release();
     const failure = await observed;
     assert.equal(completedBeforeDrain, false, "physical reap cannot certify the still-blocked transcript/final observation");
     assert.ok(failure instanceof ProcessObservationFailed);
@@ -136,9 +146,11 @@ test("original process phase cleanup joins a blocked transcript after physical r
     assert.equal(failure.cause, cause);
     await assert.rejects(running.closed, error => error === failure);
     await assert.rejects(scope.close(), error => error === failure);
+    assert.equal(readFileSync(path, "utf8"), "phase-output");
   } finally {
-    await readOriginal();
+    release?.();
     await scope.close().catch(error => { assert.ok(error instanceof ProcessObservationFailed); });
+    t.mock.restoreAll(); syncBuiltinESMExports();
   }
 });
 
