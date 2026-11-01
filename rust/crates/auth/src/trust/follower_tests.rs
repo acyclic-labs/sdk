@@ -599,6 +599,9 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     let anchor = world.issuer.anchor();
     let mut frontier =
         KeyringFrontier::resume("account", &anchor, &slices(&world.genesis)).unwrap();
+    let retained_keys: Vec<_> = std::iter::once("retired-runtime".to_owned())
+        .chain((0..256).map(|index| format!("retired-runtime-{index:04}")))
+        .collect();
     // Start from the real writer's canonical next record, with retained
     // cumulative revocations. Validation must borrow these original indexes.
     let retained = resign(
@@ -608,7 +611,7 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
             .unwrap(),
         1,
         |snapshot| {
-            snapshot.revoked_key_ids = vec!["retired-runtime".into()];
+            snapshot.revoked_key_ids = retained_keys.clone();
             snapshot.revocations = vec![Revocation {
                 id: [90; 32].to_vec(),
                 expires_at_unix_seconds: NOW + 50,
@@ -648,9 +651,18 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
     let TrustRecordKind::Keyring(signed) = decode(&rotated).unwrap().record else {
         panic!("writer did not produce a keyring");
     };
-    assert_eq!(signed.snapshot.revoked_key_ids, ["retired-runtime"]);
+    assert_eq!(signed.snapshot.revoked_key_ids, retained_keys);
     assert_eq!(signed.snapshot.revocations.len(), 1);
     assert_eq!(signed.snapshot.revocations[0].id, [90; 32]);
+    // A signed successor cannot forget any retained key, even when the
+    // checkpoint contains many other revocations. Refusal leaves it usable.
+    let forgotten = resign(&rotated, 1, |snapshot| {
+        *snapshot.revoked_key_ids.last_mut().unwrap() = "another-revoked-key".into();
+    });
+    assert_eq!(
+        frontier.apply(&forgotten, &anchor, NOW),
+        Err(VerifyError::Trust)
+    );
     frontier.apply(&rotated, &anchor, NOW).unwrap();
     let trust = follower(&world);
     trust.apply(&retained, NOW).unwrap();
