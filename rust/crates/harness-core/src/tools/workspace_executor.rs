@@ -94,6 +94,26 @@ struct WorkspaceExecutor {
 }
 
 impl ToolExecutor for WorkspaceExecutor {
+    fn authorize_replay<'a>(
+        &'a self,
+        context: Option<&'a ToolContext>,
+        invocation: &'a ToolInvocation,
+    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
+        let context = context?;
+        if let Some(target) = &context.execution_target {
+            target.executor.authorize_replay(Some(context), invocation)
+        } else if invocation.name == "fs" {
+            context
+                .task()
+                .harness
+                .filesystem
+                .as_ref()?
+                .authorize_replay(Some(context), invocation)
+        } else {
+            None
+        }
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,

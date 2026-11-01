@@ -277,6 +277,54 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> ToolExecutor
     for FilesystemTools<P, O>
 {
+    fn authorize_replay<'a>(
+        &'a self,
+        context: Option<&'a ToolContext>,
+        invocation: &'a ToolInvocation,
+    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
+        Some(Box::pin(async move {
+            let context = context.ok_or_else(|| {
+                Error::Unauthorized("filesystem replay has no task context".into())
+            })?;
+            let command = invocation
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
+            let parsed = match crate::tools::parse_fs_command(command) {
+                Ok(parsed) => parsed,
+                // Rejected syntax never selected a source or read its data.
+                Err(Error::Invalid(_)) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            let volume = self.target(&parsed, context)?;
+            let reference =
+                super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
+            let mut cancellation = context.model_cancellation(None)?;
+            let root =
+                read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
+            let access = WorkspaceAccess::new(
+                &self.verifier,
+                &self.scope,
+                context.effective_scope().grants(),
+                Some(volume),
+            )?;
+            read_before_effect(&mut cancellation, access.require(&root)).await?;
+            read_before_effect(&mut cancellation, async {
+                (crate::tools::git::RepositoryAccess {
+                    access: &access,
+                    filesystem: &self.host.filesystem,
+                    store: &self.store,
+                    current: &root,
+                    repository: root.id(),
+                })
+                .require_saved_result_access()
+                .await
+            })
+            .await
+        }))
+    }
+
     fn authorize(
         &self,
         _: Option<&RuntimeScope>,

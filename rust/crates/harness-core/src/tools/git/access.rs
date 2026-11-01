@@ -19,16 +19,30 @@ where
         &self,
         operation: acyclic_fs::OperationId,
     ) -> crate::Result<Option<GitCommandOutput>> {
-        let state = GitCompatRepository::new(self.repository, self.store.clone())
-            .load()
-            .await
-            .map_err(super::errors::compat_error::<S>)?;
+        let state = self.state().await?;
         if state.request(operation).is_none() {
             return Ok(None);
         }
-        self.authorize(&state).await?;
-        self.access.require(self.current).await?;
+        self.require_result_access(&state).await?;
         Ok(state.request(operation).cloned())
+    }
+
+    /// Authorizes saved output without copying it or running its command.
+    pub(crate) async fn require_saved_result_access(&self) -> crate::Result<()> {
+        self.require_result_access(&self.state().await?).await
+    }
+
+    async fn state(&self) -> crate::Result<acyclic_fs::GitCompatState> {
+        GitCompatRepository::new(self.repository, self.store.clone())
+            .load()
+            .await
+            .map_err(super::errors::compat_error::<S>)
+    }
+
+    async fn require_result_access(&self, state: &acyclic_fs::GitCompatState) -> crate::Result<()> {
+        self.authorize(state).await?;
+        self.access.require(self.current).await?;
+        Ok(())
     }
 
     async fn authorize(&self, state: &acyclic_fs::GitCompatState) -> crate::Result<()> {

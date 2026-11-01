@@ -67,6 +67,19 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
+    /// Rechecks mutable source authority before exposing a completed result.
+    /// The invocation has already passed `authorize` and its recorded identity
+    /// check. This must only authorize reads: it cannot execute or reconcile the
+    /// command. Executors whose synchronous authorization is sufficient return
+    /// `None`, without constructing a future.
+    fn authorize_replay<'a>(
+        &'a self,
+        _context: Option<&'a crate::runtime::ToolContext>,
+        _invocation: &'a ToolInvocation,
+    ) -> Option<BoxFuture<'a, Result<()>>> {
+        None
+    }
+
     /// Whether dropping an invocation future retires all its I/O before return.
     /// Opt in only when cancellation leaves no independently running effect.
     /// The stock journal records interruption before settling the turn, and

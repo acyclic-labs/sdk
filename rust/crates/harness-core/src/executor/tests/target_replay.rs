@@ -4,8 +4,8 @@ use crate::runtime::{Target, TargetResolver};
 
 #[cfg(feature = "filesystem")]
 #[tokio::test]
-async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery() -> Result<()>
-{
+async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
     use crate::{
         agent::{AgentPath, AgentState, ForkAdopted, VolumeBinding},
         conversation::{VolumeClass, VolumeOperation, VolumeOwner},
@@ -23,7 +23,8 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         "1".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let filesystem = acyclic_fs::Fs::memory();
+    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let owner = AgentId::from_bytes([71; 16]);
     let volume = |id: &str| {
         VolumeRef::new(
@@ -38,6 +39,57 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     let second = volume("replacement")?;
     host.create_volume(&first).await?;
     host.create_volume(&second).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let root = filesystem
+        .open_workspace(
+            first.storage_name(&mut None)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(&root).await?;
+    let child = graph
+        .fork(&root, "saved-source", acyclic_fs::IdempotencyKey::new())
+        .await?;
+    let repository = acyclic_fs::GitCompatRepository::new(root.id(), store);
+    repository
+        .register_branch_workspace("saved-source", child.id(), None, false)
+        .await?;
+    let mut transaction = root
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    transaction
+        .write(
+            "/secret",
+            bytes::Bytes::from_static(b"saved original contents"),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    transaction
+        .commit::<acyclic_fs::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
     let issuer = AuthorityRoot::new(
         "bound-filesystem",
         [72; 32],
@@ -137,12 +189,33 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         crate::tools::defaults()?,
     )
     .with_tool_authority(runtime_scope.clone(), allowed()?)?;
+    let commit_operation = OperationId::new();
+    let commit = ToolInvocation {
+        operation_id: commit_operation,
+        call_id: "commit".into(),
+        name: "fs".into(),
+        arguments: json!({"command":"commit -m base"}),
+    };
+    let committing = base
+        .clone()
+        .with_task_context(&bind(Some(original.clone()))?, commit_operation)?;
+    StockExecution::ordinary(&committing)
+        .settle_tool_call(
+            &*journal,
+            commit_operation,
+            0,
+            commit.clone(),
+            0,
+            &mut vec![call_message(&commit)],
+            &mut Vec::new(),
+        )
+        .await?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "status".into(),
         name: "fs".into(),
-        arguments: json!({"command":"status"}),
+        arguments: json!({"command":"show HEAD:secret"}),
     };
     let bound = base
         .clone()
@@ -159,6 +232,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &mut Vec::new(),
         )
         .await?;
+    assert!(serde_json::to_string(&messages)?.contains("saved original contents"));
     let (_, records) = StockExecution::ordinary(&bound)
         .tool_records(&*journal, operation, 0, "status")
         .await?;
@@ -218,6 +292,57 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         RecordedCall::classify(&records).expect("valid claim"),
         RecordedCall::Completed { .. }
     ));
+
+    let saved_state = repository.load().await?;
+    let mut policy: acyclic_fs::access::Policy =
+        serde_json::from_slice(acyclic_fs::access::INITIAL_POLICY)?;
+    for workspace in [&child, &root] {
+        policy.version += 1;
+        policy.layers[0][0].effect = acyclic_fs::access::Effect::Deny;
+        replace_replay_policy(workspace, &policy).await?;
+        let mut replay = vec![call_message(&invocation)];
+        let refused = StockExecution::ordinary(&bound)
+            .settle_tool_call(
+                &*journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut replay,
+                &mut Vec::new(),
+            )
+            .await;
+        assert!(refused.is_err(), "revoked source exposed saved output");
+        assert_eq!(replay.len(), 1, "denied output reached the model");
+        policy.version += 1;
+        policy.layers[0][0].effect = acyclic_fs::access::Effect::Allow;
+        replace_replay_policy(workspace, &policy).await?;
+        let mut replay = vec![call_message(&invocation)];
+        assert!(matches!(
+            StockExecution::ordinary(&bound)
+                .settle_tool_call(
+                    &*journal,
+                    operation,
+                    0,
+                    invocation.clone(),
+                    0,
+                    &mut replay,
+                    &mut Vec::new(),
+                )
+                .await?,
+            ExecutionProgress::Ready(())
+        ));
+        assert_eq!(replay, messages, "replay changed the saved contents");
+        assert_eq!(
+            repository.load().await?,
+            saved_state,
+            "replay ran a command"
+        );
+        let (_, replay_records) = StockExecution::ordinary(&bound)
+            .tool_records(&*journal, operation, 0, "status")
+            .await?;
+        assert_eq!(replay_records, records, "replay changed terminal records");
+    }
 
     // A committed start without its terminal reply cannot select a different
     // current volume, or gain redispatch permission when its binding is lost.
@@ -330,6 +455,57 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             reason: ToolFailureKind::Interrupted,
             ..
         }
+    ));
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+async fn replace_replay_policy<
+    A: acyclic_fs::AsyncAuthorityStore,
+    O: acyclic_fs::AsyncObjectStore,
+>(
+    workspace: &acyclic_fs::Workspace<A, O>,
+    policy: &acyclic_fs::access::Policy,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    checkout
+        .write_access_policy(
+            &serde_json::to_vec(policy)?,
+            acyclic_fs::NamedAttributeWriteMode::Replace,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    let outcome = checkout
+        .commit::<acyclic_fs::FsError, _, _>(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        outcome,
+        acyclic_fs::LivePublicationObservation::Committed { .. }
     ));
     Ok(())
 }

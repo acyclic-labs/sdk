@@ -231,6 +231,12 @@ impl StockExecution<'_> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
+                if let Some(authorization) = tool
+                    .executor
+                    .authorize_replay(context.as_ref(), &invocation)
+                {
+                    authorization.await?;
+                }
                 self.replay_tool_output(
                     journal,
                     operation_id,
