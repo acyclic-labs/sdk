@@ -348,7 +348,13 @@ async fn enrollment_precedes_disclosure_and_both_original_losses_close_without_c
         if ended {
             // The actual queued provider record remains withheld when the
             // finite data source ends. Its custody terminal still owns loss.
-            session.end(3, wire_codec::session::END_CODE)?;
+            session.record(
+                wire::SessionChannel {
+                    channel_id: 3,
+                    generation: 1,
+                },
+                Ok(Event::End),
+            )?;
             session.record(
                 wire::SessionChannel {
                     channel_id: 3,
