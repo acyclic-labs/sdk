@@ -76,7 +76,7 @@ impl LocalMachine {
         deadline: impl Into<Option<std::time::Instant>>,
     ) -> LocalExecution<H> {
         let deadline = deadline.into();
-        let schedule = deadline.map_or_else(|| CaptureSchedule::new(None), CaptureSchedule::until);
+        let schedule = deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until);
         let machine = self.id;
         let (maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,

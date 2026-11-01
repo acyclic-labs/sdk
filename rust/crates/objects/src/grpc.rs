@@ -332,13 +332,9 @@ macro_rules! call {
         let floor: Option<&RevisionCut> = $floor;
         let timeout = $timeout;
         let deadline = crate::operation::deadline($self.context.as_ref(), timeout)?;
-        let budget = match (&$self.context, deadline) {
-            (Some(context), Some(deadline)) => {
-                acyclic_auth::channel::Budget::Operation { context, deadline }
-            }
-            (None, Some(deadline)) => acyclic_auth::channel::Budget::Deadline(Some(deadline)),
-            (None, None) => acyclic_auth::channel::Budget::Deadline(None),
-            (Some(_), None) => return Err(wire::ErrorCode::InvalidArgument.into()),
+        let budget = match &$self.context {
+            Some(context) => acyclic_auth::channel::Budget::Operation { context, deadline },
+            None => acyclic_auth::channel::Budget::Deadline(deadline),
         };
         let response = acyclic_auth::channel::call(
             $self.channel.clone(),
