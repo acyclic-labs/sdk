@@ -8,6 +8,8 @@ proptest! {
         sources in prop::collection::vec(".{0,80}", 1..12),
         new_source in ".{0,80}",
         position in any::<usize>(),
+        field_order in prop::array::uniform7(any::<u16>()),
+        whitespace in "[ \\t\\r\\n]{0,4}",
     ) {
         let index = position % sources.len();
         let cells: Vec<_> = sources.iter().enumerate().map(|(index, source)| json!({
@@ -16,7 +18,17 @@ proptest! {
             "execution_count":17, "metadata":{"preserve":source}, "extension":[1,2,3],
         })).collect();
         let original = json!({"nbformat":4,"nbformat_minor":5,"cells":cells,"metadata":{"keep":true},"extra":"retain"});
-        let source = serde_json::to_string(&original).unwrap();
+        // Field order and whitespace must not determine which comma a removed
+        // run owns. Keep the semantic oracle independent of lexical ordering.
+        let cells = original["cells"].as_array().unwrap().iter().map(|cell| {
+            let mut fields: Vec<_> = cell.as_object().unwrap().iter().enumerate().collect();
+            fields.sort_unstable_by_key(|(index, _)| (field_order[*index], *index));
+            let fields: Vec<_> = fields.into_iter().map(|(_, (key, value))| {
+                format!("{}:{whitespace}{}", serde_json::to_string(key).unwrap(), serde_json::to_string(value).unwrap())
+            }).collect();
+            format!("{{{whitespace}{}{whitespace}}}", fields.join(&format!(",{whitespace}")))
+        }).collect::<Vec<_>>().join(",");
+        let source = format!(r#"{{"nbformat":4,"nbformat_minor":5,"cells":[{cells}],"metadata":{{"keep":true}},"extra":"retain"}}"#);
         let id = format!("cell-{index}");
         let replace = NotebookEdit::Replace { cell:NotebookCell::Index {index:index as u64, id:Some(id.clone())}, source:new_source.clone(), cell_type:None };
         let (edited, _hold) = edit(&source, &replace, None).unwrap();
