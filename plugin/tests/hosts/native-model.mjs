@@ -28,11 +28,14 @@ export function assertNativeCompletion(host,result,answer,selection) {
    if(selection&&event.type==='system'&&event.subtype==='init') {
     assert.equal(initialized,false,'duplicate native Claude initialization');initialized=true;
     assert.equal(event.model,selection.model,'native Claude model differs from approved selection');
-    assert.deepEqual(event.plugins.map(plugin=>plugin.name),selection.installed?['acyclic']:[],
-     'native Claude plugin set differs from paired mode');
-    assert.deepEqual(event.mcp_servers.map(server=>({name:server.name,status:server.status})),
-     selection.installed?[{name:'plugin:acyclic:acyclic-sessions',status:'connected'}]:[],
-     'native Claude MCP connections differ from paired mode');
+    const count=selection.installed?1:0;
+    assert.equal(event.plugins?.length,count,'native Claude plugin set differs from paired mode');
+    assert.equal(event.mcp_servers?.length,count,'native Claude MCP connections differ from paired mode');
+    if(selection.installed) {
+     assert.equal(event.plugins[0].name,'acyclic','native Claude plugin set differs from paired mode');
+     assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
+     assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
+    }
    }
    if(event.type==='result')terminal=event;
   } else if(host==='pi') {
@@ -145,8 +148,9 @@ export async function installedHost({host,processes,fixture,capture,tools,native
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);
    assert.equal(installation.code,0,installation.stderr);
     const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
-   assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
-   if(fixture.live)assert.deepEqual(JSON.parse(listed.stdout).installed.filter(row=>row.enabled).map(row=>row.pluginId),
+   const installed=JSON.parse(listed.stdout).installed;
+   assert.ok(installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
+   if(fixture.live)assert.deepEqual(installed.filter(row=>row.enabled).map(row=>row.pluginId),
     ['acyclic@acyclic'],'step=admit native plugins; recovery=use an exclusive native login profile with no unrelated enabled plugins');
   } else if(host==='pi') {
    const extension=fixture.live?join(root,'acyclic.ts'):join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
