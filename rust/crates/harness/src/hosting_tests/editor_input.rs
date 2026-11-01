@@ -218,11 +218,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
     // Drive the original actors to completion without a model, timer or
     // readiness loop. The real namespace/volume fork inherits both settled
     // editor prompts, but grants only the file the structured prompt names.
-    bound
-        .agents()
-        .runtime()
-        .drain_actor(&bound.agents().actor(root)?)
-        .await?;
+    bound.agents().drain(root).await?;
     let by = Sender::Host {
         host: "editor-control".into(),
     };
@@ -245,22 +241,14 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
     else {
         return Err("spawn input did not commit".into());
     };
-    bound
-        .agents()
-        .runtime()
-        .drain_actor(&bound.agents().actor(root)?)
-        .await?;
+    bound.agents().drain(root).await?;
     let (intent, _) = crate::agent::requested_child(root, inbox)?;
     let crate::agent::SpawnOutcome::Spawned { child } =
         bound.agents().spawned(root, inbox, &intent).await?
     else {
         return Err("editor child was refused".into());
     };
-    bound
-        .agents()
-        .runtime()
-        .drain_actor(&bound.agents().actor(&child)?)
-        .await?;
+    bound.agents().drain(&child).await?;
     assert!(
         inherited.observed.load(Ordering::SeqCst),
         "child never executed the inherited ordered editor input"

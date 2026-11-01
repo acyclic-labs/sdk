@@ -602,7 +602,7 @@ where
         Bindings,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice())
+        self.journal(self.admit(agent)?, agent.policy.as_slice(), None)
             .await
     }
 
@@ -611,7 +611,7 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self.journal(self.admit(agent)?, &[]).await?;
+        let (journal, _, _) = self.journal(self.admit(agent)?, &[], None).await?;
         Ok(journal)
     }
 
@@ -628,7 +628,7 @@ where
         &self,
         admitted: AdmittedAgent<'_>,
         external: &[FileRef],
-        context: &mut TurnContext<'_>,
+        context: Option<&mut TurnContext<'_>>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         Bindings,
@@ -659,33 +659,35 @@ where
         for file in external {
             crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
         }
-        context.expand_inputs(reader.as_ref()).await?;
-        let mut inherited = Vec::new();
-        for file in context.files() {
-            if let Err(error) =
-                crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)
-            {
-                if !local_root {
-                    return Err(error);
+        if let Some(context) = context {
+            context.expand_inputs(reader.as_ref()).await?;
+            let mut inherited = Vec::new();
+            for file in context.files() {
+                if let Err(error) =
+                    crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)
+                {
+                    if !local_root {
+                        return Err(error);
+                    }
+                    inherited.push(file.read_capability(&mut None)?);
                 }
-                inherited.push(file.read_capability(&mut None)?);
             }
-        }
-        if !inherited.is_empty() {
-            // Local history delegates only these immutable files. An admitted
-            // workload retains its original ceiling and cannot mint this grant.
-            inherited.extend(capabilities.iter().map(str::to_owned));
-            capabilities = Capabilities::new(inherited);
-            scope = issuer
-                .issue(None, "agent", &capabilities, scope.agent())
-                .await?;
-            reader = FilesystemContentVerifier::new(
-                Arc::clone(&self.host),
-                &verifier,
-                &scope,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
-                None,
-            )?;
+            if !inherited.is_empty() {
+                // Local history delegates only these immutable files. An admitted
+                // workload retains its original ceiling and cannot mint this grant.
+                inherited.extend(capabilities.iter().map(str::to_owned));
+                capabilities = Capabilities::new(inherited);
+                scope = issuer
+                    .issue(None, "agent", &capabilities, scope.agent())
+                    .await?;
+                reader = FilesystemContentVerifier::new(
+                    Arc::clone(&self.host),
+                    &verifier,
+                    &scope,
+                    crate::conversation::MAX_EXACT_JS_INTEGER,
+                    None,
+                )?;
+            }
         }
         let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.host),
@@ -1078,7 +1080,7 @@ where
             let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = crate::core::until_turn_stopped(
                 Some(stop.clone()),
-                self.journal(admitted, &external, &mut context),
+                self.journal(admitted, &external, Some(&mut context)),
             )
             .await?;
             let input = std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
