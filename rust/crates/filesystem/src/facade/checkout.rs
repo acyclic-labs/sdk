@@ -128,55 +128,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Checkout<A, O>, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            accounting.check()?;
-            validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
-            let (generation_root, authority_head) = self
-                .resolve_checkout_generation(selector, mode, &mut accounting, cancellation)
-                .await?;
-            let (root, allocation) = self
-                .checkout_root(generation_root, &mut accounting, cancellation)
-                .await?;
-            let authority_head = self
-                .fence_checkout(mode, authority_head, &mut accounting, cancellation)
-                .await?;
-            let CheckoutState {
-                base_root,
-                root,
-                dependencies,
-                proof_owned_bytes,
-            } = self.checkout_state(
-                generation_root,
-                root,
-                allocation,
-                &mut accounting,
-                cancellation,
-            )?;
-            accounting.check()?;
-            Ok(Checkout {
-                volume: self.clone(),
-                generation_root,
-                base_root,
-                root,
-                authority_head,
-                observed_generation: match (selector, authority_head) {
-                    (GenerationSelector::Head, Some(head)) => ObservedGeneration::head(
-                        GenerationId::from_root(generation_root),
-                        head.sequence,
-                    ),
-                    _ => ObservedGeneration::UNKNOWN,
-                },
-                authored_operation_id: None,
-                live_operation_id: None,
-                publication_closure: None,
-                prepared_merge_parent: None,
-                dependencies,
-                proof_owned_bytes,
-                mode,
-            })
-        }
-        .await;
+        let result = self
+            .checkout_accounted(selector, mode, &mut accounting, cancellation)
+            .await;
         budget.finish(result, &accounting)
+    }
+
+    /// Opens on the caller's original ledger, including retained checkout custody.
+    pub(crate) async fn checkout_accounted(
+        &self,
+        selector: GenerationSelector,
+        mode: CheckoutMode,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Checkout<A, O>, FsError> {
+        accounting.check()?;
+        validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
+        let (generation_root, authority_head) = self
+            .resolve_checkout_generation(selector, mode, accounting, cancellation)
+            .await?;
+        let (root, allocation) = self
+            .checkout_root(generation_root, accounting, cancellation)
+            .await?;
+        let authority_head = self
+            .fence_checkout(mode, authority_head, accounting, cancellation)
+            .await?;
+        let CheckoutState {
+            base_root,
+            root,
+            dependencies,
+            proof_owned_bytes,
+        } = self.checkout_state(generation_root, root, allocation, accounting, cancellation)?;
+        accounting.check()?;
+        Ok(Checkout {
+            volume: self.clone(),
+            generation_root,
+            base_root,
+            root,
+            authority_head,
+            observed_generation: match (selector, authority_head) {
+                (GenerationSelector::Head, Some(head)) => ObservedGeneration::head(
+                    GenerationId::from_root(generation_root),
+                    head.sequence,
+                ),
+                _ => ObservedGeneration::UNKNOWN,
+            },
+            authored_operation_id: None,
+            live_operation_id: None,
+            publication_closure: None,
+            prepared_merge_parent: None,
+            dependencies,
+            proof_owned_bytes,
+            mode,
+        })
     }
 
     /// Opens a private writable overlay over this volume's unpublished initial

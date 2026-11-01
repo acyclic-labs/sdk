@@ -83,6 +83,31 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let source = workspace.head(B, &cancel).await?.value;
+        // The checkout and its handback share the original standalone ledger.
+        // A fresh handback ledger would promote a third allocation here.
+        for selector in [
+            GenerationSelector::Head,
+            GenerationSelector::Exact(source.id()),
+        ] {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &cancel,
+            );
+            let checkout = workspace
+                .checkout_accounted(
+                    selector,
+                    CheckoutMode::read_only_pinned(),
+                    &mut accounting,
+                    &cancel,
+                )
+                .await?;
+            let before = accounting.spent().allocation_operations;
+            let closure = checkout.into_generation_closure(&mut accounting)?;
+            assert_eq!(accounting.spent().allocation_operations - before, 2);
+            let alias = closure.clone();
+            assert_eq!(accounting.spent().allocation_operations - before, 2);
+            drop((closure, alias));
+        }
         let native = workspace
             .generation(source.id(), &original, &cancel)
             .await?;

@@ -130,27 +130,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
-        accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let mut checkout = self
-                .volume
-                .checkout(selector, mode, original, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?;
-            self.check_access(&mut checkout, accounting, cancellation)
-                .await?;
-            return Ok(checkout);
-        }
-        let opened = self
+        let mut checkout = self
             .volume
-            .checkout(selector, mode, accounting.remaining()?, cancellation)
-            .await;
-        let (allocations, work, budget, _) = accounting
-            .standalone_parts()
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut checkout = merge_workspace_backend(opened, work, allocations.live_bytes())?.value;
-        work.verify(budget)?;
+            .checkout_accounted(selector, mode, accounting, cancellation)
+            .await
+            .map_err(WorkspaceError::from)?;
         self.check_access(&mut checkout, accounting, cancellation)
             .await?;
         Ok(checkout)
