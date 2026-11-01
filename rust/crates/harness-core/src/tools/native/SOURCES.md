@@ -36,3 +36,7 @@ import that tool's process runner, file discovery or context enrichment.
 The `golden/` lists are deterministic protocol projections of those extracted
 public declarations, with recursively sorted schema keys. They are declaration
 goldens, not observations of a provider stream or a private harness prompt.
+
+The Claude Grep `head_limit` description adapts the upstream default to the
+harness contract: omission and zero mean unlimited output. Explicit positive
+limits still select the original stdout before tail retention.
