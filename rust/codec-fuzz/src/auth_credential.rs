@@ -63,5 +63,5 @@ pub fn seed(root: &[u8]) -> Vec<u8> {
     let token = hex::encode(root);
     let encoded = bearer_bytes(&token);
     check(&encoded);
-    encoded
+    encoded.to_vec()
 }

@@ -698,6 +698,62 @@ mod http {
     #[tokio::test]
     async fn secrets_native_http_runs_conformance_and_redacts_errors_without_following_redirects()
     -> TestResult {
+        // The original bearer allocation survives the actual HTTP and gRPC
+        // metadata constructors and clones. The old Vec route is a full-copy
+        // negative control, measured independently of encoding the credential.
+        for length in [1024, acyclic_auth::credential::MAX_CREDENTIAL_BYTES] {
+            let token = "a".repeat(length);
+            let encoded = acyclic_auth::credential::bearer_bytes(&token);
+            let pointer = encoded.as_ptr();
+            let mut header = None;
+            let transfer = acyclic_test_support::measure(|| {
+                header = Some(reqwest::header::HeaderValue::from_maybe_shared(
+                    encoded.clone(),
+                ));
+            });
+            let mut header = header.ok_or("header transfer missing")??;
+            header.set_sensitive(true);
+            assert_eq!(header.as_bytes().as_ptr(), pointer);
+            let retained = header.clone();
+            drop(header);
+            assert!(retained.is_sensitive());
+            assert_eq!(retained.as_bytes().as_ptr(), pointer);
+            assert_eq!(transfer.count_total, 0, "HTTP bearer handoff allocated");
+            let copy = acyclic_test_support::measure(|| {
+                let _ = std::hint::black_box(reqwest::header::HeaderValue::from_bytes(
+                    retained.as_bytes(),
+                ));
+            });
+            assert!(copy.bytes_total >= encoded.len() as u64);
+            #[cfg(feature = "grpc")]
+            {
+                let mut metadata = None;
+                let transfer = acyclic_test_support::measure(|| {
+                    metadata = Some(
+                        tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(
+                            encoded.clone(),
+                        ),
+                    );
+                });
+                let mut metadata = metadata.ok_or("metadata transfer missing")??;
+                metadata.set_sensitive(true);
+                let retained = metadata.clone();
+                drop(metadata);
+                assert!(retained.is_sensitive());
+                assert_eq!(retained.as_encoded_bytes().as_ptr(), pointer);
+                assert_eq!(transfer.count_total, 0, "gRPC bearer handoff allocated");
+                let copied = retained.as_encoded_bytes().to_vec();
+                let copy = acyclic_test_support::measure(|| {
+                    let _ = std::hint::black_box(tonic::metadata::MetadataValue::<
+                        tonic::metadata::Ascii,
+                    >::try_from(copied));
+                });
+                assert!(copy.bytes_total >= encoded.len() as u64);
+            }
+            drop(encoded);
+            assert_eq!(retained.as_bytes().as_ptr(), pointer);
+            assert_eq!(retained.as_bytes().len(), length + b"Bearer ".len());
+        }
         // The shared native body must retain the encoded allocation through
         // transport clones and slices. Its control cost is independent of the
         // payload; an ordinary full copy is the allocation negative control.

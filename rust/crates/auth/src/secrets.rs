@@ -541,9 +541,10 @@ impl Transport for HttpTransport {
         body: ProtectedBytes,
     ) -> TransportFuture<'a> {
         Box::pin(async move {
-            let mut authorization =
-                reqwest::header::HeaderValue::from_bytes(&crate::credential::bearer_bytes(bearer))
-                    .map_err(|_| Error::Credential)?;
+            let mut authorization = reqwest::header::HeaderValue::from_maybe_shared(
+                crate::credential::bearer_bytes(bearer),
+            )
+            .map_err(|_| Error::Credential)?;
             authorization.set_sensitive(true);
             let response = self
                 .client
