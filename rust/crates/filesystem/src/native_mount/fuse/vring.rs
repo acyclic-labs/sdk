@@ -6,6 +6,20 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use virtio_queue::{Queue, QueueT};
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
+#[cfg(test)]
+thread_local! {
+    static WAITER_REGISTERED: std::cell::RefCell<Option<std::sync::mpsc::SyncSender<()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(super) fn probe_wait_registration(registered: std::sync::mpsc::SyncSender<()>) {
+    // This sender belongs to the actual controller thread. If it exits before
+    // waiting, thread-local retirement closes the receiver rather than hanging.
+    WAITER_REGISTERED.set(Some(registered));
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct RingFeatures {
     pub(super) event_idx: bool,
@@ -53,6 +67,12 @@ impl VringQueue {
             return Ok(queue);
         }
         queue.waiters = queue.waiters.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        #[cfg(test)]
+        WAITER_REGISTERED.with_borrow_mut(|registered| {
+            if let Some(registered) = registered.take() {
+                let _ = registered.send(());
+            }
+        });
         match self.completed.wait_while(queue, |queue| queue.leased) {
             Ok(mut queue) => {
                 queue.waiters -= 1;

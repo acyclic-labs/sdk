@@ -211,11 +211,11 @@ fn packet_io_releases_original_guards_and_retires_exact_mapping_and_queue()
         let (started, waiting) = sync_channel(1);
         let controller = Arc::clone(&device);
         let drain = std::thread::spawn(move || -> Result<u16, NativeMountError> {
-            started.send(()).map_err(std::io::Error::other)?;
+            super::super::vring::probe_wait_registration(started);
             controller.drain(1)
         });
-        // Either event order is valid: the queue predicate also handles a
-        // completion that precedes the controller's entry into the OS wait.
+        // Registration holds the same queue mutex until the condition wait
+        // releases it atomically. Completion therefore has to wake this wait.
         let waiting = waiting.recv();
         let _ = release.send(());
         let completion = worker.join();
