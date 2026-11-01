@@ -26,6 +26,8 @@ mod reply;
 mod runtime;
 #[path = "agent_model/slot_schedules.rs"]
 mod slot_schedules;
+#[path = "agent_model/steering.rs"]
+mod steering;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/wired.rs"]
 mod wired;

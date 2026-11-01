@@ -76,6 +76,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection: context.clone(),
+                steering: None,
             },
             None,
         )?

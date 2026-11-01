@@ -145,6 +145,7 @@ where
             input_verifier: None,
             bound_selection: None,
             stop: None,
+            boundary: None,
             agent_approvals: None,
             execution: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),
@@ -186,6 +187,14 @@ where
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.verifier.bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
+        self
+    }
+
+    /// Binds the one file-backed inbox observer used at model boundaries.
+    #[must_use]
+    pub fn with_model_boundary(mut self, boundary: Arc<dyn crate::agent::ModelBoundary>) -> Self {
+        self.boundary = Some(boundary);
+        self.invalidate_execution_caches();
         self
     }
 
