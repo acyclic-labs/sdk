@@ -86,7 +86,7 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
             observe_retirement: true,
             ..Work::default()
         };
-        let mut result = Ok(());
+        let mut result: Result<(), &'static str> = Ok(());
         let physical = acyclic_test_support::measure(|| {
             result = (|| {
                 let mut index = FixedIndex::<usize, _, N>::default();
