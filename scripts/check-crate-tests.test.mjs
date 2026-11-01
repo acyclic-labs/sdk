@@ -3,6 +3,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { createServer } from "node:net";
+import { createInterface } from "node:readline";
 import test from "node:test";
 import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
 
@@ -30,18 +31,20 @@ test("checks original default members alone in bounded worker targets", async ()
   const packages = ["first", "second", "third"];
   let active = 0, peak = 0;
   let releaseFirst;
-  const secondAdmitted = new Promise(resolve => { releaseFirst = resolve; });
+  const firstHeld = new Promise(resolve => { releaseFirst = () => resolve(undefined); });
   const commands = [], buildDirectories = [];
-  const failures = await checkCrateTests(packages, 2, "/shared target", async (args, buildDirectory) => {
+  const checking = checkCrateTests(packages, 2, "/shared target", async (args, buildDirectory) => {
     commands.push(args);
     buildDirectories.push(buildDirectory);
     peak = Math.max(peak, ++active);
-    if (args.includes("first")) await secondAdmitted;
-    else releaseFirst();
+    if (args.includes("first")) await firstHeld;
     --active;
     return args.includes("second") ? 101 : 0;
   });
-  assert.equal(peak, 2);
+  const admittedPeak = peak;
+  releaseFirst();
+  const failures = await checking;
+  assert.equal(admittedPeak, 2);
   assert.deepEqual(failures, ["second"]);
   const targets = [0, 1, 0].map(index => resolve("/shared target", "crate-test-checks", String(index)));
   assert.deepEqual(commands, packages.map((name, index) =>
@@ -55,6 +58,8 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
   const fixtureRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target", "crate-test-fixtures");
   mkdirSync(fixtureRoot, { recursive: true });
   const directory = mkdtempSync(join(fixtureRoot, "crate-check-"));
+  // Observe the selected toolchain's own directory lock and its diagnostic.
+  const cargo = execFileSync("rustup", ["which", "cargo"], { encoding: "utf8" }).trim();
   try {
     for (const shared of [false, true]) {
       const fixture = join(directory, shared ? "shared" : "parallel");
@@ -83,6 +88,7 @@ fn main() {
       let refusal;
       const arrivals = new Map();
       const connections = new Set();
+      const failure = detail => new Error(`step=compiler-overlap ${detail}; recovery: node --test --test-name-pattern '^real Cargo compilations overlap' scripts/check-crate-tests.test.mjs`);
       const refuse = error => {
         refusal ??= error;
         for (const socket of connections) socket.destroy();
@@ -92,7 +98,10 @@ fn main() {
       const server = createServer(socket => {
         connections.add(socket);
         socket.on("error", refuse);
-        socket.on("close", () => connections.delete(socket));
+        socket.on("close", () => {
+          connections.delete(socket);
+          if (arrivals.size !== 2 && !refusal) refuse(failure("build-script producer closed before overlap"));
+        });
         if (refusal) { socket.destroy(); return; }
         let name = "";
         socket.setEncoding("utf8");
@@ -101,7 +110,7 @@ fn main() {
           if (!name.endsWith("\n")) return;
           const selected = name.trim();
           if (!["first", "second"].includes(selected) || arrivals.has(selected)) {
-            refuse(new Error(`invalid original build-script arrival: ${name}`));
+            refuse(failure(`invalid original build-script arrival: ${name}`));
             return;
           }
           arrivals.set(selected, socket);
@@ -110,13 +119,13 @@ fn main() {
           }
         });
         socket.on("end", () => {
-          if (arrivals.size !== 2) refuse(new Error("build-script producer ended before overlap"));
+          if (arrivals.size !== 2) refuse(failure("build-script producer ended before overlap"));
         });
       });
       server.on("error", refuse);
       await new Promise((accept, reject) => {
         server.once("error", reject);
-        server.listen(0, "127.0.0.1", accept);
+        server.listen(0, "127.0.0.1", () => accept(undefined));
       });
       const address = server.address();
       assert.ok(address && typeof address !== "string");
@@ -131,27 +140,29 @@ fn main() {
         const cargoArgs = shared
           ? args.map((arg, index) => args[index - 1] === "--target-dir" ? target : arg)
           : args;
-        const child = spawn("cargo", cargoArgs, {
+        const child = spawn(cargo, cargoArgs, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
           env,
         });
         child.stdout.on("data", chunk => { output += chunk; });
-        let stderr = "";
         child.stderr.setEncoding("utf8");
-        child.stderr.on("data", chunk => {
-          output += chunk;
-          stderr += chunk;
+        child.stderr.on("data", chunk => { output += chunk; });
+        createInterface({ input: child.stderr }).on("line", line => {
           // This is the actual second Cargo invocation's lock-wait event,
           // not an elapsed-time inference about the held first compilation.
-          if (measure && /Blocking waiting for file lock on build directory/.test(stderr)) {
-            lockWait = stderr;
-            refuse(new Error("original shared build lock prevented overlap"));
+          if (measure && /Blocking waiting for file lock on build directory/.test(line)) {
+            lockWait = line;
+            console.log(`Original Cargo lock-wait event: ${line}`);
+            refuse(failure("original shared build lock prevented overlap"));
           }
         });
         return await new Promise(resolve => {
           child.on("error", error => { refuse(error); resolve(1); });
           child.on("close", status => {
-            if (status !== 0) refuse(new Error(`original Cargo producer exited: ${status}`));
+            const selected = args[args.indexOf("-p") + 1];
+            if (status !== 0 || (measure && !arrivals.has(selected))) {
+              refuse(failure(`original Cargo producer exited before admission: ${selected}, status=${status}`));
+            }
             resolve(status);
           });
         });
@@ -167,14 +178,13 @@ fn main() {
           assert.ok(failures.length > 0, "the original shared lock must prevent overlap");
           assert.match(lockWait, /Blocking waiting for file lock on build directory/);
           assert.match(output, /compilations did not overlap/);
-          console.log(`Original Cargo lock-wait event: ${lockWait.trim()}`);
         } else {
           assert.deepEqual(failures, [], output);
           assert.equal(arrivals.size, 2, "both original build scripts reached the same event");
         }
       } finally {
-        refuse(new Error("original overlap owner closed"));
-        await new Promise((accept, reject) => server.close(error => error ? reject(error) : accept()));
+        refuse(failure("original overlap owner closed"));
+        await new Promise((accept, reject) => server.close(error => error ? reject(error) : accept(undefined)));
       }
     }
   } finally {

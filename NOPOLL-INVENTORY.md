@@ -4,15 +4,21 @@ Compiler-overlap successor, locations on `c3010262af`:
 
 | Source | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `scripts/check-crate-tests.test.mjs:36` | Synthetic scheduling turn | First worker awaits the second worker's original admission promise. | Source complete; unqualified |
+| `scripts/check-crate-tests.test.mjs:36` | Synthetic scheduling turn | Hold the first worker on an explicit channel, observe the original synchronous worker admission, then release and join both workers before asserting. | Source complete; unqualified |
 | `scripts/check-crate-tests.test.mjs:72` | Generated build-script filesystem recheck | Both real build scripts connect to one pre-armed channel and receive admission only after both arrive. Original Cargo failure, socket EOF/error and server withdrawal close the same channel. | Source complete; unqualified |
 | `scripts/check-crate-tests.test.mjs:73` | Two-second overlap refusal window | The actual second Cargo process's build-directory lock-wait event refuses the held build script; retain the shared-target negative without inferring absence from elapsed time. | Source complete; unqualified |
 | `scripts/check-crate-tests.test.mjs:74` | Five-millisecond polling sleep | Deleted with the filesystem loop; one original socket read waits for admission or producer EOF. | Source complete; unqualified |
 
+The first qualification attempt exposed serialization before Cargo itself could
+publish a lock event and was stopped. The fixture now resolves the selected
+toolchain's Cargo once through `rustup which cargo`, so the negative observes
+that original tool's own lock. No result is claimed for the stopped attempt.
+
 No production operation changes. Per measured compilation, repeated filesystem
 existence checks and sleeps become one TCP connection, one fixed-name write and
 one byte read. Two constant-size connections and one listener replace two marker
-files and repeated filesystem metadata reads. No added compilation, thread,
+files and repeated filesystem metadata reads. One toolchain-path lookup is
+added per test. No added compilation, thread,
 durability barrier or polling timer. Actual syscall/allocation totals and the
 Cargo lock-wait adapter are not yet qualified. The original two-crate parallel
 positive and restored shared-target negative remain the deciding control.
