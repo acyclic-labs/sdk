@@ -424,11 +424,101 @@ fn consume(cursor: &mut Cursor, model: &mut Model) -> TestCaseResult {
 fn actions() -> impl Strategy<Value = Vec<Action>> {
     prop::collection::vec((0_u8..8, 0_u8..2, any::<u8>()), 0..40)
 }
+
+fn credential_actions(actions: &[(u32, u8)]) -> TestCaseResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(fail)?;
+    let _entered = runtime.enter();
+    let channel = tonic::transport::Endpoint::from_static("http://ordering.invalid").connect_lazy();
+    let (mut pool, _) = fixture::fixture(&channel);
+    let failed = pool
+        .links
+        .remove("bad")
+        .ok_or_else(|| missing("bad link"))?;
+    pool.links.clear();
+    let mut expected = BTreeMap::<u32, Bytes>::new();
+    for (slot, length) in [(0, 8), (1, 4), (0, 2), (1, 12), (0, 0)]
+        .iter()
+        .chain(actions)
+        .copied()
+    {
+        let credential = Bytes::from(vec![length; usize::from(length)]);
+        pool.command(Command::Credential {
+            slot,
+            credential: credential.clone(),
+        })
+        .map_err(fail)?;
+        if credential.is_empty() {
+            expected.remove(&slot);
+        } else {
+            expected.insert(slot, credential);
+        }
+        prop_assert_eq!(&pool.credentials, &expected);
+        prop_assert_eq!(
+            pool.credential_bytes,
+            expected.values().map(Bytes::len).sum::<usize>()
+        );
+    }
+    for slot in expected.keys().copied().collect::<Vec<_>>() {
+        pool.command(Command::Credential {
+            slot,
+            credential: Bytes::new(),
+        })
+        .map_err(fail)?;
+    }
+    expected.clear();
+    let maximum = Bytes::from(vec![1; crate::MAX_COMMAND_BYTES]);
+    pool.command(Command::Credential {
+        slot: 0,
+        credential: maximum.clone(),
+    })
+    .map_err(fail)?;
+    expected.insert(0, maximum);
+    // Aggregate rejection must leave both the actual slots and the retained
+    // total unchanged, even though this new credential fits by itself.
+    prop_assert_eq!(
+        pool.command(Command::Credential {
+            slot: 1,
+            credential: Bytes::from_static(b"x")
+        }),
+        Err(StreamError::Capacity)
+    );
+    prop_assert_eq!(&pool.credentials, &expected);
+    prop_assert_eq!(pool.credential_bytes, crate::MAX_COMMAND_BYTES);
+
+    // Drive the real original Outbound terminal. Send evicts that link; it
+    // cannot roll back an already accepted credential or strand its accounting.
+    failed.sender.close().map_err(fail)?;
+    pool.links.insert("bad".into(), failed);
+    let final_value = Bytes::from_static(b"replacement");
+    pool.command(Command::Credential {
+        slot: 0,
+        credential: final_value.clone(),
+    })
+    .map_err(fail)?;
+    expected.insert(0, final_value);
+    prop_assert!(!pool.links.contains_key("bad"));
+    prop_assert_eq!(&pool.credentials, &expected);
+    prop_assert_eq!(
+        pool.credential_bytes,
+        expected.values().map(Bytes::len).sum::<usize>()
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
     fn cursor_drop_open_and_credit_match_the_stateful_oracle(actions in actions()) {
         exercise(&actions, false)?;
+    }
+    #[test]
+    fn credential_mutations_match_original_slots_through_refusal_and_link_loss(
+        actions in prop::collection::vec((0_u32..4, 0_u8..32), 0..40)
+    ) {
+        credential_actions(&actions)?;
     }
 }
 #[test]
