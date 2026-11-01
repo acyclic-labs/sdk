@@ -10,7 +10,7 @@ use acyclic_harness::local::{
 };
 use acyclic_native_runtime::lines::AsyncLines;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, io::Write, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 type Failure = Box<dyn std::error::Error>;
