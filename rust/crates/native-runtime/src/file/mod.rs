@@ -11,6 +11,10 @@ pub(crate) use scope::{with_file_admission, with_file_scope};
 pub(crate) use write_validation::validate_write_batch;
 
 mod capability;
+#[cfg(target_os = "linux")]
+mod descriptor;
+#[cfg(target_os = "linux")]
+pub(crate) use descriptor::outside_standard_streams;
 mod sync_batch;
 pub use sync_batch::NativeSyncBatch;
 mod durable;
@@ -68,10 +72,14 @@ pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
     return windows::file_identity(file);
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = file.metadata()?;
-        Ok((metadata.dev(), metadata.ino()))
+        Ok(file_identity_from_metadata(&file.metadata()?))
     }
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+pub(crate) fn file_identity_from_metadata(metadata: &std::fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt as _;
+    (metadata.dev(), metadata.ino())
 }
 
 pub(crate) fn is_uncertain_io_error(error: &io::Error) -> bool {

@@ -54,6 +54,7 @@ mod number {
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
+    pub const FSTAT: usize = 5;
     pub const MMAP: usize = 9;
     pub const RT_SIGACTION: usize = 13;
     pub const RT_SIGPROCMASK: usize = 14;
@@ -74,6 +75,8 @@ mod number {
     pub const SETGROUPS: usize = 116;
     pub const GETPGID: usize = 121;
     pub const PRCTL: usize = 157;
+    pub const CAPSET: usize = 126;
+    pub const SECCOMP: usize = 317;
     pub const EXIT_GROUP: usize = 231;
     pub const OPENAT: usize = 257;
     pub const UNLINKAT: usize = 263;
@@ -84,6 +87,7 @@ mod number {
     pub const UMASK: usize = 95;
     pub const PIDFD_OPEN: usize = 434;
     pub const CLOSE_RANGE: usize = 436;
+    pub const LANDLOCK_RESTRICT_SELF: usize = 446;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -97,6 +101,7 @@ mod number {
     pub const CLOSE: usize = 57;
     pub const PIPE2: usize = 59;
     pub const READ: usize = 63;
+    pub const FSTAT: usize = 80;
     pub const WRITE: usize = 64;
     pub const PPOLL: usize = 73;
     pub const EXIT_GROUP: usize = 94;
@@ -109,6 +114,8 @@ mod number {
     pub const GETPGID: usize = 155;
     pub const SETGROUPS: usize = 159;
     pub const PRCTL: usize = 167;
+    pub const CAPSET: usize = 91;
+    pub const SECCOMP: usize = 277;
     pub const GETPID: usize = 172;
     pub const GETPPID: usize = 173;
     pub const RECVMSG: usize = 212;
@@ -121,6 +128,7 @@ mod number {
     pub const UMASK: usize = 166;
     pub const PIDFD_OPEN: usize = 434;
     pub const CLOSE_RANGE: usize = 436;
+    pub const LANDLOCK_RESTRICT_SELF: usize = 446;
 }
 
 /// One system call with up to six arguments.
@@ -450,6 +458,112 @@ pub fn close_range(first: u32, last: u32) -> Result<(), Errno> {
         }
     }
     Ok(())
+}
+
+// Thin raw-syscall adapter for the same final-child entry used by the host.
+// There is no fallback scan when sealing capability descriptors fails.
+
+pub fn seal_descriptors() -> Result<(), i32> {
+    // SAFETY: CLOSE_RANGE_CLOEXEC changes flags only, preserving the original
+    // launch acknowledgement pipe until successful exec or reported refusal.
+    unsafe { call(number::CLOSE_RANGE, [3, u32::MAX as usize, 4, 0, 0, 0]) }
+        .map(drop)
+        .map_err(|Errno(error)| error)
+}
+
+/// Native Linux UAPI stat layouts: x86_64 has a 64-bit link count before
+/// mode, while aarch64 has a 32-bit link count after it. Only mode and device
+/// cross this syscall adapter; the shared entry owns the admission decision.
+#[repr(C)]
+struct Metadata {
+    object: [u64; 2],
+    #[cfg(target_arch = "x86_64")]
+    links: u64,
+    mode: u32,
+    #[cfg(target_arch = "aarch64")]
+    links: u32,
+    owner: [u32; 2],
+    #[cfg(target_arch = "x86_64")]
+    padding: u32,
+    device: u64,
+    #[cfg(target_arch = "x86_64")]
+    rest: [u64; 12],
+    #[cfg(target_arch = "aarch64")]
+    rest: [u64; 11],
+}
+
+pub fn stdio_metadata(fd: Fd) -> Result<(u32, u64), i32> {
+    // SAFETY: Metadata contains only integers; zero is valid for each field.
+    let mut metadata: Metadata = unsafe { core::mem::zeroed() };
+    // SAFETY: the exact native UAPI output layout for this image's ABI.
+    unsafe {
+        call(
+            number::FSTAT,
+            [arg(fd), (&raw mut metadata).addr(), 0, 0, 0, 0],
+        )
+    }
+    .map_err(|Errno(error)| error)?;
+    Ok((metadata.mode, metadata.device))
+}
+
+pub fn clear_ambient_capabilities() -> Result<(), i32> {
+    // SAFETY: PR_CAP_AMBIENT, CLEAR_ALL; no pointer arguments.
+    unsafe { call(number::PRCTL, [47, 4, 0, 0, 0, 0]) }
+        .map(drop)
+        .map_err(|Errno(error)| error)
+}
+
+pub fn capset(
+    header: &super::entry::CapabilityHeader,
+    capabilities: &[super::entry::Capabilities; 2],
+) -> Result<(), i32> {
+    // SAFETY: capability version 3 borrows exactly two initialized words.
+    unsafe {
+        call(
+            number::CAPSET,
+            [
+                core::ptr::from_ref(header).addr(),
+                capabilities.as_ptr().addr(),
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+    .map(drop)
+    .map_err(|Errno(error)| error)
+}
+
+pub fn no_new_privileges() -> Result<(), i32> {
+    // SAFETY: PR_SET_NO_NEW_PRIVS, enabled; no pointer arguments.
+    unsafe { call(number::PRCTL, [38, 1, 0, 0, 0, 0]) }
+        .map(drop)
+        .map_err(|Errno(error)| error)
+}
+
+pub fn restrict_filesystem(ruleset: Fd) -> Result<(), i32> {
+    // SAFETY: this request retains the original prepared ruleset descriptor.
+    unsafe {
+        call(
+            number::LANDLOCK_RESTRICT_SELF,
+            [arg(ruleset), 0, 0, 0, 0, 0],
+        )
+    }
+    .map(drop)
+    .map_err(|Errno(error)| error)
+}
+
+pub fn restrict_syscalls(program: &super::entry::Program) -> Result<(), i32> {
+    // SAFETY: enter borrows the complete original request's filter buffer.
+    unsafe {
+        call(
+            number::SECCOMP,
+            [1, 0, core::ptr::from_ref(program).addr(), 0, 0, 0],
+        )
+    }
+    .map(drop)
+    .map_err(|Errno(error)| error)
 }
 
 // The runner's own calls.

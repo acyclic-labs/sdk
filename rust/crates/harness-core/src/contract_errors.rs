@@ -443,6 +443,15 @@ impl Error {
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_exit(error: std::io::Error, exit_code: Option<i32>) -> Self {
+        if let Some(refusal) = error.get_ref().and_then(|cause| {
+            cause.downcast_ref::<acyclic_native_runtime::execution::ExecutionRefusal>()
+        }) {
+            return if error.kind() == std::io::ErrorKind::Unsupported {
+                Self::Unsupported(refusal.reason().to_owned())
+            } else {
+                Self::Unauthorized(refusal.reason().to_owned())
+            };
+        }
         let message = error.to_string();
         Self::Process(match error.kind() {
             std::io::ErrorKind::TimedOut => crate::ProcessError::Timeout { exit_code, message },

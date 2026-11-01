@@ -1,5 +1,35 @@
 use crate::*;
 
+/// One actual SDK/kernel attempt owns one operation credit. The result stays
+/// separate from a late recording error so accepted work can retain custody.
+pub(crate) fn native_operation_attempt<T>(
+    meter: Option<&dyn NativeReadMeter>,
+    kind: NativeOperationKind,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<(io::Result<T>, io::Result<()>)> {
+    match meter {
+        Some(meter) => {
+            let mut token = NativeOperationReservation::new(meter, kind, 1)?;
+            Ok(token.attempt(operation))
+        }
+        None => Ok((operation(), Ok(()))),
+    }
+}
+
+/// Completes an operation whose successful value owns its resources. A late
+/// recording failure drops that value; effects needing recovery must already
+/// be retained by the caller before the operation returns.
+pub(crate) fn native_control_attempt<T>(
+    meter: Option<&dyn NativeReadMeter>,
+    kind: NativeOperationKind,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    match meter {
+        Some(meter) => NativeOperationReservation::new(meter, kind, 1)?.control(operation),
+        None => operation(),
+    }
+}
+
 /// Reserved native operations, borrowed or owned by an accepted request.
 pub struct NativeOperationReservation<M: std::ops::Deref<Target: NativeReadMeter>> {
     pub(crate) meter: M,
@@ -26,6 +56,19 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M> 
             .unwrap_or_else(|| std::process::abort());
         let recorded = self.meter.record_reserved_operation(self.kind);
         (operation(), recorded)
+    }
+
+    /// Completes one pre-reserved operation whose value owns its resources.
+    /// Preparation before this call can fail without reporting a native attempt.
+    pub(crate) fn control<T>(
+        &mut self,
+        operation: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let (result, recorded) = self.attempt(operation);
+        match result {
+            Err(error) => Err(error),
+            Ok(value) => recorded.map(|()| value),
+        }
     }
 }
 

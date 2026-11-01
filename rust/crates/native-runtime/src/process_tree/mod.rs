@@ -3,6 +3,10 @@
     reason = "process containment and bounded pipes use platform OS calls"
 )]
 
+use crate::meter::{
+    native_control_attempt as process_control_attempt,
+    native_operation_attempt as pipe_operation_attempt,
+};
 use crate::obs;
 #[cfg(unix)]
 use platform::Child;
@@ -96,13 +100,15 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{PendingStdin, drain_pipe_observed, observe_output, pipe_operation_attempt};
+use capture::{PendingStdin, drain_pipe_observed, observe_output};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
 pub use prepared::PreparedClosedProcess;
 #[cfg(test)]
 mod custody_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod execution_boundary_tests;
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod platform;
@@ -229,6 +235,62 @@ impl ProcessTree {
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
+    /// Consumes an authenticated execution grant and command at this same
+    /// process owner. No reusable command can retain a consumed boundary or
+    /// launch after a refusal without that boundary.
+    pub fn spawn_granted(
+        command: ProcessCommand,
+        grant: &crate::execution::ExecutionGrant,
+        custody: Option<&ProcessCustody>,
+    ) -> io::Result<Self> {
+        let mut retained = None;
+        if let Err(error) =
+            Self::spawn_granted_controlled(command, grant, custody, None, &mut retained)
+        {
+            if let Some(tree) = retained.as_mut() {
+                tree.terminate(None).map_err(crate::execution::failure)?;
+            }
+            return Err(error);
+        }
+        retained.ok_or_else(|| crate::execution::failure(io::ErrorKind::NotFound.into()))
+    }
+
+    /// Consumes a confined command while retaining the original launch meter
+    /// and recovery slot. On error, `retained` can still own an admitted tree
+    /// or custody record: the caller must preserve it through recovery. This
+    /// method never replaces an occupied slot or performs unmetered cleanup.
+    /// The meter covers the shared process owner and Linux root/ruleset calls.
+    /// Grant construction and remaining launch allocations still require
+    /// invocation-local resource accounting.
+    pub fn spawn_granted_controlled(
+        mut command: ProcessCommand,
+        grant: &crate::execution::ExecutionGrant,
+        custody: Option<&ProcessCustody>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        retained: &mut Option<Self>,
+    ) -> io::Result<()> {
+        (|| {
+            if retained.is_some() {
+                return Err(io::ErrorKind::AlreadyExists.into());
+            }
+            if let Some(meter) = meter {
+                meter.check()?;
+            }
+            command.boundary = Some({
+                let cwd =
+                    grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
+                grant.prepare_launch(Some(cwd), meter)?
+            });
+            match custody {
+                Some(custody) => {
+                    Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
+                }
+                None => Self::spawn_controlled(&mut command, meter, retained),
+            }
+        })()
+        .map_err(crate::execution::failure)
+    }
+
     /// Starts a child whose whole tree is tied to this host process and
     /// recorded in `custody` until this owner observes it gone. If the host
     /// dies first, the tree is killed, and a reopened owner's
@@ -302,7 +364,19 @@ impl ProcessTree {
     ) -> io::Result<()> {
         Self::spawn_metered(command, meter, custody, |command, slot| {
             #[cfg(unix)]
-            return platform::spawn_controlled(&mut command.to_std()?, meter, slot);
+            {
+                let boundary = command.boundary.take();
+                if boundary.is_some() {
+                    // The boundary installs its held directory in the child.
+                    // Do not resolve the admitted path a second time in std.
+                    command.cwd = None;
+                }
+                let mut native = command.to_std()?;
+                if let Some(boundary) = boundary {
+                    boundary.install(&mut native)?;
+                }
+                return platform::spawn_controlled(&mut native, meter, slot);
+            }
             #[cfg(windows)]
             platform::spawn_controlled(command, meter, slot)
         })
@@ -1307,18 +1381,5 @@ impl Drop for ProcessTree {
             return;
         }
         let _ = self.terminate(None);
-    }
-}
-
-/// One actual SDK/kernel attempt, not a prediction of its hidden internals.
-fn process_control_attempt<T>(
-    meter: Option<&dyn crate::NativeReadMeter>,
-    kind: crate::NativeOperationKind,
-    call: impl FnOnce() -> io::Result<T>,
-) -> io::Result<T> {
-    let (result, recorded) = pipe_operation_attempt(meter, kind, call)?;
-    match result {
-        Err(error) => Err(error),
-        Ok(value) => recorded.map(|()| value),
     }
 }

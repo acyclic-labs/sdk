@@ -10,6 +10,7 @@ pub use arc::arc_allocation_bytes;
 pub(crate) use buffer::ReadBuffer;
 pub use codec::{NativeCodecReservation, NativeCodecWork};
 pub use reservation::{NativeByteReservation, NativeOperationReservation};
+pub(crate) use reservation::{native_control_attempt, native_operation_attempt};
 
 /// Filesystem-operation allowance owned by one accepted native request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

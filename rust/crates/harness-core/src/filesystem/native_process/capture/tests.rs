@@ -2,6 +2,43 @@ use super::*;
 use std::{sync::Arc, time::Duration};
 
 #[test]
+fn launch_failure_returns_its_cause_and_original_custody()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let root = tempfile::tempdir()?;
+    let invocation = Invocation {
+        executable: root.path().join("absent-executable"),
+        argv: Vec::new(),
+        cwd: root.path().into(),
+        environment: Default::default(),
+        inherit_environment: false,
+        schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+        control_timeout_ms: 1000,
+        maximum_output_bytes: 1024,
+        standard_input: None,
+        process_custody: None,
+    };
+    let custody = Arc::new(());
+    let (output, returned) = runtime.block_on(capture_with_custody(
+        invocation,
+        |_, _| Ok(()),
+        || Ok(()),
+        Arc::clone(&custody),
+        None,
+        OutputRetention::Collect,
+    ))?;
+    assert!(Arc::ptr_eq(&custody, &returned));
+    assert!(matches!(
+        output,
+        Err(Error::Process(crate::ProcessError::NotFound { .. }))
+    ));
+    Ok(())
+}
+
+#[test]
 fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
     type TestHandler = Handler<
         (),
@@ -192,7 +229,7 @@ fn interactive_completion_retains_input_producer_and_cleanup()
             }
             let (result, handler) = completion.await??;
             assert!(retirement.await?);
-            let result = result.ok_or_else(|| Error::Storage("capture lost completion".into()))?;
+            let result = result?.ok_or_else(|| Error::Storage("capture lost completion".into()))?;
             if mode == "producer-lost" {
                 let stop = result.stop.expect("producer loss must be a typed failure");
                 assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
@@ -296,7 +333,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
                 Error::Storage(format!("native capture handoff interrupted: {error}"))
             })?
         })?;
-        let output = output.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
+        let output = output?.ok_or_else(|| Error::Storage("capture was interrupted".into()))?;
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
         if let Some(kind) = stopped {
             let stop = output
@@ -431,7 +468,7 @@ mod simulation {
                 OutputRetention::Collect,
             );
             type Capture<'a> =
-                Pin<Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>>;
+                Pin<Box<dyn Future<Output = Result<(NativeProcessOutcome, Vec<u8>)>> + 'a>>;
             let operation: Capture<'_> = Box::pin(operation);
             let mut operation = Box::pin(schedule.scope(operation));
             let mut phases = Vec::new();
@@ -447,7 +484,7 @@ mod simulation {
                 }
             };
             schedule.drained().await;
-            let output = output.expect("native capture was interrupted");
+            let output = output?.expect("native capture was interrupted");
             assert!(output.success, "{:?}", output.stop);
             assert_eq!(output.exit_code, Some(0));
             assert!(output.stderr.is_empty());

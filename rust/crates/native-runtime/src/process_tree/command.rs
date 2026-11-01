@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 /// `std::process::Command::spawn`.
 #[derive(Debug)]
 pub struct ProcessCommand {
+    // Set only by the consuming, host-authorized launch entry. It is carried
+    // through the original process owner, never exposed as a model argument.
+    pub(super) boundary: Option<crate::execution::PreparedExecution>,
     pub(super) program: OsString,
     pub(super) args: Vec<Arg>,
     pub(super) env: Environment,
@@ -177,6 +180,7 @@ impl ProcessCommand {
     /// working directory, and inherited standard streams.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
+            boundary: None,
             program: program.as_ref().to_owned(),
             args: Vec::new(),
             env: Environment::default(),
@@ -343,6 +347,12 @@ impl ProcessCommand {
     /// duplicated, so this description stays reusable.
     #[cfg(any(unix, test))]
     pub(crate) fn to_std(&self) -> std::io::Result<std::process::Command> {
+        if self.boundary.is_some() {
+            return Err(crate::execution::failure(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "native command conversion cannot discard its execution boundary",
+            )));
+        }
         let mut command = std::process::Command::new(&self.program);
         for argument in &self.args {
             match argument {

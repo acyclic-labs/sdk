@@ -267,7 +267,7 @@ mod unix {
         /// recorded in `directory`. On Linux the owner's runner clones the
         /// warden; on macOS this owner forks it.
         pub(in crate::process_tree) fn spawn(
-            command: &super::super::ProcessCommand,
+            command: &mut super::super::ProcessCommand,
             directory: &File,
             meter: Option<&dyn crate::NativeReadMeter>,
             retained: &mut Option<super::super::ProcessTree>,
@@ -282,6 +282,7 @@ mod unix {
             {
                 use std::os::fd::AsRawFd as _;
                 use std::os::unix::process::CommandExt as _;
+                let boundary = command.boundary.take();
                 let mut native = command.to_std()?;
                 let descriptor = directory.as_raw_fd();
                 let owner = libc::pid_t::try_from(std::process::id())
@@ -292,6 +293,9 @@ mod unix {
                     native.pre_exec(move || {
                         super::super::warden::enter(descriptor, owner).map_err(Into::into)
                     });
+                }
+                if let Some(boundary) = boundary {
+                    boundary.install(&mut native)?;
                 }
                 super::super::platform::spawn_controlled(&mut native, meter, retained)
             }

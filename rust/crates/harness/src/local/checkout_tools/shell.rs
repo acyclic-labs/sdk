@@ -103,7 +103,9 @@ impl CheckoutTools {
             )
             .await?;
         let result = output
-            .ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
+            .and_then(|output| {
+                output.ok_or_else(|| Error::Conflict("process capture was interrupted".into()))
+            })
             .and_then(|output| {
                 retained.settle(
                     ToolResult {

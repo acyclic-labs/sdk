@@ -93,6 +93,10 @@ pub enum OutputRetention {
     Observe,
 }
 
+/// A definitive launch/capture result, or an interrupted control check. Kept
+/// inside the completion so even a refused launch returns its original custody.
+pub type NativeProcessOutcome = Result<Option<NativeProcessResult>>;
+
 #[doc(hidden)]
 pub async fn capture_with_custody<T: Send + 'static>(
     invocation: Invocation,
@@ -103,7 +107,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
     custody: T,
     wake: Option<acyclic_native_runtime::ProcessWake>,
     retention: OutputRetention,
-) -> Result<(Option<NativeProcessResult>, T)> {
+) -> Result<(NativeProcessOutcome, T)> {
     start_capture_with_custody(invocation, observer, check, custody, wake, retention)
         .await?
         .await
@@ -131,9 +135,7 @@ pub async fn start_capture_with_custody<T: Send + 'static>(
     custody: T,
     wake: Option<acyclic_native_runtime::ProcessWake>,
     retention: OutputRetention,
-) -> Result<
-    impl std::future::Future<Output = Result<(Option<NativeProcessResult>, T)>> + Send + 'static,
-> {
+) -> Result<impl std::future::Future<Output = Result<(NativeProcessOutcome, T)>> + Send + 'static> {
     let completion = start_capture(
         invocation,
         Handler {
@@ -163,9 +165,7 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     invocation: Invocation,
     mut handler: H,
     retention: OutputRetention,
-) -> Result<
-    impl std::future::Future<Output = Result<(Option<NativeProcessResult>, H)>> + Send + 'static,
-> {
+) -> Result<impl std::future::Future<Output = Result<(NativeProcessOutcome, H)>> + Send + 'static> {
     // Native capture callbacks may await durable publication on Tokio's
     // blocking pool, so they run on main's independent native host service.
     // Spawning runs there too; the running child then holds no worker: the
@@ -288,7 +288,7 @@ fn result(
     output: std::io::Result<
         std::result::Result<std::process::Output, acyclic_native_runtime::ProcessCaptureFailure>,
     >,
-) -> Option<NativeProcessResult> {
+) -> NativeProcessOutcome {
     let result = match output {
         Ok(Ok(output)) => NativeProcessResult {
             success: output.status.success(),
@@ -313,9 +313,10 @@ fn result(
                 cleanup_completed: failure.cleanup_completed,
             }),
         },
-        Err(_) => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
+        Err(error) => return Err(Error::process_io(error)),
     };
-    Some(result)
+    Ok(Some(result))
 }
 
 #[cfg(test)]

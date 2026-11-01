@@ -1,4 +1,5 @@
 use crate::*;
+use std::ops::Deref;
 
 /// One inline, original-meter allocation credit prepared before accepted IO.
 #[must_use]
@@ -46,8 +47,8 @@ impl Drop for ReadAllocationReservation {
 
 /// Custody of logical SDK-owned payload on the original invocation ledger.
 #[must_use]
-pub struct ReadAllocation {
-    meter: Arc<dyn NativeReadMeter>,
+pub struct ReadAllocation<M: Deref<Target: NativeReadMeter> = Arc<dyn NativeReadMeter>> {
+    meter: M,
     bytes: u64,
 }
 
@@ -113,7 +114,9 @@ impl ReadAllocation {
         self.bytes = actual;
         Ok(())
     }
+}
 
+impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
     /// Records real capacity discovered after a controlled allocation.
     ///
     /// # Panics
@@ -140,7 +143,9 @@ impl ReadAllocation {
         }
         Ok(())
     }
+}
 
+impl ReadAllocation {
     /// Logical capacity currently owned by this guard.
     pub const fn bytes(&self) -> u64 {
         self.bytes
@@ -205,7 +210,22 @@ impl ReadAllocation {
     }
 }
 
-impl std::fmt::Debug for ReadAllocation {
+// Synchronous native preparation retains its caller's borrow until the buffer
+// is physically gone. It needs no detached Arc or replacement ledger owner.
+#[cfg(target_os = "linux")]
+impl<'a> ReadAllocation<&'a dyn NativeReadMeter> {
+    pub(crate) fn borrowed(meter: &'a dyn NativeReadMeter, bytes: usize) -> io::Result<Self> {
+        let bytes = bytes as u64;
+        if bytes == 0 {
+            meter.check()?;
+        } else {
+            meter.allocate(bytes)?;
+        }
+        Ok(Self { meter, bytes })
+    }
+}
+
+impl<M: Deref<Target: NativeReadMeter>> std::fmt::Debug for ReadAllocation<M> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ReadAllocation")
@@ -214,7 +234,7 @@ impl std::fmt::Debug for ReadAllocation {
     }
 }
 
-impl Drop for ReadAllocation {
+impl<M: Deref<Target: NativeReadMeter>> Drop for ReadAllocation<M> {
     fn drop(&mut self) {
         self.meter.release(self.bytes);
     }
