@@ -223,6 +223,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let budget = acyclic_fs::WorkBudget::UNBOUNDED;
             let workspace = self.open(workspace, None).await?;
             let key = filesystem_key(idempotency_key);
+            #[cfg(test)]
+            if let Some(pause) = &self.publication_pause {
+                pause().await;
+            }
             let mut transaction = match expected_generation {
                 Some(reference) => {
                     let generation = self.generation(&workspace, reference, None).await?;
@@ -283,10 +287,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                     TransactionCommit::Conflict { .. }
-                        if expected_generation.is_none()
-                            && publication
-                                .fence()
-                                .is_none_or(|fence| !fence.generation_sensitive()) =>
+                        if match publication {
+                            FilePublication::Authorized(fence, _) => !fence.generation_sensitive(),
+                            FilePublication::Replace(_) => expected_generation.is_none(),
+                        } =>
                     {
                         // Reuse the original candidate only when the SDK proves its
                         // exact observations and mutation dependencies still hold.

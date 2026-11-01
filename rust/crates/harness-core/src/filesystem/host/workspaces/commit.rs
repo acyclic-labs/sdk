@@ -15,6 +15,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             key,
             io,
             FilePublication::Replace(expected),
+            None,
         )
     }
 
@@ -54,10 +55,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: IdempotencyKey,
         io: Option<&'a PreparationIo>,
         publication: FilePublication<'a>,
+        authorized_generation: Option<&'a GenerationRef>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
         let expected = match publication {
             FilePublication::Replace(expected) => expected,
-            FilePublication::Authorized(..) => None,
+            FilePublication::Authorized(..) => authorized_generation,
         };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {

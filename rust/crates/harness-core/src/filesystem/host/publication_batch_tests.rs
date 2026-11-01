@@ -141,6 +141,125 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
 type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
+#[tokio::test]
+async fn creation_retains_its_authorized_cut_before_transaction_start() -> Result<()> {
+    for adapter in 0..3 {
+        let provider = ProviderRef::new(
+            "creation".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let agent = AgentId::from_bytes([39; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        host.create_volume(&volume).await?;
+        let issuer = AuthorityRoot::new(
+            "creator",
+            [42; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "creator".into(),
+            },
+        );
+        let label = acyclic_fs::access::Capability::whole_volume(
+            None,
+            &[acyclic_fs::access::Action::Create],
+        )
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let scope = issuer.bootstrap_scope(
+            "create-only",
+            &crate::Capabilities::new([
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                label,
+            ]),
+            Some(agent),
+            &mut None,
+        )?;
+        let grant = ContentGrant::verify(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            64,
+            &mut None,
+        )?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let access = crate::conversation::ContentAccess {
+            ceiling: None,
+            io: io.as_ref(),
+        };
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let opened = host.open(&workspace, None).await?;
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let race = armed.clone();
+        let racing_workspace = opened.clone();
+        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+            let run = race.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let workspace = racing_workspace.clone();
+            Box::pin(async move {
+                if run {
+                    workspace.write_text("/raced", "racer").await.unwrap();
+                }
+            })
+        }));
+        host.put_content(
+            &volume,
+            &grant,
+            "created",
+            b"first",
+            "text/plain",
+            "created",
+            64,
+            &IdempotencyKey::new("created")?,
+            None,
+            access,
+        )
+        .await?;
+        // The same grant cannot overwrite an existing path, even without a race.
+        assert!(
+            matches!(host.put_content(&volume, &grant, "created", b"overwrite", "text/plain", "created", 64,
+            &IdempotencyKey::new("overwrite")?, None, access).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+        );
+        let key = IdempotencyKey::new("raced")?;
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Real mutation after authorization, before the original transaction.
+        assert!(
+            matches!(host.put_content(&volume, &grant, "raced", b"overwrite", "text/plain", "raced", 64,
+            &key, None, access).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict)
+        );
+        assert_eq!(
+            host.read(&workspace, None, "/raced", 64, None)
+                .await?
+                .as_ref(),
+            b"racer"
+        );
+        assert!(
+            host.content_for_operation(&volume, &grant, &key, "raced", 64, access)
+                .await?
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
 async fn replace_source(
     host: &MemoryHost,
     write: &ContentGrant,
