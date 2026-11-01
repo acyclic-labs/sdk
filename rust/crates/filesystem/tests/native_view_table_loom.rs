@@ -26,27 +26,74 @@ impl Drop for Core {
 
 #[test]
 fn no_callback_runs_on_a_retired_view() {
-    check(false, false);
+    check(false);
 }
 
 #[test]
 #[should_panic(expected = "callback ran after its view retired")]
 fn retiring_without_draining_is_detected() {
-    check(true, false);
+    check(true);
 }
 
 #[test]
 fn stop_unwind_drains_the_original_admitted_callbacks() {
-    check(false, true);
+    check_unwind(false);
 }
 
 #[test]
 #[should_panic(expected = "callback ran after its view retired")]
 fn stop_unwind_without_draining_is_detected() {
-    check(true, true);
+    check_unwind(true);
 }
 
-fn check(broken: bool, unwind: bool) {
+fn check_unwind(broken: bool) {
+    loom::model(move || {
+        let table = Arc::new(ViewTable::new(u64::MAX));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owner = ViewTable::insert(
+            &table,
+            Core {
+                id: 1,
+                dropped: Arc::clone(&dropped),
+            },
+        )
+        .unwrap();
+        let serial = owner.serial().get();
+        let lease = table.enter(serial).unwrap();
+        let retired = Arc::new(AtomicBool::new(false));
+        let callback = loom::thread::spawn({
+            let retired = Arc::clone(&retired);
+            move || {
+                assert_eq!(lease.id, 1);
+                assert!(
+                    !retired.load(Ordering::SeqCst),
+                    "callback ran after its view retired"
+                );
+                drop(lease);
+            }
+        });
+
+        RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
+        struct StopUnwind;
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            owner.retire_after(|| std::panic::resume_unwind(Box::new(StopUnwind)))
+        }));
+        assert!(stopped.is_err_and(|error| error.is::<StopUnwind>()));
+        if !broken {
+            assert!(
+                dropped.load(Ordering::SeqCst),
+                "retirement drops the core before resuming unwind"
+            );
+        }
+        retired.store(true, Ordering::SeqCst);
+        assert!(table.enter(serial).is_none(), "a retired serial stays gone");
+        callback.join().unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(table.len(), 0);
+    });
+}
+
+fn check(broken: bool) {
     loom::model(move || {
         let table = Arc::new(ViewTable::new(u64::MAX));
         let dropped = Arc::new(AtomicBool::new(false));
@@ -101,15 +148,7 @@ fn check(broken: bool, unwind: bool) {
         });
 
         RETIRE_WITHOUT_DRAIN.with(|fault| fault.set(broken));
-        if unwind {
-            struct StopUnwind;
-            let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                owner.retire_after(|| std::panic::panic_any(StopUnwind))
-            }));
-            assert!(stopped.is_err_and(|error| error.is::<StopUnwind>()));
-        } else {
-            drop(owner);
-        }
+        drop(owner);
         if !broken {
             assert!(
                 dropped.load(Ordering::SeqCst),
