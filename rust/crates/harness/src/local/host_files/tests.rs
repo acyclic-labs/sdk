@@ -2,6 +2,156 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+#[test]
+fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
+    fn ownership(workspace: &Path) -> Result<acyclic_native_runtime::FileLock> {
+        let directory =
+            acyclic_fs::hold_root(&workspace.join(DIRECTORY)).map_err(native_file_error)?;
+        acyclic_native_runtime::FileLock::try_acquire(
+            directory
+                .open_file(Path::new("owner.lock"), true)
+                .map_err(native_file_error)?,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)
+    }
+    fn owner() -> Result<(tempfile::TempDir, PathBuf, acyclic_native_runtime::FileLock)> {
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+        let directory = workspace.join(DIRECTORY);
+        std::fs::create_dir_all(directory.join("requests")).map_err(storage)?;
+        std::fs::create_dir(directory.join("status")).map_err(storage)?;
+        let ownership = ownership(&workspace)?;
+        immutable(
+            &directory.join("owner.json"),
+            &serde_json::to_vec(&Endpoint {
+                version: 3,
+                session: uuid::Uuid::new_v4(),
+                workspace: workspace.clone(),
+            })
+            .map_err(storage)?,
+        )?;
+        Ok((checkout, workspace, ownership))
+    }
+    fn observer(bridge: &Bridge) -> std::thread::JoinHandle<()> {
+        lock(&bridge.observer)
+            .take()
+            .expect("the original owner observer")
+    }
+
+    let registry = Arc::new(Mutex::<Registry>::default());
+    let (_checkout, cwd, owner_lock) = owner()?;
+    let (_other_checkout, other_cwd, other_lock) = owner()?;
+    let child = cwd.join("child");
+    std::fs::create_dir(&child).map_err(storage)?;
+    let first = Registry::bridge(&registry, &cwd, Bridge::open)?;
+    let alias = Registry::bridge(&registry, &child, Bridge::open)?;
+    assert!(Arc::ptr_eq(&first, &alias));
+    let other = Registry::bridge(&registry, &other_cwd, Bridge::open)?;
+    let original = lock(&first.shared.waiters).retirement.clone().unwrap();
+    let original_connection = original.connection.upgrade().unwrap();
+    let first_observer = observer(&first);
+    let other_observer = observer(&other);
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = first.wait(OperationId::new(), delivery)?;
+    drop(owner_lock);
+    first_observer
+        .join()
+        .expect("the original owner terminal must return");
+    assert!(matches!(response.try_recv(), Ok(Delivery::Gone)));
+    drop(waiting);
+    let (delivery, _) = mpsc::sync_channel(1);
+    assert!(matches!(
+        first.wait(OperationId::new(), delivery),
+        Err(Error::NotFound(_))
+    ));
+    {
+        let index = lock(&registry);
+        assert_eq!(
+            index.bridges.len(),
+            1,
+            "no lookup may be needed to retire a dead owner"
+        );
+        assert_eq!(
+            index.located.len(),
+            1,
+            "all and only the original owner's aliases retire"
+        );
+    }
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &other_cwd).unwrap(),
+        &other
+    ));
+
+    // A new admitted owner at the same path gets its own slot. A delayed old
+    // terminal and a borrowed old slot must not remove or reopen that owner.
+    let replacement_lock = ownership(&cwd)?;
+    let replacement = Registry::bridge(&registry, &cwd, Bridge::open)?;
+    let replacement_alias = Registry::bridge(&registry, &child, Bridge::open)?;
+    assert!(!Arc::ptr_eq(&replacement, &first));
+    assert!(Arc::ptr_eq(&replacement, &replacement_alias));
+    assert!(lock(&original_connection).retired);
+    original.retire();
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &cwd).unwrap(),
+        &replacement
+    ));
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &child).unwrap(),
+        &replacement
+    ));
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &other_cwd).unwrap(),
+        &other
+    ));
+    let weak = Arc::downgrade(&first);
+    drop((first, alias, original_connection));
+    assert!(
+        weak.upgrade().is_none(),
+        "only original caller custody may retain the retired bridge"
+    );
+    let replacement_observer = observer(&replacement);
+    drop(replacement_lock);
+    replacement_observer
+        .join()
+        .expect("replacement owner terminal must return");
+
+    // Real owner loss before registration is not allowed to publish an alias
+    // with no future producer. Join that same native observer inside setup.
+    let early_lock = ownership(&cwd)?;
+    let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
+        let bridge = Bridge::open(directory, endpoint)?;
+        let observing = observer(&bridge);
+        drop(early_lock);
+        observing.join().expect("early owner terminal must return");
+        Ok(bridge)
+    });
+    assert!(matches!(result, Err(Error::NotFound(_))));
+    assert_eq!(lock(&registry).bridges.len(), 1);
+    assert_eq!(lock(&registry).located.len(), 1);
+    assert!(Arc::ptr_eq(
+        &Registry::live(&registry, &other_cwd).unwrap(),
+        &other
+    ));
+
+    let refused = Arc::new(Mutex::<Registry>::default());
+    let failed = Registry::bridge(&refused, &other_cwd, |_, _| {
+        Err(Error::Unsupported(
+            "original native admission refused".into(),
+        ))
+    });
+    assert!(matches!(failed, Err(Error::Unsupported(_))));
+    assert!(lock(&refused).bridges.is_empty());
+    assert!(lock(&refused).located.is_empty());
+    drop(other_lock);
+    other_observer
+        .join()
+        .expect("unrelated original owner terminal must return");
+    assert!(lock(&registry).bridges.is_empty());
+    assert!(lock(&registry).located.is_empty());
+    Ok(())
+}
+
 fn rejected_requests_end_without_owner_exit() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
@@ -131,7 +281,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
     watcher
         .watch(&requests, RecursiveMode::NonRecursive)
         .map_err(storage)?;
-    let registry = Mutex::<Registry>::default();
+    let registry = Arc::new(Mutex::<Registry>::default());
     let (completed, completion) = mpsc::sync_channel(1);
     let result = std::thread::scope(|scope| {
         scope.spawn(|| {
