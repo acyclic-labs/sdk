@@ -150,6 +150,8 @@ pub struct Roster {
     home: String,
     targets: Vec<TargetRecord>,
     #[serde(skip)]
+    home_position: usize,
+    #[serde(skip)]
     canonical: std::sync::Arc<[u8]>,
     #[serde(skip)]
     digest: [u8; 32],
@@ -225,15 +227,18 @@ impl Roster {
     /// When a record is malformed, a name repeats or the home is unlisted.
     pub fn new(home: &str, targets: Vec<TargetRecord>) -> Result<Self, super::Error> {
         let mut names = std::collections::BTreeSet::new();
-        for target in &targets {
+        let mut home_position = None;
+        for (position, target) in targets.iter().enumerate() {
             super::AgentRecord::check(target)?;
             if !names.insert(target.name.as_str()) {
                 return Err(super::Error::Record("target name repeats in the roster"));
             }
+            if target.name == home {
+                home_position = Some(position);
+            }
         }
-        if !names.contains(home) {
-            return Err(super::Error::Record("roster home is not a listed target"));
-        }
+        let home_position =
+            home_position.ok_or(super::Error::Record("roster home is not a listed target"))?;
         let wire = RosterWire {
             home: home.to_owned(),
             targets,
@@ -245,6 +250,7 @@ impl Roster {
         Ok(Self {
             home: wire.home,
             targets: wire.targets,
+            home_position,
             canonical: bytes.into(),
             digest: *hasher.finalize().as_bytes(),
         })
@@ -289,13 +295,25 @@ impl Roster {
     /// # Errors
     /// The refusal the call settles with.
     pub fn select(&self, target: Option<&str>) -> Result<&TargetRecord, TargetRefusal> {
+        self.select_position(target)
+            .map(|position| &self.targets[position])
+    }
+
+    /// The position in this admitted roster, shared with its executor table.
+    pub(crate) fn select_position(&self, target: Option<&str>) -> Result<usize, TargetRefusal> {
         let named = target.unwrap_or(&self.home);
-        let found = match named.strip_prefix(USER_PREFIX) {
-            Some(owner) => self.targets.iter().find(|record| record.owner == owner),
-            None => self.targets.iter().find(|record| record.name == named),
+        let found = if named == self.home {
+            Some(self.home_position)
+        } else {
+            match named.strip_prefix(USER_PREFIX) {
+                Some(owner) => self.targets.iter().position(|record| record.owner == owner),
+                None => self.targets.iter().position(|record| record.name == named),
+            }
         };
         let refused = match found {
-            Some(record) if record.state == TargetState::Online => return Ok(record),
+            Some(position) if self.targets[position].state == TargetState::Online => {
+                return Ok(position);
+            }
             Some(_) => Refused::Offline,
             None => Refused::Unknown,
         };
