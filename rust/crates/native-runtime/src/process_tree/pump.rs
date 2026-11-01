@@ -155,6 +155,12 @@ pub trait CaptureHandler: Send + 'static {
     /// Observation may retain this handler longer; it cannot delay retirement.
     /// Owner loss skips this callback and must remain an unproved retirement.
     fn retired(&mut self, _cleanup_completed: bool) {}
+    /// Borrows opt-in telemetry owned by this same handler. Retain it through
+    /// `retired`; the original result is recorded only after that callback
+    /// returns. The default adds no observation or physical ownership.
+    fn observation(&mut self) -> Option<&mut crate::obs::CaptureObservation> {
+        None
+    }
 }
 
 /// A finished async capture: its handler and the bounded result. A tree
@@ -169,11 +175,16 @@ pub struct CaptureOutcome<H> {
 
 impl<H: CaptureHandler> CaptureOutcome<H> {
     pub(super) fn new(mut handler: H, result: Result<Output, ProcessCaptureFailure>) -> Self {
-        handler.retired(
-            result
-                .as_ref()
-                .map_or_else(|failure| failure.cleanup_completed, |_| true),
-        );
+        let cleanup_completed = result
+            .as_ref()
+            .map_or_else(|failure| failure.cleanup_completed, |_| true);
+        handler.retired(cleanup_completed);
+        if let Some(observation) = handler.observation() {
+            observation.retired(
+                cleanup_completed,
+                result.as_ref().err().map(|failure| &failure.error),
+            );
+        }
         Self { handler, result }
     }
 }

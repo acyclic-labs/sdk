@@ -8,6 +8,11 @@
 #![deny(unsafe_code)]
 
 #[cfg(not(target_arch = "wasm32"))]
+mod capture_retirement;
+#[cfg(not(target_arch = "wasm32"))]
+pub use capture_retirement::CaptureRetirement;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod durability;
 #[cfg(not(target_arch = "wasm32"))]
 pub use durability::{DurabilityAttempt, DurabilityRequest, DurabilitySyscall};

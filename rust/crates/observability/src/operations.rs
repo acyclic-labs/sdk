@@ -188,6 +188,8 @@ pub struct Sample<'a> {
     pub durability: Option<crate::DurabilityAttempt>,
     /// Original native task admission and publication, when requested.
     pub native_task: Option<crate::NativeTask>,
+    /// Original process containment cleanup, when requested; not final backing retirement.
+    pub capture_retirement: Option<crate::CaptureRetirement>,
     /// Optional producer-declared semantic work, retained only when requested.
     pub work: Option<crate::WorkSummary>,
     /// Fixed original executor publication semantics, when requested.
@@ -218,6 +220,8 @@ pub struct OwnedSample {
     pub durability: Option<crate::DurabilityAttempt>,
     /// Original native task admission and publication, when requested.
     pub native_task: Option<crate::NativeTask>,
+    /// Original process containment cleanup, when requested; not final backing retirement.
+    pub capture_retirement: Option<crate::CaptureRetirement>,
     /// Original producer's optional work totals, without reconstructing work.
     pub work: Option<crate::WorkSummary>,
     /// Fixed original executor publication semantics, when requested.
@@ -244,6 +248,7 @@ impl OwnedSample {
             parent_id: self.parent_id.as_ref(),
             durability: self.durability,
             native_task: self.native_task,
+            capture_retirement: self.capture_retirement,
             work: self.work,
             publication: self.publication,
             binding: self.binding.as_ref(),
@@ -291,6 +296,10 @@ pub trait Sink: Clone + Send + Sync + 'static {
     fn native_task_details(&self) -> bool {
         false
     }
+    /// Opt into fixed evidence from the original capture cleanup callback.
+    fn capture_retirement_details(&self) -> bool {
+        false
+    }
 }
 
 impl<A: Sink, B: Sink> Sink for (A, B) {
@@ -312,6 +321,9 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
     }
     fn native_task_details(&self) -> bool {
         self.0.native_task_details() || self.1.native_task_details()
+    }
+    fn capture_retirement_details(&self) -> bool {
+        self.0.capture_retirement_details() || self.1.capture_retirement_details()
     }
     fn record_owned(&self, sample: OwnedSample) {
         self.0.record(&sample.sample());
@@ -706,6 +718,7 @@ struct Operation {
     parent_id: Option<Id>,
     durability: Option<crate::DurabilityAttempt>,
     native_task: Option<crate::NativeTask>,
+    capture_retirement: Option<crate::CaptureRetirement>,
     work: Option<crate::WorkSummary>,
     publication: Option<crate::Publication>,
     rpc: Option<String>,
@@ -756,6 +769,7 @@ struct Terminal {
     has_error_kind: bool,
     has_durability_fields: bool,
     has_native_task: bool,
+    has_capture_retirement: bool,
     has_work: bool,
     has_publication: bool,
 }
@@ -774,11 +788,15 @@ struct Fields {
     rpc: Option<String>,
     durability: Option<crate::DurabilityAttempt>,
     native_task: Option<crate::NativeTask>,
+    capture_retirement: Option<crate::CaptureRetirement>,
     work: Option<crate::WorkSummary>,
     publication: Option<crate::Publication>,
 }
 impl Visit for Fields {
     fn record_bool(&mut self, field: &Field, value: bool) {
+        if let Some(capture) = self.capture_retirement.as_mut() {
+            capture.record_bool(field, value);
+        }
         if let Some(task) = self.native_task.as_mut() {
             task.record_bool(field, value);
         }
@@ -797,6 +815,9 @@ impl Visit for Fields {
         }
     }
     fn record_u64(&mut self, field: &Field, value: u64) {
+        if let Some(capture) = self.capture_retirement.as_mut() {
+            capture.record_u64(field, value);
+        }
         if let Some(attempt) = self.durability.as_mut() {
             attempt.record_u64(field, value);
         }
@@ -808,6 +829,9 @@ impl Visit for Fields {
         }
     }
     fn record_i64(&mut self, field: &Field, value: i64) {
+        if let Some(capture) = self.capture_retirement.as_mut() {
+            capture.record_i64(field, value);
+        }
         if let Some(attempt) = self.durability.as_mut() {
             attempt.record_i64(field, value);
         }
@@ -820,6 +844,7 @@ impl Visit for Fields {
 
 impl Visit for Terminal {
     fn record_bool(&mut self, field: &Field, _: bool) {
+        self.has_capture_retirement |= field.name() == "capture.cleanup_completed";
         self.has_native_task |= matches!(
             field.name(),
             "native.queued" | "native.started" | "native.panicked"
@@ -828,10 +853,12 @@ impl Visit for Terminal {
     fn record_i64(&mut self, field: &Field, _: i64) {
         self.has_durability_fields |= field.name() == "error.os";
         self.has_native_task |= field.name() == "error.os";
+        self.has_capture_retirement |= field.name() == "error.os";
     }
     fn record_u64(&mut self, field: &Field, _: u64) {
         self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
         self.has_native_task |= field.name() == "error.os";
+        self.has_capture_retirement |= field.name() == "error.os";
         self.has_work |= matches!(
             field.name(),
             "work.items" | "work.bytes" | "work.durability"
@@ -896,6 +923,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let Some(span) = context.span(id) else { return };
         let mut fields = Fields {
             rpc: None,
+            capture_retirement: (self.0.capture_retirement_details()
+                && metadata.name() == "acyclic.runtime.capture")
+                .then(crate::CaptureRetirement::default),
             publication: (self.0.publication_details()
                 && metadata.name() == "acyclic.harness.executor.publication")
                 .then(crate::Publication::default),
@@ -925,6 +955,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             },
             durability: fields.durability,
             native_task: fields.native_task,
+            capture_retirement: fields.capture_retirement,
             work: fields.work,
             publication: fields.publication,
             rpc: fields.rpc,
@@ -943,6 +974,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 parent_id: operation.parent_id.take(),
                 durability: operation.durability.take(),
                 native_task: operation.native_task.take(),
+                capture_retirement: operation.capture_retirement.take(),
                 work: operation.work.take(),
                 publication: operation.publication.take(),
                 binding: binding.clone(),
@@ -969,6 +1001,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             && !(terminal.has_work && self.0.work_details())
             && !(terminal.has_publication && self.0.publication_details())
             && !(terminal.has_native_task && self.0.native_task_details())
+            && !(terminal.has_capture_retirement && self.0.capture_retirement_details())
         {
             return;
         }
@@ -991,6 +1024,9 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         if let Some(attempt) = operation.durability.as_mut() {
             values.record(attempt);
         }
+        if let Some(capture) = operation.capture_retirement.as_mut() {
+            values.record(capture);
+        }
         if let Some(task) = operation.native_task.as_mut() {
             values.record(task);
         }
@@ -1011,6 +1047,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let parent_id = operation.parent_id.take();
         let durability = operation.durability.take();
         let native_task = operation.native_task.take();
+        let capture_retirement = operation.capture_retirement.take();
         let work = operation.work.take();
         let publication = operation.publication.take();
         let rpc = operation.rpc.take();
@@ -1024,6 +1061,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             parent_id,
             durability,
             native_task,
+            capture_retirement,
             work,
             publication,
             binding,
@@ -1051,6 +1089,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 parent_id: operation.parent_id,
                 durability: operation.durability,
                 native_task: operation.native_task,
+                capture_retirement: operation.capture_retirement,
                 work: operation.work,
                 publication: operation.publication,
                 binding: self.0.binding_details().then_some(binding).flatten(),

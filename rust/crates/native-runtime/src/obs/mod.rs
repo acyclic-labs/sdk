@@ -5,6 +5,8 @@ use tracing::{Dispatch, Span};
 
 mod scoped;
 pub use scoped::Scoped;
+mod capture;
+pub use capture::CaptureObservation;
 mod report_port;
 mod wait_report;
 pub use report_port::{ReportAck, ReportOutcome, ReportPort, ReportRequest};
