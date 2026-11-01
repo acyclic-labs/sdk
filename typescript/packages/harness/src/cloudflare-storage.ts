@@ -16,6 +16,22 @@ export interface SqliteStorage {
 /** Values accepted by Durable Objects SQLite parameter binding. */
 export type SqlValue = string | number | ArrayBuffer | null;
 
+/** Exclusive prefix end in SQLite's UTF-8 binary order; no end means all remaining keys. */
+function prefixEnd(prefix: string): string | undefined {
+  for (let start = prefix.length; start > 0;) {
+    const last = prefix.charCodeAt(--start);
+    if (last >= 0xdc00 && last <= 0xdfff && start > 0) {
+      const previous = prefix.charCodeAt(start - 1);
+      if (previous >= 0xd800 && previous <= 0xdbff) --start;
+    }
+    const scalar = prefix.codePointAt(start)!;
+    if (scalar < 0x10ffff) {
+      return prefix.slice(0, start) + String.fromCodePoint(scalar === 0xd7ff ? 0xe000 : scalar + 1);
+    }
+  }
+  return undefined;
+}
+
 /** Raw metadata rows and alarm I/O. Host rules live in the shared event core. */
 export class SqliteEventStorage implements EventStorage {
   constructor(private readonly storage: SqliteStorage & {
@@ -36,7 +52,11 @@ export class SqliteEventStorage implements EventStorage {
     this.storage.sql.exec("DELETE FROM acyclic_host_metadata WHERE domain = ? AND key = ?", this.domain, key);
   }
   entries(prefix: string, after: string, limit: number): [string, string][] {
-    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, `${prefix}\uffff`, after, limit), row => {
+    const end = prefixEnd(prefix);
+    const rows = end === undefined
+      ? this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, after, limit)
+      : this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, end, after, limit);
+    return Array.from(rows, row => {
       if (typeof row.key !== "string" || typeof row.value !== "string") throw new Error("STEP sqlite-metadata-read failed; recovery: restore metadata from a verified SQLite backup");
       return [row.key, row.value];
     });

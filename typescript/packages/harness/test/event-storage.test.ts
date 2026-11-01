@@ -20,6 +20,38 @@ function storage(database: Database, domain: string) {
   } satisfies SqliteStorage & { setAlarm(time: number): Promise<void>; deleteAlarm(): Promise<void> }, domain);
 }
 
+test("SQLite metadata pages retain Unicode prefixes and exact cursors", () => {
+  const database = new Database(":memory:");
+  try {
+    const metadata = storage(database, "unicode"), foreign = storage(database, "foreign");
+    const maximum = "\u{10ffff}";
+    const keys = ["outside", "page", "page/", "page/a", "page/\0tail", "page/\ud7ff", "page/\ue000",
+      "page/\uffff", "page/\ufffftail", "page/\u{10000}", "page/😀", `page/${maximum}`,
+      `page/${maximum}tail`, "page0", "尾😀", "尾😀/child", "尾😁", "\uffff", "\ufffftail",
+      maximum, `${maximum}tail`, `${maximum}${maximum}`, `${maximum}${maximum}tail`];
+    for (const key of [...keys].reverse()) metadata.put(key, `value:${key}`);
+    for (const key of keys) foreign.put(key, "foreign");
+    const compare = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+    const ordered = keys.sort(compare);
+    const reopened = storage(database, "unicode");
+    for (const prefix of ["", "page/", "page/\0", "page/\ud7ff", "page/\uffff", `page/${maximum}`,
+      "尾😀", "\uffff", maximum, maximum + maximum, "missing/"]) {
+      for (const limit of [1, 2, 5]) {
+        const selected = ordered.filter(key => key.startsWith(prefix));
+        let after = "";
+        for (let offset = 0; offset < selected.length; offset += limit) {
+          const page = reopened.entries(prefix, after, limit);
+          expect(page).toEqual(selected.slice(offset, offset + limit).map(key => [key, `value:${key}`]));
+          after = page.at(-1)![0];
+        }
+        expect(reopened.entries(prefix, after, limit)).toEqual([]);
+        expect(reopened.entries(prefix, "page/😀", limit)).toEqual(selected
+          .filter(key => compare(key, "page/😀") > 0).slice(0, limit).map(key => [key, `value:${key}`]));
+      }
+    }
+  } finally { database.close(); }
+});
+
 test("SQLite wake routing pages actual changed owners and preserves later generations through reopen", async () => {
   const database = new Database(":memory:");
   try {
