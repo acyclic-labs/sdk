@@ -40,7 +40,7 @@ impl FileProjectionPolicy {
                 }))
             }
             "application/pdf" => {
-                let bounds = crate::conversation::Limits::default().render_bytes;
+                let bounds = file.descriptor().byte_length().max(1);
                 Self::Native(Box::new(NativeMediaPolicy {
                     intent: NativeMediaIntent::Document,
                     maximum_bytes: bounds,

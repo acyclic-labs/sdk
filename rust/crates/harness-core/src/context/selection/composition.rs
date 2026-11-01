@@ -1,4 +1,5 @@
 use super::*;
+use crate::context::ContextMessages;
 
 /// Validates and places renderer output; shared by native stages and narrow WASM bindings.
 pub fn apply_context_projection(
@@ -142,6 +143,23 @@ fn preflight_context_composition(
             contribution.messages.as_slice(),
         ),
     };
+    struct JoinedMetadata<'a>(
+        &'a std::collections::BTreeMap<String, FileRef>,
+        &'a std::collections::BTreeMap<String, FileRef>,
+    );
+    impl Serialize for JoinedMetadata<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(None)?;
+            for (key, value) in self.0.iter().chain(self.1) {
+                map.serialize_entry(key, value)?;
+            }
+            map.end()
+        }
+    }
     #[derive(Serialize)]
     struct JoinedContext<'a> {
         messages: ContextMessages<'a>,

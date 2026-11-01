@@ -144,7 +144,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
@@ -163,7 +166,9 @@ impl Limits {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_file_metadata(file, work)?;
-        if range.length > self.file_bytes
+        if self
+            .file_bytes
+            .is_some_and(|maximum| range.length > maximum)
             || range
                 .offset
                 .checked_add(range.length)

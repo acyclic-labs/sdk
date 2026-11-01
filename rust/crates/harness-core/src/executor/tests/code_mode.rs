@@ -82,7 +82,7 @@ fn input() -> TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text("compose".into()),
         selected_context: None,
-        max_steps: 2,
+        max_steps: Some(2),
     }
 }
 
