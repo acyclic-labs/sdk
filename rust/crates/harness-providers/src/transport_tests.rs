@@ -318,6 +318,38 @@ async fn response_status_keeps_its_original_interruption_before_and_after_output
             drop(error);
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
+        // Read-only counting may repeat an interrupted successful response, but
+        // a final refusal cannot become retryable when its diagnostic is cut.
+        // The queued valid count detects a lost status on either transport path.
+        for status in [400, 413] {
+            for cut in [0, 12] {
+                let body = "{\"input_tokens\":7}";
+                let (port, accepted) =
+                    serve(vec![Reply::Cut(status, body, cut), Reply::Full(200, body)]).await?;
+                let (provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+                let (prepared, _) = super::request(&provider)?;
+                let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                let baseline = work.live_allocation_bytes();
+                let result = if native {
+                    provider
+                        .count_tokens_with_native_work(&prepared, &work)?
+                        .await
+                        .map(drop)
+                } else {
+                    provider.count_tokens(&prepared).await.map(drop)
+                };
+                let error = result.expect_err("final count refusal was redelivered");
+                assert_eq!(
+                    failure(&error),
+                    Some(ModelTransportFailure::Interrupted),
+                    "native={native}, status={status}, cut={cut}: {error}"
+                );
+                assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
+                assert_eq!(accepted.load(Ordering::SeqCst), 1);
+                drop(error);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            }
+        }
     }
     Ok(())
 }

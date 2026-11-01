@@ -283,11 +283,14 @@ async fn exchange_count(
                 }
             }
             Ok(response) => {
+                let retryable = crate::retry::retryable_status(response.status);
                 let retry_after = response.retry_after;
-                (
-                    crate::http_failure(response, provider.config.max_event_bytes, work).await,
-                    retry_after,
-                )
+                let failure =
+                    crate::http_failure(response, provider.config.max_event_bytes, work).await;
+                if !retryable {
+                    return Err(failure);
+                }
+                (failure, retry_after)
             }
             Err(failure) => (failure, None),
         };
