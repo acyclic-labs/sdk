@@ -13,7 +13,7 @@ mod usage_export;
 mod view;
 
 pub use lifecycle::{
-    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, StartupReport,
+    CliCompletion, CliFailure, CliPhase, DiagnosticConfigurationError, FailureReport,
 };
 
 use acyclic_harness::{
@@ -45,8 +45,10 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// The original completion endpoint is admitted before runtime/setup. Setup
 /// rejection uses its same announcement before the shared terminal; an absent
 /// endpoint/runtime is explicitly incomplete observation. The original cause
-/// remains available through [`CliCompletion::into_result`]. No terminal output
-/// write, implicit text storage or replacement reporter is started on error.
+/// remains available through [`CliCompletion::into_result`]. A failure returned
+/// after setup uses that same channel before completion, independently of an
+/// earlier diagnostic snapshot. No post-terminal output, implicit text storage
+/// or replacement reporter is started on error.
 /// Diagnostic delivery ends with the original operation, report and shutdown
 /// owner; its best-effort failure never replaces the original operation result.
 pub fn main_with(
@@ -59,7 +61,7 @@ pub fn main_with(
             return CliCompletion::rejected(
                 CliPhase::ReportAdmission,
                 Box::new(error),
-                StartupReport::Incomplete(None),
+                FailureReport::Incomplete(None),
             );
         }
     };
@@ -75,7 +77,7 @@ pub fn main_with(
             return CliCompletion::rejected(
                 CliPhase::Runtime,
                 Box::new(error),
-                StartupReport::Incomplete(None),
+                FailureReport::Incomplete(None),
             );
         }
     };
@@ -90,7 +92,7 @@ pub fn main_with(
                 return CliCompletion::rejected(
                     CliPhase::ReportRegistration,
                     Box::new(error),
-                    StartupReport::Incomplete(None),
+                    FailureReport::Incomplete(None),
                 );
             }
         };
@@ -140,9 +142,9 @@ pub fn main_with(
         };
         let operation = phase(|| run(args, seams, shutdown.clone()));
         let original = lifecycle::observe(&report, Ok(port), shutdown, graceful, operation);
-        let ((result, _report_result), _diagnostic_failure) =
+        let ((result, _report_result, failure_report), _diagnostic_failure) =
             lifecycle::diagnostics(original, diagnostics).await;
-        CliCompletion::executed(result)
+        CliCompletion::executed(result, failure_report)
     }));
     runtime.shutdown_background();
     result

@@ -17,6 +17,7 @@ export class ProcessReport {
   #readyReject;
   ready = new Promise((resolve, reject) => { this.#readyResolve = resolve; this.#readyReject = reject; });
   #terminal;
+  #executionFailure;
   #resolve;
   #completion = new Promise(resolve => { this.#resolve = resolve; });
   #channel;
@@ -84,6 +85,15 @@ export class ProcessReport {
     return this.#channel ? this.#drained.then(close) : close();
   }
   #receive(message) {
+    if (!this.#executionFailure && !this.#terminal?.rejection && message.generation === this.generation
+      && message.failed?.phase === "execution" && typeof message.failed.cause === "string"
+      && (message.failed.raw_os_error === null || Number.isInteger(message.failed.raw_os_error))) {
+      // A completed snapshot is diagnostic, not the selected CLI's result.
+      // Retain the first returned cause even when that snapshot arrived first.
+      this.#executionFailure = message.failed;
+      this.#finish("write-failed", "execution-failed");
+      return;
+    }
     if (this.#terminal) return;
     if (!this.#ready && message.generation === this.generation
       && message.rejected && typeof message.rejected.phase === "string" && message.rejected.phase.length > 0
@@ -130,10 +140,11 @@ export class ProcessReport {
     this.#readyReject = undefined;
     const error = new Error(`report capability ended: ${cause ?? outcome}`);
     const rejection = this.#terminal?.rejection;
-    error.code = rejection ? "PROCESS_STARTUP_REJECTED" : "REPORT_CONTROL_ENDED";
+    error.code = rejection ? "PROCESS_STARTUP_REJECTED"
+      : this.#executionFailure ? "PROCESS_EXECUTION_FAILED" : "REPORT_CONTROL_ENDED";
     error.outcome = outcome;
-    if (rejection) {
-      error.cause = rejection;
+    if (rejection || this.#executionFailure) {
+      error.cause = rejection ?? this.#executionFailure;
       error.generation = this.generation;
     }
     reject(error);
@@ -153,7 +164,7 @@ export class ProcessReport {
       this.#ended ? "control-eof-before-acknowledgement" : "original-drain-deadline");
   }
   get termination() {
-    if (!this.#request && !this.#terminal?.rejection) return undefined;
+    if (!this.#request && !this.#terminal?.rejection && !this.#executionFailure) return undefined;
     const terminal = this.#terminal ?? { outcome: "unacknowledged", waits: [] };
     return {
       report_requested: !!this.#request,
@@ -165,6 +176,7 @@ export class ProcessReport {
       stuck_on: terminal.waits,
       missing_wait_report: terminal.outcome !== "report" && terminal.outcome !== "empty",
       ...(terminal.rejection ? { startup_rejection: terminal.rejection } : {}),
+      ...(this.#executionFailure ? { execution_failure: this.#executionFailure } : {}),
     };
   }
 }

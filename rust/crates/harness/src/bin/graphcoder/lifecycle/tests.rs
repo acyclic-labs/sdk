@@ -108,13 +108,13 @@ fn original_setup_refusal_survives_announcement_and_sink_loss() {
                     .unwrap_err();
                 assert!(std::ptr::eq(original, failure.cause.as_ref()));
                 assert!(failure.cause.is::<DiagnosticConfigurationError>());
-                match (sink, failure.startup_report.unwrap()) {
-                    ("absent", StartupReport::Incomplete(None))
-                    | ("open", StartupReport::Written) => {}
-                    ("closed", StartupReport::Incomplete(Some(error))) => {
+                match (sink, failure.failure_report) {
+                    ("absent", FailureReport::Incomplete(None))
+                    | ("open", FailureReport::Written) => {}
+                    ("closed", FailureReport::Incomplete(Some(error))) => {
                         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
                     }
-                    ("blocked", StartupReport::Incomplete(Some(error))) => {
+                    ("blocked", FailureReport::Incomplete(Some(error))) => {
                         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
                     }
                     (_, other) => panic!("original sink disposition was lost: {sink}: {other:?}"),
@@ -176,7 +176,7 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
             terminate.send(()).unwrap();
             producer
         };
-        let ((result, diagnostic), producer) = tokio::join!(
+        let ((result, diagnostic, _failure_report), producer) = tokio::join!(
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );
@@ -184,6 +184,157 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
         diagnostic.unwrap();
         assert!(producer.is_closed());
         assert!(report.snapshot().is_empty());
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn returned_execution_cause_survives_the_original_snapshot_and_sink_disposition() {
+    use std::{
+        future::{Future as _, poll_fn},
+        io::{Read as _, Write as _},
+        task::Poll,
+    };
+    let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+    runtime.block_on(async {
+        for sink in ["absent", "request", "ack", "closed", "blocked"] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let cause: Failure = Box::new(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(file.path())
+                    .unwrap()
+                    .read(&mut [0])
+                    .unwrap_err(),
+            );
+            let original = cause.as_ref() as *const dyn std::error::Error;
+            let message = cause.to_string();
+            let native = cause.downcast_ref::<io::Error>().unwrap().raw_os_error();
+            let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
+            owner.set_nonblocking(true).unwrap();
+            child.set_nonblocking(true).unwrap();
+            let mut filler = child.try_clone().unwrap();
+            let port = ReportPort::new(
+                GENERATION.into(),
+                tokio::net::UnixStream::from_std(child).unwrap(),
+            )
+            .unwrap();
+            let mut owner = Some(BufReader::new(
+                tokio::net::UnixStream::from_std(owner).unwrap(),
+            ));
+            let (release, released) = tokio::sync::oneshot::channel();
+            let (terminate, signal) = tokio::sync::oneshot::channel();
+            let shutdown = async {
+                signal.await.unwrap();
+                Ok(143)
+            }
+            .boxed()
+            .shared();
+            let operation = async {
+                released.await.unwrap();
+                Err(cause)
+            };
+            let report = WaitReport::default();
+            let mut observed = Box::pin(observe(
+                &report,
+                Ok((sink != "absent").then_some(port)),
+                shutdown,
+                false,
+                operation,
+            ));
+            let mut filled = 0;
+            let mut controller = Box::pin(async {
+                if sink != "absent" {
+                    let peer = owner.as_mut().unwrap();
+                    let mut line = String::new();
+                    peer.read_line(&mut line).await.unwrap();
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&line).unwrap()["generation"],
+                        GENERATION
+                    );
+                    if sink == "ack" {
+                        peer.get_mut()
+                            .write_all(
+                                format!("{}\n", serde_json::to_string(&request()).unwrap())
+                                    .as_bytes(),
+                            )
+                            .await
+                            .unwrap();
+                        line.clear();
+                        peer.read_line(&mut line).await.unwrap();
+                        assert_eq!(
+                            serde_json::from_str::<ReportAck>(&line).unwrap().outcome,
+                            ReportOutcome::Empty
+                        );
+                    }
+                    if sink == "blocked" {
+                        loop {
+                            match filler.write(&[b'x'; 8192]) {
+                                Ok(0) => panic!("original report socket accepted no bytes"),
+                                Ok(n) => filled += n,
+                                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                                Err(e) => panic!("original report fill: {e}"),
+                            }
+                        }
+                        assert!(filled > 0);
+                    }
+                }
+                if sink == "closed" {
+                    drop(owner.take());
+                }
+                release.send(()).unwrap();
+            });
+            poll_fn(|cx| {
+                assert!(
+                    observed.as_mut().poll(cx).is_pending(),
+                    "operation cannot finish before its original release"
+                );
+                controller.as_mut().poll(cx)
+            })
+            .await;
+            drop(controller);
+            if sink == "blocked" {
+                assert!(poll_fn(|cx| Poll::Ready(observed.as_mut().poll(cx).is_pending())).await);
+                terminate.send(()).unwrap();
+            }
+            let (result, diagnostic, delivery) = observed.await;
+            diagnostic.unwrap();
+            let failure = CliCompletion::executed(result, delivery)
+                .into_result()
+                .unwrap_err();
+            assert!(std::ptr::eq(original, failure.cause.as_ref()));
+            assert_eq!(
+                failure
+                    .cause
+                    .downcast_ref::<io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                native
+            );
+            assert_eq!(failure.phase, CliPhase::Execution);
+            match (sink, failure.failure_report) {
+                ("absent", FailureReport::Incomplete(None)) => {}
+                ("closed", FailureReport::Incomplete(Some(e))) => {
+                    assert_eq!(e.kind(), io::ErrorKind::BrokenPipe)
+                }
+                ("blocked", FailureReport::Incomplete(Some(e))) => {
+                    assert_eq!(e.kind(), io::ErrorKind::Interrupted)
+                }
+                ("request" | "ack", FailureReport::Written) => {
+                    let mut line = String::new();
+                    owner.as_mut().unwrap().read_line(&mut line).await.unwrap();
+                    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(frame["generation"], GENERATION);
+                    assert_eq!(frame["failed"]["phase"], "execution");
+                    assert_eq!(frame["failed"]["cause"], message);
+                    assert_eq!(frame["failed"]["raw_os_error"], native.unwrap());
+                    assert!(frame.get("rejected").is_none());
+                }
+                (_, other) => panic!("lost original failure disposition: {sink}: {other:?}"),
+            }
+            drop(filler);
+        }
     });
 }
 
@@ -204,7 +355,7 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-18", completion).await?;
             Ok(0)
         };
-        let (result, _) = observe(
+        let (result, _, _failure_report) = observe(
             &report,
             Ok(None),
             std::future::pending().boxed().shared(),
@@ -407,7 +558,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     release.take().unwrap().send(()).unwrap();
                 }
             }
-            let ((result, report_result), failure) = host.await;
+            let ((result, report_result, _failure_report), failure) = host.await;
             if let Err(error) = report_result {
                 // EOF and the original cancellation event may be ready in
                 // either order. With no owner request, interruption makes no
@@ -523,7 +674,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                     original,
                     Some((receiver.unwrap(), output)),
                 ));
-                let ((result, report_result), failure) = poll_fn(|cx| {
+                let ((result, report_result, _failure_report), failure) = poll_fn(|cx| {
                     let Poll::Ready(result) = host.as_mut().poll(cx) else {
                         panic!("diagnostic output held the completed original result")
                     };
@@ -584,7 +735,7 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
                 terminate.send(()).unwrap();
                 release.send(()).unwrap();
             };
-            let ((result, diagnostic), ()) = tokio::join!(
+            let ((result, diagnostic, _failure_report), ()) = tokio::join!(
                 observe(&report, Ok(Some(port)), shutdown, true, operation),
                 controller
             );
@@ -661,7 +812,7 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
             terminate.send(()).unwrap();
             owner
         };
-        let ((result, diagnostic), owner) = tokio::join!(
+        let ((result, diagnostic, _failure_report), owner) = tokio::join!(
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );

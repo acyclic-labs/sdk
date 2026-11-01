@@ -46,10 +46,13 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             } else {
                 let ack = port.snapshot(request.unwrap(), &report);
                 port.acknowledge(&ack).await.unwrap();
+                if mode == "fail-ack" {
+                    port.fail_execution(&super::super::tests::native_read_refusal()).await.unwrap();
+                }
             }
             return;
         }
-        for mode in ["ack", "live", "wrong-generation", "expired", "withdrawn", "foreign", "reject"] {
+        for mode in ["ack", "live", "wrong-generation", "expired", "withdrawn", "foreign", "reject", "fail-ack"] {
             let mut random = [0; 16];
             getrandom::fill(&mut random).unwrap();
             let generation = format!("{:032x}", u128::from_ne_bytes(random));
@@ -131,6 +134,16 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
                         assert!(ack.waits.is_empty());
                     }
                     line.clear();
+                    if mode == "fail-ack" {
+                        assert_ne!(pipe.read_line(&mut line).await.unwrap(), 0);
+                        let failure: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let original = super::super::tests::native_read_refusal();
+                        assert_eq!(failure["generation"], generation);
+                        assert_eq!(failure["failed"]["phase"], "execution");
+                        assert_eq!(failure["failed"]["cause"], original.to_string());
+                        assert_eq!(failure["failed"]["raw_os_error"], original.raw_os_error().unwrap());
+                        line.clear();
+                    }
                     assert_eq!(pipe.read_line(&mut line).await.unwrap(), 0);
                 }
             }

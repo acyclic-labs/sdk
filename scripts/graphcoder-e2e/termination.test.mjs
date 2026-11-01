@@ -210,6 +210,36 @@ test("original native startup rejection retains cause and selected physical clos
   }
 });
 
+test("the selected native execution failure survives readiness and an earlier diagnostic acknowledgement", { skip: process.platform === "win32" }, async () => {
+  for (const owned of [false, true]) for (const mode of ["fail-before-ready", "fail-ready", "fail-ack", "fail-foreign"]) {
+    const scope = new Processes();
+    const running = launch(scope, owned, mode);
+    try {
+      if (mode === "fail-before-ready") {
+        await assert.rejects(running.reportReady, error => error.code === "PROCESS_EXECUTION_FAILED"
+          && error.cause.phase === "execution" && error.cause.cause.length > 0);
+      } else {
+        await running.reportReady;
+        if (mode === "fail-ack") await running.requestReport(Number.MAX_SAFE_INTEGER);
+      }
+      const result = await running.closed;
+      assert.equal(result.code, 0, result.stderr);
+      if (mode === "fail-foreign") {
+        assert.equal(result.termination, undefined, "a foreign generation cannot supply the selected returned cause");
+      } else {
+        assert.equal(result.termination.execution_failure.phase, "execution");
+        assert.notEqual(result.termination.execution_failure.cause, "");
+        assert.ok(Number.isInteger(result.termination.execution_failure.raw_os_error)
+          && result.termination.execution_failure.raw_os_error !== 0);
+        assert.equal(result.termination.startup_rejection, undefined);
+        assert.equal(result.termination.report_acknowledged, mode === "fail-ack");
+        if (mode === "fail-ack") assert.equal(result.termination.report_outcome, "empty");
+      }
+      assert.equal(scope.children.size, 0, "neither snapshot nor cause replaces physical close");
+    } finally { await scope.close(); }
+  }
+});
+
 test("selected report acknowledgement distinguishes live, empty, refusal and producer loss before physical drain", { skip: process.platform === "win32" }, async () => {
   for (const owned of [false, true]) for (const [mode, expected] of [
     ["live", "report"], ["1", "empty"], ["expired", "unsupported"],

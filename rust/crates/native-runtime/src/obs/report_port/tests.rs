@@ -93,7 +93,7 @@ async fn withdrawn_request_and_broken_sink_end_with_the_original_transport_cause
 #[test]
 fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completion() {
     use std::future::{Future as _, poll_fn};
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -107,102 +107,76 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
     runtime.block_on(async {
-        for (reject_startup, close_sink) in
-            [(false, false), (false, true), (true, false), (true, true)]
-        {
-            let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
-            owner.set_nonblocking(true).unwrap();
-            child.set_nonblocking(true).unwrap();
-            let mut filler = child.try_clone().unwrap();
-            let mut port = ReportPort::new(
-                GENERATION.into(),
-                tokio::net::UnixStream::from_std(child).unwrap(),
-            )
-            .unwrap();
-            let mut owner = BufReader::new(tokio::net::UnixStream::from_std(owner).unwrap());
-            let mut line = String::new();
-            if !reject_startup {
-                port.ready().await.unwrap();
-                owner.read_line(&mut line).await.unwrap();
-                assert_eq!(
-                    serde_json::from_str::<serde_json::Value>(&line).unwrap()["generation"],
-                    GENERATION
-                );
-            }
-            let request = ReportRequest {
-                request_id: "fedcba9876543210fedcba9876543210".into(),
-                generation: GENERATION.into(),
-                deadline_unix_ms: u64::MAX,
-            };
-            let received = if !reject_startup {
-                let mut bytes = serde_json::to_vec(&request).unwrap();
-                bytes.push(b'\n');
-                owner.get_mut().write_all(&bytes).await.unwrap();
-                Some(port.request().await.unwrap().unwrap())
-            } else {
-                None
-            };
-            let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
-            let wait = crate::obs::waiting("channel-close", "kernel-credit", completion);
-            let ack = received.map(|received| port.snapshot(received, &report));
-            if let Some(ack) = &ack {
-                assert_eq!(ack.waits.len(), 1);
-            }
-            let cause = native_read_refusal();
-            let original = (cause.kind(), cause.raw_os_error(), cause.to_string());
-
-            // Exhaust actual kernel credit before the original ACK is submitted.
-            // Each successful iteration transfers bytes; WouldBlock is the cut,
-            // never a readiness retry or an inferred quiet interval.
-            let chunk = [b'x'; 8192];
-            let mut filled = 0;
-            loop {
-                match filler.write(&chunk) {
-                    Ok(0) => panic!("the live report socket accepted no bytes"),
-                    Ok(written) => filled += written,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(error) => panic!("fill report socket: {error}"),
-                }
-            }
-            assert!(filled > 0);
-            let owner = {
-                let delivery = async {
-                    if reject_startup {
-                        port.reject_startup("setup", &cause).await
-                    } else {
-                        port.acknowledge(ack.as_ref().unwrap()).await
-                    }
-                };
-                tokio::pin!(delivery);
-                assert!(poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await);
-
-                let physical = Arc::new(AtomicUsize::new(0));
-                let completed = Arc::clone(&physical);
-                let position = u64::from(close_sink) + 2 * u64::from(reject_startup);
-                let result = crate::spawn_persistence(
-                    "report",
-                    "unrelated",
-                    crate::PersistenceKey::new(Arc::as_ptr(&physical) as usize, position),
-                    move || {
-                        completed.fetch_add(1, Ordering::SeqCst);
-                        position
-                    },
+        for frame in ["ack", "setup", "execution"] {
+            for terminal in ["drain", "close", "cancel"] {
+                let reject_startup = frame == "setup";
+                let close_sink = terminal == "close";
+                let partial = frame == "ack" && terminal == "cancel";
+                let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
+                owner.set_nonblocking(true).unwrap();
+                child.set_nonblocking(true).unwrap();
+                let mut prefix_reader = partial.then(|| owner.try_clone().unwrap());
+                let mut filler = child.try_clone().unwrap();
+                let mut port = ReportPort::new(
+                    GENERATION.into(),
+                    tokio::net::UnixStream::from_std(child).unwrap(),
                 )
-                .await
                 .unwrap();
-                assert_eq!(result, position);
-                assert_eq!(physical.load(Ordering::SeqCst), 1);
-                assert!(poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await);
-
-                if close_sink {
-                    drop(owner);
+                let mut owner = BufReader::new(tokio::net::UnixStream::from_std(owner).unwrap());
+                let mut line = String::new();
+                if !reject_startup {
+                    port.ready().await.unwrap();
+                    owner.read_line(&mut line).await.unwrap();
                     assert_eq!(
-                        delivery.await.unwrap_err().kind(),
-                        io::ErrorKind::BrokenPipe
+                        serde_json::from_str::<serde_json::Value>(&line).unwrap()["generation"],
+                        GENERATION
                     );
-                    None
+                }
+                let request = ReportRequest {
+                    request_id: "fedcba9876543210fedcba9876543210".into(),
+                    generation: GENERATION.into(),
+                    deadline_unix_ms: u64::MAX,
+                };
+                let received = if !reject_startup {
+                    let mut bytes = serde_json::to_vec(&request).unwrap();
+                    bytes.push(b'\n');
+                    owner.get_mut().write_all(&bytes).await.unwrap();
+                    Some(port.request().await.unwrap().unwrap())
                 } else {
+                    None
+                };
+                let cause = native_read_refusal();
+                let original = (cause.kind(), cause.raw_os_error(), cause.to_string());
+
+                // Exhaust actual kernel credit before the original ACK is submitted.
+                // Each successful iteration transfers bytes; WouldBlock is the cut,
+                // never a readiness retry or an inferred quiet interval.
+                let chunk = [b'x'; 8192];
+                let mut filled = 0;
+                loop {
+                    match filler.write(&chunk) {
+                        Ok(0) => panic!("the live report socket accepted no bytes"),
+                        Ok(written) => filled += written,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("fill report socket: {error}"),
+                    }
+                }
+                assert!(filled > 0);
+                let key = if partial {
+                    // The original record exceeds measured kernel credit, so
+                    // one write must stop inside its actual encoded frame.
+                    "k".repeat(filled * 2)
+                } else {
+                    "kernel-credit".into()
+                };
+                let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
+                let wait = crate::obs::waiting("channel-close", key, completion);
+                let ack = received.map(|received| port.snapshot(received, &report));
+                if let Some(ack) = &ack {
+                    assert_eq!(ack.waits.len(), 1);
+                }
+                if partial {
                     let mut drain = [0; 8192];
                     while filled > 0 {
                         let count = filled.min(drain.len());
@@ -210,50 +184,143 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                         assert!(drain[..count].iter().all(|byte| *byte == b'x'));
                         filled -= count;
                     }
-                    line.clear();
-                    let (delivered, read) = tokio::join!(delivery, owner.read_line(&mut line));
-                    delivered.unwrap();
-                    assert_ne!(read.unwrap(), 0);
-                    if reject_startup {
-                        let delivered: serde_json::Value = serde_json::from_str(&line).unwrap();
-                        assert_eq!(delivered["generation"], GENERATION);
-                        assert_eq!(delivered["rejected"]["phase"], "setup");
-                        assert_eq!(delivered["rejected"]["cause"], cause.to_string());
-                        assert_eq!(
-                            delivered["rejected"]["raw_os_error"],
-                            cause.raw_os_error().unwrap()
-                        );
-                    } else {
-                        assert_eq!(
-                            line,
-                            format!(
-                                "{}\n",
-                                serde_json::to_string(ack.as_ref().unwrap()).unwrap()
-                            )
-                        );
-                        let delivered: ReportAck = serde_json::from_str(&line).unwrap();
-                        assert_eq!(delivered.request_id, request.request_id);
-                        assert_eq!(delivered.generation, request.generation);
-                        assert_eq!(delivered.outcome, ReportOutcome::Report);
-                        assert_eq!(delivered.waits.len(), 1);
-                        assert_eq!(delivered.waits[0].primitive, "channel-close");
-                        assert_eq!(delivered.waits[0].key, "kernel-credit");
-                    }
-                    Some(owner)
                 }
-            };
-            assert_eq!(
-                (cause.kind(), cause.raw_os_error(), cause.to_string()),
-                original
-            );
-            drop(port);
-            drop(filler);
-            if let Some(mut owner) = owner {
-                line.clear();
-                assert_eq!(owner.read_line(&mut line).await.unwrap(), 0);
+                let mut prefix = Vec::new();
+                let owner = {
+                    let delivery = async {
+                        if reject_startup {
+                            port.reject_startup("setup", &cause).await
+                        } else if frame == "execution" {
+                            port.fail_execution(&cause).await
+                        } else {
+                            port.acknowledge(ack.as_ref().unwrap()).await
+                        }
+                    };
+                    tokio::pin!(delivery);
+                    assert!(
+                        poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await
+                    );
+
+                    let physical = Arc::new(AtomicUsize::new(0));
+                    let completed = Arc::clone(&physical);
+                    let position = u64::from(close_sink) + 2 * u64::from(reject_startup);
+                    let result = crate::spawn_persistence(
+                        "report",
+                        "unrelated",
+                        crate::PersistenceKey::new(Arc::as_ptr(&physical) as usize, position),
+                        move || {
+                            completed.fetch_add(1, Ordering::SeqCst);
+                            position
+                        },
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(result, position);
+                    assert_eq!(physical.load(Ordering::SeqCst), 1);
+                    assert!(
+                        poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await
+                    );
+
+                    if let Some(reader) = prefix_reader.as_mut() {
+                        let mut first = [0];
+                        // A direct nonblocking OS read proves accepted frame
+                        // bytes without waiting for another producer poll.
+                        assert_eq!(reader.read(&mut first).unwrap(), 1);
+                        assert_eq!(first, [b'{']);
+                        prefix.extend_from_slice(&first);
+                    }
+                    if terminal == "cancel" {
+                        Some(owner)
+                    } else if close_sink {
+                        drop(owner);
+                        assert_eq!(
+                            delivery.await.unwrap_err().kind(),
+                            io::ErrorKind::BrokenPipe
+                        );
+                        None
+                    } else {
+                        let mut drain = [0; 8192];
+                        while filled > 0 {
+                            let count = filled.min(drain.len());
+                            owner.read_exact(&mut drain[..count]).await.unwrap();
+                            assert!(drain[..count].iter().all(|byte| *byte == b'x'));
+                            filled -= count;
+                        }
+                        line.clear();
+                        let (delivered, read) = tokio::join!(delivery, owner.read_line(&mut line));
+                        delivered.unwrap();
+                        assert_ne!(read.unwrap(), 0);
+                        if frame != "ack" {
+                            let key = if reject_startup { "rejected" } else { "failed" };
+                            let phase = if reject_startup { "setup" } else { "execution" };
+                            let delivered: serde_json::Value = serde_json::from_str(&line).unwrap();
+                            assert_eq!(delivered["generation"], GENERATION);
+                            assert_eq!(delivered[key]["phase"], phase);
+                            assert_eq!(delivered[key]["cause"], cause.to_string());
+                            assert_eq!(
+                                delivered[key]["raw_os_error"],
+                                cause.raw_os_error().unwrap()
+                            );
+                        } else {
+                            assert_eq!(
+                                line,
+                                format!(
+                                    "{}\n",
+                                    serde_json::to_string(ack.as_ref().unwrap()).unwrap()
+                                )
+                            );
+                            let delivered: ReportAck = serde_json::from_str(&line).unwrap();
+                            assert_eq!(delivered.request_id, request.request_id);
+                            assert_eq!(delivered.generation, request.generation);
+                            assert_eq!(delivered.outcome, ReportOutcome::Report);
+                            assert_eq!(delivered.waits.len(), 1);
+                            assert_eq!(delivered.waits[0].primitive, "channel-close");
+                            assert_eq!(delivered.waits[0].key, "kernel-credit");
+                        }
+                        Some(owner)
+                    }
+                };
+                assert_eq!(
+                    (cause.kind(), cause.raw_os_error(), cause.to_string()),
+                    original
+                );
+                if terminal == "cancel" {
+                    let refused = {
+                        let failure = port.fail_execution(&cause);
+                        tokio::pin!(failure);
+                        poll_fn(|cx| Poll::Ready(failure.as_mut().poll(cx))).await
+                    };
+                    assert!(
+                        matches!(refused, Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::AlreadyExists)
+                    );
+                }
+                drop(prefix_reader);
+                drop(port);
+                drop(filler);
+                if let Some(mut owner) = owner {
+                    if terminal == "cancel" {
+                        let mut drain = [0; 8192];
+                        while filled > 0 {
+                            let count = filled.min(drain.len());
+                            owner.read_exact(&mut drain[..count]).await.unwrap();
+                            assert!(drain[..count].iter().all(|byte| *byte == b'x'));
+                            filled -= count;
+                        }
+                    }
+                    if partial {
+                        owner.read_to_end(&mut prefix).await.unwrap();
+                        let mut expected = serde_json::to_vec(ack.as_ref().unwrap()).unwrap();
+                        expected.push(b'\n');
+                        assert!(prefix.len() > 1 && prefix.len() < expected.len());
+                        assert!(expected.starts_with(&prefix));
+                    } else {
+                        line.clear();
+                        assert_eq!(owner.read_line(&mut line).await.unwrap(), 0);
+                    }
+                }
+                drop(wait);
+                assert!(report.snapshot().is_empty());
             }
-            drop(wait);
-            assert!(report.snapshot().is_empty());
         }
     });
 }
@@ -319,6 +386,10 @@ fn inherited_report_port_joins_the_selected_real_process() {
                 }
                 return;
             }
+            if mode == "fail-before-ready" {
+                port.fail_execution(&native_read_refusal()).await.unwrap();
+                return;
+            }
             if mode == "no-ready" {
                 drop(port);
                 std::future::pending::<()>().await;
@@ -335,6 +406,16 @@ fn inherited_report_port_joins_the_selected_real_process() {
                 None
             };
             port.ready().await.unwrap();
+            if mode == "fail-ready" || mode == "fail-foreign" {
+                if mode == "fail-foreign" {
+                    port.generation = format!(
+                        "{:032x}",
+                        u128::from_str_radix(&port.generation, 16).unwrap() ^ 1
+                    );
+                }
+                port.fail_execution(&native_read_refusal()).await.unwrap();
+                return;
+            }
             let request = port.request().await.unwrap().unwrap();
             if mode == "crash" {
                 std::process::exit(17);
@@ -349,6 +430,9 @@ fn inherited_report_port_joins_the_selected_real_process() {
             }
             let ack = port.snapshot(request, &report);
             port.acknowledge(&ack).await.unwrap();
+            if mode == "fail-ack" {
+                port.fail_execution(&native_read_refusal()).await.unwrap();
+            }
         });
         return;
     }
