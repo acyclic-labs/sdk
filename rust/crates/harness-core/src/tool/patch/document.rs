@@ -219,7 +219,7 @@ mod tests {
             // introduce a second, more permissive update implementation.
             prop_assert!(super::super::apply_update("# unrelated\n", diff, super::super::PatchLimits {
                 maximum_bytes: 4096, maximum_work: 4096, maximum_hunks: 4,
-            }, &mut meter).is_err());
+            }, &mut meter).is_err(), "unrelated source accepted the update");
         }
     }
 

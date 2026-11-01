@@ -396,7 +396,7 @@ pub(super) async fn read(
     };
     let code = Some(crate::wire::ErrorCode::Invalid);
     loop {
-        crate::executor::with_history_io(io, |history| {
+        crate::executor::with_history_io(io, |history| -> Result<()> {
             if let Some(history) = history.as_deref_mut() {
                 history.codec_charge(JsonCodecCharge::Read {
                     bytes: window.bytes.len() as u64,

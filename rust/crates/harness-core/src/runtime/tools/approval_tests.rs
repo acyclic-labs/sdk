@@ -19,7 +19,7 @@ proptest! {
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
         let baseline = work.live_allocation_bytes();
-        let paid = copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy, None).unwrap();
+        let paid = copy_approval_subject(&invocation, "tool", Some(&work), crate::interaction::ApprovalRoute::Policy, None).unwrap();
         prop_assert_eq!((work.receipt().bytes_copied, paid.1.is_some()), (expected, true));
         prop_assert_eq!(&paid.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(), target: None,
@@ -33,7 +33,7 @@ proptest! {
         let control = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
-        let unmetered = copy_approval_subject(&invocation, None, crate::interaction::ApprovalRoute::Policy, None).unwrap();
+        let unmetered = copy_approval_subject(&invocation, "tool", None, crate::interaction::ApprovalRoute::Policy, None).unwrap();
         prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
             tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments, target: None,
         });
@@ -58,6 +58,7 @@ fn subject_copy_denies_exhausted_copy_work_before_allocating() {
     assert!(
         copy_approval_subject(
             &invocation,
+            "tool",
             Some(&work),
             crate::interaction::ApprovalRoute::Policy,
             None

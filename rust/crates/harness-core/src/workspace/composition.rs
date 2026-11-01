@@ -211,7 +211,7 @@ impl<T> MountTable<T> {
     pub fn mounts_mut(&mut self) -> impl Iterator<Item = (&str, &mut Mount<T>)> {
         self.mounted
             .iter_mut()
-            .map(|(path, mount)| (path.as_ref(), mount))
+            .map(|(path, mount)| (&**path, mount))
     }
 
     /// Visible mounts in canonical path order; the primary path is empty.

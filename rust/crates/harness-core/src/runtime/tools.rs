@@ -580,6 +580,7 @@ impl ToolContext {
                     source,
                     self.effective_scope(),
                     self.effective_scope().grants(),
+                    None,
                     io,
                 )?;
                 if source.volume() != volume {
@@ -976,6 +977,7 @@ impl ToolContext {
                 source,
                 self.effective_scope(),
                 self.effective_scope().grants(),
+                None,
                 io,
             )?;
             if source.volume() != selected || source.path() != relative.as_ref() {

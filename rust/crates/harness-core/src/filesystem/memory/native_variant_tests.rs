@@ -56,7 +56,7 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
         render_bytes: 4_096,
         ..Limits::default()
     };
-    run_admitted_file_case(&storage, limits, |task| async move {
+    run_admitted_file_case(&storage, limits, move |task| async move {
         let originals = crate::tools::defaults()?;
         for profile in [NativeToolProfile::Anthropic, NativeToolProfile::Google] {
             let revisions = profile.tools()?;
