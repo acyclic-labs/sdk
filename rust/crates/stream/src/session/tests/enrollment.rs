@@ -199,11 +199,8 @@ async fn enroll(session: &mut Session<MemoryStream>) -> TestResult {
         upsert: vec![request(1, 1)],
         remove: vec![],
     })?;
-    session.credit = wire::SessionWindow {
-        bytes: 1_000_000,
-        frames: 100,
-    };
-    session.channels.get_mut(&1).unwrap().credit = session.credit;
+    session.receive(window(0))?;
+    session.receive(window(1))?;
     assert!(matches!(
         session.next_frame().await?.unwrap().wire().body,
         Some(Body::InterestApplied(_))
@@ -419,11 +416,8 @@ async fn enrollment_requires_sealed_original_identity_and_an_exclusive_slot() ->
             upsert: vec![request(1, 1)],
             remove: vec![],
         })?;
-        session.credit = wire::SessionWindow {
-            bytes: 1_000_000,
-            frames: 100,
-        };
-        session.channels.get_mut(&1).unwrap().credit = session.credit;
+        session.receive(window(0))?;
+        session.receive(window(1))?;
         session.next_frame().await?;
         session.next_frame().await?;
         let closed = session.next_frame().await?.unwrap();
