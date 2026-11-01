@@ -156,14 +156,7 @@ impl VringControl {
         // Feature negotiation precedes ring setup. No active callback can
         // acquire a different interpretation of its original descriptors.
         let _memory = self.memory.write().unwrap_or_else(PoisonError::into_inner);
-        let first = self.queue(0)?;
-        let second = self.queue(1)?;
-        for queue in [&*first, &*second] {
-            queue.configurable()?;
-            if queue.queue.ready() {
-                return Err(libc::EBUSY.into());
-            }
-        }
+        let _queues = self.unconfigured_queues()?;
         self.features.store(features, Ordering::Release);
         Ok(())
     }
@@ -173,23 +166,45 @@ impl VringControl {
         offers: &[VhostUserMemoryRegion],
         files: Vec<std::fs::File>,
     ) -> Result<(), NativeMountError> {
+        self.replace_memory(|| GuestRam::new(offers, files, &self.work))
+    }
+
+    pub(super) fn replace_memory(
+        &self,
+        prepare: impl FnOnce() -> Result<GuestRam, NativeMountError>,
+    ) -> Result<(), NativeMountError> {
         self.check()?;
-        // No queue lock is held while awaiting existing memory borrowers.
-        let mut memory = self.memory.write().unwrap_or_else(PoisonError::into_inner);
-        let mut first = self.queue(0)?;
-        let mut second = self.queue(1)?;
-        for queue in [&*first, &*second] {
+        {
+            let _memory = self.memory.read().unwrap_or_else(PoisonError::into_inner);
+            let _queues = self.unconfigured_queues()?;
+        }
+        // File metadata and mmap preparation retain their original funding,
+        // without excluding either queue or the currently installed mapping.
+        let replacement = prepare()?;
+        let retired = {
+            let mut memory = self.memory.write().unwrap_or_else(PoisonError::into_inner);
+            let [mut first, mut second] = self.unconfigured_queues()?;
+            self.check()?;
+            first.invalidate_addresses();
+            second.invalidate_addresses();
+            memory.replace(replacement)
+        };
+        // Retire mappings, descriptors and their custody after every guard.
+        drop(retired);
+        Ok(())
+    }
+
+    fn unconfigured_queues(
+        &self,
+    ) -> Result<[std::sync::MutexGuard<'_, PacketVring>; QUEUE_COUNT], NativeMountError> {
+        let queues = [self.queue(0)?, self.queue(1)?];
+        for queue in &queues {
             queue.configurable()?;
             if queue.queue.ready() {
                 return Err(libc::EBUSY.into());
             }
         }
-        let replacement = GuestRam::new(offers, files, &self.work)?;
-        self.check()?;
-        first.invalidate_addresses();
-        second.invalidate_addresses();
-        *memory = Some(replacement);
-        Ok(())
+        Ok(queues)
     }
 
     pub(super) fn queue(
