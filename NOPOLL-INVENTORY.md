@@ -4,7 +4,7 @@ Capture control successor, location on `47ad15fec8`:
 
 | Source | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:470` | Three-millisecond synthetic Pending ownership check | The exact oneshot receiver registers its worker waker before publishing its sole release sender to the seeded driver. Driver withdrawal returns `BrokenPipe` through the original capture result. | Source complete; unqualified |
+| `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:470` | Three-millisecond synthetic Pending ownership check | The exact oneshot receiver registers its worker waker before publishing its sole release sender to the seeded driver. Driver withdrawal returns `BrokenPipe` through the original capture result. | Qualified at `97a0f627d4` |
 
 The existing real-process replay, output custody and erased-entropy negative
 remain. The same oracle now requires the actual Pending registration event;
@@ -17,6 +17,15 @@ and one oneshot replace one timer; no new task, thread, process, file, payload
 copy or durability barrier. Exact channel allocation/syscall counts remain
 unmeasured, and no production operation changes.
 
+
+Linux x86_64: at `97a0f627d4`, `cargo test --locked -p
+acyclic-harness-core --lib --no-default-features --features
+native-execution,test-support
+filesystem::native_process::capture::tests::simulation::capture_retains_seeded_worker_sources_and_custody
+-- --exact --nocapture` passed 1/1, 0.01 seconds execution. The original
+real-process replay and erased-entropy negative passed alongside release-producer
+withdrawal. The separate scoped process-provider control compiled but was not
+executed in this run. No Windows or macOS execution is claimed.
 
 MCP reader successor, location on `f4e34ab9f9`:
 
