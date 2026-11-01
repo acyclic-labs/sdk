@@ -393,7 +393,7 @@ mod tests {
             let exhausted_baseline = exhausted.live_allocation_bytes();
             let io = PreparationIo::from_native_work(&exhausted).unwrap();
             let no_capacity = with_history_io(Some(&io), |work| ToolFailureCause::of(&error, work));
-            prop_assert!(matches!(no_capacity, Err(Error::NativeWork { .. })));
+            prop_assert!(matches!(&no_capacity, Err(Error::NativeWork { .. })), "copy admission must return the original typed failure: {no_capacity:?}");
             drop(no_capacity);
             drop(io);
             prop_assert_eq!(exhausted.live_allocation_bytes(), exhausted_baseline);
