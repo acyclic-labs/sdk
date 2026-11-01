@@ -22,6 +22,26 @@ pub(super) fn push_with_successor<'a>(
     mut next: Message<'a>,
     allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
+    if adapter == Adapter::Gemini {
+        next = match next {
+            Message::Notice(notice) => {
+                // The shared renderer owns the notice format. Move its fresh
+                // parts into the ordinary turn fold before count/generation;
+                // a notice is not a separate Gemini role boundary.
+                #[derive(serde::Deserialize)]
+                struct Parts {
+                    parts: Vec<serde_json::Value>,
+                }
+                let parts: Parts = serde_json::from_str(notice.wire().get())
+                    .map_err(|_| crate::invalid("cannot admit rendered Gemini notice parts"))?;
+                Message::Gemini {
+                    role: "user",
+                    parts: parts.parts.into_iter().map(Item::Json).collect(),
+                }
+            }
+            message => message,
+        };
+    }
     if adapter == Adapter::Responses
         && messages
             .last()
