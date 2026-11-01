@@ -135,7 +135,7 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
 test("packaged Harness tests retain their inventory, logs and failure status on default stacks", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
   const start = source.indexOf('"$cargo_bin" test --manifest-path');
-  const end = source.indexOf('"$cargo_bin" run --manifest-path', start);
+  const end = source.indexOf('mkdir -p "$output"', start);
   assert.ok(start >= 0 && end > start);
   const command = source.slice(start, end);
   assert.ok(command.includes('--all-features --offline'));
