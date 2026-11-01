@@ -285,16 +285,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .operation_generation(operation, active_io, active_io.cancellation())
                     .await,
             )?;
-            let root_cut = if opened.id() != root.id() && prior.is_none() {
-                Some(
-                    active_io.sdk(
-                        root.capture_policy_cut(active_io, active_io.cancellation())
-                            .await,
-                    )?,
-                )
-            } else {
-                None
-            };
             if let Some(binding) = binding {
                 bounded_io::retain(&binding, io).await?;
             }
@@ -401,19 +391,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     replacements,
                 });
             }
-            let (authorized_selection, policy_fence) = self
+            let (mut authorized_selection, mut policy_fence) = self
                 .authorize_content_write(&opened, grant, provisional.path(), None, ceiling, io)?
                 .await?;
-            let (authorized_selection, original_action) =
-                authorized_selection.ok_or_else(|| {
-                    stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Storage,
-                        "fresh publication has no authorized generation",
-                    )
-                })?;
-            let authorized_generation = self.generation_ref_id(authorized_selection.id(), io)?;
-            let root_fence = if opened.id() != root.id() || needs_binding {
+            if needs_binding {
+                let original_action = authorized_selection
+                    .as_ref()
+                    .map(|(_, action)| *action)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "fresh publication has no authorized generation",
+                        )
+                    })?;
                 let (_, fence) = self
                     .authorize_content_write(
                         &root,
@@ -424,19 +415,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         io,
                     )?
                     .await?;
-                if needs_binding {
-                    self.bind_content_operation(
+                self.bind_content_operation(
+                    &root,
+                    opened.id(),
+                    operation,
+                    (fence, grant),
+                    active_io,
+                )?
+                .await?;
+                if opened.id() == root.id() {
+                    // The binding changed this same workspace. Authorize the
+                    // content against its post-binding generation.
+                    (authorized_selection, policy_fence) = self
+                        .authorize_content_write(
+                            &opened,
+                            grant,
+                            provisional.path(),
+                            None,
+                            ceiling,
+                            io,
+                        )?
+                        .await?;
+                }
+            }
+            let (authorized_selection, original_action) =
+                authorized_selection.ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "fresh publication has no authorized generation",
+                    )
+                })?;
+            let authorized_generation = self.generation_ref_id(authorized_selection.id(), io)?;
+            let (root_cut, root_fence) = if opened.id() != root.id() {
+                // Routing commits to the root first. Capture and authorize the
+                // root together afterward so neither that write nor a concurrent
+                // policy edit can invalidate or escape this publication's cut.
+                let cut = active_io.sdk(
+                    root.capture_policy_cut(active_io, active_io.cancellation())
+                        .await,
+                )?;
+                let (_, fence) = self
+                    .authorize_content_write(
                         &root,
-                        opened.id(),
-                        operation,
-                        (fence, grant),
-                        active_io,
+                        grant,
+                        provisional.path(),
+                        Some(original_action),
+                        ceiling,
+                        io,
                     )?
                     .await?;
-                }
-                (opened.id() != root.id()).then_some(fence)
+                (Some(cut), Some(fence))
             } else {
-                None
+                (None, None)
             };
             let generation_hold = io
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))

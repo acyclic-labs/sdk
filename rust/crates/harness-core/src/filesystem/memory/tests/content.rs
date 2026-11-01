@@ -126,7 +126,12 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
                 io: Some(&committed_io),
             },
         )?
-        .await?;
+        .await
+        .map_err(|error| format!("fresh branch publication: {error}"))?;
+    assert_eq!(
+        committed.action,
+        Some(crate::conversation::PublicationAction::Create)
+    );
     assert!(committed_io.receipt().backend_write_operations > 0);
     let original_key =
         crate::filesystem::content_publisher::once_key(operation, Some(&committed_io))?;
@@ -170,7 +175,8 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             None,
             Some(&committed_io),
         )?
-        .await?;
+        .await
+        .map_err(|error| format!("conditional branch replacement: {error}"))?;
     assert_eq!(
         storage
             .content_verifier
@@ -248,7 +254,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         &storage.host.provider,
         None,
     )?
-    .with_project_families(store)?;
+    .with_project_families(store.clone())?;
     let reopened_publisher = FilesystemContentPublisher::new(
         reopened_host,
         &storage.volume,
@@ -271,6 +277,21 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         )?
         .await?;
     assert_eq!(recovered.as_ref(), Some(&committed));
+    let (recovered_replacement, _replacement_recovery_hold) = reopened_publisher
+        .observe_staged_once(
+            replacement_operation,
+            Some(crate::conversation::ContentPublicationQuery::Replacement {
+                volume: &storage.volume,
+                path: committed.file.path(),
+            }),
+            1024,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&observed_io),
+            },
+        )?
+        .await?;
+    assert_eq!(recovered_replacement.as_ref(), Some(&replacement));
     let root_before = root
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -392,6 +413,61 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .await?
             .0
             .is_none()
+    );
+    repository
+        .register_branch_workspace("uploads", branch.id(), None, true)
+        .await?;
+    let mut fenced_host = FilesystemHost::new(
+        storage.host.filesystem.clone(),
+        &storage.host.provider,
+        None,
+    )?
+    .with_project_families(store)?;
+    let publications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let source = root.clone();
+    Arc::get_mut(&mut fenced_host).unwrap().publication_pause = Some(Arc::new(move || {
+        let mutate_source = publications.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1;
+        let source = source.clone();
+        Box::pin(async move {
+            // The first commit binds routing; change its policy source only
+            // after that commit, immediately before the descendant commit.
+            if mutate_source {
+                source
+                    .write_text("/source-cut-changed", "changed")
+                    .await
+                    .unwrap();
+            }
+        })
+    }));
+    let fenced_publisher = FilesystemContentPublisher::new(
+        fenced_host,
+        &storage.volume,
+        &storage.verifier(),
+        &storage.scope,
+        1024,
+        None,
+    )?;
+    let fenced = fenced_publisher
+        .stage_once(
+            OperationId::new(),
+            "must-not-commit",
+            b"never",
+            "text/plain",
+            "never",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await;
+    assert!(
+        matches!(fenced, Err(error) if error.code() == crate::wire::ErrorCode::Conflict),
+        "a post-binding source change must still fence the descendant publication"
+    );
+    assert_eq!(
+        branch
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        branch_before
     );
     Ok(())
 }
