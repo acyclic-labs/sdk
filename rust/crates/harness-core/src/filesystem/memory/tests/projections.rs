@@ -413,6 +413,8 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
     );
 
     #[cfg(not(target_arch = "wasm32"))]
+    let native_retirement;
+    #[cfg(not(target_arch = "wasm32"))]
     {
         invocation.arguments["selection"]["offset"] = json!(1);
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -428,12 +430,12 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
         custody = retained;
         assert_eq!(native.value["text"], result.value["text"]);
         work.remaining()?;
-        assert!(work.live_allocation_bytes() > baseline);
+        let held = work.live_allocation_bytes();
+        assert!(held > baseline);
         drop(native);
         drop(custody);
-        // Observe the same retirement boundary as production admission.
         work.remaining()?;
-        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert!(work.live_allocation_bytes() < held);
         cancellation.cancel();
         let cancelled =
             match tool
@@ -444,6 +446,7 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
                 Err(error) => Err(error),
             };
         assert!(cancelled.is_err());
+        native_retirement = (work, baseline);
     }
     let workspace = super::super::super::bounded_io::content_workspace(
         &storage.host.provider,
@@ -483,6 +486,17 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
                 )
                 .is_err()
         );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Decoded immutable pages retain their original custody in the shared
+        // object cache. Release the cache owners before checking full retirement.
+        drop(context);
+        drop(task);
+        drop(storage);
+        drop(private);
+        let (work, baseline) = native_retirement;
+        assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
