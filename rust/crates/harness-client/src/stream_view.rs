@@ -299,7 +299,7 @@ impl StreamView {
                 if charge > self.policy.bytes {
                     return Err(StreamError::LimitExceeded);
                 }
-                let owned = compact_record(record, payload);
+                let owned = compact_record(record, payload, frame.original_record());
                 while self.records.len() >= self.policy.records
                     || self.bytes > self.policy.bytes - charge
                 {
@@ -355,29 +355,64 @@ fn record_charge(record: &wire::Record) -> Result<usize, StreamError> {
     Ok(charge)
 }
 
-fn compact_record(record: &wire::Record, payload: RecordBytes) -> wire::Record {
+fn compact_record(
+    record: &wire::Record,
+    payload: RecordBytes,
+    original: Option<&acyclic_stream::Record>,
+) -> wire::Record {
     wire::Record {
         sequence: record.sequence,
         value: Bytes::from_owner(payload),
-        commit_id: Bytes::copy_from_slice(&record.commit_id),
+        // Native frame construction already owns this exact fixed-size copy.
+        commit_id: original.map_or_else(
+            || Bytes::copy_from_slice(&record.commit_id),
+            |_| record.commit_id.clone(),
+        ),
         committed_at_micros: record.committed_at_micros,
         origin: record.origin.clone(),
         keys: record
             .keys
             .iter()
-            .map(|key| Bytes::copy_from_slice(key))
+            .enumerate()
+            .map(|(index, key)| {
+                retain_header(
+                    key,
+                    original.and_then(|record| record.headers.keys().get(index)),
+                )
+            })
             .collect::<Vec<_>>()
             .into_boxed_slice()
             .into_vec(),
         attributes: record
             .attributes
             .iter()
-            .map(|attribute| wire::Attribute {
+            .enumerate()
+            .map(|(index, attribute)| wire::Attribute {
                 name: attribute.name.as_str().into(),
-                value: Bytes::copy_from_slice(&attribute.value),
+                value: retain_header(
+                    &attribute.value,
+                    original.and_then(|record| {
+                        record
+                            .headers
+                            .attributes()
+                            .get(index)
+                            .map(|attribute| attribute.value)
+                    }),
+                ),
             })
             .collect::<Vec<_>>()
             .into_boxed_slice()
             .into_vec(),
+    }
+}
+
+fn retain_header(bytes: &Bytes, original: Option<&acyclic_stream::OwnedBytes>) -> Bytes {
+    // Only the immutable frame's canonical record can attest this backing.
+    // Sharing a full allocation pays exactly the existing header byte charge;
+    // unknown capacity or excess backing still requires a compact copy.
+    if original.is_some_and(|original| original.retained_capacity() == Some(bytes.len())) {
+        bytes.clone()
+    } else {
+        Bytes::copy_from_slice(bytes)
     }
 }

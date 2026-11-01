@@ -67,7 +67,33 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     // same subscription; no viewport replacement or second open is involved.
     let follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
     let payload = acyclic_stream::OwnedBytes::from(b"created".to_vec());
-    append(&memory, path.clone(), vec![payload.clone().into()]).await?;
+    let key = acyclic_stream::OwnedBytes::from(b"key".to_vec());
+    let attribute = acyclic_stream::OwnedBytes::from(b"attribute".to_vec());
+    let key_owner = acyclic_stream::OwnedBytes::from(vec![b'z'; 64 * 1024]);
+    let tiny_key = key_owner.slice(..3);
+    let attribute_owner = acyclic_stream::OwnedBytes::from(vec![b'x'; 64 * 1024]);
+    let tiny_attribute = attribute_owner.slice(..7);
+    append(
+        &memory,
+        path.clone(),
+        vec![AppendRecord {
+            value: payload.clone(),
+            headers: acyclic_stream::RecordHeaders::new(
+                vec![key.clone(), tiny_key.clone()],
+                vec![
+                    acyclic_stream::Attribute {
+                        name: "a".into(),
+                        value: attribute.clone(),
+                    },
+                    acyclic_stream::Attribute {
+                        name: "z".into(),
+                        value: tiny_attribute.clone(),
+                    },
+                ],
+            )?,
+        }],
+    )
+    .await?;
     let forked = StreamPath::new("reader/inherited-conversation")?;
     memory
         .fork(acyclic_stream::ForkRequest {
@@ -112,11 +138,58 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
             Some(followed.clone()),
             backings.clone(),
         );
+        let Some(wire::session_frame::Body::Data(wire::SessionData {
+            item: Some(wire::session_data::Item::Record(original)),
+            ..
+        })) = frame.wire().body.as_ref()
+        else {
+            return Err("missing original wire record".into());
+        };
+        let original_commit = original.commit_id.clone();
         view.apply(&frame, 1)?;
         assert_eq!(
             view.record(0).ok_or("missing row")?.value.as_ptr(),
             payload.as_slice().as_ptr(),
             "qualified view copied the original payload"
+        );
+        let row = view.record(0).ok_or("missing header row")?;
+        assert_eq!(
+            row.commit_id.as_ptr(),
+            original_commit.as_ptr(),
+            "native commit metadata was copied"
+        );
+        let headers = [
+            (&row.keys[0], &key),
+            (&row.attributes[0].value, &attribute),
+            (&row.keys[1], &tiny_key),
+            (&row.attributes[1].value, &tiny_attribute),
+        ];
+        let mut copied = 0;
+        for (retained, original) in headers {
+            assert_eq!(retained.as_ref(), original.as_slice());
+            if original.retained_capacity() == Some(original.len()) {
+                assert_eq!(
+                    retained.as_ptr(),
+                    original.as_slice().as_ptr(),
+                    "full header backing was copied"
+                );
+            } else {
+                assert_ne!(
+                    retained.as_ptr(),
+                    original.as_slice().as_ptr(),
+                    "tiny header retained uncharged excess backing"
+                );
+                copied += retained.len();
+            }
+        }
+        assert_eq!(copied, tiny_key.len() + tiny_attribute.len());
+        println!(
+            "header byte copies: {} -> {copied}",
+            original_commit.len()
+                + key.len()
+                + attribute.len()
+                + tiny_key.len()
+                + tiny_attribute.len()
         );
         let mut wire_only = StreamView::new(
             crate::StreamViewPolicy::default(),
@@ -136,6 +209,22 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
                 .as_ptr(),
             payload.as_slice().as_ptr(),
             "wire-only view retained uncharged backing"
+        );
+        let row = wire_only.record(0).ok_or("missing wire header row")?;
+        assert_ne!(
+            row.commit_id.as_ptr(),
+            original_commit.as_ptr(),
+            "wire-only commit retained unknown backing"
+        );
+        assert_ne!(
+            row.keys[0].as_ptr(),
+            key.as_slice().as_ptr(),
+            "wire-only key retained unknown backing"
+        );
+        assert_ne!(
+            row.attributes[0].value.as_ptr(),
+            attribute.as_slice().as_ptr(),
+            "wire-only attribute retained unknown backing"
         );
         if followed == path {
             own_charge = view.retained_bytes();
