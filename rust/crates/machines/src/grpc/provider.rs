@@ -72,15 +72,15 @@ machine_mutations! {
             let deadline = command.expiry_unix_ms
                 .map(|expiry| self.endpoint.absolute_deadline(expiry)).transpose()?;
             let mut client = transport::run(deadline.as_ref(), self.client()).await
-                    .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
+                    .map_err(DeadlineStop::before_dispatch)??;
             let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
             let mut request = Request::new(input);
             if let Some(remaining) = deadline.as_ref().and_then(transport::Deadline::remaining) {
                 request.set_timeout(remaining);
             }
-            let output = transport::run(deadline.as_ref(), client.exec(request))
+            let output = transport::dispatch(deadline.as_ref(), client.exec(request), |stop| stop.command(machine))
                 .await
-                .ok_or(ProviderError::CommandIndeterminate(machine))?
+                ?
                 .map_err(|error| {
                     obs::failed_rpc(&observation, &error);
                     command_error(machine, &error)
@@ -94,7 +94,7 @@ machine_mutations! {
                     }
                     let frame = transport::run(deadline.as_ref(), output.message())
                         .await
-                        .ok_or(ProviderError::CommandIndeterminate(machine))?
+                        .map_err(|stop| stop.command(machine))?
                         .map_err(|error| command_stream_error(machine, exited, &error))?;
                     match frame {
                         None => Err(ProviderError::CommandIndeterminate(machine)),

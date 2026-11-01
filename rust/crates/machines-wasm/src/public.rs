@@ -130,6 +130,10 @@ pub(crate) fn provider_error(error: ProviderError) -> JsValue {
         | ProviderError::OperationIndeterminate(_)
         | ProviderError::CommandIndeterminate(_)
         | ProviderError::FileIndeterminate(_) => "indeterminate",
+        ProviderError::DeadlineSourceLost {
+            machine: Some(_), ..
+        } => "indeterminate",
+        ProviderError::DeadlineSourceLost { machine: None, .. } => "unavailable",
         ProviderError::Failed => "failed",
         ProviderError::Cancelled => "cancelled",
     };

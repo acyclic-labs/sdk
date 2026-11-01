@@ -50,6 +50,26 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             false,
         ),
         (ProviderError::Failed, ErrorCode::Storage, false),
+        (
+            ProviderError::DeadlineSourceLost {
+                machine: None,
+                cause: acyclic_machines::DeadlineSourceLost(Arc::new(
+                    std::io::Error::from_raw_os_error(5),
+                )),
+            },
+            ErrorCode::Storage,
+            false,
+        ),
+        (
+            ProviderError::DeadlineSourceLost {
+                machine: Some(machine),
+                cause: acyclic_machines::DeadlineSourceLost(Arc::new(
+                    std::io::Error::from_raw_os_error(5),
+                )),
+            },
+            ErrorCode::Indeterminate,
+            true,
+        ),
         (ProviderError::Cancelled, ErrorCode::Cancelled, false),
         (ProviderError::Unavailable, ErrorCode::Storage, true),
         (

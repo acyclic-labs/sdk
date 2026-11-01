@@ -422,6 +422,10 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
         | Machines::OperationIndeterminate(_)
         | Machines::CommandIndeterminate(_)
         | Machines::FileIndeterminate(_) => ErrorCode::Indeterminate,
+        Machines::DeadlineSourceLost {
+            machine: Some(_), ..
+        } => ErrorCode::Indeterminate,
+        Machines::DeadlineSourceLost { machine: None, .. } => ErrorCode::Storage,
         Machines::Cancelled => ErrorCode::Cancelled,
         Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
     }

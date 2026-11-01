@@ -5,7 +5,7 @@ use super::*;
 pub struct GuestDeadline {
     until: Option<tokio::time::Instant>,
     expiry: Option<u64>,
-    wake: Option<Arc<tokio::sync::Notify>>,
+    wake: Option<tokio::sync::watch::Receiver<Option<DeadlineStop>>>,
     _alarm: Option<acyclic_native_runtime::WallAlarm>,
 }
 
@@ -26,12 +26,20 @@ impl GuestDeadline {
                     })
             })
             .transpose()?;
-        let wake = expiry.map(|_| Arc::new(tokio::sync::Notify::new()));
-        let alarm = wake.as_ref().zip(expiry).map(|(wake, expiry)| {
-            let notify = wake.clone();
-            acyclic_native_runtime::WallAlarm::register(expiry, Arc::new(move |_outcome| notify.notify_one()))
-                .map_err(|error| ProviderError::Rejected(format!("guest expiry alarm failed: {error}; recovery: restore the wall-clock alarm before dispatch")))
-        }).transpose()?;
+        let (wake, alarm) = match expiry {
+            Some(expiry) => {
+                let (terminal, wake) = terminal();
+                let alarm = acyclic_native_runtime::WallAlarm::register(
+                    expiry,
+                    Arc::new(move |outcome| terminal.finish(outcome)),
+                )
+                .map_err(|error| {
+                    DeadlineStop::SourceLost(DeadlineSourceLost(Arc::new(error))).before_dispatch()
+                })?;
+                (Some(wake), Some(alarm))
+            }
+            None => (None, None),
+        };
         Ok(Self {
             until,
             expiry,
@@ -56,26 +64,100 @@ impl GuestDeadline {
         self.until.map(tokio::time::Instant::into_std)
     }
 
-    pub(crate) async fn run<T>(&self, future: impl std::future::Future<Output = T>) -> Option<T> {
+    #[cfg(test)]
+    pub(crate) fn controlled() -> (Self, impl Fn(Result<(), Arc<std::io::Error>>)) {
+        let (terminal, wake) = terminal();
+        (
+            Self {
+                until: None,
+                expiry: None,
+                wake: Some(wake),
+                _alarm: None,
+            },
+            move |outcome| terminal.finish(outcome),
+        )
+    }
+
+    pub(crate) async fn run<T>(
+        &self,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T, DeadlineStop> {
+        // Subscribe to the retained decision before checking time or polling work.
+        // A callback that failed already must not be relabelled as expiry.
+        let mut wake = self.wake.clone();
+        if let Some(stop) = wake.as_ref().and_then(|wake| wake.borrow().clone()) {
+            return Err(stop);
+        }
         if self.expiry.is_some_and(|expiry| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(true, |now| now.as_millis() >= u128::from(expiry))
         }) {
-            return None;
+            return Err(DeadlineStop::Expired);
         }
         let timed = async {
             match self.until {
-                Some(until) => tokio::time::timeout_at(until, future).await.ok(),
-                None => Some(future.await),
+                Some(until) => tokio::time::timeout_at(until, future)
+                    .await
+                    .map_err(|_| DeadlineStop::Expired),
+                None => Ok(future.await),
             }
         };
-        match &self.wake {
+        match &mut wake {
             Some(wake) => tokio::select! {
+                biased;
+                decision = wake.wait_for(Option::is_some) => {
+                    match decision {
+                        Ok(decision) => Err(decision.clone().unwrap_or_else(source_lost)),
+                        Err(_) => Err(source_lost()),
+                    }
+                }
                 value = timed => value,
-                () = wake.notified() => None,
             },
             None => timed.await,
         }
     }
 }
+
+/// The callback and its retirement are the sole producers of this decision.
+struct Terminal(tokio::sync::watch::Sender<Option<DeadlineStop>>);
+
+fn terminal() -> (Terminal, tokio::sync::watch::Receiver<Option<DeadlineStop>>) {
+    let (sender, receiver) = tokio::sync::watch::channel(None);
+    (Terminal(sender), receiver)
+}
+
+impl Terminal {
+    fn finish(&self, outcome: Result<(), Arc<std::io::Error>>) {
+        let stop = match outcome {
+            Ok(()) => DeadlineStop::Expired,
+            Err(error) => DeadlineStop::SourceLost(DeadlineSourceLost(error)),
+        };
+        self.0.send_if_modified(|decision| {
+            if decision.is_some() {
+                return false;
+            }
+            *decision = Some(stop);
+            true
+        });
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        // Dropping an uncalled callback is source loss, never an expiry or a
+        // permanently pending observation. The same decision serves late runs.
+        if self.0.borrow().is_none() {
+            let _ = self.0.send_replace(Some(source_lost()));
+        }
+    }
+}
+
+fn source_lost() -> DeadlineStop {
+    DeadlineStop::SourceLost(DeadlineSourceLost(Arc::new(std::io::Error::other(
+        "step=guest-alarm-terminal; recovery=restore the original alarm producer before dispatch",
+    ))))
+}
+
+#[cfg(test)]
+mod tests;

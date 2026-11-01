@@ -26,22 +26,54 @@ pub trait Deadline: ProviderPlatform + 'static {
     /// Remaining original budget for the transport's deadline metadata.
     fn remaining(&self) -> Option<Duration>;
     /// Stop observation on the original expiry event, retaining admitted uncertainty.
-    fn run<F>(&self, future: F) -> impl Future<Output = Option<F::Output>> + ProviderTask
+    fn run<F>(
+        &self,
+        future: F,
+    ) -> impl Future<Output = Result<F::Output, DeadlineStop>> + ProviderTask
     where
         F: Future + ProviderTask,
         F::Output: ProviderTask;
 }
 
 /// Observe the producer until its result or the caller's separately chosen expiry.
-pub(super) async fn run<D: Deadline, F>(deadline: Option<&D>, future: F) -> Option<F::Output>
+pub(super) async fn run<D: Deadline, F>(
+    deadline: Option<&D>,
+    future: F,
+) -> Result<F::Output, DeadlineStop>
 where
     F: Future + ProviderTask,
     F::Output: ProviderTask,
 {
     match deadline {
         Some(deadline) => deadline.run(future).await,
-        None => Some(future.await),
+        None => Ok(future.await),
     }
+}
+
+/// Enter the original RPC only when its deadline admits polling the transport.
+/// A terminal observed before that point is a refusal, not uncertain dispatch.
+pub(crate) async fn dispatch<D: Deadline, F>(
+    deadline: Option<&D>,
+    future: F,
+    after_dispatch: impl FnOnce(DeadlineStop) -> ProviderError + ProviderTask,
+) -> Result<F::Output, ProviderError>
+where
+    F: Future + ProviderTask,
+    F::Output: ProviderTask,
+{
+    let mut dispatched = false;
+    run(deadline, async {
+        dispatched = true;
+        future.await
+    })
+    .await
+    .map_err(|stop| {
+        if dispatched {
+            after_dispatch(stop)
+        } else {
+            stop.before_dispatch()
+        }
+    })
 }
 
 /// Read one frame without imposing native `Send` on browser response producers.
@@ -61,7 +93,7 @@ impl Deadline for crate::provider::deadline::GuestDeadline {
     fn remaining(&self) -> Option<Duration> {
         self.remaining()
     }
-    async fn run<F>(&self, future: F) -> Option<F::Output>
+    async fn run<F>(&self, future: F) -> Result<F::Output, DeadlineStop>
     where
         F: Future + ProviderTask,
         F::Output: ProviderTask,
