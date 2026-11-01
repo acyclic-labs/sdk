@@ -347,7 +347,10 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
                     Some(Err(error)) => return Err(Error::from(error).into()),
                     None => break,
                 },
-                () = (&mut deadline).fuse() => break,
+                result = (&mut deadline).fuse() => {
+                    result.map_err(Error::from)?;
+                    break;
+                },
             }
         }
         Ok(lines)
@@ -373,7 +376,8 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
         let clock = self.target.clock();
         futures::select_biased! {
             frame = peer.next().fuse() => Ok(frame?),
-            () = clock.sleep_until(clock.now_unix_ms().saturating_add(BUDGET_MS)).fuse() => {
+            result = clock.sleep_until(clock.now_unix_ms().saturating_add(BUDGET_MS)).fuse() => {
+                result.map_err(Error::from)?;
                 self.violation("no frame from the host".into())
             }
         }

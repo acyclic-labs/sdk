@@ -11,7 +11,9 @@ pub use applied::{Applied, AppliedCut};
 pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
 pub use crate::guest::Subscription;
-pub use runtime::{Clock, Runtime, RuntimeLimits, SystemClock};
+pub use runtime::{
+    Clock, ClockControl, ClockError, ControlledClock, Runtime, RuntimeLimits, SystemClock,
+};
 mod sockets;
 pub use sockets::Sockets;
 
@@ -27,9 +29,12 @@ use acyclic_stream::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Typed failure at the shared actor publication boundary.
+/// Typed failure at the shared actor runtime and publication boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The original scheduling clock could not produce a deadline event.
+    #[error(transparent)]
+    Clock(#[from] ClockError),
     /// Canonical provider failure, including uncertain acknowledgement.
     #[error(transparent)]
     Stream(#[from] StreamError),
@@ -77,6 +82,7 @@ impl Error {
     /// Stable, path-free telemetry category. Unknown effects remain unknown.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Clock(_) => "clock",
             Self::Stream(error) => error.code(),
             Self::Unknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
