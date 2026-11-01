@@ -65,9 +65,15 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             }
         };
         let mut decoded = None;
+        crate::changes::take_parsed_bytes();
         let allocations = acyclic_test_support::measure(|| {
             decoded = Some(frame.decode_record(Some(&path)));
         });
+        assert_eq!(
+            crate::changes::take_parsed_bytes(),
+            0,
+            "owned projection reparsed body"
+        );
         let decoded = decoded.ok_or("projection did not run")??;
         assert_eq!(decoded, first);
         let original = frame.original_record().ok_or("missing captured custody")?;
@@ -84,7 +90,12 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 assert_eq!(frame.decode_record(Some(&path)).unwrap(), first);
             }
         });
-        assert_eq!(repeated.count_total, 0, "repeated projection reparsed keys");
+        assert_eq!(repeated.count_total, 0, "repeated projection allocated");
+        assert_eq!(
+            crate::changes::take_parsed_bytes(),
+            0,
+            "owned projection reparsed body"
+        );
         assert!(frame.decode_record(None).is_err());
         assert!(
             frame
@@ -101,10 +112,14 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         let before = acyclic_test_support::measure(|| {
             baseline = Some(wire_codec::record(record.clone(), Some(&path)));
         });
+        let parsed_bytes = crate::changes::take_parsed_bytes();
+        if records == 2 {
+            assert_eq!(parsed_bytes, first.value.len());
+        }
         assert_eq!(baseline.ok_or("baseline did not run")??, first);
         assert!(before.count_total > allocations.count_total);
         eprintln!(
-            "record_projection records={records} before_allocations={} after_allocations={}",
+            "record_projection records={records} wire_allocations={} owned_allocations={} wire_parser_bytes={parsed_bytes} owned_parser_bytes=0",
             before.count_total, allocations.count_total
         );
         let mut invalid = frame.wire().clone();

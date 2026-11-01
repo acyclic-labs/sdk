@@ -23,6 +23,16 @@ mod native;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+std::thread_local! {
+    static PARSED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_parsed_bytes() -> usize {
+    PARSED_BYTES.with(|count| count.replace(0))
+}
+
 /// Borrowed path-local facts used by a provider's funded change producer.
 pub struct ChangeEntryRef<'a> {
     /// Canonical indexed key, with the same order as the resulting headers.
@@ -248,6 +258,8 @@ fn parse_v1<'a>(
     bytes: &'a [u8],
     mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
+    #[cfg(test)]
+    PARSED_BYTES.with(|count| count.set(count.get() + bytes.len()));
     let mut reader = Reader(bytes);
     let context = reader.field(10)?.unwrap_or_default();
     let mut previous: Option<&[u8]> = None;
@@ -294,6 +306,8 @@ fn parse<'a>(
     bytes: &'a [u8],
     mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
+    #[cfg(test)]
+    PARSED_BYTES.with(|count| count.set(count.get() + bytes.len()));
     let mut reader = Reader(bytes);
     let context = reader.bytes()?;
     let count = reader.number()?;
