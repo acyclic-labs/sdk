@@ -685,7 +685,10 @@ where
                             .map_err(|_| Error::Record("history cursor encoding failed"))?;
                         next_envelope + length.div_ceil(3) * 4
                     };
-                    if bytes + size + envelope > u64::from(page.bytes()) {
+                    let encoded =
+                        acyclic_harness_client::encoded_agent_reply_size(bytes + size + envelope)
+                            .map_err(|_| Error::Stream(StreamError::Capacity))?;
+                    if encoded > u64::from(page.bytes()) {
                         if accepted == 0 {
                             return Err(Error::Stream(StreamError::Capacity));
                         }
@@ -697,6 +700,13 @@ where
                 }
                 items.truncate(accepted);
                 cursor.before = before;
+                if items.is_empty()
+                    && acyclic_harness_client::encoded_agent_reply_size(end_envelope)
+                        .map_err(|_| Error::Stream(StreamError::Capacity))?
+                        > u64::from(page.bytes())
+                {
+                    return Err(Error::Stream(StreamError::Capacity));
+                }
                 let next = history_cursor(&cursor)?;
                 Ok(AgentReply::History { items, next })
             }

@@ -241,6 +241,22 @@ mod envelope {
     }
 }
 
+/// Size a successful canonical reply from its compact JSON byte count, without
+/// allocating either body or envelope. Page credit includes this wire framing.
+pub fn encoded_agent_reply_size(json_bytes: u64) -> Result<u64, CommandError> {
+    let length = usize::try_from(json_bytes).map_err(|_| CommandError::Capacity)?;
+    if length > MAX_AGENT_COMMAND_BYTES {
+        return Err(CommandError::Capacity);
+    }
+    let framing = Envelope {
+        value: Some(envelope::Value::Reply(Vec::new())),
+        reason: None,
+    }
+    .encoded_len()
+        - prost::length_delimiter_len(0);
+    Ok(json_bytes + (framing + prost::length_delimiter_len(length)) as u64)
+}
+
 /// Encode by borrowing the host's result. Capacity/encoding refusal leaves the
 /// original uncertain request with its owner, including on export failure.
 pub fn encode_agent_reply(
@@ -270,7 +286,10 @@ pub fn encode_agent_reply(
         value: Some(value),
         reason,
     };
-    let encoded_len = envelope.encoded_len();
+    let encoded_len = match &envelope.value {
+        Some(Value::Reply(bytes)) => encoded_agent_reply_size(bytes.len() as u64)? as usize,
+        _ => envelope.encoded_len(),
+    };
     if encoded_len > MAX_AGENT_REPLY_BYTES {
         return Err(CommandError::Capacity);
     }

@@ -1890,10 +1890,17 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     assert_eq!(items[0].conversation, 2);
     assert_eq!(items[0].context_tail, saved.context.tail);
     assert_eq!(items[0].volume_count, saved.volumes.len() as u64);
-    let exact_credit = serde_json::to_vec(&crate::client::AgentReply::History {
-        items: items.clone(),
-        next: next.clone(),
-    })
+    let measure = crate::client::AgentCommand::History {
+        agent: root.clone(),
+        page: crate::client::AgentPageRequest::new(1, 4096, None).map_err(agent)?,
+    };
+    let exact_credit = acyclic_harness_client::encode_agent_reply(
+        &Ok(crate::client::AgentReply::History {
+            items: items.clone(),
+            next: next.clone(),
+        }),
+        &measure,
+    )
     .map_err(agent)?
     .len() as u32;
     let exact_page = connection
@@ -1903,7 +1910,9 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         })
         .await?;
     assert_eq!(
-        serde_json::to_vec(&exact_page).map_err(agent)?.len(),
+        acyclic_harness_client::encode_agent_reply(&Ok(exact_page.clone()), &measure)
+            .map_err(agent)?
+            .len(),
         exact_credit as usize,
         "the newest row and its exact continuation must fit their byte credit"
     );
