@@ -179,16 +179,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             (allocation, targets)
         };
         let unswept = self.collection.unswept().await;
-        if work.is_native() {
-            self.drain_locked(&mut spill, &unswept, &targets, work)
-                .await?;
-        } else {
-            let cancellation = CancellationToken::new();
-            let mut housekeeping = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let _ = self
-                .drain_locked(&mut spill, &unswept, &targets, &mut housekeeping)
-                .await;
-        }
+        self.drain_locked(&mut spill, &unswept, &targets, work)
+            .await?;
         Ok(())
     }
 }

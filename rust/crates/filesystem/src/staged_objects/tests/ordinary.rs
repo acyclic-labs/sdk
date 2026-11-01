@@ -387,7 +387,7 @@ async fn overflow_spills_privately_until_the_publication_drain()
 }
 
 #[tokio::test]
-async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
+async fn spill_relief_retains_original_work_cancellation_and_refusal()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let (store, provider) = open_staged(directory.path()).await?;
@@ -417,20 +417,37 @@ async fn a_spill_past_its_bound_drains_without_charging_or_failing_admissions()
     // Stand in for a spill file that has grown past its bound.
     advance_spill_past_bound(&store).await?;
 
-    // An admission may spend exactly its own spill: one backend write.
-    let mut admission = WorkBudget::UNBOUNDED;
-    admission.backend_write_operations = 1;
+    let mut denied = AuthorityWork::new(
+        WorkBudget {
+            backend_read_operations: 0,
+            ..crate::performance::BOUNDARY_BUDGET
+        },
+        &token,
+    );
+    assert!(matches!(
+        store.relieve_window(&mut denied).await,
+        Err(ObjectStoreError::Work(_))
+    ));
+    assert_eq!(denied.spent().backend_read_operations, 0);
+    assert_eq!(denied.spent().backend_write_operations, 0);
+    assert!(store.index().spilled_objects > 0);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
+    assert!(matches!(
+        store.relieve_window(&mut stopped).await,
+        Err(ObjectStoreError::Cancelled)
+    ));
+    assert_eq!(stopped.spent().backend_read_operations, 0);
+    assert_eq!(stopped.spent().backend_write_operations, 0);
+
+    let mut admission = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
     for (object_id, bytes) in late {
-        let receipt = {
-            let __object_args = (*object_id, bytes.clone(), admission, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-        assert!(receipt.work.backend_write_operations <= 1);
+        store.put(*object_id, bytes.clone(), &mut admission).await?;
     }
+    assert!(admission.spent().backend_read_operations > 0);
+    assert!(admission.spent().backend_write_operations > 0);
     let durable = {
         let mut durable = 0;
         for (object_id, _) in early {
