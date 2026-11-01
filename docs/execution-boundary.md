@@ -203,6 +203,9 @@ allocation or copy. Device numbers follow the
 Root file types are bound with their identities at grant construction. A
 pinned inode's type cannot change; launch reuses that type after checking
 identity, removing one repeated metadata syscall per declared root.
+Exact-root attenuation compares the two pinned identities before opening the
+ceiling root, then verifies that open once. It needs one identity query instead
+of two; cloning a stale grant still cannot skip the path replacement check.
 Missing native facilities return a typed unsupported refusal before execution.
 The public preparation and consuming launch entries use the same refusal
 mapper, including failures in preparation or its invocation meter. Cancellation

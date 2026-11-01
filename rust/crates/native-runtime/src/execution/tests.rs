@@ -406,13 +406,20 @@ fn replaced_grant_root_refuses_before_guest_execution() {
         assert!(error.to_string().contains("root was replaced"), "{error}");
         let replacement = ExecutionGrant::new(
             &workspace,
-            ExecutionAccess::ReadOnly,
+            ExecutionAccess::WorkspaceWrite,
             [external.clone()],
             ExecutionNetwork::Off,
         )
         .unwrap();
         let error = grant.check_attenuation(&replacement).unwrap_err();
         assert!(error.to_string().contains("root was replaced"), "{error}");
+        // A current ceiling cannot accept a stale requested object at the
+        // same name, even though binding the ceiling itself succeeds.
+        replacement.check_attenuation(&replacement).unwrap();
+        for (ceiling, requested) in [(&replacement, &grant), (&grant, &grant)] {
+            let error = ceiling.check_attenuation(requested).unwrap_err();
+            assert!(error.to_string().contains("root was replaced"), "{error}");
+        }
         // A lexical prefix alone used to refresh the replaced root's identity
         // and mint another child grant, including for a read-only root.
         let nested = replaced.join("nested");

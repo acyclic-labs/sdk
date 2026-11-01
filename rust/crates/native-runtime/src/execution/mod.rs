@@ -161,9 +161,15 @@ impl BoundPath {
         };
         #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
         {
+            let exact = relative.as_os_str().is_empty();
+            // Both grants pin their original objects. Compare those identities
+            // once, then bind the ceiling to detect replacement at its path.
+            if exact && self.identity != requested.identity {
+                return Err(refused("execution grant root was replaced"));
+            }
             let root = self.bind()?;
-            if relative.as_os_str().is_empty() {
-                requested.verify(&root)?;
+            if exact {
+                drop(root);
                 return Ok(true);
             }
             #[cfg(target_os = "linux")]
