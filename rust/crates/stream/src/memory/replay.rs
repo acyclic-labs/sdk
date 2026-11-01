@@ -104,7 +104,7 @@ impl ReplayProbes {
             self.remaining = self
                 .remaining
                 .checked_sub(items)
-                .unwrap_or_else(|| unreachable!("reserved AVL height"));
+                .unwrap_or_else(|| unreachable!("reserved index examinations"));
             return meter.record_reserved_examination(items);
         }
         Ok(())

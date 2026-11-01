@@ -172,6 +172,8 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                     let (original, expected) = &histories[parent % histories.len()];
                     let mut expected = expected.clone();
                     let claims = work.claims;
+                    let claimed_bytes = work.claimed_bytes;
+                    let items = work.items;
                     let view = if let Some(cut) = cut {
                         expected.retain(|(_, sequence), _| *sequence < cut);
                         original.cap(cut)
@@ -183,6 +185,9 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                         .insert(key.to_be_bytes(), sequence, value, &mut work)
                         .map_err(TestCaseError::fail)?;
                     prop_assert!(work.claims - claims <= 130);
+                    let bound = view.insertion_bound(1).unwrap();
+                    prop_assert!(work.claimed_bytes - claimed_bytes <= bound.allocation_bytes);
+                    prop_assert!(work.items - items <= bound.examined_items);
                     expected.insert((key, sequence), value);
                     histories.push((next, expected));
                     for (history, expected) in &histories {
@@ -406,9 +411,24 @@ fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
                 let mut bytes = [0; 1024];
                 bytes[bit / 8] = 0x80 >> (bit % 8);
                 let key = binary_key::<1032, _>(&bytes, &mut work).unwrap();
+                let bound = index.insertion_bound(1).unwrap();
+                let claimed = work.claimed_bytes;
+                let items = work.items;
                 index = index.insert(key, 9, bit + 1, &mut work)?;
+                assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
+                assert!(work.items - items <= bound.examined_items);
             }
             let original = index.clone();
+            let bound = index.insertion_bound(1).unwrap();
+            let claimed = work.claimed_bytes;
+            let items = work.items;
+            work.maximum_items = Some(items + bound.examined_items);
+            index = index.insert(zero, 0, 8888, &mut work)?;
+            assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
+            assert!(work.items - items <= bound.examined_items);
+            work.maximum_items = None;
+            assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &8888)));
+            assert_eq!(original.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
             index = index.cap(1).insert(zero, 1, 9999, &mut work)?;
             let items = work.items;
             assert_eq!(index.seek(zero, 1, 2, &mut work)?, Some((1, &9999)));
@@ -456,6 +476,7 @@ use std::{cell::Cell, rc::Rc};
 struct Work {
     items: u64,
     claims: u64,
+    claimed_bytes: u64,
     maximum_items: Option<u64>,
     maximum_claims: Option<u64>,
     cancelled: bool,
@@ -513,6 +534,7 @@ impl IndexWork for Work {
         }
         let live = self.live.get().checked_add(bytes).ok_or("live overflow")?;
         self.claims = next;
+        self.claimed_bytes += bytes;
         self.live.set(live);
         Ok(Allocation {
             bytes,

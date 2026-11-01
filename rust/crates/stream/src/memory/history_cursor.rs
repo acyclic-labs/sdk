@@ -197,7 +197,7 @@ impl FiniteRead {
                 };
                 let Some(sequence) =
                     root.keys()
-                        .seek(&key.key, self.next, self.history.tail, &mut || examine(1))?
+                        .seek(&key.key, self.next, self.history.tail, &mut examine)?
                 else {
                     return Ok(None);
                 };

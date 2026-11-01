@@ -15,7 +15,7 @@ mod recent;
 pub use recent::RecentIndex;
 
 mod persistent;
-pub use persistent::{PersistentIndex, PersistentPosition};
+pub use persistent::{IndexInsertionBound, PersistentIndex, PersistentPosition};
 
 mod keyed;
 pub use keyed::{BinaryKeyError, KeyedIndex, binary_key};

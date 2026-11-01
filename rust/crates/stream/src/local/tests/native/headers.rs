@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryStreamExt as _;
 
 fn body() -> Result<crate::AppendRecord, StreamError> {
     Ok(crate::AppendRecord {
@@ -6,7 +7,13 @@ fn body() -> Result<crate::AppendRecord, StreamError> {
         headers: crate::RecordHeaders::new(
             (0..=u8::MAX)
                 .take(crate::MAX_RECORD_KEYS)
-                .map(|key| OwnedBytes::from(vec![key]))
+                .map(|key| {
+                    OwnedBytes::from(match key {
+                        0 => vec![0; crate::MAX_RECORD_KEY_BYTES - 1],
+                        1 => vec![0; crate::MAX_RECORD_KEY_BYTES],
+                        _ => vec![key],
+                    })
+                })
                 .collect(),
             (0..crate::MAX_RECORD_ATTRIBUTES)
                 .map(|index| crate::Attribute {
@@ -65,6 +72,23 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
         };
         assert_eq!(record.value, body.value);
         assert_eq!(record.headers, body.headers);
+        for key in &body.headers.keys()[..2] {
+            let selected: Vec<_> = provider
+                .read(ReadRequest {
+                    path: append.path.clone(),
+                    from: append.start,
+                    limit: 1,
+                    key: Some(crate::ReadKeySeek {
+                        key: key.clone(),
+                        before: append.end,
+                    }),
+                    at_least: Default::default(),
+                })
+                .await?
+                .try_collect()
+                .await?;
+            assert_eq!(selected.as_slice(), std::slice::from_ref(record));
+        }
         let recovered = recovery.await??;
         let observed = recovered.value().as_ref().ok_or("missing completion")?;
         assert_eq!(
