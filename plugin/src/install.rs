@@ -24,9 +24,14 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         check_codex()?;
     }
     if command == "doctor" {
+        let plugins = if host == "codex" {
+            Some(codex_plugin_exchange(None)?)
+        } else {
+            None
+        };
         println!(
             "{}",
-            json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[]})
+            json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[],"native_plugins":plugins})
         );
         return Ok(());
     }
@@ -58,7 +63,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
                         package.to_str().ok_or("non-Unicode plugin path")?,
                     ])?;
                 }
-                install_codex_plugin(&package)?;
+                codex_plugin_exchange(Some(&package))?;
             } else {
                 codex(&["plugin", "remove", "acyclic@acyclic", "--json"])?;
             }
@@ -294,15 +299,20 @@ fn codex_marketplace(package: &Path) -> Result<bool> {
 /// The native install request names the admitted manifest itself, so a later
 /// registry change cannot redirect installation to a namesake marketplace.
 /// Install and hook trust use one initialized app-server and config writer.
-fn install_codex_plugin(package: &Path) -> Result<()> {
+/// A read-only exchange returns the same host's complete installed state.
+fn codex_plugin_exchange(package: Option<&Path>) -> Result<Value> {
     use acyclic_native_runtime::{
         CaptureInput, CaptureSchedule, ProcessCommand, ProcessInput, ProcessOutput,
         ProcessStdio as Stdio, ProcessTree,
     };
-    let recovery = format!(
-        "recovery argv: {}",
-        serde_json::to_string(&("acyclic", "install", "codex", "--plugin-root", package))?
-    );
+    let recovery = if let Some(package) = package {
+        format!(
+            "recovery argv: {}",
+            serde_json::to_string(&("acyclic", "install", "codex", "--plugin-root", package))?
+        )
+    } else {
+        "recovery=acyclic doctor codex".into()
+    };
     let resolved = host_command("codex")?;
     let mut command = ProcessCommand::new(resolved.get_program());
     command
@@ -320,6 +330,7 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
     let mut expected = 1;
     let mut line = Vec::new();
     let mut committed = false;
+    let mut installed = Value::Null;
     // The shared pump owns all delivery, output, root-exit and physical-close
     // events. A final acknowledgement ends containment; stdin EOF is not an
     // obligation for an external service to honour before we can reap it.
@@ -333,7 +344,7 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
             for fragment in bytes.split_inclusive(|byte| *byte == b'\n') {
                 line.extend_from_slice(fragment);
                 if fragment.last() != Some(&b'\n') {continue;}
-                let message: Value = serde_json::from_slice(&line).map_err(io::Error::other)?;
+                let mut message: Value = serde_json::from_slice(&line).map_err(io::Error::other)?;
                 line.clear();
                 let Some(id) = message.get("id") else {continue;};
                 if id != &json!(expected) {
@@ -342,12 +353,21 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
                 if let Some(error) = message.get("error") {
                     return Err(io::Error::other(format!("Codex request {expected}: {error}")));
                 }
-                let result = message.get("result").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Codex response lacks result"))?;
+                let result = message.get_mut("result").map(Value::take).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Codex response lacks result"))?;
                 match expected {
                     1 => {
                         next.extend_from_slice(b"{\"method\":\"initialized\"}\n");
-                        next.extend(codex_frame(2, "plugin/install", json!({"pluginName": "acyclic", "marketplacePath": package.join(".agents/plugins/marketplace.json")})).map_err(io::Error::other)?);
+                        let (method, params) = if let Some(package) = package {
+                            ("plugin/install", json!({"pluginName": "acyclic", "marketplacePath": package.join(".agents/plugins/marketplace.json")}))
+                        } else {
+                            ("plugin/installed", json!({}))
+                        };
+                        next.extend(codex_frame(2, method, params).map_err(io::Error::other)?);
                         expected = 2;
+                    }
+                    2 if package.is_none() => {
+                        installed = result;
+                        committed = true;
                     }
                     2 => {
                         if result.get("authPolicy").and_then(Value::as_str).is_none() || result.get("appsNeedingAuth").and_then(Value::as_array).is_none() {
@@ -357,7 +377,7 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
                         expected = 3;
                     }
                     3 => {
-                        let trust = codex_hook_trust(result).map_err(io::Error::other)?;
+                        let trust = codex_hook_trust(&result).map_err(io::Error::other)?;
                         if trust.is_empty() {committed = true;} else {
                             next.extend(codex_frame(4, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
                             expected = 4;
@@ -369,11 +389,11 @@ fn install_codex_plugin(package: &Path) -> Result<()> {
             }
             Ok(ProcessInput {bytes: next, complete: committed})
         }, None, None, None,
-    ).map_err(|failure| format!("step=Codex hook trust exchange: {}; physical_cleanup_completed={}; {recovery}", failure.error, failure.cleanup_completed))?;
+    ).map_err(|failure| format!("step=Codex plugin exchange: {}; physical_cleanup_completed={}; {recovery}", failure.error, failure.cleanup_completed))?;
     if !committed {
-        return Err(format!("step=Codex hook trust exchange: root exited {} before request {expected} acknowledgement; {recovery}", outcome.status).into());
+        return Err(format!("step=Codex plugin exchange: root exited {} before request {expected} acknowledgement; {recovery}", outcome.status).into());
     }
-    Ok(())
+    Ok(installed)
 }
 
 fn codex_frame(id: u64, method: &str, params: Value) -> Result<Vec<u8>> {

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, delimiter, isAbsolute, join } from "node:path";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { environment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
 import { withOwnedCase } from "../../../scripts/graphcoder-e2e/suite.mjs";
-import { nativePackage } from "./native-model.mjs";
+import { codexInstalled, nativePackage } from "./native-model.mjs";
 
 const recovery = "ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_CODEX=/absolute/codex node --test --test-concurrency=1 plugin/tests/hosts/native-installation.test.mjs";
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -38,11 +38,7 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
       const rejected = await run(executable, ["install", "codex", "--plugin-root", missing]);
       assert.notEqual(rejected.code, 0);
       assert.match(rejected.stderr, /plugin marketplace manifest is missing/);
-      const list = async () => {
-        const result = await run(codex, ["plugin", "list", "--json"]);
-        assert.equal(result.code, 0);
-        return JSON.parse(result.stdout).installed;
-      };
+      const list = () => codexInstalled(run, executable);
       assert.deepEqual(await list(), []);
       step = "install through shipping CLI and actual native plugin manager";
       assert.equal((await run(executable, ["install", "codex", "--plugin-root", packageRoot])).code, 0);
@@ -83,6 +79,18 @@ test("actual Codex installs and removes the exact native plugin in its fixture p
         assert.equal(digest(await readFile(join(cached, member))), digest(await readFile(join(packageRoot, member))), member);
       step = "remove through shipping CLI and verify native manager state";
       assert.equal((await run(executable, ["uninstall", "codex", "--plugin-root", packageRoot])).code, 0);
+      assert.deepEqual(await list(), []);
+      step = "reject an unrelated actual installed plugin in the bare profile";
+      const contaminant = join(root, "contaminant");
+      await cp(packageRoot, contaminant, { recursive: true, force: false, errorOnExist: true });
+      const manifestPath = join(contaminant, ".agents/plugins/marketplace.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.name = "contaminant";
+      await writeFile(manifestPath, JSON.stringify(manifest));
+      assert.equal((await run(codex, ["plugin", "marketplace", "add", contaminant])).code, 0);
+      assert.equal((await run(codex, ["plugin", "add", "acyclic@contaminant"])).code, 0);
+      await assert.rejects(codexInstalled(run, executable, []), /exclusive native login profile/);
+      assert.equal((await run(codex, ["plugin", "remove", "acyclic@contaminant", "--json"])).code, 0);
       assert.deepEqual(await list(), []);
     } });
     assert.equal(receipt.expired, false);

@@ -75,6 +75,31 @@ export function assertNativeCompletion(host,result,answer,selection) {
 // approves the same coordination tools by its native allow list.
 export const nativeModel=(host,live)=>live?.model??(host==='claude-code'?'claude-haiku-5-5':'tiny');
 
+// Query the host's installed state through the shipping native exchange.
+// Native `plugin list` also fetches the remote discovery catalog, even when
+// only its installed JSON rows are requested. Filtering one marketplace would
+// hide an unrelated enabled plugin from the paired-profile admission.
+export async function codexInstalled(run,executable,expected) {
+ const result=await run(executable,['doctor','codex']);
+ assert.equal(result.code,0,result.stderr);
+ const state=JSON.parse(result.stdout).native_plugins;
+ assert.ok(state&&Array.isArray(state.marketplaces)&&Array.isArray(state.marketplaceLoadErrors),
+  'step=admit native installed-state response; recovery=use the matching shipping executable with plugin/installed observation');
+ assert.deepEqual(state.marketplaceLoadErrors,[],
+  'step=admit native installed-state closure; recovery=repair original native marketplace load errors');
+ const installed=state.marketplaces.flatMap(marketplace=>{
+  assert.ok(Array.isArray(marketplace.plugins),'native marketplace lacks installed plugin rows');
+  return marketplace.plugins.map(plugin=>{
+   assert.ok(typeof plugin.id==='string'&&typeof plugin.installed==='boolean'&&typeof plugin.enabled==='boolean',
+    'step=admit native installed plugin; recovery=repair the original native installed-state response');
+   return {pluginId:plugin.id,installed:plugin.installed,enabled:plugin.enabled,version:plugin.localVersion??plugin.version};
+  });
+ });
+ if(expected!==undefined)assert.deepEqual(installed.filter(row=>row.enabled).map(row=>row.pluginId),expected,
+  'step=admit native plugins; recovery=use an exclusive native login profile with no unrelated enabled plugins');
+ return installed;
+}
+
 export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
  const model=nativeModel(host,live);
  if(host==='codex') {
@@ -163,11 +188,8 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   if(host==='codex') {
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);
    assert.equal(installation.code,0,installation.stderr);
-    const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
-   const installed=JSON.parse(listed.stdout).installed;
+   const installed=await codexInstalled(run,executable,fixture.live?['acyclic@acyclic']:undefined);
    assert.ok(installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled),'native plugin manager lacks acyclic@acyclic');
-   if(fixture.live)assert.deepEqual(installed.filter(row=>row.enabled).map(row=>row.pluginId),
-    ['acyclic@acyclic'],'step=admit native plugins; recovery=use an exclusive native login profile with no unrelated enabled plugins');
   } else if(host==='pi') {
    const extension=fixture.live?join(root,'acyclic.ts'):join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts');
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot,'--settings',extension]);

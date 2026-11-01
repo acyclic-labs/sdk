@@ -10,7 +10,7 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {recordedRequests,requests} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
-import {assertNativeCompletion,installedHost,launchNativeHost,nativeModel,nativePackage} from './native-model.mjs';
+import {assertNativeCompletion,codexInstalled,installedHost,launchNativeHost,nativeModel,nativePackage} from './native-model.mjs';
 import {ProcessPhases,pairOrders,pairPhases} from './process-phases.mjs';
 import {assertNativeResume} from './native-session-proof.mjs';
 
@@ -73,9 +73,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
       pluginInstalled=mode==='installed';
      }
      if(live&&host==='codex'&&mode==='bare') {
-      const listed=await run(native.program,[...native.args,'plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
-      assert.deepEqual(JSON.parse(listed.stdout).installed.filter(row=>row.enabled).map(row=>row.pluginId),
-       [],'step=admit paired native plugins; recovery=use an exclusive native login profile with no unrelated enabled plugins');
+      await codexInstalled(run,configuration.env.E2E_PLUGIN_BINARY,[]);
      }
      await rm(join(workspace,'parent.txt'),{force:true});
      const operation=randomUUID();collector=new ProcessPhases(operation);
