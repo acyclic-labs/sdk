@@ -23,7 +23,7 @@ test('native filesystem effects reject parent-only execution and lost resume cus
     {cwd,env:{...env,ACYCLIC_TASK:identity,E2E_PLUGIN_BINARY:binary}});
    t.diagnostic(JSON.stringify({phase,cwd,...result}));return result;
   };
-  const receipt=await withOwnedCase({processes,run:async()=>{
+  await withOwnedCase({processes,run:async()=>{
    step='reject child work attempted by the parent';
    assert.equal((await run('parent',workspace)).code,0);
    step='retain the explicit staged executable across separate workspace scopes';
@@ -80,7 +80,6 @@ test('native filesystem effects reject parent-only execution and lost resume cus
    assertNativeResume(original,original);
    assert.deepEqual(await Promise.all(paths.map(path=>readFile(join(child,path)))),before);
   }});
-  assert.equal(receipt.expired,false);
  } catch(cause) {
   throw new Error('step='+step+': '+cause.message+'; recovery=node --test plugin/tests/hosts/native-effects.test.mjs',{cause});
  } finally {

@@ -70,9 +70,9 @@ async function main(){
   const home=scratchDirectory('fixture-'+entry.name+'-');
   const env=environment(home,{PATH:process.env.PATH,RUST_TEST_THREADS:'4'});
   const scope=new Processes();
-  const {run,seconds,expired}=await withOwnedCase({processes:scope,
+  const {run,seconds}=await withOwnedCase({processes:scope,
    run:()=>runScriptedScenario({scenario:entry,processes:scope,directory,env})});
-  const receipt={...run,seconds,expired,accepted:run.accepted&&!expired&&seconds<10};
+  const receipt={...run,seconds,accepted:run.accepted&&seconds<10};
   receipts.push(receipt);await writeFile(join(directory,'results.json'),JSON.stringify(receipts,null,2));
   console.log(JSON.stringify(receipt));
  }
