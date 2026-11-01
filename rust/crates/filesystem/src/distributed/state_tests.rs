@@ -163,15 +163,71 @@ async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals(
         .map_err(|(error, _)| error)?;
         let mut native = AuthorityWork::native(&original, &cancellation);
         let before = provider.requests();
-        let observed = store.observe_record(path, &mut native).await?;
+        let observed = store.observe_record(path.clone(), &mut native).await?;
         assert_eq!(
-            observed.record.ok_or("missing native state")?.commit_id,
+            observed
+                .record
+                .as_ref()
+                .ok_or("missing native state")?
+                .commit_id,
             receipt.commit_id
         );
         assert!(observed.allocation.is_some());
+        assert_eq!(native.spent().backend_read_operations, 1);
+        assert_eq!(native.spent().authority_records_read, 1);
         let calls = provider.requests().since(before);
         assert_eq!(calls.class(RequestClass::Head), 1);
-        assert_eq!(calls.data(), 1);
+        assert_eq!(calls.data(), 0);
+        for (selected, absent) in [("state/absent", true), ("state/empty", false)] {
+            let before = provider.requests();
+            let result = store
+                .observe_record(StreamPath::new(selected)?, &mut native)
+                .await;
+            if absent {
+                assert!(matches!(
+                    result?.observation.condition(),
+                    CommitCondition::Absent { .. }
+                ));
+            } else {
+                assert!(matches!(result, Err(AuthorityStoreError::CorruptStatic(_))));
+            }
+            let calls = provider.requests().since(before);
+            assert_eq!(calls.class(RequestClass::Head), 1);
+            assert_eq!(calls.data(), 0);
+        }
+        for cancelled in [false, true] {
+            let token = CancellationToken::new();
+            let denied_original = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    authority_records_read: u64::from(cancelled),
+                    ..crate::performance::BOUNDARY_BUDGET
+                },
+                &token,
+            )
+            .map_err(|(error, _)| error)?;
+            if cancelled {
+                token.cancel();
+            }
+            let mut denied = AuthorityWork::native(&denied_original, &token);
+            let before = provider.requests();
+            assert!(
+                store
+                    .observe_record(path.clone(), &mut denied)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(provider.requests().since(before).control(), 0);
+            assert_eq!(provider.requests().since(before).data(), 0);
+        }
+        drop(native);
+        drop(original);
+        assert_eq!(
+            observed
+                .record
+                .ok_or("lost retained native state")?
+                .commit_id,
+            receipt.commit_id
+        );
     }
     Ok(())
 }
