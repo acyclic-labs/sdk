@@ -590,6 +590,18 @@ mod tests {
                 2,
                 "one original fetch per tail projection must serve every admitted witness"
             );
+            for flight in reader.inflight.values() {
+                assert!(
+                    reader
+                        .demand
+                        .get(&flight.key)
+                        .unwrap()
+                        .paging
+                        .witnesses
+                        .is_empty()
+                );
+                assert!(!flight.paging.witnesses.is_empty());
+            }
             for op in ops.into_iter().rev() {
                 let id = op.id();
                 reader.complete(id, execute(&provider, op).await, 0);
@@ -686,15 +698,77 @@ mod tests {
                 2,
                 "persistence fabricated fresh projection observations"
             );
+            // Returning request custody on transient failure preserves the
+            // original observations without a second plan or copied map.
+            for op in &ops {
+                reader.complete(op.id(), Outcome::Failed(Failure::Unavailable), 1);
+            }
+            let retry_at = reader.next_deadline().unwrap();
+            assert!(reader.poll(retry_at - 1).is_empty());
+            let ops = reader.poll(retry_at);
+            assert_eq!(
+                ops.len(),
+                1,
+                "recovery admits the original one-request probe"
+            );
+            let op = ops.into_iter().next().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            let ops = reader.poll(retry_at);
+            assert_eq!(ops.len(), 1);
+            let op = ops.into_iter().next().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(retry_at).is_empty(),
+                "retry lost the original witnesses"
+            );
+
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(retry_at);
+            assert_eq!(ops.len(), 2);
+            // A newer plan replaces the pending view while the old flight
+            // still owns its observations. Timeout cannot restore withdrawn
+            // witnesses or resurrect the removed projection.
+            reader.plan([want(&projections[2])]);
+            let deadline = reader.next_deadline().unwrap();
+            reader.begin_frame(deadline);
+            assert_eq!(reader.take_cancelled().len(), 2);
+            let retry_at = reader.next_deadline().unwrap();
+            let mut retried = reader.poll(retry_at);
+            let op = retried.pop().unwrap();
+            let id = op.id();
+            reader.complete(id, execute(&provider, op).await, retry_at);
+            let listing = reader.cache().listing(&parent, 0).unwrap();
+            assert_eq!(listing.projections.get(&projections[0]), None);
+            assert_eq!(listing.projections.get(&projections[1]), None);
+            assert_eq!(listing.projections.get(&projections[2]), Some(&Some(2)));
+            assert!(reader.poll(retry_at).is_empty());
+            reader.plan(projections.iter().map(want));
+            for op in reader.poll(retry_at) {
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, retry_at);
+            }
+            reader.plan(projections.iter().map(want));
+            assert!(
+                reader.poll(retry_at).is_empty(),
+                "timeout lost the original witnesses"
+            );
+
+            reader.restore(&bytes).unwrap();
+            reader.plan(projections.iter().map(want));
+            let ops = reader.poll(retry_at);
             // Original indexed parent invalidation covers every projection,
             // including a valid original reply arriving after cancellation.
             let late_id = ops[0].id();
             let late = execute(&provider, ops[0].clone()).await;
             reader.denied(&parent);
             assert_eq!(reader.take_cancelled().len(), 2);
-            reader.complete(late_id, late, 2);
+            reader.complete(late_id, late, retry_at);
             assert!(reader.cache().listing(&parent, 0).is_none());
-            assert!(reader.poll(2).is_empty());
+            assert!(reader.poll(retry_at).is_empty());
         });
     }
 

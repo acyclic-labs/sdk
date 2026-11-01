@@ -379,7 +379,7 @@ impl OpKey {
 }
 
 /// How a listing op is read and when its page goes stale.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Paging {
     after: Option<StreamPath>,
     /// Original witness paths and positions admitted before this request.
@@ -1009,7 +1009,7 @@ impl Reader {
                     priority: *priority,
                     deadline: now.saturating_add(self.policy.timeout_ms),
                     issued: now,
-                    paging: paging.clone(),
+                    paging: Paging::default(),
                     observed: self.cache.observation(key.path()),
                 },
             );
@@ -1018,8 +1018,8 @@ impl Reader {
             ops.push(op);
         }
         for op in &ops {
-            if let Some(flight) = self.inflight.get(&op.id()) {
-                self.demand.rotate(&flight.key, self.next_ticket);
+            if let Some(flight) = self.inflight.get_mut(&op.id()) {
+                flight.paging = self.demand.dispatch(&flight.key, self.next_ticket);
                 self.next_ticket += 1;
             }
         }
@@ -1081,6 +1081,8 @@ impl Reader {
                 }
                 if matches!(failure, Failure::Refused | Failure::Denied) {
                     self.refuse(flight.key.clone());
+                } else {
+                    self.demand.restore_paging(&flight.key, flight.paging);
                 }
                 self.fail(failure, now);
                 return;
@@ -1538,6 +1540,7 @@ impl Reader {
             return false;
         };
         self.keys.remove(&flight.key);
+        self.demand.restore_paging(&flight.key, flight.paging);
         self.cancelled.push(id);
         true
     }
@@ -2106,7 +2109,10 @@ mod reader_tests {
                 priority: Priority::Visible,
                 deadline: 100,
                 issued: 0,
-                paging: paging.clone(),
+                paging: Paging {
+                    after: Some(old.clone()),
+                    ..Paging::default()
+                },
                 observed: None,
             },
         );
