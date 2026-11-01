@@ -506,6 +506,30 @@ fn malformed_native_part_fields_fail_before_publication() {
         .unwrap();
         assert!(events.iter().any(|event| matches!(event,ModelEvent::ReasoningBlock {block} if block.continuity == raw.as_bytes())));
     }
+    // Native continuity may carry only thought metadata. Local wire admission
+    // must accept the same exact model part as ingress/replay, without adding
+    // a text member merely to satisfy the local validator.
+    for part in [
+        json!({"thoughtSignature":"original==","extension":{"kept":true}}),
+        json!({"thought":true}),
+    ] {
+        let raw = serde_json::to_vec(&part).unwrap();
+        let item = crate::projection::gemini::Replay::default()
+            .native(&raw, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&item).unwrap(), raw);
+        let mut body = json!({"contents":[
+            {"role":"user","parts":[{"text":"question"}]},
+            {"role":"model","parts":[part]},
+            {"role":"user","parts":[{"text":"continue"}]},
+        ]});
+        assert!(crate::input::validate_input(Adapter::Gemini, &body).is_empty());
+        // Moving provider thought metadata onto a user turn must not create a
+        // new valid native continuity position.
+        body["contents"][1]["role"] = json!("user");
+        assert!(crate::input::validate_input(Adapter::Gemini, &body).contains(&"GEM-SEQ-03"));
+    }
     for (index, first) in fields.iter().enumerate() {
         for second in &fields[index + 1..] {
             let mut part = json!({"thoughtSignature":"original==","extension":{"kept":true}});

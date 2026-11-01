@@ -65,7 +65,10 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     );
                 }
                 GeminiPart::Other => check(
-                    part.get("inlineData").is_some() || part.get("fileData").is_some(),
+                    part.get("inlineData").is_some()
+                        || part.get("fileData").is_some()
+                        || role == "model"
+                            && (part["thought"] == true || part["thoughtSignature"].is_string()),
                     "GEM-SEQ-03",
                     errors,
                 ),
