@@ -322,7 +322,7 @@ mod tests {
                 panic!("new file already exists");
             };
         }
-        assert!(files.read(abandoned_path, 4096).await?.is_none());
+        assert!(files.read(abandoned_path, Some(4096)).await?.is_none());
 
         // Removing a file after selection changes a fresh read, but cannot
         // remove a listed effect from the retained original generation.
@@ -346,12 +346,12 @@ mod tests {
             ))
             .await
             .map_err(super::super::map_error)?;
-        assert!(files.read(&removed, 4096).await?.is_none());
+        assert!(files.read(&removed, Some(4096)).await?.is_none());
         assert_eq!(reader.list(&effects.directory).await?, selected);
         let mut retained = Vec::new();
         for name in selected {
             let bytes = reader
-                .read(&format!("{}/{name}", effects.directory), 4096)
+                .read(&format!("{}/{name}", effects.directory), Some(4096))
                 .await?
                 .ok_or_else(|| Error::Storage("selected effect disappeared".into()))?;
             retained.push(decode(&bytes)?);
