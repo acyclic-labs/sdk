@@ -10,15 +10,18 @@ use std::sync::{
 /// Published trust and clock: trust is swapped before each publication or
 /// the owner's loss resolves a registered change.
 pub(in crate::session) struct State {
-    trust: RwLock<Arc<signed::Snapshot>>,
+    trust: RwLock<Arc<dyn verify::Trust + Send + Sync>>,
     clock: AtomicU64,
     published: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
     clock_events: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
 }
 impl State {
     pub(in crate::session) fn new() -> Arc<Self> {
+        Self::with_trust(Arc::new(signed::Snapshot::default()))
+    }
+    pub(in crate::session) fn with_trust(trust: Arc<dyn verify::Trust + Send + Sync>) -> Arc<Self> {
         Arc::new(Self {
-            trust: RwLock::new(Arc::new(signed::Snapshot::default())),
+            trust: RwLock::new(trust),
             clock: AtomicU64::new(signed::NOW),
             published: tokio::sync::watch::channel(Ok(())).0,
             clock_events: tokio::sync::watch::channel(Ok(())).0,

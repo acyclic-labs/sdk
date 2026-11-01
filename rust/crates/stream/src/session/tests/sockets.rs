@@ -274,6 +274,136 @@ fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult
 }
 
 #[tokio::test]
+async fn socket_input_renewal_preserves_the_certified_account() -> TestResult {
+    use crate::session::authority::tests::{State, authority};
+    use acyclic_auth::{testing as signed, verify};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Both accounts have real, independently signed birth/key certificates.
+    // The original public fixture keys are trusted for these two accounts.
+    struct Accounts(signed::Snapshot);
+    impl verify::Trust for Accounts {
+        fn environment_keys(
+            &self,
+            environment: &str,
+        ) -> Result<verify::Keys<'_>, verify::VerifyError> {
+            verify::Trust::environment_keys(&self.0, environment)
+        }
+        fn account(&self, account: &str) -> Result<verify::AccountState<'_>, verify::VerifyError> {
+            if !matches!(account, "account" | "other") {
+                return Err(verify::VerifyError::Trust);
+            }
+            verify::Trust::account(&self.0, "account")
+        }
+        fn revoked(
+            &self,
+            account: &str,
+            check: verify::RevocationCheck<'_>,
+        ) -> Result<bool, verify::VerifyError> {
+            if !matches!(account, "account" | "other") {
+                return Err(verify::VerifyError::Trust);
+            }
+            verify::Trust::revoked(&self.0, "account", check)
+        }
+    }
+    let credential = |account: &str, expiry| {
+        Bytes::from(signed::root(|block| {
+            if let Some(certificates) = &mut block.certificates {
+                certificates.birth.birth.account_id = account.into();
+                for key in &mut certificates.keys {
+                    key.key.account_id = account.into();
+                    key.key.grants =
+                        signed::claims::grants("actors:/fixture", false, "actors/invoke");
+                }
+            }
+            block.caveats.push(acyclic_auth::contract::Caveat {
+                kind: acyclic_auth::contract::CaveatKind::ExpiresAtUnixSeconds(expiry),
+            });
+        }))
+    };
+    let first = credential("account", 900);
+    let renewed = credential("account", 950);
+    let foreign = credential("other", 950);
+    let trust = Accounts(signed::Snapshot::default());
+    let held = verify::verify(&first, &trust, signed::NOW)?;
+    for bytes in [&renewed, &foreign] {
+        let next = verify::verify(bytes, &trust, signed::NOW)?;
+        assert_eq!(held.effective().principal(), next.effective().principal());
+        assert!(held.effective().grants().eq(next.effective().grants()));
+    }
+    let (sender, receiver) = mpsc::unbounded();
+    let mut greeting = hello(1_000_000, 100);
+    let Some(Body::Hello(hello)) = &mut greeting.body else {
+        return Err("missing greeting".into());
+    };
+    hello.credentials = vec![first];
+    sender.unbounded_send(Ok(greeting))?;
+    let mut socket = subscribe(1, "events", 0, false);
+    socket.kind = Some(Kind::ActorSocket(Bytes::from_static(b"open")));
+    sender.unbounded_send(Ok(interest(1, vec![socket])))?;
+    let (gone, left) = oneshot::channel();
+    let received = Arc::new(AtomicUsize::new(0));
+    let state = State::with_trust(Arc::new(trust));
+    let mut output = serve_on_with_products(
+        Arc::new(MemoryStream::default()),
+        Arc::new(authority(state)),
+        Products {
+            sockets: Some(Arc::new(Echo {
+                gone: std::sync::Mutex::new(Some(gone)),
+                ends: false,
+                received: Some(received.clone()),
+            })),
+            ..Products::default()
+        },
+        "node".into(),
+        Limits::default(),
+        receiver.boxed(),
+        None,
+    )?;
+    for _ in 0..3 {
+        next(&mut output).await?;
+    }
+    sender.unbounded_send(Ok(window(1)))?;
+    assert!(matches!(next(&mut output).await?.body, Some(Body::Data(_))));
+    for (replacement, bytes) in [
+        (renewed, Bytes::from_static(b"allowed")),
+        (foreign, Bytes::from_static(b"refused")),
+    ] {
+        assert!(futures::poll!(output.next()).is_pending());
+        sender.unbounded_send(Ok(frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential {
+                slot: 0,
+                credential: replacement,
+            }),
+        )))?;
+        sender.unbounded_send(Ok(frame(
+            1,
+            1,
+            Body::Data(wire::SessionData {
+                item: Some(Item::ActorSocket(bytes.clone())),
+                ..Default::default()
+            }),
+        )))?;
+        let result = next(&mut output).await?;
+        if bytes.as_ref() == b"allowed" {
+            assert!(matches!(result.body, Some(Body::Data(wire::SessionData {
+                item: Some(Item::ActorSocket(echo)), ..
+            })) if echo == bytes));
+        } else {
+            assert!(matches!(result.body, Some(Body::Closed(close)) if close.code == "forbidden"));
+        }
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+    }
+    assert!(matches!(
+        futures::FutureExt::now_or_never(left),
+        Some(Ok(()))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn socket_frames_flow_both_ways_and_dropping_the_peer_ends_the_owner() -> TestResult {
     let (gone, left) = oneshot::channel();
     let client = client(Arc::new(Echo {
