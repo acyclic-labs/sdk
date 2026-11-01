@@ -102,3 +102,9 @@ under the same frozen opening cut; a fresh initial query includes new appends.
 Pass either continuation unchanged using `--cursor`. Select and follow only
 visible agents through the existing client; neither command constructs a whole
 tree or walks preceding history pages to reach the newest turn.
+
+History rows contain an exclusive `conversation` cut, `context_tail` and
+`volume_count`; saved roots remain at the source. A selected turn is
+`conversation - 1`, never its position in the displayed page. For a file restore,
+capture expected current roots through `ProjectHeads`; saved target generations
+cannot stand in for the current roots being approved.

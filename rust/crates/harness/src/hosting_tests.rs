@@ -346,10 +346,12 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ..Default::default()
     };
     let missing = connect(None)?;
+    let mut refused = missing.subscribe(subscription.clone()).await?;
     assert!(matches!(
-        missing.subscribe(subscription.clone()).await,
-        Err(StreamError::Unsupported)
+        refused.next().await,
+        Some(Err(StreamError::Unsupported))
     ));
+    assert!(refused.next().await.is_none());
     let connected = connect(Some(Arc::new(bound.changes()?)))?;
     let mut follow = connected.subscribe(subscription).await?;
     // The already committed publication is replayed by this original follow;
