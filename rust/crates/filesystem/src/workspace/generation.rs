@@ -158,40 +158,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     ) -> W::Output<(ChangeSet<A, O>, crate::AuthorityAllocation), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let (changes, allocation) = match &mut accounting {
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelAccounting::NativeOriginal { work: original, .. } => {
-                    self.workspace
-                        .volume
-                        .fs
-                        .workspace_join_changes(
-                            self.id,
-                            to,
-                            maximum_changes,
-                            *original,
-                            cancellation,
-                        )
-                        .await?
-                }
-                _ => {
-                    let result = self
-                        .workspace
-                        .volume
-                        .fs
-                        .workspace_join_changes(
-                            self.id,
-                            to,
-                            maximum_changes,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let (_, spent, _, _) = accounting
-                        .standalone_parts()
-                        .ok_or(crate::WorkError::Overflow)?;
-                    merge_workspace_backend(result, spent, 0)?.value
-                }
-            };
+            let (changes, allocation) = self
+                .workspace
+                .volume
+                .fs
+                .workspace_join_changes_with_accounting(
+                    self.id,
+                    to,
+                    maximum_changes,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
             let allocation = workspace_allocation(allocation, &accounting)?;
             Ok::<_, WorkspaceError>((
                 ChangeSet {

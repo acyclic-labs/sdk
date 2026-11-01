@@ -27,67 +27,82 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
-        use crate::workspace::WorkspaceError;
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
-            {
-                return Err(WorkspaceError::ForeignGeneration);
-            }
-            let config = source.workspace.volume.config;
-            let (base_root, base_root_allocation) =
-                crate::kernel::read_generation_root_with_accounting(
-                    &self.inner.objects,
-                    base.object_id(),
-                    config,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await
-                .map_err(WorkspaceError::Filesystem)?;
-            let bytes = crate::foundation::usize_to_u64(
-                base_root.parents.capacity() * size_of::<GenerationId>(),
-            );
-            let base_root = crate::kernel::Owned::new(base_root, base_root_allocation, bytes);
-            let (source_root, source_root_allocation) =
-                crate::kernel::read_generation_root_with_accounting(
-                    &self.inner.objects,
-                    source.id.object_id(),
-                    config,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await
-                .map_err(WorkspaceError::Filesystem)?;
-            let bytes = crate::foundation::usize_to_u64(
-                source_root.parents.capacity() * size_of::<GenerationId>(),
-            );
-            let source_root = crate::kernel::Owned::new(source_root, source_root_allocation, bytes);
-            if source_root.value.volume_id != source.workspace.volume.id
-                || base_root.value.root_file_id != source_root.value.root_file_id
-            {
-                return Err(WorkspaceError::IncompatibleWorkspace);
-            }
-            let output = diff_generation_file_tables(
-                &self.inner.objects,
-                base_root.value.file_table,
-                source_root.value.file_table,
+        let result = self
+            .workspace_join_changes_with_accounting(
+                base,
+                source,
                 maximum_changes,
-                DecodeLimits::for_volume(config),
                 &mut accounting,
+                cancellation,
+            )
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn workspace_join_changes_with_accounting(
+        &self,
+        base: GenerationId,
+        source: &crate::Generation<A, O>,
+        maximum_changes: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(GenerationDiff, KernelOwnedAllocation), crate::workspace::WorkspaceError> {
+        use crate::workspace::WorkspaceError;
+        if maximum_changes == 0 || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner) {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let config = source.workspace.volume.config;
+        let (base_root, base_root_allocation) =
+            crate::kernel::read_generation_root_with_accounting(
+                &self.inner.objects,
+                base.object_id(),
+                config,
+                accounting,
                 cancellation,
             )
             .await
             .map_err(WorkspaceError::Filesystem)?;
-            base_root.retire(&mut accounting)?;
-            source_root.retire(&mut accounting)?;
-            if output.0.truncated {
-                return Err(WorkspaceError::JoinLimit);
-            }
-            Ok(output)
+        let bytes = crate::foundation::usize_to_u64(
+            base_root.parents.capacity() * size_of::<GenerationId>(),
+        );
+        let base_root = crate::kernel::Owned::new(base_root, base_root_allocation, bytes);
+        let (source_root, source_root_allocation) =
+            crate::kernel::read_generation_root_with_accounting(
+                &self.inner.objects,
+                source.id.object_id(),
+                config,
+                accounting,
+                cancellation,
+            )
+            .await
+            .map_err(WorkspaceError::Filesystem)?;
+        let bytes = crate::foundation::usize_to_u64(
+            source_root.parents.capacity() * size_of::<GenerationId>(),
+        );
+        let source_root = crate::kernel::Owned::new(source_root, source_root_allocation, bytes);
+        if source_root.value.volume_id != source.workspace.volume.id
+            || base_root.value.root_file_id != source_root.value.root_file_id
+        {
+            return Err(WorkspaceError::IncompatibleWorkspace);
         }
-        .await;
-        work.finish(result, &accounting)
+        let output = diff_generation_file_tables(
+            &self.inner.objects,
+            base_root.value.file_table,
+            source_root.value.file_table,
+            maximum_changes,
+            DecodeLimits::for_volume(config),
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::Filesystem)?;
+        base_root.retire(accounting)?;
+        source_root.retire(accounting)?;
+        if output.0.truncated {
+            return Err(WorkspaceError::JoinLimit);
+        }
+        Ok(output)
     }
 }
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
