@@ -194,7 +194,8 @@ mod tests {
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
         ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
         MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
-        Message, Phase, Sender, SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
+        MAX_WAKING_NOTICE_BYTES, Message, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
+        VolumeBinding,
     };
     use crate::conversation::{
         FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
@@ -297,6 +298,23 @@ mod tests {
         ]
     }
 
+    /// The widest admitted waking notice: a control-character body, which JSON
+    /// escapes to six bytes, filling [`MAX_WAKING_NOTICE_BYTES`].
+    fn widest_notice() -> crate::conversation::wire::Notice {
+        let notice = |n| crate::conversation::wire::Notice {
+            source: widest(MAX_INTENT_BYTES),
+            kind: widest(MAX_INTENT_BYTES),
+            body: serde_json::Value::String(widest_text(n)),
+            wake: true,
+            // A key requires an object body; the body fills the bound alone.
+            coalesce_key: None,
+        };
+        let width = |n| serde_json::to_vec(&notice(n)).expect("notice").len();
+        let n = (MAX_WAKING_NOTICE_BYTES - width(0)) / 6;
+        assert!(width(n) <= MAX_WAKING_NOTICE_BYTES && width(n + 1) > MAX_WAKING_NOTICE_BYTES);
+        notice(n)
+    }
+
     /// The widest adoption: deepest parent, every volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
@@ -335,6 +353,10 @@ mod tests {
             InboxRecord::ChildSettled(crate::agent::ChildSettled {
                 child: deepest.clone(),
             }),
+            InboxRecord::Notice {
+                id: intent(),
+                notice: widest_notice(),
+            },
         ];
         for outcome in outcomes().into_iter().chain([AgentOutcome::Failed {
             message: widest_text(MAX_MESSAGE_BYTES),
@@ -414,6 +436,17 @@ mod tests {
         for record in inbox_records() {
             record.encode().expect("every inbox record fits");
         }
+        // One byte past the waking reserve is refused at admission, before
+        // its turn could run and fail to settle.
+        let mut oversized = widest_notice();
+        if let serde_json::Value::String(body) = &mut oversized.body {
+            body.push(' ');
+        }
+        let oversized = InboxRecord::Notice {
+            id: intent(),
+            notice: oversized,
+        };
+        assert!(oversized.encode().is_err());
         for by in senders() {
             Closed { by, id: intent() }
                 .encode()
@@ -443,6 +476,10 @@ mod tests {
                     "tools/.results/{}",
                     crate::OperationId::from_bytes([255; 16])
                 )),
+                notices: Some(crate::agent::NoticeSelection {
+                    source: deepest.clone(),
+                    range: 0..u64::MAX,
+                }),
             }
             .encode()
             .expect("a conversation entry fits");
@@ -470,6 +507,7 @@ mod tests {
                     brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
                     roster: Some([u8::MAX; 32]),
@@ -605,7 +643,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))), notices: None };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

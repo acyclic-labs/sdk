@@ -238,6 +238,7 @@ pub(super) struct Script {
     adapter: Adapter,
     status: u16,
     sent: Mutex<Vec<HttpRequest>>,
+    counted: Mutex<Option<Bytes>>,
 }
 
 impl HttpTransport for Script {
@@ -253,6 +254,10 @@ impl HttpTransport for Script {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             if let Some(response) = fixture_count(&request) {
+                *self
+                    .counted
+                    .lock()
+                    .map_err(|_| invalid("poisoned fixture"))? = Some(request.body.clone());
                 return Ok(response);
             }
             self.sent
@@ -298,6 +303,7 @@ pub(super) fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Scr
         adapter,
         status,
         sent: Mutex::new(Vec::new()),
+        counted: Mutex::new(None),
     });
     let provider = provider_with(adapter, "http://127.0.0.1:1234/v1", script.clone());
     (provider, script)

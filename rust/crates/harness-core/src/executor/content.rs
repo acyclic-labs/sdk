@@ -206,7 +206,7 @@ impl StockExecution<'_> {
                 "max_steps exceeds configured model step bound",
             ));
         }
-        with_history_io(self.io, |work| input.input.validate_user_input(work))?;
+        with_history_io(self.io, |work| input.input.validate_turn_input(work))?;
         let scope = self
             .original_context()
             .map(crate::runtime::TaskContext::scope);

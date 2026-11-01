@@ -30,6 +30,8 @@ mod lifecycle;
 pub use lifecycle::{AgentComposer, AgentLifecycle, CLOSE};
 mod lower;
 mod machine;
+mod notices;
+pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod reply;
 mod settled;
@@ -51,7 +53,7 @@ pub use commit::{
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
     TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent, encode_user_input, expand_attachments,
-    model_input, roster_message, turn_id, turn_roster, turn_segment,
+    model_input, roster_message, turn_id, turn_notices, turn_roster, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
@@ -69,9 +71,9 @@ pub use machine::{
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
     ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
-    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase,
-    RECORD_VERSION, Sender, SpawnRequest, StatusRecord, UnsupportedRecordVersion, VolumeBinding,
-    decode_record,
+    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, MAX_WAKING_NOTICE_BYTES,
+    Message, Phase, RECORD_VERSION, Sender, SpawnRequest, StatusRecord, UnsupportedRecordVersion,
+    VolumeBinding, decode_record,
 };
 pub use reply::{Reply, reply};
 

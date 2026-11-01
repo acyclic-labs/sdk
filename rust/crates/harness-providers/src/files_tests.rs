@@ -121,6 +121,161 @@ fn with_parts(
     )
 }
 
+#[tokio::test]
+async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        let (mut provider, script) = provider(adapter, 200);
+        let original = file(b"child result", "text/plain")?;
+        let notice = ModelContentPart::Notices {
+            notices: vec![acyclic_harness_core::conversation::wire::Notice {
+                source: "child".into(),
+                kind: "child.finished".into(),
+                body: json!({"result": original}),
+                wake: true,
+                coalesce_key: None,
+            }],
+        };
+        let attachment = ModelContentPart::File {
+            file: original.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        };
+        let prepared = with_parts(&provider, vec![notice.clone(), attachment.clone()])?;
+        assert_eq!(
+            prepared.request().messages[0]
+                .content
+                .file_refs()
+                .collect::<Vec<_>>(),
+            vec![&original]
+        );
+        let mut split = prepared.request().clone();
+        split.messages = vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(notice.clone()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(attachment),
+            },
+        ];
+        let split = PreparedModelRequest::prepare(split, Limits::default(), None)?;
+        let reader = Arc::new(Reader {
+            data: b"child result".to_vec(),
+            reads: AtomicUsize::new(0),
+        });
+        provider.files = crate::files::Files {
+            reader: Some(reader.clone()),
+            maximum_bytes: 4096,
+        };
+        let mut files = crate::files::resolve(&provider.files, prepared.request(), None).await?;
+        let actual = projection::body_with_files(&provider, prepared.request(), &mut files)?;
+        assert!(
+            files.0.next().is_none(),
+            "the original file is consumed once"
+        );
+        assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+        let mut expected_files =
+            crate::files::FileText(vec![String::from("child result").into()].into_iter());
+        assert_eq!(
+            actual,
+            projection::body_with_files(&provider, split.request(), &mut expected_files)?
+        );
+        if adapter == Adapter::Gemini {
+            assert!(crate::validate_input(adapter, &actual).is_empty());
+            let parts = actual["contents"][0]["parts"].as_array().unwrap();
+            assert_eq!(actual["contents"].as_array().unwrap().len(), 1);
+            assert_eq!(parts.len(), 2);
+            // Preserve the actual renderer's notice text before the admitted
+            // file. The former bypass emitted these as separate user turns.
+            assert_eq!(parts[1]["text"], "child result");
+            let mut bypass = actual.clone();
+            bypass["contents"] = parts
+                .iter()
+                .map(|part| json!({"role":"user", "parts":[part]}))
+                .collect();
+            assert!(crate::validate_input(adapter, &bypass).contains(&"GEM-SEQ-04"));
+
+            let mut source = prepared.request().clone();
+            source.messages.insert(
+                0,
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("prior answer".into()),
+                },
+            );
+            source.messages.insert(
+                0,
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("prior input".into()),
+                },
+            );
+            source.messages.extend([
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(notice.clone()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("current input".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Part(notice.clone()),
+                },
+            ]);
+            let request = PreparedModelRequest::prepare(source, Limits::default(), None)?;
+            let shared = crate::prepared::PreparedInput::new(&provider, request).await?;
+            let generation = crate::json(&shared.generation)?;
+            assert!(crate::validate_input(adapter, &generation).is_empty());
+            let turns = generation["contents"].as_array().unwrap();
+            assert_eq!(turns.len(), 3);
+            assert_eq!(turns[0]["parts"][0]["text"], "prior input");
+            assert_eq!(turns[1]["parts"][0]["text"], "prior answer");
+            assert_eq!(
+                turns[2]["parts"],
+                json!([parts[0], parts[1], parts[0], {"text":"current input"}, parts[0]])
+            );
+            let count = shared.count(&provider).await?;
+            count.validate(&shared.request, &mut None)?;
+            let counted = script.counted.lock().unwrap();
+            let counted = crate::json(counted.as_ref().expect("original count was not sent"))?;
+            assert_eq!(
+                counted["generateContentRequest"]["contents"],
+                generation["contents"]
+            );
+            assert_eq!(reader.reads.load(Ordering::SeqCst), 2);
+        }
+        // Event metadata cannot turn arbitrary text into an admitted event
+        // attachment. JSON references alone retain no file read authority.
+        assert!(
+            with_parts(
+                &provider,
+                vec![
+                    notice.clone(),
+                    ModelContentPart::Text {
+                        text: "synthetic user message".into(),
+                    }
+                ]
+            )
+            .is_err()
+        );
+        let metadata_only = with_parts(&provider, vec![notice])?;
+        assert_eq!(
+            metadata_only.request().messages[0]
+                .content
+                .file_refs()
+                .count(),
+            0
+        );
+        assert_eq!(
+            reader.reads.load(Ordering::SeqCst),
+            if adapter == Adapter::Gemini { 2 } else { 1 }
+        );
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]

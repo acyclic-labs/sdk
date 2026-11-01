@@ -243,6 +243,10 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn render_bytes(&self) -> Option<u64> {
+        Some(self.limits.render_bytes)
+    }
+
     fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
         self.context.roster(agent)
     }

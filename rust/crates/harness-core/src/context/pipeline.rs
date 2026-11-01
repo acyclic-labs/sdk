@@ -274,7 +274,7 @@ impl ContextPipeline {
         base.validate_bounds(limits, io)?;
         crate::executor::with_history_io(io, |work| {
             input.input.validate_limits(limits, work)?;
-            input.input.validate_user_input(work)
+            input.input.validate_turn_input(work)
         })?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, io)?;
@@ -369,7 +369,7 @@ impl ContextPipeline {
                 "context stage count exceeds limit",
             ));
         }
-        crate::executor::with_history_io(io, |work| input.input.validate_user_input(work))?;
+        crate::executor::with_history_io(io, |work| input.input.validate_turn_input(work))?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, io)?;
         }

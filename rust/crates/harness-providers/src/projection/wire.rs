@@ -16,6 +16,7 @@ pub(super) enum Item<'a> {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(super) enum Message<'a> {
+    Notice(#[serde(serialize_with = "notice_wire")] acyclic_model_render::WireItem),
     Item(Item<'a>),
     Chat(Chat<'a>),
     Anthropic {
@@ -26,6 +27,13 @@ pub(super) enum Message<'a> {
         role: &'static str,
         parts: Vec<Item<'a>>,
     },
+}
+
+fn notice_wire<S: serde::Serializer>(
+    item: &acyclic_model_render::WireItem,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    item.wire().serialize(serializer)
 }
 
 #[derive(Serialize)]

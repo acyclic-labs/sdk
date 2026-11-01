@@ -100,7 +100,8 @@ impl ModelRequest {
         for message in messages {
             charge_items(io, 1)?;
             with_history_io(io, |work| message.content.validate_limits(limits, work))?;
-            let standalone = matches!(message.content, ModelContent::Part(_));
+            let standalone = matches!(message.content, ModelContent::Part(_))
+                || message.content.notice_parts().is_some();
             let empty = message.content.parts().is_empty();
             let parts = match &mut message.content {
                 ModelContent::Text(_) => &mut [][..],
@@ -214,6 +215,17 @@ impl ModelRequest {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         match part {
+            ModelContentPart::Notices { notices } => {
+                if !standalone
+                    || !pending.is_empty()
+                    || notices.is_empty()
+                    || matches!(role, ModelRole::Assistant | ModelRole::Tool)
+                {
+                    return Err(Error::Invalid(
+                        "notices require an event boundary with only file attachments".into(),
+                    ));
+                }
+            }
             ModelContentPart::Configuration { effort, .. } => {
                 if role != ModelRole::User
                     || !standalone

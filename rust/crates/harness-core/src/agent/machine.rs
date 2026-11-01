@@ -85,6 +85,11 @@ pub struct AgentState {
     pub brief: Option<[u8; 32]>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
+    /// Exclusive inbox range containing notices not yet frozen into a request.
+    /// Payloads remain in the original inbox; checkpoint size is independent
+    /// of the number of pending events. This is not a conversation-item cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_notices: Option<std::ops::Range<u64>>,
     /// Cancelled inputs before this sequence, including goal continuations.
     #[serde(default)]
     pub dropped_before: u64,
@@ -183,6 +188,7 @@ impl AgentState {
             policy: adopted.policy.clone(),
             brief,
             conversation_tail: adopted.conversation_tail,
+            pending_notices: None,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
@@ -334,6 +340,8 @@ pub enum Out {
     Conversation(Vec<u8>),
     /// The preceding conversation entry announced the roster of this digest.
     Roster([u8; 32]),
+    /// Consume a frozen Notice prefix with its original conversation append.
+    Notices(super::NoticeSelection),
     /// Complete this goal run with the preceding conversation entry.
     GoalCompleted {
         /// Original turn identity, preserved across self-continuations.
@@ -515,6 +523,15 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
 ) -> Result<PreparedStep, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
+    // Consuming a non-waking stream event never advances the model driver,
+    // including when another turn is currently paused or executing.
+    let quiet_notice = matches!(
+        &wake,
+        Wake::Inbox {
+            record: InboxRecord::Notice { notice, .. },
+            ..
+        } if !notice.wake
+    );
     // A requested spawn's step carries only that spawn: its child is created
     // by this step's commit, so no turn may reach it until the commit lands.
     // Pending turn work continues at once on the next step (the kernel's
@@ -576,7 +593,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     let applied = outs.len();
     if state.closed {
         cascade(&mut state, &mut outs)?;
-    } else if !spawn_wake {
+    } else if !spawn_wake && !quiet_notice {
         run(
             driver,
             &mut state,
@@ -589,7 +606,13 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
     let tails = (state.conversation_tail, state.status_tail);
-    let completion = (state.awaited, state.checkpoint, state.roster, outs.len());
+    let completion = (
+        state.awaited,
+        state.checkpoint,
+        state.roster,
+        outs.len(),
+        state.pending_notices.clone(),
+    );
     let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
@@ -605,6 +628,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.awaited = completion.0;
         state.checkpoint = completion.1;
         state.roster = completion.2;
+        state.pending_notices = completion.4;
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
         step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
@@ -668,6 +692,7 @@ fn finalize_step(
                 state.roster = None;
             }
             Out::Roster(digest) => state.roster = Some(*digest),
+            Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -747,6 +772,16 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = admitted.control.closed;
+    if admitted.enqueue && matches!(&record, InboxRecord::Notice { notice, .. } if !notice.wake) {
+        let end = sequence
+            .checked_add(1)
+            .ok_or(Error::Record("notice inbox cursor overflow"))?;
+        match &mut state.pending_notices {
+            Some(range) if range.end <= sequence => range.end = end,
+            Some(_) => return Err(Error::Record("notice inbox cursor moved backwards")),
+            None => state.pending_notices = Some(sequence..end),
+        }
+    }
     if let InboxRecord::ChildDone(done) = &record {
         if state.open_children.remove(&done.child) && state.turn.is_some() {
             // The paused journal may already contain a replayed spawn of this
@@ -806,7 +841,11 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } | Out::Checkpoint | Out::Roster(_) | Out::GoalCompleted { .. } => true,
+        Out::Archive { .. }
+        | Out::Checkpoint
+        | Out::Roster(_)
+        | Out::Notices(_)
+        | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }
