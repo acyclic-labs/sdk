@@ -3,6 +3,7 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 
 mod prefix;
+mod preparation;
 
 #[test]
 fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
