@@ -98,7 +98,7 @@ fn an_empty_continuation_reuses_its_existing_request_header() -> Result<()> {
                 assert_eq!(prepared.bytes(), expected);
                 // The former empty append still encodes the whole tool envelope.
                 let _previous = encoding::EncodingPrefix::append(
-                    prepared.bytes, prepared.encoding, count, &prepared.request, Some(io),
+                    prepared.bytes, prepared.encoding, count, &prepared.request, Some(io), &mut 0,
                 )?;
                 assert!(io.receipt().bytes_encoded > receipt.bytes_encoded,
                     "former empty append did not expose repeated encoding");

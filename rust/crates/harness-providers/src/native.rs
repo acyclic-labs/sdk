@@ -25,7 +25,7 @@ async fn encode(
     work: &NativeMaterializationWork,
 ) -> Result<bytes::Bytes> {
     let (key, account) = auth;
-    let (mut bytes, nodes) = shape(request.bytes());
+    let (mut bytes, nodes) = request.projection_shape();
     for message in &request.request().messages {
         bytes = bytes
             .checked_add(
@@ -147,21 +147,8 @@ pub(crate) fn model_diagnostic<T>(
 // Count structural tokens without constructing a second JSON graph. Quoted
 // punctuation and escaped quotes are payload, not allocation-bearing nodes.
 pub(crate) fn shape(bytes: &[u8]) -> (u64, u64) {
-    let mut nodes = 1;
-    let mut quoted = false;
-    let mut escape = false;
-    for &byte in bytes {
-        if escape {
-            escape = false;
-        } else if quoted && byte == b'\\' {
-            escape = true;
-        } else if byte == b'"' {
-            quoted = !quoted;
-        } else if !quoted && matches!(byte, b'{' | b'[' | b',' | b':') {
-            nodes += 1;
-        }
-    }
-    (bytes.len() as u64, nodes)
+    let (bytes, nodes) = acyclic_harness_core::executor::json::encoded_json_shape(bytes);
+    (bytes, nodes as u64)
 }
 
 // Admission includes the temporary decoded graph, copies retained by the

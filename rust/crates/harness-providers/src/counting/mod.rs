@@ -101,7 +101,7 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (mut bytes, nodes) = crate::native::shape(request.bytes());
+            let (mut bytes, nodes) = request.projection_shape();
             for message in &request.request().messages {
                 bytes = bytes
                     .checked_add(crate::files::extra_bytes(
