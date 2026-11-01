@@ -353,9 +353,9 @@ test('the entry point compares real Git objects and rejects modified and untrack
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent, GIT_CONFIG_COUNT: '0'};
  const git = args => execFileSync('git', args, {cwd: root, env, maxBuffer: Infinity});
  const write = (file, source) => { mkdirSync(dirname(join(root, file)), {recursive: true}); writeFileSync(join(root, file), source); };
- const check = base => {
+ const check = (...args) => {
   try {
-   return {status: 0, output: execFileSync(process.execPath, [checker, base], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
+   return {status: 0, output: execFileSync(process.execPath, [checker, ...args], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
   } catch (error) {
    return {status: error.status, output: String(error.stdout) + String(error.stderr)};
   }
@@ -390,6 +390,24 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const pluginUntracked = check('HEAD');
   assert.notEqual(pluginUntracked.status, 0);
   assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
+  const censusPath = join(root, 'census.json');
+  const inventoried = check('--inventory', censusPath);
+  assert.equal(inventoried.status, 0, inventoried.output);
+  const census = JSON.parse(readFileSync(censusPath, 'utf8'));
+  assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
+  assert.equal(census.files, 5);
+  const siteOrder = (a, b) => a.file.localeCompare(b.file) || a.fingerprint.localeCompare(b.fingerprint);
+  assert.deepEqual(census.sites.sort(siteOrder), projectPollingSites(new Map([
+   [rust, readFileSync(join(root, rust), 'utf8')],
+   [helper, readFileSync(join(root, helper), 'utf8')],
+   [caller, readFileSync(join(root, caller), 'utf8')],
+   [plugin, beforePlugin],
+   [pluginChild, readFileSync(join(root, pluginChild), 'utf8')],
+  ])).sort(siteOrder));
+  assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
+  const preserved = readFileSync(censusPath, 'utf8');
+  assert.notEqual(check('--inventory', censusPath).status, 0);
+  assert.equal(readFileSync(censusPath, 'utf8'), preserved);
   rmSync(join(root, pluginChild));
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
   const modified = check('HEAD');
