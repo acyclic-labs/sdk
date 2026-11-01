@@ -1,4 +1,4 @@
-//! Live observation of one agent: its conversation and status streams and its
+//! Live observation of one agent: its conversation, status and history and its
 //! tool output, `tools/` on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
@@ -9,13 +9,13 @@ use acyclic_auth::{
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
-/// A read-only observation of one agent: its conversation and status streams
+/// A read-only observation of one agent: its conversation, status and history
 /// and its tool output, under one credential.
 pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to follow the agent's conversation and status and to
+    /// Sealed credential to follow the agent's conversation, status and history and to
     /// list and read under `resource`, bound to the agent's audience; it lives
     /// no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
@@ -47,81 +47,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
-        if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id().to_bytes())) {
-            return Err(Error::Unauthorized(
-                "an observation derives from the agent's own scope".into(),
-            ));
-        }
-        ContentGrant::verify_directory_read(
-            &authority.verifier,
-            &authority.scope,
-            volume,
-            TOOL_OUTPUT,
-            &mut None,
-        )?;
-        let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
-        let workspace = self.open(&reference, None).await?;
-        // A structured filesystem scope is only enforced by its compiled
-        // view, so prove it before minting: the derived credential may never
-        // reach a path or action the parent cannot. The parent must list and
-        // read all of `tools/`; the rest of the volume does not matter.
-        if let Some(label) =
-            crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
-        {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let io = PreparationIo::from_budget(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )?;
-            let view = super::access::access_view(
-                &workspace,
-                &authority.scope,
+        let (resource, capability) = self
+            .observation_credential(
+                authority,
+                agent,
+                volume,
+                seconds(clock.as_ref()),
+                calls,
                 None,
-                super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
-                None,
-                &io,
             )
-            .await?;
-            if !view.0.allows_subtree(
-                TOOL_OUTPUT,
-                &[
-                    acyclic_fs::access::Action::List,
-                    acyclic_fs::access::Action::Read,
-                ],
-                super::access::access_now()?,
-            ) {
-                return Err(Error::Unauthorized(
-                    "an observation needs list and read on all of the tool output".into(),
-                ));
-            }
-        }
-        let resource = acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
-            .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
-        let stream =
-            |path: std::result::Result<acyclic_stream::StreamPath, crate::agent::Error>| {
-                path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
-                    .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
-            };
-        let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
-        let follow: &[&str] = &["streams/follow"];
-        let read: &[&str] = &["fs/list", "fs/read"];
-        let invoke: &[&str] = &["actors/invoke"];
-        let mut grants = vec![
-            (conversation.as_str(), false, follow),
-            (status.as_str(), false, follow),
-            (resource.as_str(), true, read),
-        ];
-        if let Some(calls) = calls {
-            grants.push((calls, false, invoke));
-        }
-        let capability = authority
-            .issuer
-            .resource_credential(&crate::core::ResourceIssuance {
-                parent: &authority.scope,
-                grants: &grants,
-                caller: None,
-                now: seconds(clock.as_ref()),
-            })
             .await?;
         let principal = capability.effective().principal().id.clone();
         let credential = capability.encode().to_vec();

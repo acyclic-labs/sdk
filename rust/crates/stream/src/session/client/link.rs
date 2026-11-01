@@ -124,6 +124,7 @@ impl Pool {
                 let mut attempt = 0_u32;
                 let outcome = loop {
                     let mut observation = Observation::session(attempt);
+                    let mut terminal = None;
                     let result = observation
                         .operation
                         .clone()
@@ -132,14 +133,23 @@ impl Pool {
                                 Some(channel) => channel.clone(),
                                 None => connect(node.clone()).await?,
                             };
-                            handshake(
-                                endpoint,
+                            if let Err(error) = endpoint.check() {
+                                terminal = Some(error.clone());
+                                return Err(error);
+                            }
+                            let result = handshake(
+                                endpoint.clone(),
                                 &name,
                                 identity.clone(),
                                 credentials.clone(),
                                 interest.clone(),
                             )
-                            .await
+                            .await;
+                            if let Err(error) = endpoint.check() {
+                                terminal = Some(error.clone());
+                                return Err(error);
+                            }
+                            result
                         })
                         .await;
                     match result {
@@ -149,6 +159,9 @@ impl Pool {
                         }
                         Err(error) => {
                             observation.finish(Some(&error));
+                            if let Some(error) = terminal {
+                                break Err(error);
+                            }
                             // Admission carries the request. An effectful call
                             // may have committed before transport failed.
                             if error != StreamError::Unavailable || !replayable {
@@ -358,6 +371,16 @@ impl Pool {
         )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
+        if let Err(error) = self
+            .links
+            .get(node)
+            .ok_or(StreamError::Unavailable)?
+            .channel
+            .check()
+        {
+            self.fail_link(node, &error);
+            return Ok(());
+        }
         let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
         if let Some(observation) = &mut link.observation {
             observation.finish(Some(&StreamError::Unavailable));

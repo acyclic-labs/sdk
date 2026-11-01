@@ -30,6 +30,14 @@ pub(crate) async fn credential_event<T>(
 
 /// An authenticated endpoint. The pool owns all protocol, credit and recovery.
 pub trait Transport: ProviderPlatform {
+    /// Fence admission against an original owner that cannot reconnect after
+    /// it ends. A refusal is terminal even when its exposed code is
+    /// `Unavailable`; transient I/O errors remain eligible for backoff.
+    /// The physical connection must already wait on that owner's loss event.
+    fn check(&self) -> Result<(), StreamError> {
+        Ok(())
+    }
+
     /// Opens one bidirectional platform connection from the canonical frame source.
     /// `Unavailable` denotes a transient transport failure and permits backoff;
     /// every other error terminates the opening interests.
