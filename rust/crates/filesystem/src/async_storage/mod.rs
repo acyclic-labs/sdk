@@ -32,6 +32,8 @@ pub(crate) use work::authority_error;
 pub(crate) use work::authority_parts;
 pub use work::{AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork};
 mod authority;
+mod generation;
+pub(crate) use generation::generation_fact;
 mod owned_group;
 pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
 pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};

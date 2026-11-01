@@ -152,6 +152,16 @@ impl AsyncAuthorityStore for MemoryAuthorityStore {
         self.read_head(authority, &mut work.accounting())
             .map_err(authority_error)
     }
+    async fn first_generation(
+        &self,
+        authority: AuthorityId,
+        generation: crate::GenerationId,
+        through: Sequence,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<Sequence>, AuthorityStoreError> {
+        self.lookup_generation(authority, generation, through, &mut work.accounting())
+            .map_err(authority_error)
+    }
     async fn replay(
         &self,
         authority: AuthorityId,

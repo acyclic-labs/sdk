@@ -316,6 +316,22 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         }
     }
 
+    /// Finds the first publication of this complete generation in the inclusive
+    /// observed prefix. A backend must authenticate the original record and
+    /// establish the prefix before returning absence. Unsupported backends
+    /// refuse; they must not emulate this lookup by replaying history.
+    fn first_generation(
+        &self,
+        _authority: AuthorityId,
+        _generation: GenerationId,
+        _through: Sequence,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<Option<Sequence>, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority backend does not support indexed generation lookup",
+        )))
+    }
+
     /// Replays one bounded page while retaining its native storage.
     fn replay(
         &self,

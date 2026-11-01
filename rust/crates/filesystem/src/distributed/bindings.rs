@@ -248,6 +248,17 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             .await
     }
 
+    async fn first_generation(
+        &self,
+        authority: AuthorityId,
+        generation: GenerationId,
+        through: Sequence,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<Sequence>, AuthorityStoreError> {
+        self.seek_generation(authority, generation, through, work)
+            .await
+    }
+
     async fn replay(
         &self,
         authority: AuthorityId,
