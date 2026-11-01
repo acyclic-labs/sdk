@@ -296,7 +296,6 @@ fn deleting_a_file_conflicts_with_its_staged_write() -> Result<(), Box<dyn std::
                     write,
                     ViewChange::Node(file),
                     None,
-                    None,
                     &work,
                     source.cancellation(),
                     None

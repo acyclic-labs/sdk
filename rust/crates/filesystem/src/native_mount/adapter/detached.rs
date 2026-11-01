@@ -190,17 +190,19 @@ where
             let stamp = state
                 .change_content(change, &self.ledger, &self.runtime.clock, work)
                 .await?;
-            let mut node = mount_node(state.file.record());
-            node.link_count = 0;
             Ok(super::MountWriteResult {
-                file_id: node.file_id,
+                file_id: state.file.file_id(),
                 written,
-                facts: facts.then_some(super::MountWriteFacts {
-                    lookup: MountLookup {
-                        node,
-                        metadata: state.metadata,
-                    },
-                    stamp,
+                facts: facts.then(|| {
+                    let mut node = mount_node(state.file.record());
+                    node.link_count = 0;
+                    super::MountWriteFacts {
+                        lookup: MountLookup {
+                            node,
+                            metadata: state.metadata,
+                        },
+                        stamp,
+                    }
                 }),
             })
         })
