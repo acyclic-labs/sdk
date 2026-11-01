@@ -15,7 +15,7 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
         crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
     let journal = storage.journal();
     let journal = journal.as_ref();
-    let context = crate::context::Context {
+    let mut context = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::User,
             content: ModelContent::Text("paused on main".into()),
@@ -24,6 +24,9 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
         ..Default::default()
     };
     let checkpoint = stage_json(journal, OperationId::new(), "checkpoint", &context, None).await?;
+    context
+        .metadata
+        .insert("original".into(), checkpoint.clone());
     for compacted in [false, true] {
         let accounting = ContextAccounting {
             capacity: crate::context::ModelContextCapacity {
@@ -40,6 +43,7 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
         let fixture = serde_json::json!({
             "context": context, "canonical": null,
             "checkpoint": if compacted { Some(&checkpoint) } else { None },
+            "working": checkpoint,
             "accounting": accounting,
         });
         let bytes = crate::contract::canonical_json_bytes(&fixture)?;
@@ -79,12 +83,15 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
                 projection.checkpoint.as_ref(),
                 compacted.then_some(&checkpoint)
             );
-            assert!(projection.working.is_none());
+            assert_eq!(projection.working.as_ref(), Some(&checkpoint));
             assert_eq!(
                 serde_json::to_value(&projection.accounting)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 fixture["accounting"]
             );
+            let full_bytes = projection
+                .decoded_owned_bytes()?
+                .ok_or_else(|| invalid(Some(&io)))?;
             drop(projection);
             drop(hold);
             assert_eq!(
@@ -92,6 +99,27 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
                 0,
                 "native={native} compacted={compacted}"
             );
+            let continuation =
+                ResponseProjection::continuation_metadata(journal, &reference, Some(&io)).await?;
+            assert!(continuation.context.messages.is_empty());
+            assert_eq!(continuation.context.metadata, context.metadata);
+            assert_eq!(
+                continuation.context.current_input_index,
+                context.current_input_index
+            );
+            assert_eq!(continuation.working.as_ref(), Some(&checkpoint));
+            assert!(continuation.canonical.is_none());
+            assert!(continuation.checkpoint.is_none());
+            assert!(continuation.accounting.is_none());
+            let retained = continuation
+                .decoded_owned_bytes()?
+                .ok_or_else(|| invalid(Some(&io)))?;
+            assert!(retained < full_bytes);
+            assert_eq!(io.owned_bytes()?, retained);
+            let hold = io.guard_owned(retained)?;
+            drop(continuation);
+            drop(hold);
+            assert_eq!(io.owned_bytes()?, 0);
         }
     }
     Ok(())

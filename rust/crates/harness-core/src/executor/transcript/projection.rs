@@ -17,44 +17,30 @@ impl ResponseProjection {
         #[cfg(not(feature = "filesystem"))]
         let io = original;
         let stored = retain_preparation(load_json::<Self>(journal, reference, io).await?)?;
-        #[cfg(feature = "filesystem")]
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let context = crate::context::copy_context(
-            &crate::context::Context {
+        let projection = Self {
+            context: crate::context::Context {
                 messages: Vec::new(),
                 metadata: stored.context.metadata,
                 current_input_index: stored.context.current_input_index,
             },
-            io,
-        )?;
-        let working = stored
-            .working
-            .as_ref()
-            .map(|file| crate::model::clone_file(file, io))
-            .transpose()?;
+            canonical: None,
+            checkpoint: None,
+            working: stored.working,
+            accounting: None,
+        };
         drop((
             stored.context.messages,
             stored.canonical,
             stored.checkpoint,
-            stored.working,
             stored.accounting,
         ));
         #[cfg(feature = "filesystem")]
         {
-            let retained = io.map_or(Ok(0), |io| {
-                io.owned_bytes()?
-                    .checked_sub(before)
-                    .ok_or_else(|| invalid(Some(io)))
-            })?;
+            let retained = projection
+                .decoded_owned_bytes()?
+                .ok_or_else(|| invalid(io))?;
             scope.finish(retained)?;
         }
-        let projection = Self {
-            context,
-            canonical: None,
-            checkpoint: None,
-            working,
-            accounting: None,
-        };
         Ok(projection)
     }
 }
