@@ -250,8 +250,9 @@ pub(crate) fn generate<'a>(
                             let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                             let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                             let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-                            let mut events = parse_response(provider, request, &names, dispatch_id, work, response,
-                                input_bytes, origin, origin_custody)?;
+                            let events = parse_response(provider, request, &names, dispatch_id, work, response,
+                                input_bytes, origin, origin_custody);
+                            futures::pin_mut!(events);
                             let mut failure = None;
                             while let Some(event) = events.next().await {
                                 match event {
@@ -266,36 +267,22 @@ pub(crate) fn generate<'a>(
                         if let Some(login) = &provider.codex_login {
                             if recovery.retry(&error) {
                                 drop(error);
-                                let exchange = async {
+                                response = async {
                                     let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), Some(&mut auth_custody)).await?;
                                     auth = (Some(std::borrow::Cow::Owned(key)), account);
                                     work.remaining()?;
                                     send(provider, body.clone(), dispatch_id,
                                         (auth.0.as_deref(), auth.1.as_deref()), work).await
-                                };
-                                let cancelled = work.cancellation_wait()?;
-                                futures::pin_mut!(exchange, cancelled);
-                                response = match futures::future::select(cancelled, exchange).await {
-                                    futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                                    futures::future::Either::Right((result, _)) => result,
-                                };
+                                }.await;
                                 continue;
                             }
                         }
                         if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
                             drop(error);
-                            let exchange = async {
-                                crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
-                                work.remaining()?;
-                                Ok::<_, Error>(send(provider, body.clone(), dispatch_id,
-                                    (auth.0.as_deref(), auth.1.as_deref()), work).await)
-                            };
-                            let cancelled = work.cancellation_wait()?;
-                            futures::pin_mut!(exchange, cancelled);
-                            response = match futures::future::select(cancelled, exchange).await {
-                                futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                                futures::future::Either::Right((result, _)) => result?,
-                            };
+                            crate::deadline::timer(provider.transport.as_ref(), wait, Some(work))?.await?;
+                            work.remaining()?;
+                            response = send(provider, body.clone(), dispatch_id,
+                                (auth.0.as_deref(), auth.1.as_deref()), work).await;
                             continue;
                         }
                         Err(error)?;
@@ -324,23 +311,16 @@ fn parse_response<'a>(
     input_bytes: usize,
     origin: acyclic_harness_core::model::ReasoningOrigin,
     origin_custody: NativeAllocation,
-) -> Result<NativeModelStream<'a>> {
+) -> impl futures::Stream<Item = Result<(ModelEvent, NativeAllocation)>> + Send + 'a {
     let maximum = provider.config.max_event_bytes;
     let adapter = provider.config.adapter;
-    NativeModelStream::new(work, || {
-        async_stream::try_stream! {
+    async_stream::try_stream! {
             let mut parser = Parser { state: stream::State::native(maximum, work), allocation: work.claim(std::mem::size_of::<stream::State>() as u64, 0, WorkCounters::UNCHARGED)? };
             parser.allocation.absorb(&mut { origin_custody })?;
             parser.state.set_origin(Some(origin))?;
             let frames = sse::frames(response.body, maximum, sse::Decoder::native(work)?);
-            let cancelled = work.cancellation_wait()?;
-            futures::pin_mut!(frames, cancelled);
-            loop {
-                let frame = match futures::future::select(cancelled.as_mut(), frames.next()).await {
-                    futures::future::Either::Left(_) => Err(Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?,
-                    futures::future::Either::Right((frame, _)) => frame,
-                };
-                let Some(frame) = frame else { break; };
+            futures::pin_mut!(frames);
+            while let Some(frame) = frames.next().await {
                 work.remaining()?;
                 let frame = frame?;
                 let (bytes, nodes) = shape(frame.data().as_bytes());
@@ -386,6 +366,5 @@ fn parse_response<'a>(
                 let custody = allocation.split_off(event.logical_owned_bytes()?)?;
                 yield (event, custody);
             }
-        }
-    })
+    }
 }
