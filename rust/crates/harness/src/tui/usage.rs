@@ -53,7 +53,7 @@ fn count_text(text: &mut String, count: UsageTotal) {
 mod tests {
     use super::*;
     use crate::tui::{
-        PromptInput, Screen, Viewport,
+        PromptInput, QueryPage, Screen, Viewport,
         ratatui::{Terminal, backend::TestBackend},
     };
 
@@ -71,10 +71,22 @@ mod tests {
             known: 987_654_321,
             unknown: 1,
         };
-        let mut terminal = Terminal::new(TestBackend::new(96, 12)).unwrap();
-        let usage = usage_summary(&totals);
+        for counter in [
+            &mut totals.output,
+            &mut totals.cached,
+            &mut totals.cache_write,
+            &mut totals.reasoning,
+        ] {
+            *counter = UsageTotal {
+                known: u64::MAX,
+                unknown: 0,
+            };
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        let mut usage = QueryPage::<()>::new(vec![usage_summary(&totals)], None, false);
+        usage.wrap(80);
         let screen = Screen {
-            usage: Some(&usage),
+            usage: &usage.lines,
             status: Line::raw("approval requested"),
             ..Screen::default()
         };
@@ -100,6 +112,16 @@ mod tests {
             visible.contains("estimated token charge: ? · in ?"),
             "a partial subtotal must remain unknown on the screen"
         );
+        let compact = visible.replace(' ', "");
+        for label in ["out", "cacheread", "cachewrite", "reasoning"] {
+            assert!(
+                compact.contains(&format!("{label}{}", u64::MAX)),
+                "counter clipped: {label}"
+            );
+        }
+        // A one-row consumer must fail the same complete-counter oracle.
+        let clipped = usage.lines[0].to_string().replace(' ', "");
+        assert!(!clipped.contains(&format!("reasoning{}", u64::MAX)));
         // Complete arithmetic alone cannot name a monetary value without a
         // selected currency. A selected currency retains exact nanounits.
         totals.token_nano_units = UsageTotal {

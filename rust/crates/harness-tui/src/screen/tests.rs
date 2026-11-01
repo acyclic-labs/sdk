@@ -26,7 +26,7 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
         tools: &tools,
         feedback: hidden == 1,
         overlay: if hidden == 2 { &help } else { &[] },
-        usage: Some(&usage),
+        usage: std::slice::from_ref(&usage),
         ..Screen::default()
     };
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();

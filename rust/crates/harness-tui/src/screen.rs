@@ -44,8 +44,9 @@ pub struct Screen<'a> {
     pub scrollbar: Option<(std::ops::Range<usize>, usize)>,
     /// Committed usage and estimated token charge, formatted by the query
     /// consumer from the shared projection and borrowed from its cache.
-    /// None reserves no footer space.
-    pub usage: Option<&'a Line<'a>>,
+    /// The consumer caches wrapping for the viewport width. Empty reserves no
+    /// footer space; short screens preserve status before these rows.
+    pub usage: &'a [Line<'a>],
     /// Status hints and attention, independent of the usage summary.
     pub status: Line<'a>,
 }
@@ -199,7 +200,7 @@ impl Screen<'_> {
             status_height,
         );
         remaining.height -= status_height;
-        let usage_height = u16::from(self.usage.is_some()).min(remaining.height);
+        let usage_height = cells(self.usage.len()).min(remaining.height);
         let usage = Rect::new(
             area.x,
             remaining.bottom() - usage_height,
@@ -397,9 +398,7 @@ impl Screen<'_> {
         }
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);
-        if let Some(usage) = self.usage {
-            frame.render_widget(usage, areas.usage);
-        }
+        rows(frame, self.usage, areas.usage, 0);
         frame.render_widget(&self.status, areas.status);
         let mut side = areas.side;
         let panels = [

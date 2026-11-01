@@ -34,7 +34,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         goal: &goal,
         plans: &plans,
         notifications: &notices,
-        usage: Some(&usage),
+        usage: std::slice::from_ref(&usage),
         status: Line::from("approval requested"),
         ..Screen::default()
     };
@@ -155,7 +155,7 @@ proptest! {
         let rows = vec![Line::from("row"); count];
         let tools = vec![Line::from("tool"); tools];
         let summary = usage.then(|| Line::from("committed usage"));
-        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: summary.as_ref(), ..Screen::default() };
+        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, usage: summary.as_ref().map_or(&[][..], std::slice::from_ref), ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
         input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();

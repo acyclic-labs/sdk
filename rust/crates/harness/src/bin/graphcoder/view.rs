@@ -11,7 +11,8 @@ use acyclic_harness::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
     tui::{
-        Action, AppAction, Editor, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
+        Action, AppAction, Editor, InputEffect, PromptInput, QueryPage, Screen, TranscriptRows,
+        Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -468,8 +469,8 @@ pub async fn run(
     let mut diff_query = std::pin::pin!(None);
     let mut diff_credit = 0;
     let mut usage_future = std::pin::pin!(Some(usage(conversation.usage_query())));
-    let mut usage_line = Line::raw("Loading usage…");
-    let usage_unavailable = Line::raw("Usage unavailable");
+    let mut usage_page = QueryPage::<()>::new(vec![Line::raw("Loading usage…")], None, false);
+    let usage_unavailable = [Line::raw("Usage unavailable")];
     // Retain the failed query's exact frontier and contribution. Redraw cannot
     // restart replay or turn an unavailable source into a successful total.
     let mut usage_stopped: Option<(UsageQuery, acyclic_harness::Error)> = None;
@@ -485,6 +486,7 @@ pub async fn run(
     loop {
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let size: Size = size()?;
+        usage_page.wrap(size.width);
         let busy = view.busy();
         input.busy = busy;
         let back = view.back;
@@ -512,11 +514,11 @@ pub async fn run(
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
-                usage: Some(if usage_stopped.is_some() {
-                    &usage_unavailable
+                usage: if usage_stopped.is_some() {
+                    &usage_unavailable[..]
                 } else {
-                    &usage_line
-                }),
+                    &usage_page.lines
+                },
                 overlay: overlay.as_ref().map_or_else(
                     || {
                         diff_panel.as_ref().map_or_else(
@@ -583,7 +585,7 @@ pub async fn run(
                 match result {
                     Ok(changed) => {
                         if changed && query.synchronized() {
-                            usage_line = usage_summary(query.totals());
+                            usage_page = QueryPage::new(vec![usage_summary(query.totals())], None, false);
                         }
                         usage_future.set(Some(usage(query)));
                     }
