@@ -797,6 +797,8 @@ fn prepare_keyring(
                 .is_some_and(|root| root.as_slice() == next.root_public_key.as_slice())
         })
         .map(|current| current.root.clone());
+    #[cfg(test)]
+    tests::keyring_verifying();
     signed_by(environment, &message, &signed.signature).or_else(|refused| match &kept {
         Some(root) => signed_by(root, &message, &signed.signature),
         None => Err(refused),
