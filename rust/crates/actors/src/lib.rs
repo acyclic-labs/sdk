@@ -58,9 +58,6 @@ pub mod wire;
 /// Canonical version-one descriptor set.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-/// Largest accepted bearer credential, in bytes.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
 pub(crate) fn valid_token(token: &str) -> bool {
     acyclic_auth::credential::valid_credential(token)
 }
@@ -102,9 +99,9 @@ mod tests {
 
             bindings: vec![],
             limits: Some(wire::ActorLimits {
-                handler_timeout_millis: 1_000,
-                memory_bytes: 1024,
-                checkpoint_bytes: 1024,
+                handler_timeout_millis: Some(1_000),
+                memory_bytes: Some(1024),
+                checkpoint_bytes: Some(1024),
             }),
             subscriptions: vec![wire::SubscriptionSpec {
                 subscription_id: "events".into(),
@@ -141,7 +138,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn delete_requires_actor_and_bounded_idempotency_key() {
+    fn delete_requires_actor_and_idempotency_identity() {
         let valid = wire::DeleteAllRequest {
             namespace: None,
             account_id: Vec::new(),
@@ -166,12 +163,6 @@ mod tests {
                 idempotency_key: String::new(),
                 ..valid.clone()
             },
-            wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
-                idempotency_key: "k".repeat(257),
-                ..valid.clone()
-            },
         ] {
             assert_eq!(
                 validate_delete(&invalid),
@@ -179,13 +170,26 @@ mod tests {
             );
             assert!(domain::DeleteAllRequest::try_from(invalid).is_err());
         }
-        let boundary = wire::DeleteAllRequest {
+        let complete = wire::DeleteAllRequest {
             namespace: None,
             account_id: Vec::new(),
-            idempotency_key: "k".repeat(256),
+            idempotency_key: "k".repeat(4096),
             ..valid
         };
-        assert_eq!(validate_delete(&boundary), Ok(()));
+        assert_eq!(validate_delete(&complete), Ok(()));
+        let semantic =
+            domain::DeleteAllRequest::try_from(complete.clone()).expect("complete identity");
+        assert_eq!(wire::DeleteAllRequest::from(semantic), complete);
+        let worker = domain::DeleteWorkerRequest::new(
+            domain::ActorNamespace::new("worker".into()).expect("worker namespace"),
+            complete.idempotency_key.clone(),
+        )
+        .expect("same canonical key admission");
+        let wire: wire::DeleteWorkerRequest = worker.clone().into();
+        assert_eq!(
+            domain::DeleteWorkerRequest::try_from(wire).expect("complete worker identity"),
+            worker
+        );
         assert_eq!(
             domain::DeleteAllResponse::try_from(wire::DeleteAllResponse {}),
             Ok(domain::DeleteAllResponse::default())
@@ -195,8 +199,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn clients_share_endpoint_and_credential_policy() {
-        let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
-        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+        for token in ["", " ", "a\r\nb", "a\0b"] {
             assert!(matches!(
                 http::Client::new("https://example.test", token, 1),
                 Err(http::Error::InvalidArgument)
@@ -208,7 +211,7 @@ mod tests {
             "http://[::1]:1",
             "https://example.test",
         ] {
-            assert!(http::Client::new(endpoint, &"t".repeat(MAX_BEARER_TOKEN_BYTES), 1).is_ok());
+            assert!(http::Client::new(endpoint, "t", 1).is_ok());
         }
         for endpoint in [
             "http://example.test",
@@ -327,9 +330,9 @@ mod tests {
                     name: "tracing".into(),
                     code_sha256: vec![1; 32],
                     limits: Some(wire::ActorLimits {
-                        handler_timeout_millis: 1,
-                        memory_bytes: 1,
-                        checkpoint_bytes: 1
+                        handler_timeout_millis: Some(1),
+                        memory_bytes: Some(1),
+                        checkpoint_bytes: Some(1)
                     }),
                     idempotency_key: "tracing".into(),
                     ..Default::default()

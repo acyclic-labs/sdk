@@ -28,6 +28,13 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
         }),
     )
 }
+fn credential(slot: u32, credential: Bytes) -> wire::SessionFrame {
+    frame(
+        0,
+        0,
+        Body::Credential(wire::SessionCredential { slot, credential }),
+    )
+}
 fn subscribe(id: u64, path: &str, from: u64, latest: bool) -> wire::SessionSubscription {
     wire::SessionSubscription {
         credential: 0,
@@ -98,6 +105,7 @@ async fn follows_share_one_session_and_credit_is_per_channel() -> TestResult {
     }
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     sender.unbounded_send(Ok(interest(
         1,
         vec![subscribe(1, "a", 1, false), subscribe(3, "b", 1, false)],
@@ -162,6 +170,7 @@ async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_chann
     }
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     sender.unbounded_send(Ok(interest(
         1,
         vec![guarded, refused, subscribe(5, "events", 1, false)],
@@ -227,6 +236,7 @@ async fn backpressure_keeps_one_value_per_key_and_preserves_attention() -> TestR
     append(&provider, "status", status(b"seed", false)).await?;
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(0, 0)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     sender.unbounded_send(Ok(interest(1, vec![subscribe(1, "status", 1, true)])))?;
     sender.unbounded_send(Ok(window(1)))?;
     let mut output = serve(
@@ -270,6 +280,7 @@ async fn replacement_resumes_from_cursor_and_ignores_stale_source() -> TestResul
     append(&provider, "a", Bytes::from_static(b"seed")).await?;
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     sender.unbounded_send(Ok(interest(1, vec![subscribe(1, "a", 0, false)])))?;
     sender.unbounded_send(Ok(window(1)))?;
     let mut output = serve(
@@ -317,6 +328,7 @@ async fn malformed_latest_value_closes_only_its_own_channel() -> TestResult {
     append(&provider, "events", Bytes::from_static(b"seed")).await?;
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(credential(0, testing::credential())))?;
     sender.unbounded_send(Ok(interest(
         1,
         vec![

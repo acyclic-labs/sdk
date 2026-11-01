@@ -106,8 +106,16 @@ impl BorrowedContext<'_> {
             .len()
             .checked_add(usize::from(self.messages.user.is_some()))
             .and_then(|count| count.checked_add(self.messages.second.len()))
-            .filter(|count| *count <= limits.context_messages);
-        if count.is_none() || self.metadata.len() > limits.attachments {
+            .filter(|count| {
+                limits
+                    .context_messages
+                    .is_none_or(|maximum| *count <= maximum.get())
+            });
+        if count.is_none()
+            || limits
+                .attachments
+                .is_some_and(|maximum| self.metadata.len() > maximum.get())
+        {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,

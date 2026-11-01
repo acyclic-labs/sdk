@@ -6,8 +6,6 @@ use serde::Deserialize;
 mod codec;
 pub(crate) mod transport;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
-
 /// Exa's typed POST /search adapter.
 pub struct Exa(HttpSearch);
 
@@ -141,24 +139,25 @@ impl TinyFish {
         request.validate_with_work(work)?;
         // Reserve both old and replacement URL buffers while the URL serializer
         // grows its percent-encoded query. This remains separate from response IO.
-        let _url = crate::tool::edit::allocation(
-            work,
-            (self.0.endpoint.as_str().len() + 7 + request.query.len() * 3) * 3,
-        )?;
+        let bound = request
+            .query
+            .len()
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(self.0.endpoint.as_str().len()))
+            .and_then(|n| n.checked_add(7))
+            .ok_or_else(|| super::error(work, "search URL size overflow"))?;
+        let scratch = bound
+            .checked_mul(3)
+            .ok_or_else(|| super::error(work, "search URL ownership overflow"))?;
+        let _url = crate::tool::edit::allocation(work, scratch)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
-            // Cloning and geometric growth of the serializer's private String.
-            let bound = self.0.endpoint.as_str().len() + 7 + request.query.len() * 3;
             work.charge(acyclic_fs::WorkCounters {
                 allocation_operations: u64::from(usize::BITS - bound.leading_zeros()) + 1,
                 ..Default::default()
             })?;
         }
-        crate::tool::edit::charge(
-            &_url,
-            (self.0.endpoint.as_str().len() + 7 + request.query.len() * 3) as u64,
-            request.query.len() as u64,
-        )?;
+        crate::tool::edit::charge(&_url, bound as u64, request.query.len() as u64)?;
         let mut endpoint = self.0.endpoint.clone();
         endpoint
             .query_pairs_mut()
@@ -191,7 +190,7 @@ fn request_body(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let bytes = io.encode(value, MAXIMUM_RESPONSE_BYTES as u64, false)?;
+        let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), false)?;
         return Ok(bytes::Bytes::from_owner(bytes));
     }
     let _ = work;

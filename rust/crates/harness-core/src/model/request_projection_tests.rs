@@ -109,7 +109,7 @@ fn error_results_answer_any_paired_call_and_are_held_to_their_shape() {
     // The shape: nonempty, control-free, within the render limit. Each fails on every source;
     // before this change a harness-marked error skipped the control and empty checks.
     let limits = Limits {
-        render_bytes: 4096,
+        render_bytes: Some(4096),
         ..Limits::default()
     };
     for (message, admitted) in [
@@ -153,9 +153,7 @@ fn authored_prefix(
     hasher.update(b"harness:model-prefix:ordered:v1");
     for message in &messages {
         hasher.update(&crate::executor::json::canonical_json_digest(
-            message,
-            u64::MAX,
-            &mut None,
+            message, None, &mut None,
         )?);
     }
     let segment = json!({
@@ -344,7 +342,7 @@ proptest! {
         message in r"(\PC|[\n\t\x1b]){0,48}",
         value in values(),
     ) {
-        let limits = Limits { render_bytes: 32, ..Limits::default() };
+        let limits = Limits { render_bytes: Some(32), ..Limits::default() };
         let (name, standing) = CALLS[call];
         let result = if projected {
             ToolResultContent::Json { value: value.clone() }

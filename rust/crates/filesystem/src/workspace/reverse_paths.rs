@@ -5,10 +5,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub async fn paths_for_file_id(
         &self,
         file_id: FileId,
-        maximum_entries: u32,
+        maximum_entries: impl Into<Option<u32>>,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<String>>, WorkspaceError> {
+        let maximum_entries = maximum_entries.into();
+
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
             let search = self
@@ -50,8 +52,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub async fn paths_for_file_ids(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
-        maximum_entries: u32,
+        maximum_entries: impl Into<Option<u32>>,
     ) -> Result<BTreeMap<FileId, Vec<String>>, WorkspaceError> {
+        let maximum_entries = maximum_entries.into();
+
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let ids = sorted_changed_file_ids(file_ids, &mut accounting)?;
@@ -78,12 +82,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub(super) async fn namespace_records_with_accounting(
         &self,
         ids: &[FileId],
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), WorkspaceError> {
         accounting.check()?;
-        if ids.is_empty() || maximum_entries == 0 {
+        if ids.is_empty() || maximum_entries == Some(0) {
             return Ok((
                 NamespaceRecordSearch {
                     records: NamespaceRecords::default(),

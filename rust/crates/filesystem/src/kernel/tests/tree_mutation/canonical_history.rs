@@ -16,7 +16,6 @@ async fn identical_fork_contents_have_identical_directory_roots()
         &store,
         base,
         entries.iter().cloned().map(TreeMutation::Insert).collect(),
-        192,
         limits,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -29,7 +28,6 @@ async fn identical_fork_contents_have_identical_directory_roots()
             &store,
             incremental,
             batch.iter().cloned().map(TreeMutation::Insert).collect(),
-            17,
             limits,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -82,12 +80,10 @@ async fn apply(
     mutations: Vec<TreeMutation>,
     limits: DecodeLimits,
 ) -> Result<OperationReceipt<ObjectId>, Box<dyn std::error::Error>> {
-    let count = u32::try_from(mutations.len())?;
     Ok(apply_tree_mutations(
         store,
         root,
         mutations,
-        count,
         limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),

@@ -47,8 +47,8 @@ fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result
         crate::executor::json::json_owned_value_shape_bounded(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined,
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: 256,
             },
             crate::executor::json::JsonValueSchema::None,

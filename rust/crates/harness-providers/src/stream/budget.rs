@@ -7,8 +7,8 @@ use std::mem::size_of;
 mod properties;
 
 pub(super) struct Budget<'work> {
-    used: usize,
-    limit: usize,
+    used: Size,
+    maximum_bytes: Option<usize>,
     #[cfg(not(target_arch = "wasm32"))]
     work: Option<&'work acyclic_fs::NativeMaterializationWork>,
     #[cfg(target_arch = "wasm32")]
@@ -31,10 +31,10 @@ impl<'work> Budget<'work> {
     pub fn used(&self) -> usize {
         self.used
     }
-    pub fn new(maximum: usize) -> Self {
+    pub fn new(maximum: impl Into<Option<usize>>) -> Self {
         Self {
-            used: 0,
-            limit: maximum,
+            used: Size::default(),
+            maximum_bytes: maximum.into(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
             #[cfg(target_arch = "wasm32")]
@@ -42,20 +42,36 @@ impl<'work> Budget<'work> {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn native(maximum: usize, work: &'work acyclic_fs::NativeMaterializationWork) -> Self {
+    pub fn native(
+        maximum: impl Into<Option<usize>>,
+        work: &'work acyclic_fs::NativeMaterializationWork,
+    ) -> Self {
         Self {
             work: Some(work),
             ..Self::new(maximum)
         }
     }
-    pub fn replace(&mut self, old: usize, new: usize) -> Result<()> {
-        let bytes = self.used.checked_sub(old).and_then(|n| n.checked_add(new));
-        match bytes {
-            Some(bytes) if bytes <= self.limit => {
-                self.used = bytes;
+    pub fn replace(&mut self, old: Size, new: Size) -> Result<()> {
+        let bytes = self
+            .used
+            .bytes
+            .checked_sub(old.bytes)
+            .and_then(|n| n.checked_add(new.bytes));
+        let items = self
+            .used
+            .items
+            .checked_sub(old.items)
+            .and_then(|n| n.checked_add(new.items));
+        match (bytes, items) {
+            (Some(bytes), Some(items))
+                if self.maximum_bytes.is_none_or(|maximum| bytes <= maximum) =>
+            {
+                self.used = Size { bytes, items };
                 Ok(())
             }
-            _ => Err(invalid("retained model state exceeds aggregate byte limit")),
+            _ => Err(invalid(
+                "retained model state exceeds configured byte policy",
+            )),
         }
     }
     pub fn add(&mut self, bytes: usize) -> Result<()> {
@@ -85,13 +101,22 @@ impl<'work> Budget<'work> {
             .ok_or_else(|| invalid("tool size overflow"))?;
         if required > target.capacity() {
             let old = target.capacity();
-            let available = (self.limit - self.used)
-                .checked_add(old)
-                .ok_or_else(|| invalid("tool capacity overflow"))?;
-            if required > available {
-                return Err(invalid("retained model state exceeds aggregate byte limit"));
+            let available = self
+                .maximum_bytes
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(self.used.bytes)
+                        .and_then(|remaining| remaining.checked_add(old))
+                        .ok_or_else(|| invalid("tool capacity overflow"))
+                })
+                .transpose()?;
+            if available.is_some_and(|available| required > available) {
+                return Err(invalid(
+                    "retained model state exceeds configured byte policy",
+                ));
             }
-            let capacity = required.max(old.saturating_mul(2)).max(8).min(available);
+            let capacity = required.max(old.saturating_mul(2)).max(8);
+            let capacity = available.map_or(capacity, |available| capacity.min(available));
             // Only a growth can relocate old text. Native frame admission covers
             // decoding/copying the incoming fragment; it never recharges the prefix.
             #[cfg(not(target_arch = "wasm32"))]

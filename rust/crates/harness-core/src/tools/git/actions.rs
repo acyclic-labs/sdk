@@ -1,9 +1,6 @@
 //! The Git filesystem actions the workspace executor performs.
 use super::*;
 
-/// Largest committed file `git show REV:PATH` returns, matching blame and grep.
-const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
-
 impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
@@ -188,7 +185,7 @@ where
                 &to,
                 &self.repository,
                 tracked_paths,
-                100_000,
+                None,
                 &CancellationToken::new(),
             )
             .await
@@ -252,7 +249,7 @@ where
             &current,
             &source,
             &self.ignore,
-            u32::MAX,
+            None,
             &CancellationToken::new(),
         )
         .await
@@ -360,7 +357,7 @@ where
     /// Lists a tree's Git-visible entries.
     pub(super) async fn archive(&self, tree: &GitTreeRef) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(*tree).await?;
-        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
+        let entries = walk_git_tree(&generation, &self.ignore, None, None)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -381,17 +378,10 @@ where
         tree: &GitTreeRef,
     ) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(*tree).await?;
-        let result = grep_git_generation(
-            &generation,
-            &self.ignore,
-            pattern,
-            path,
-            100_000,
-            16 * 1024 * 1024,
-            100_000,
-        )
-        .await
-        .map_err(Error::from)?;
+        let result =
+            grep_git_generation(&generation, &self.ignore, pattern, path, None, None, None)
+                .await
+                .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
             kind: "grep".to_owned(),
             value: serde_json::to_value(result).map_err(json_error)?,
@@ -409,7 +399,7 @@ where
             let generation = self.generation(commit.tree).await?;
             history.push((commit.clone(), generation));
         }
-        let lines = blame_git_generations(&history, &self.ignore, path, 16 * 1024 * 1024)
+        let lines = blame_git_generations(&history, &self.ignore, path, None)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -432,7 +422,7 @@ where
                 "Git clean generation is not the live workspace",
             ));
         }
-        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
+        let entries = walk_git_tree(&generation, &self.ignore, None, None)
             .await
             .map_err(Error::from)?;
         let candidates: Vec<_> = entries
@@ -562,7 +552,7 @@ where
             generation
                 .read(
                     &shown,
-                    SHOWN_FILE_BYTES,
+                    None,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )

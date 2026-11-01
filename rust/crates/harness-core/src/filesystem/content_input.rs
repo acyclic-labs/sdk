@@ -50,7 +50,7 @@ mod tests {
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let io = PreparationIo::from_native_work(&work)?;
-        let encoded = io.encode(&"q".repeat(128 * 1024), u64::MAX, false)?;
+        let encoded = io.encode(&"q".repeat(128 * 1024), None, false)?;
         let original = encoded.as_ptr();
         let copied = work.receipt().bytes_copied;
         let mut shared = None;

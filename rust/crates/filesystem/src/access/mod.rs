@@ -70,8 +70,6 @@ pub const INITIAL_POLICY: &[u8] = include_bytes!("initial.json");
 
 /// Versioned policy record in the root directory's authenticated metadata.
 pub const POLICY_METADATA_KEY: &[u8] = b"security.acyclic.access.v1";
-/// Bound checked before materializing a stored policy record.
-pub const MAXIMUM_POLICY_RECORD_BYTES: u64 = 1_048_576;
 
 /// Independently grantable filesystem operations.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

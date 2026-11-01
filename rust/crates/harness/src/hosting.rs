@@ -663,7 +663,7 @@ where
                             items: Vec::new(),
                             next,
                         },
-                        u64::MAX,
+                        None,
                         &mut None,
                     )
                     .map_err(|_| Error::Record("history page encoding failed"))
@@ -674,14 +674,14 @@ where
                 let mut before = cursor.before;
                 let mut accepted = 0;
                 for item in &items {
-                    let size = json_byte_length(item, u64::MAX, &mut None)
+                    let size = json_byte_length(item, None, &mut None)
                         .map_err(|_| Error::Record("history item encoding failed"))?
                         + u64::from(accepted != 0);
                     cursor.before = item.conversation - 1;
                     let envelope = if cursor.before == 0 {
                         end_envelope
                     } else {
-                        let length = json_byte_length(&cursor, u64::MAX, &mut None)
+                        let length = json_byte_length(&cursor, None, &mut None)
                             .map_err(|_| Error::Record("history cursor encoding failed"))?;
                         next_envelope + length.div_ceil(3) * 4
                     };

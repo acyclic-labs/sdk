@@ -12,8 +12,8 @@ function required(name: string): string {
 const endpoint = required("ACYCLIC_CONFORMANCE_ENDPOINT");
 const token = required("ACYCLIC_CONFORMANCE_TOKEN");
 const capability = required("ACYCLIC_CONFORMANCE_SESSION_CREDENTIAL");
-if (capability.length > 131_072 || capability.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(capability)) {
-  throw new Error("CLIENT_INPUT invalid bounded capability hex");
+if (capability.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(capability)) {
+  throw new Error("CLIENT_INPUT invalid capability hex");
 }
 const toolPath = process.env.ACYCLIC_CONFORMANCE_TOOL_FIXTURE;
 const controlPath = process.env.ACYCLIC_CONFORMANCE_CONTROL_FIXTURE;
@@ -24,16 +24,7 @@ if ([toolPath, controlPath, agentPath].filter(value => value !== undefined).leng
 const handle = await open(toolPath ?? controlPath ?? required("ACYCLIC_CONFORMANCE_AGENT_FIXTURE"), "r");
 let encoded: Uint8Array;
 try {
-  const maximum = toolPath ? 8 * 1024 * 1024 : controlPath ? 32 * 1024 * 1024 : 65_536;
-  const input = new Uint8Array(maximum + 1);
-  let length = 0;
-  while (length < input.length) {
-    const result = await handle.read(input, length, input.length - length);
-    if (result.bytesRead === 0) break;
-    length += result.bytesRead;
-  }
-  if (length > maximum) throw new Error("CLIENT_INPUT fixture byte capacity exceeded");
-  encoded = input.slice(0, length);
+  encoded = await handle.readFile();
 } finally { await handle.close(); }
 await initializeClientQueries();
 const observation = agentPath ? decodeClientJson(encoded) as ClientObservationFixture : undefined;

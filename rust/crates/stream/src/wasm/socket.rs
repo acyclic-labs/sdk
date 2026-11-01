@@ -39,7 +39,7 @@ impl Endpoint {
 }
 
 struct Incoming {
-    sender: Option<mpsc::Sender<js_sys::ArrayBuffer>>,
+    sender: Option<mpsc::UnboundedSender<js_sys::ArrayBuffer>>,
     terminal: Option<StreamError>,
 }
 impl Incoming {
@@ -101,7 +101,7 @@ impl Transport for Endpoint {
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)
                 .map_err(|_| StreamError::InvalidArgument)?;
             socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-            let (sender, receiver) = mpsc::channel(crate::MAX_ITEMS);
+            let (sender, receiver) = mpsc::unbounded_channel();
             let incoming = Rc::new(RefCell::new(Incoming {
                 sender: Some(sender),
                 terminal: None,
@@ -132,7 +132,7 @@ impl Transport for Endpoint {
                         Some(StreamError::LimitExceeded)
                     }
                     Ok(data) => incoming.sender.as_ref().and_then(|sender| {
-                        sender.try_send(data).err().map(|_| StreamError::Capacity)
+                        sender.send(data).err().map(|_| StreamError::Unavailable)
                     }),
                 };
                 if let Some(error) = error {
@@ -218,11 +218,8 @@ impl Transport for Endpoint {
                             }
                             Either::Right(Some(frame)) => {
                                 let bytes = frame.encode_to_vec();
-                                if bytes.len() > MAX_COMMAND_BYTES
-                                    || guard.socket.buffered_amount() as usize + bytes.len()
-                                        > MAX_COMMAND_BYTES
-                                {
-                                    return Err(StreamError::Capacity);
+                                if bytes.len() > MAX_COMMAND_BYTES {
+                                    return Err(StreamError::LimitExceeded);
                                 }
                                 guard
                                     .socket
