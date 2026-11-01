@@ -8,7 +8,11 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
 
-/// Admits only explicit `--option VALUE` policy pairs the host allows, with
+fn is_switch(host: &str, name: &str) -> bool {
+    host == "pi" && name == "--no-extensions"
+}
+
+/// Admits only explicit native policy options the host allows, with
 /// exactly one sandbox and approval choice where the host has them.
 pub fn validate(host: &str, args: &[String]) -> Result<()> {
     let (sandbox, approval, allowed): (&str, &str, &[&str]) = match host {
@@ -53,24 +57,26 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
         ),
         _ => return Err(invalid("host launcher supports codex, claude-code or pi")),
     };
-    if args
-        .chunks(2)
-        .any(|pair| !matches!(pair, [name, _] if allowed.contains(&name.as_str())))
-    {
-        return Err(invalid(
-            "provide explicit native policy arguments as --option VALUE pairs; prompts belong in the native host",
-        ));
+    let mut required = [(sandbox, 0), (approval, 0)];
+    let mut arguments = args.iter();
+    while let Some(name) = arguments.next() {
+        if is_switch(host, name) {
+            continue;
+        }
+        if !allowed.contains(&name.as_str()) || arguments.next().is_none() {
+            return Err(invalid(
+                "provide admitted native policy switches or --option VALUE pairs; prompts belong in the native host",
+            ));
+        }
+        for (option, count) in &mut required {
+            *count += usize::from(name.as_str() == *option);
+        }
     }
-    for name in [sandbox, approval] {
+    for (name, count) in required {
         if name.is_empty() {
             continue;
         }
-        if args
-            .chunks(2)
-            .filter(|pair| matches!(*pair, [key, _] if key == name))
-            .count()
-            != 1
-        {
+        if count != 1 {
             return Err(invalid(format!(
                 "host requires exactly one {name} VALUE; children inherit it unchanged"
             )));
@@ -93,7 +99,14 @@ pub fn program(host: &str) -> Result<&'static str> {
 pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<String>> {
     validate(host, args)?;
     let mut flags = args.to_vec();
-    for [name, value] in flags.as_chunks_mut::<2>().0 {
+    let mut arguments = flags.iter_mut();
+    while let Some(name) = arguments.next() {
+        if is_switch(host, name) {
+            continue;
+        }
+        let Some(value) = arguments.next() else {
+            return Err(invalid("native policy option requires a value"));
+        };
         let inherited_path = match (host, name.as_str()) {
             (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
             ("claude-code", "--settings") => !value.trim_start().starts_with('{'),

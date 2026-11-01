@@ -185,24 +185,65 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
         ),
         (
             "pi",
-            vec!["--thinking", "high", "--session-dir", "native-sessions"],
+            vec![
+                "--no-extensions",
+                "--thinking",
+                "high",
+                "--session-dir",
+                "native-sessions",
+            ],
+            "--session",
+        ),
+        (
+            "pi",
+            vec![
+                "--thinking",
+                "high",
+                "--no-extensions",
+                "--session-dir",
+                "native-sessions",
+            ],
+            "--session",
+        ),
+        (
+            "pi",
+            vec![
+                "--thinking",
+                "high",
+                "--session-dir",
+                "native-sessions",
+                "--no-extensions",
+            ],
             "--session",
         ),
     ] {
         let supplied = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let mut foreign_switch = supplied.clone();
+        foreign_switch.push("--unknown-policy".into());
+        assert!(validate(host, &foreign_switch).is_err());
+        let mut missing_value = supplied.clone();
+        missing_value.push("--model".into());
+        assert!(validate(host, &missing_value).is_err());
+        if host != "pi" {
+            let mut pi_switch = supplied.clone();
+            pi_switch.push("--no-extensions".into());
+            assert!(validate(host, &pi_switch).is_err());
+        }
         let flags = parent_flags(host, &supplied, Path::new("workspace"))?;
         if host == "pi" {
             assert_eq!(
-                flags,
-                [
-                    "--thinking".to_owned(),
-                    "high".to_owned(),
-                    "--session-dir".to_owned(),
-                    Path::new("workspace")
-                        .join("native-sessions")
-                        .to_string_lossy()
-                        .into_owned()
-                ]
+                flags
+                    .windows(2)
+                    .find(|pair| pair[0] == "--session-dir")
+                    .ok_or("native session directory absent")?[1],
+                Path::new("workspace")
+                    .join("native-sessions")
+                    .to_string_lossy()
+                    .into_owned()
+            );
+            assert_eq!(
+                flags.iter().position(|flag| flag == "--no-extensions"),
+                supplied.iter().position(|flag| flag == "--no-extensions")
             );
         } else {
             assert_eq!(
@@ -224,9 +265,7 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
             .iter()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        for pair in flags.as_chunks::<2>().0 {
-            assert!(arguments.windows(2).any(|window| window == pair));
-        }
+        assert!(arguments.windows(flags.len()).any(|window| window == flags));
         assert!(
             arguments
                 .windows(2)
