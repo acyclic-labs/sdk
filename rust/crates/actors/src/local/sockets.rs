@@ -434,12 +434,12 @@ type CloseCompletion = futures::future::Shared<BoxProviderFuture<'static, Result
 impl crate::guest::SocketTerminal for CloseCompletion {
     fn completion(
         self: Arc<Self>,
-    ) -> BoxProviderFuture<'static, Result<(), Arc<dyn std::error::Error + Send + Sync>>> {
+    ) -> BoxProviderFuture<'static, Result<(), Arc<crate::guest::SocketTerminalError>>> {
         Box::pin(async move {
             self.as_ref()
                 .clone()
                 .await
-                .map_err(|error| error as Arc<dyn std::error::Error + Send + Sync>)
+                .map_err(|error| error as Arc<crate::guest::SocketTerminalError>)
         })
     }
 }

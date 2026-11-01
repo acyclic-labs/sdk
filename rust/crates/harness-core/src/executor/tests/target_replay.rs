@@ -372,6 +372,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 step: 0,
                 call_id: invocation.call_id.clone(),
                 invocation: start,
+                publication: None,
             },
             None,
         )?

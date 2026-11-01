@@ -19,6 +19,13 @@ pub struct WebSocketAutoResponse {
     /// Exact outgoing text frame.
     pub response: String,
 }
+/// Original socket failure retained across native executor threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub type SocketTerminalError = dyn std::error::Error + Send + Sync;
+/// Original socket failure retaining browser event-loop ownership.
+#[cfg(target_arch = "wasm32")]
+pub type SocketTerminalError = dyn std::error::Error;
+
 /// A retained observation of one original host socket's close producer.
 /// Dropping an observer never cancels that producer. The original decided
 /// failure remains reachable after the host retires its live socket entry.
@@ -26,10 +33,7 @@ pub trait SocketTerminal: acyclic_stream::ProviderPlatform {
     /// Joins the original producer and retains its decided failure after retirement.
     fn completion(
         self: Arc<Self>,
-    ) -> acyclic_stream::BoxProviderFuture<
-        'static,
-        Result<(), Arc<dyn std::error::Error + Send + Sync>>,
-    >;
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<(), Arc<SocketTerminalError>>>;
 }
 
 /// Hibernatable socket effects. A host keeps sockets, tags, attachments and the

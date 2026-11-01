@@ -371,6 +371,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
                 os: "linux".into(),
                 shell: "bash".into(),
                 path_style: PathStyle::Posix,
+                device_kind: DeviceKind::Desktop,
                 state: TargetState::Online,
             },
             acyclic_harness_core::tools::defaults()?
