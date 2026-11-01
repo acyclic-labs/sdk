@@ -93,7 +93,7 @@ async fn withdrawn_request_and_broken_sink_end_with_the_original_transport_cause
 #[test]
 fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completion() {
     use std::future::{Future as _, poll_fn};
-    use std::io::Write as _;
+    use std::io::{Read as _, Write as _};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -111,9 +111,11 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
             for terminal in ["drain", "close", "cancel"] {
                 let reject_startup = frame == "setup";
                 let close_sink = terminal == "close";
+                let partial = frame == "ack" && terminal == "cancel";
                 let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
                 owner.set_nonblocking(true).unwrap();
                 child.set_nonblocking(true).unwrap();
+                let mut prefix_reader = partial.then(|| owner.try_clone().unwrap());
                 let mut filler = child.try_clone().unwrap();
                 let mut port = ReportPort::new(
                     GENERATION.into(),
@@ -143,12 +145,6 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                 } else {
                     None
                 };
-                let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
-                let wait = crate::obs::waiting("channel-close", "kernel-credit", completion);
-                let ack = received.map(|received| port.snapshot(received, &report));
-                if let Some(ack) = &ack {
-                    assert_eq!(ack.waits.len(), 1);
-                }
                 let cause = native_read_refusal();
                 let original = (cause.kind(), cause.raw_os_error(), cause.to_string());
 
@@ -167,6 +163,29 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                     }
                 }
                 assert!(filled > 0);
+                let key = if partial {
+                    // The original record exceeds measured kernel credit, so
+                    // one write must stop inside its actual encoded frame.
+                    "k".repeat(filled * 2)
+                } else {
+                    "kernel-credit".into()
+                };
+                let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
+                let wait = crate::obs::waiting("channel-close", key, completion);
+                let ack = received.map(|received| port.snapshot(received, &report));
+                if let Some(ack) = &ack {
+                    assert_eq!(ack.waits.len(), 1);
+                }
+                if partial {
+                    let mut drain = [0; 8192];
+                    while filled > 0 {
+                        let count = filled.min(drain.len());
+                        owner.read_exact(&mut drain[..count]).await.unwrap();
+                        assert!(drain[..count].iter().all(|byte| *byte == b'x'));
+                        filled -= count;
+                    }
+                }
+                let mut prefix = Vec::new();
                 let owner = {
                     let delivery = async {
                         if reject_startup {
@@ -202,6 +221,14 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                         poll_fn(|cx| Poll::Ready(delivery.as_mut().poll(cx).is_pending())).await
                     );
 
+                    if let Some(reader) = prefix_reader.as_mut() {
+                        let mut first = [0];
+                        // A direct nonblocking OS read proves accepted frame
+                        // bytes without waiting for another producer poll.
+                        assert_eq!(reader.read(&mut first).unwrap(), 1);
+                        assert_eq!(first, [b'{']);
+                        prefix.extend_from_slice(&first);
+                    }
                     if terminal == "cancel" {
                         Some(owner)
                     } else if close_sink {
@@ -258,11 +285,16 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                     original
                 );
                 if terminal == "cancel" {
-                    assert_eq!(
-                        port.fail_execution(&cause).await.unwrap_err().kind(),
-                        io::ErrorKind::AlreadyExists
+                    let refused = {
+                        let failure = port.fail_execution(&cause);
+                        tokio::pin!(failure);
+                        poll_fn(|cx| Poll::Ready(failure.as_mut().poll(cx))).await
+                    };
+                    assert!(
+                        matches!(refused, Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::AlreadyExists)
                     );
                 }
+                drop(prefix_reader);
                 drop(port);
                 drop(filler);
                 if let Some(mut owner) = owner {
@@ -275,8 +307,16 @@ fn kernel_backpressure_preserves_report_identity_and_unrelated_physical_completi
                             filled -= count;
                         }
                     }
-                    line.clear();
-                    assert_eq!(owner.read_line(&mut line).await.unwrap(), 0);
+                    if partial {
+                        owner.read_to_end(&mut prefix).await.unwrap();
+                        let mut expected = serde_json::to_vec(ack.as_ref().unwrap()).unwrap();
+                        expected.push(b'\n');
+                        assert!(prefix.len() > 1 && prefix.len() < expected.len());
+                        assert!(expected.starts_with(&prefix));
+                    } else {
+                        line.clear();
+                        assert_eq!(owner.read_line(&mut line).await.unwrap(), 0);
+                    }
                 }
                 drop(wait);
                 assert!(report.snapshot().is_empty());
