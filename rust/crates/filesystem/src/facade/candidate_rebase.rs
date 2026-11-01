@@ -12,27 +12,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> candidates::NativeCandidateReb
     ) -> Result<Option<(Checkout<A, O>, Checkout<A, O>)>, FsError> {
         let target = self.checkout;
         accounting.check()?;
-        // Only working-tree mutations can be transplanted. Generation and
-        // authority transitions retain their original adoption fence.
-        if candidate.volume.id != base.volume.id
-            || target.volume.id != base.volume.id
-            || target.generation_root != base.generation_root
-            || target.base_root != base.base_root
-            || target.authority_head != base.authority_head
-            || target.live_operation_id != base.live_operation_id
-            || target.observed_generation != base.observed_generation
-            || target.prepared_merge_parent != base.prepared_merge_parent
-            || candidate.generation_root != base.generation_root
-            || candidate.base_root != base.base_root
-            || candidate.authority_head != base.authority_head
-            || candidate.live_operation_id != base.live_operation_id
-            || candidate.observed_generation != base.observed_generation
-            || candidate.prepared_merge_parent != base.prepared_merge_parent
-            || candidate.mode != base.mode
-            || target.mode != base.mode
-        {
-            return Ok(None);
-        }
         if let Some(paths) = rename
             && !target
                 .rename_bindings_unchanged(&mut base, paths, accounting, cancellation)

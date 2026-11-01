@@ -102,33 +102,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             } = candidate;
             let target = state.checkout.pin_native_candidate_rebase(
                 &base,
+                &checkout,
                 &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
                 cancellation,
             )?;
             let mut state = Some(state);
-            let (base, checkout) = if let Some(target) = target {
-                // The target retains its original root, mode and proof while
-                // provider I/O proceeds independently of the shared checkout.
-                drop(state.take());
-                let Some(rebased) = target
-                    .rebase(
-                        base,
-                        checkout,
-                        rename,
-                        MAXIMUM_EXACT_INSTALL_CHANGES,
-                        &mut crate::kernel::allocation::KernelAccounting::native(
-                            &original,
+            let (base, checkout) = match target {
+                crate::facade::NativeCandidateRebasePlan::Unchanged => (base, checkout),
+                crate::facade::NativeCandidateRebasePlan::Stale => return Ok(None),
+                crate::facade::NativeCandidateRebasePlan::Rebase(target) => {
+                    // The target retains its original root, mode and proof while
+                    // provider I/O proceeds independently of the shared checkout.
+                    drop(state.take());
+                    let Some(rebased) = target
+                        .rebase(
+                            base,
+                            checkout,
+                            rename,
+                            MAXIMUM_EXACT_INSTALL_CHANGES,
+                            &mut crate::kernel::allocation::KernelAccounting::native(
+                                &original,
+                                cancellation,
+                            ),
                             cancellation,
-                        ),
-                        cancellation,
-                    )
-                    .await?
-                else {
-                    return Ok(None);
-                };
-                rebased
-            } else {
-                (base, checkout)
+                        )
+                        .await?
+                    else {
+                        return Ok(None);
+                    };
+                    rebased
+                }
             };
             let mut candidate = CheckoutCandidate {
                 base,

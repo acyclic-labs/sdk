@@ -23,6 +23,13 @@ pub(crate) struct NativeCandidateRebase<A: 'static, O: 'static> {
     pub(super) checkout: Checkout<A, O>,
 }
 
+#[cfg(feature = "native-mount")]
+pub(crate) enum NativeCandidateRebasePlan<A: 'static, O: 'static> {
+    Unchanged,
+    Stale,
+    Rebase(NativeCandidateRebase<A, O>),
+}
+
 impl<A, O> Checkout<A, O> {
     #[cfg(feature = "native-mount")]
     pub(crate) fn prepare_candidate_adoption(
@@ -106,17 +113,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(crate) fn pin_native_candidate_rebase(
         &self,
         base: &Self,
+        candidate: &Self,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<NativeCandidateRebase<A, O>>, FsError> {
+    ) -> Result<NativeCandidateRebasePlan<A, O>, FsError> {
         accounting.check()?;
         if self.candidate_base_unchanged(base) {
-            return Ok(None);
+            return Ok(NativeCandidateRebasePlan::Unchanged);
+        }
+        // Refuse authority transitions before admitting a target pin. Only
+        // working-tree mutations can be transplanted onto this original mode.
+        if candidate.volume.id != base.volume.id
+            || self.volume.id != base.volume.id
+            || self.generation_root != base.generation_root
+            || self.base_root != base.base_root
+            || self.authority_head != base.authority_head
+            || self.live_operation_id != base.live_operation_id
+            || self.observed_generation != base.observed_generation
+            || self.prepared_merge_parent != base.prepared_merge_parent
+            || candidate.generation_root != base.generation_root
+            || candidate.base_root != base.base_root
+            || candidate.authority_head != base.authority_head
+            || candidate.live_operation_id != base.live_operation_id
+            || candidate.observed_generation != base.observed_generation
+            || candidate.prepared_merge_parent != base.prepared_merge_parent
+            || candidate.mode != base.mode
+            || self.mode != base.mode
+        {
+            return Ok(NativeCandidateRebasePlan::Stale);
         }
         let custody = Self::checkout_custody(accounting, cancellation)?;
         let dependencies = self.dependencies.observing_with_custody(custody);
         let checkout = self.replica(dependencies, self.mode, accounting)?;
-        Ok(Some(NativeCandidateRebase { checkout }))
+        Ok(NativeCandidateRebasePlan::Rebase(NativeCandidateRebase {
+            checkout,
+        }))
     }
 
     pub(super) fn checkout_custody(
