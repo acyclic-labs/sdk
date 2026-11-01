@@ -5,13 +5,18 @@ use std::sync::atomic::AtomicUsize;
 struct PausedObjects {
     inner: crate::memory::MemoryObjectStore,
     paused: AtomicBool,
+    paused_reads: AtomicBool,
     entered: AtomicUsize,
     released: tokio::sync::Notify,
 }
 
 impl PausedObjects {
     async fn before_write(&self) {
-        if self.paused.load(Ordering::Acquire) {
+        self.before_io(&self.paused).await;
+    }
+
+    async fn before_io(&self, paused: &AtomicBool) {
+        if paused.load(Ordering::Acquire) {
             let released = self.released.notified();
             tokio::pin!(released);
             released.as_mut().enable();
@@ -22,6 +27,7 @@ impl PausedObjects {
 
     fn release(&self) {
         self.paused.store(false, Ordering::Release);
+        self.paused_reads.store(false, Ordering::Release);
         self.released.notify_waiters();
     }
 }
@@ -61,6 +67,7 @@ impl AsyncObjectStore for PausedObjects {
         maximum: u64,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        self.before_io(&self.paused_reads).await;
         self.inner.read(id, maximum, work).await
     }
 
@@ -69,6 +76,7 @@ impl AsyncObjectStore for PausedObjects {
         requests: &[crate::storage::ObjectReadRequest],
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        self.before_io(&self.paused_reads).await;
         self.inner.read_many(requests, work).await
     }
 
@@ -153,6 +161,60 @@ async fn write(
 fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::Error>> {
     let (source, objects) = paused_source()?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+    source.runtime.wait(|| async {
+        objects.paused_reads.store(true, Ordering::Release);
+        let mut first_carrier = NativeDemandCarrier::Native(&work);
+        let mut second_carrier = NativeDemandCarrier::Native(&work);
+        let first = source
+            .checkout
+            .candidate(None, &mut first_carrier, work.cancellation(), None);
+        let second =
+            source
+                .checkout
+                .candidate(None, &mut second_carrier, work.cancellation(), None);
+        tokio::pin!(first, second);
+        assert!(futures::poll!(first.as_mut()).is_pending());
+        assert_eq!(objects.entered.load(Ordering::Acquire), 1);
+        assert!(futures::poll!(second.as_mut()).is_pending());
+        assert_eq!(
+            objects.entered.load(Ordering::Acquire),
+            2,
+            "a private policy read must not exclude another candidate"
+        );
+        let state = source
+            .checkout
+            .state
+            .try_write()
+            .expect("checkout unlocked during policy I/O");
+        let root = state.checkout.root().file_table;
+        drop(state);
+        objects.release();
+        let (first, second) = futures::try_join!(first, second)?;
+        assert_eq!(first.base.root().file_table, root);
+        assert_eq!(second.base.root().file_table, root);
+        assert_eq!(first.epoch, second.epoch);
+        assert_eq!(first.stamp, second.stamp);
+        drop((first, second));
+
+        // Abandon the original read while its provider is still delayed. Its
+        // publication lease and private proof must not exclude the successor.
+        objects.paused_reads.store(true, Ordering::Release);
+        let mut carrier = NativeDemandCarrier::Native(&work);
+        let mut abandoned = Box::pin(source.checkout.candidate(
+            None,
+            &mut carrier,
+            work.cancellation(),
+            None,
+        ));
+        assert!(futures::poll!(abandoned.as_mut()).is_pending());
+        drop(abandoned);
+        assert!(source.checkout.publication_fence.try_write().is_ok());
+        assert!(source.checkout.state.try_write().is_ok());
+        objects.release();
+        drop(candidate_now(&source.checkout, &work).await?);
+        objects.entered.store(0, Ordering::Release);
+        Ok(())
+    })?;
     let paths = ["left", "right"].map(native_test_path);
     let left = source
         .create_file(&paths[0], metadata(), None, &work)?
