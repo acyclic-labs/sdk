@@ -565,6 +565,7 @@ fn live_session(
         0,
         0,
         Body::Hello(wire::SessionHello {
+            credentials: vec![],
             interest: None,
             version: crate::session::VERSION,
             client_id: Bytes::from_static(b"authority-control"),

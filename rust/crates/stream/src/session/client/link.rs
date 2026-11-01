@@ -120,7 +120,7 @@ impl Pool {
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
-                let mut attempt = 0_u32;
+                let mut attempt = 0_u64;
                 let outcome = loop {
                     let mut observation = Observation::session(attempt);
                     let result = observation
@@ -461,6 +461,7 @@ async fn handshake(
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
+            credentials,
         }),
     );
     let bytes = hello.encoded_len();
@@ -481,23 +482,10 @@ async fn handshake(
         epoch: 0,
         credit,
     };
-    // Initial slots are streamed sparsely, before rotations and interests.
-    // No aggregate Hello or maximum-slot-sized array is materialized.
-    let initial = stream::iter(credentials.into_iter().map(|(slot, credential)| {
-        frame(
-            0,
-            0,
-            Body::Credential(wire::SessionCredential { slot, credential }),
-        )
-    }));
     let controls = stream::unfold(Arc::clone(&link.sender), |sender| async move {
         sender.next().await.ok().map(|frame| (frame, sender))
     });
-    let input: transport::Requests = Box::pin(
-        stream::once(future::ready(hello))
-            .chain(initial)
-            .chain(controls),
-    );
+    let input: transport::Requests = Box::pin(stream::once(future::ready(hello)).chain(controls));
     let mut response = link.channel.session(input).await?;
     let welcome = response
         .next()

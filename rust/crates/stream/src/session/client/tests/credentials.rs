@@ -31,6 +31,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
             0,
             0,
             Body::Hello(wire::SessionHello {
+                credentials: vec![],
                 interest: None,
                 version: crate::session::VERSION,
                 client_id: bytes::Bytes::from_static(b"credential-owner"),
