@@ -99,26 +99,72 @@ impl Part<&RawValue> {
     /// Raw tokens have already passed the shared literal-safe traversal.
     /// Inspecting their kind neither decodes signatures nor constructs a tree.
     fn valid_raw(&self) -> bool {
-        self.valid(|value| match value.get().as_bytes().first() {
-            Some(b'"') => Kind::String,
-            Some(b't' | b'f') => Kind::Bool,
-            Some(b'{') => Kind::Object,
-            _ => Kind::Other,
-        })
+        self.valid(|value| raw_kind(value))
     }
+}
+
+fn raw_kind(value: &RawValue) -> Kind {
+    match value.get().as_bytes().first() {
+        Some(b'"') => Kind::String,
+        Some(b't' | b'f') => Kind::Bool,
+        Some(b'{') => Kind::Object,
+        _ => Kind::Other,
+    }
+}
+
+/// Optional call fields distinguish omission from an explicitly invalid null.
+fn supplied_raw<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<&'de RawValue>, D::Error> {
+    <&RawValue>::deserialize(deserializer).map(Some)
+}
+
+/// Borrowed executable identity, validated before either execution or replay.
+/// https://ai.google.dev/api/generate-content#FunctionCall
+#[derive(Clone, Copy, Deserialize)]
+pub(crate) struct Function<'a> {
+    #[serde(default, borrow, deserialize_with = "supplied_raw")]
+    pub id: Option<&'a RawValue>,
+    #[serde(borrow)]
+    pub name: &'a RawValue,
+    #[serde(default, borrow, deserialize_with = "supplied_raw")]
+    pub args: Option<&'a RawValue>,
+}
+
+pub(crate) struct NativePart<'a> {
+    pub fields: Part<&'a RawValue>,
+    pub function: Option<Function<'a>>,
 }
 
 /// Admits known fields after literal-safe JSON validation. All returned tokens
 /// borrow the original part; admission never reconstructs its native bytes.
-pub(crate) fn native_part(raw: &RawValue) -> crate::Result<Part<&RawValue>> {
+pub(crate) fn native_part(raw: &RawValue) -> crate::Result<NativePart<'_>> {
     let invalid = || {
         crate::invalid(
-            "Gemini part admission failed; recovery: return one correctly typed data field per native part",
+            "Gemini part admission failed; recovery: return one typed data member and a well-formed functionCall per native part",
         )
     };
     let part: Part<&RawValue> = serde_json::from_str(raw.get()).map_err(|_| invalid())?;
     if !part.valid_raw() {
         return Err(invalid());
     }
-    Ok(part)
+    let function = part
+        .function_call
+        .map(|raw| {
+            let function: Function<'_> = serde_json::from_str(raw.get()).map_err(|_| invalid())?;
+            if raw_kind(function.name) != Kind::String
+                || function.id.is_some_and(|id| raw_kind(id) != Kind::String)
+                || function
+                    .args
+                    .is_some_and(|args| raw_kind(args) != Kind::Object)
+            {
+                return Err(invalid());
+            }
+            Ok(function)
+        })
+        .transpose()?;
+    Ok(NativePart {
+        fields: part,
+        function,
+    })
 }

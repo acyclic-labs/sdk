@@ -189,8 +189,8 @@ fn parallel_signed_calls_preserve_the_entire_provider_part() {
     // Missing provider IDs, unusual key order and escaped signature bytes
     // expose reconstruction even when the decoded JSON is equivalent.
     let signed = [
-        r#"{ "thoughtSignature":"one\u003d", "functionCall": {"args":{"path":"a"},"name":"read"} }"#.to_owned(),
-        r#"{"functionCall":{"name":"read","args":{"path":"b"}},"thoughtSignature":"two=="}"#.to_owned(),
+        r#"{ "thoughtSignature":"one\u003d", "functionCall": {"args":{"path":"a"},"name":"r\u0065ad","extension":{"kept":true}} }"#.to_owned(),
+        r#"{"functionCall":{"id":"call\u003d","name":"read","args":{"path":"b"}},"thoughtSignature":"two=="}"#.to_owned(),
     ];
     let input = format!(
         "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{},{}]}},\"finishReason\":\"STOP\"}}]}}\n\n",
@@ -468,7 +468,7 @@ fn malformed_native_part_fields_fail_before_publication() {
     {
         let payload = match field {
             Some("text") => json!("answer"),
-            Some("functionCall") => json!({"name":"echo","args":{}}),
+            Some("functionCall") => json!({"name":"echo"}),
             _ => json!({}),
         };
         let member = field.map_or_else(String::new, |field| format!(",{field:?}:{payload}"));
@@ -522,6 +522,16 @@ fn malformed_native_part_fields_fail_before_publication() {
             }
         }
     }
+    for field in ["name", "id", "args"] {
+        for value in [json!(null), json!(false), json!(1), json!([])] {
+            let mut part =
+                json!({"thoughtSignature":"original==","functionCall":{"name":"echo","args":{}}});
+            part["functionCall"][field] = value;
+            parts.push(part);
+        }
+    }
+    parts.push(json!({"thoughtSignature":"original==","functionCall":{"args":{}}}));
+    parts.push(json!({"thoughtSignature":"original==","functionCall":{"name":"echo","args":"{}"}}));
     let unsigned: Vec<_> = parts
         .iter()
         .filter(|part| part["thoughtSignature"].is_string())
@@ -532,33 +542,7 @@ fn malformed_native_part_fields_fail_before_publication() {
         })
         .collect();
     parts.extend(unsigned);
-    for part in parts {
-        let raw = serde_json::to_vec(&part).unwrap();
-        assert!(
-            crate::projection::gemini::Replay::default()
-                .native(&raw, false)
-                .is_err()
-        );
-        let input = format!(
-            "data: {}\n\n",
-            json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"prior","args":{}},"thoughtSignature":"prior=="},part]},"finishReason":"STOP"}]})
-        );
-        let result = futures::executor::block_on(
-            stream::events(Adapter::Gemini, chunks(&input, 1), 4096, parser_dispatch())
-                .collect::<Vec<_>>(),
-        );
-        assert_eq!(result.len(), 1);
-        assert!(matches!(result[0], Err(Error::Invalid(_))));
-    }
-    for field in fields {
-        let payload = match field {
-            "text" => json!("answer"),
-            "functionCall" => json!({"name":"echo","args":{}}),
-            _ => json!({}),
-        };
-        let raw = format!(
-            r#"{{"thoughtSignature":"original==",{field:?}:{payload},{field:?}:{payload}}}"#
-        );
+    let rejects = |raw: &str| {
         assert!(
             crate::projection::gemini::Replay::default()
                 .native(raw.as_bytes(), false)
@@ -573,6 +557,30 @@ fn malformed_native_part_fields_fail_before_publication() {
         );
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], Err(Error::Invalid(_))));
+    };
+    for part in parts {
+        rejects(&part.to_string());
+    }
+    for field in fields {
+        let payload = match field {
+            "text" => json!("answer"),
+            "functionCall" => json!({"name":"echo","args":{}}),
+            _ => json!({}),
+        };
+        rejects(&format!(
+            r#"{{"thoughtSignature":"original==",{field:?}:{payload},{field:?}:{payload}}}"#
+        ));
+    }
+    for function in [
+        r#"{"id":"call","id":"call","name":"echo","args":{}}"#,
+        r#"{"name":"echo","name":"echo","args":{}}"#,
+        r#"{"name":"echo","args":{},"args":{}}"#,
+        r#"{"id":null,"id":"call","name":"echo","args":{}}"#,
+        r#"{"name":"echo","args":null,"args":{}}"#,
+    ] {
+        rejects(&format!(
+            r#"{{"thoughtSignature":"original==","functionCall":{function}}}"#
+        ));
     }
 }
 

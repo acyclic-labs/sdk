@@ -30,7 +30,7 @@ mod tests {
 // duplicate prefix across text chunks and tool steps, without merging parts.
 #[derive(Default)]
 pub(super) struct Replay<'a> {
-    call: Option<&'a RawValue>,
+    call: Option<(&'a RawValue, crate::protocol::gemini::Function<'a>)>,
     visible: VecDeque<Cow<'a, str>>,
     offset: usize,
 }
@@ -67,11 +67,14 @@ impl<'a> Replay<'a> {
         if raw.get().as_bytes() != bytes || !crate::protocol::strict::valid(raw.get()) {
             return Err(crate::invalid("invalid retained Gemini part"));
         }
-        let part = crate::protocol::gemini::native_part(raw)?;
-        if part.function_call.is_some() {
+        let crate::protocol::gemini::NativePart {
+            fields: part,
+            function,
+        } = crate::protocol::gemini::native_part(raw)?;
+        if let Some(function) = function {
             // A signature authenticates this exact part, including the call.
             // Retain its bytes rather than reconstructing a signed envelope.
-            self.call = Some(raw);
+            self.call = Some((raw, function));
             return Ok(None);
         }
         self.call = None;
@@ -95,31 +98,20 @@ impl<'a> Replay<'a> {
         name: &str,
         arguments: &Value,
     ) -> acyclic_harness_core::Result<Option<&'a RawValue>> {
-        let Some(raw) = self.call else {
+        let Some((_, original)) = self.call else {
             return Ok(None);
         };
-        #[derive(Deserialize)]
-        struct Envelope<'a> {
-            #[serde(rename = "functionCall", borrow)]
-            call: Function<'a>,
-        }
-        #[derive(Deserialize)]
-        struct Function<'a> {
-            #[serde(borrow)]
-            id: Option<Cow<'a, str>>,
-            #[serde(borrow)]
-            name: Cow<'a, str>,
-            #[serde(borrow)]
-            args: Option<&'a RawValue>,
-        }
-        let original: Envelope<'_> = serde_json::from_str(raw.get())
-            .map_err(|_| crate::invalid("invalid retained Gemini call"))?;
-        if original.call.id.as_deref() != id || original.call.name != name {
+        let decode = |raw: &'a RawValue| -> acyclic_harness_core::Result<Cow<'a, str>> {
+            let Text(text): Text<'a> = serde_json::from_str(raw.get())
+                .map_err(|_| crate::invalid("invalid retained Gemini call"))?;
+            Ok(text)
+        };
+        if original.id.map(decode).transpose()?.as_deref() != id || decode(original.name)? != name {
             return Err(crate::invalid(
                 "retained Gemini call differs from its canonical call",
             ));
         }
-        let same_arguments = match original.call.args {
+        let same_arguments = match original.args {
             Some(raw) => crate::json(raw.get().as_bytes())? == *arguments,
             None => arguments.as_object().is_some_and(|args| args.is_empty()),
         };
@@ -128,7 +120,7 @@ impl<'a> Replay<'a> {
                 "retained Gemini call differs from its canonical call",
             ));
         }
-        Ok(self.call.take())
+        Ok(self.call.take().map(|(raw, _)| raw))
     }
 
     pub fn remaining<'text>(&mut self, mut text: &'text str) -> &'text str {
