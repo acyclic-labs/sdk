@@ -15,7 +15,7 @@ fn launch_failure_returns_its_cause_and_original_custody()
         cwd: root.path().into(),
         environment: Default::default(),
         inherit_environment: false,
-        timeout_ms: 1000,
+        schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
         control_timeout_ms: 1000,
         maximum_output_bytes: 1024,
         standard_input: None,
