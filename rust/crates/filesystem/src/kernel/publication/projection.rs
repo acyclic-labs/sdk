@@ -58,7 +58,7 @@ async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
         root: candidate,
         lease,
     } = candidate;
-    let mut work = crate::async_storage::AuthorityFrame::borrow(accounting, cancellation)?;
+    let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
     let current = authority
         .head_payload(request.authority_id, 4096, &mut work)
         .await;

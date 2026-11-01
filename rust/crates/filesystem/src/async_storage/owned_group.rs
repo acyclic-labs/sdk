@@ -137,18 +137,13 @@ impl<G: OwnedAuthorityGuard> OwnedAuthorityGroup<G> {
     }
 
     async fn run<A: AsyncAuthorityStore>(mut self, owner: A) {
-        let cancellation = self
-            .accounting
-            .as_ref()
-            .unwrap_or_else(|| unreachable!("running accounting"))
-            .cancellation();
         let result = async {
             let mut accounting = self
                 .accounting
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("running accounting"))
                 .borrow();
-            let mut work = super::work::AuthorityFrame::borrow(&mut accounting, &cancellation)
+            let mut work = super::work::AuthorityFrame::borrow(&mut accounting)
                 .map_err(super::work::authority_error)?;
             owner
                 .compare_and_append_group(

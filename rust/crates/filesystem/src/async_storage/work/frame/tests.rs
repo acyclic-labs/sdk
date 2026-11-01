@@ -22,7 +22,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         .live_bytes();
     let second;
     {
-        let mut borrowed = AuthorityFrame::borrow(&mut original, &cancellation)?;
+        let mut borrowed = AuthorityFrame::borrow(&mut original)?;
         // The former remaining-budget frame starts at zero and fails here.
         assert_eq!(borrowed.spent(), before);
         assert_eq!(borrowed.allocations.live_bytes(), live);
@@ -57,7 +57,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
     let before = original.spent();
     let mut operation = Box::pin(async {
-        let borrowed = AuthorityFrame::borrow(&mut original, &cancellation)?;
+        let borrowed = AuthorityFrame::borrow(&mut original)?;
         assert_eq!(borrowed.spent(), before);
         let _ = receiver.await;
         drop(borrowed);
@@ -68,7 +68,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
     drop(operation);
     drop(producer);
     assert_eq!(original.spent(), before);
-    assert!(AuthorityFrame::borrow(&mut original, &cancellation).is_err());
+    assert!(AuthorityFrame::borrow(&mut original).is_err());
     assert_eq!(original.spent(), before);
     drop(first);
     drop(second);
@@ -90,7 +90,7 @@ async fn scoped_authority_restores_original_work_and_custody_on_withdrawal()
         let baseline = native.live_allocation_bytes();
         let mut original = KernelAccounting::native(&native, &cancellation);
         original.charge_items(1)?;
-        let mut borrowed = AuthorityFrame::borrow(&mut original, &cancellation)?;
+        let mut borrowed = AuthorityFrame::borrow(&mut original)?;
         assert_eq!(borrowed.spent(), native.receipt());
         let held = RetainedAllocation::claim(32, 1, &mut borrowed.accounting())?;
         borrowed.charge(WorkCounters {

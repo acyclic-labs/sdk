@@ -247,7 +247,7 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             objects: &prepared.authentication.proof.objects,
             proven_at: prepared.proven_at,
         };
-        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting, self.cancellation)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.is_native();
         let publication_hold = objects.flush_before_publish(scope, &mut work).await;

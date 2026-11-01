@@ -8,11 +8,9 @@ pub(crate) struct AuthorityFrame<'a> {
 }
 
 impl<'a> AuthorityFrame<'a> {
-    pub(crate) fn borrow(
-        accounting: &'a mut KernelAccounting<'_>,
-        cancellation: &'a CancellationToken,
-    ) -> Result<Self, FsError> {
+    pub(crate) fn borrow(accounting: &'a mut KernelAccounting<'_>) -> Result<Self, FsError> {
         accounting.check()?;
+        let cancellation = accounting.cancellation();
         match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => Ok(Self {

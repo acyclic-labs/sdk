@@ -127,8 +127,7 @@ fn seal_group<P: PublicationOwner>(
     let mut requests = Retained::from_owned(requests, accounting)?;
     let cuts = Owned::<Vec<crate::PolicyCut>>::allocate(count, accounting)?;
     let mut cuts = Retained::from_owned(cuts, accounting)?;
-    let mut preparation_work =
-        crate::async_storage::AuthorityFrame::borrow(accounting, cancellation)?;
+    let mut preparation_work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
     let result = prepare_requests(group, &mut requests.value, &mut preparation_work);
     drop(preparation_work);
     let head = result?;
