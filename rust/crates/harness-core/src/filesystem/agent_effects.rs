@@ -546,7 +546,10 @@ mod tests {
             retained.push(decode(&bytes)?);
         }
         assert_eq!(retained, [first.clone(), later.clone()]);
-        assert_eq!(effects.recorded().await?, [later]);
+        assert_eq!(
+            effects.recorded().await?.as_slice(),
+            std::slice::from_ref(&later)
+        );
 
         #[cfg(not(target_arch = "wasm32"))]
         {

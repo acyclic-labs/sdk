@@ -147,6 +147,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 }],
                 brief: None,
                 policy: None,
+                profile: None,
             },
         )
         .map_err(|error| Error::Invalid(error.to_string()))
