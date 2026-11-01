@@ -137,12 +137,10 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
         if reads == 0 {
             assert!(matches!(
                 result,
-                Err(WorkspaceError::Filesystem(FsError::Authority(
-                    AuthorityStoreError::Work(crate::WorkError::BudgetExceeded {
-                        counter: "backend_read_operations",
-                        ..
-                    })
-                )))
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
             ));
             assert_eq!(spent.backend_write_operations, 0);
             assert_eq!(live, baseline);
@@ -239,9 +237,7 @@ async fn retention_keeps_original_work_on_success_refusal_and_producer_loss()
             drop(producer);
             assert!(matches!(
                 operation.await,
-                Err(WorkspaceError::Filesystem(FsError::Authority(
-                    AuthorityStoreError::Retired
-                )))
+                Err(WorkspaceError::Filesystem(FsError::WorkspaceDeleted))
             ));
         }
         assert_eq!(
