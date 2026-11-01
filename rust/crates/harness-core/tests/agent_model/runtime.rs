@@ -220,7 +220,6 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
             }
         }
     );
-    assert!(host.state(&root).await?.open_children.is_empty());
     let mut complete = Vec::new();
     for from in 0..diagnostic.records() {
         let page: Vec<_> = diagnostic
@@ -271,6 +270,10 @@ async fn large_failure_publishes_complete_diagnostic_with_original_child_settlem
             },
         })
     );
+    // This finite host has no activation dispatcher running. Deliver the
+    // parent's committed ChildDone through its existing event-owned drain.
+    host.drain(&root).await?;
+    assert!(host.state(&root).await?.open_children.is_empty());
     Ok(())
 }
 
