@@ -101,11 +101,20 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
  return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,...(input?[]:[prompt])]};
 }
 
+// A campaign keeps one immutable package source across its pair/workflow
+// scopes. Admission still precedes the first stage, and failed staging stays
+// failed; later scopes neither copy the package nor change its registration.
+export function nativePackage(binary,packageRoot) {
+ let staged;
+ return ()=>staged??=stagePlugin(fileURLToPath(new URL('../../',import.meta.url)),binary,packageRoot)
+  .then(executable=>({packageRoot,executable}));
+}
+
 // One installed host session under the caller's process scope: stage the
 // production package, install through the shipping CLI or the host's native
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's admitted provider.
-export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute}) {
+export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute,packageStage}) {
  const native=await nativeHost(host,fixture.env);
  nativeProvider(native,fixture.live);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
@@ -143,8 +152,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   capture(record);return record;
  };
  try {
-  const packageRoot=join(root,'package');
-  const executable=await stagePlugin(fileURLToPath(new URL('../../',import.meta.url)),binary,packageRoot);
+  const {packageRoot,executable}=await (packageStage??nativePackage(binary,join(root,'package')))();
   step='install through shipping plugin';
   if(host==='codex') {
    const installation=await run(executable,['install',host,'--plugin-root',packageRoot]);
@@ -181,7 +189,8 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
-  assertNativeCompletion(host,completed,answer);
+  assertNativeCompletion(host,completed,answer,fixture.live&&host==='claude-code'
+   ?{model:fixture.live.model,installed:true}:undefined);
  } catch(error) {
   throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
  }

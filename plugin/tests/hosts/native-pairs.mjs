@@ -10,13 +10,13 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {recordedRequests,requests} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
-import {assertNativeCompletion,installedHost,launchNativeHost} from './native-model.mjs';
+import {assertNativeCompletion,installedHost,launchNativeHost,nativePackage} from './native-model.mjs';
 import {ProcessPhases,pairOrders,pairPhases} from './process-phases.mjs';
 import {assertNativeResume} from './native-session-proof.mjs';
 
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
 const quote=text=>"'"+text.replaceAll("'","'\\''")+"'";
-export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live}) {
+export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live,packageStage}) {
  assert.ok(order?.length===2&&((order[0]==='bare'&&order[1]==='installed')||
   (order[0]==='installed'&&order[1]==='bare')),
   'step=admit native pair order; recovery=supply one bare and one installed leg');
@@ -49,7 +49,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
    events=new Spool(server.child.stdout,server.closed,{transcript:join(output,'events.jsonl'),
     key:event=>event.event==='ready'?['ready']:[]});
    fixture.url=`http://127.0.0.1:${(await events.keyed('ready')).port}/installed/v1`;
-  },run:()=>installedHost({host,processes:scope,fixture,capture:record=>captures.push(record),tools:[],
+  },run:()=>installedHost({host,processes:scope,fixture,packageStage,capture:record=>captures.push(record),tools:[],
    nativePermissions:['Bash'],prompt,answer,execute:async({native,configuration,run})=>{
     const version=await run(native.program,[...native.args,'--version']);assert.equal(version.code,0,version.stderr);
     const binding={source,artifact_source:artifactSource,host,platform:process.platform,architecture:process.arch,host_entry_sha256:await digest(native.entry),
@@ -124,7 +124,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
 // One installed live coding attempt, using the same host admission/install,
 // policy, process custody and filesystem/native-session oracle as mock cases.
 // Whole-workflow duration is deliberately not a warm-turn latency sample.
-export async function nativeWorkflow({host,binary,plugin,output,source,artifactSource=source,live}) {
+export async function nativeWorkflow({host,binary,plugin,output,source,artifactSource=source,live,packageStage}) {
  assert.ok(live,'step=admit live workflow; recovery=supply an approved native login configuration');
  assert.match(source??'',/^[0-9a-f]{40}$/,'step=bind workflow source; recovery=supply exact E2E_SOURCE');
  assert.match(artifactSource??'',/^[0-9a-f]{40}$/,'step=bind workflow artifacts; recovery=supply exact E2E_ARTIFACT_SOURCE');
@@ -154,7 +154,7 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
    model:live.model,provider:live.provider,profile:live.profile,
    artifacts:{graphcoder:await digest(binary),plugin:await digest(plugin)},
    prompt_sha256:createHash('sha256').update(prompt).digest('hex')},null,2)+'\n');
-  outcome=await withOwnedCase({processes:scope,run:()=>installedHost({host,processes:scope,fixture,
+  outcome=await withOwnedCase({processes:scope,run:()=>installedHost({host,processes:scope,fixture,packageStage,
    capture:record=>captures.push(record),tools,nativePermissions:['Bash'],prompt,answer})});
   assert.equal(outcome.expired,false,'original installed workflow envelope expired');
   for(const [file,bytes] of [['parent.txt','PARENT'],['child.txt','CHILD'],['resumed.txt','RESUMED']])
@@ -180,16 +180,17 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
    &&(extra.length===2||extra[2]==='--workflow')),
    'step=admit pair arguments; recovery=supply HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT PAIRS [--live NONSECRET_NATIVE_LOGIN_JSON [--workflow]]');
   const live=extra.length?JSON.parse(await readFile(extra[1],'utf8')):undefined;
+  const packageStage=nativePackage(plugin,join(output,'package'));
   for(const {index,order} of pairOrders(Number(count))) {
    const directory=`pair-${index}`;
    await nativePair({host,binary,mock,plugin,output:join(output,directory),order,
-    source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live});
+    source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live,packageStage});
    // Raw samples stay in their own original pair directory. Append only the
    // completed pair's index; never retain earlier captures or phase objects.
    await appendFile(join(output,'pairs.jsonl'),JSON.stringify({index,order,pair:`${directory}/pair.json`})+'\n');
   }
   if(extra[2]==='--workflow')await nativeWorkflow({host,binary,plugin,output:join(output,'workflow'),
-   source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live});
+   source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live,packageStage});
  } catch(error) {
   console.error(`step=native pairs: ${error.stack}; recovery=node plugin/tests/hosts/native-pairs.mjs HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT PAIRS [--live NONSECRET_NATIVE_LOGIN_JSON] with exact admitted E2E_SOURCE`);
   process.exitCode=1;

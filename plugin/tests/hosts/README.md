@@ -3,6 +3,8 @@
 The native pair collector uses the same pinned package, shipping plugin install,
 workspace owner and native permission path as the installed acceptance cases.
 It observes the original process writer, transcript sink, exit and close.
+All pairs and the optional workflow share one package staged after admission;
+its path stays fixed across the native profile's marketplace registrations.
 
 ```sh
 node plugin/tests/hosts/native-pairs.mjs HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT PAIRS
