@@ -48,7 +48,7 @@ fn run_cut(
     let acknowledged = run.join("acknowledged");
     let report = run.join("crash-point");
     std::fs::create_dir_all(&run).unwrap();
-    let mut child = std::process::Command::new(&executable);
+    let mut child = acyclic_native_runtime::ProcessCommand::new(&executable);
     child
         .args([
             "--exact",
@@ -60,8 +60,8 @@ fn run_cut(
         .env("ACYCLIC_CORE_STATE_CRASH_ACKNOWLEDGED", &acknowledged)
         .env("ACYCLIC_CORE_STATE_CRASH_POINT", point.to_string())
         .env("ACYCLIC_CORE_STATE_CRASH_REPORT", &report)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stdout(acyclic_native_runtime::ProcessStdio::piped())
+        .stderr(acyclic_native_runtime::ProcessStdio::null());
     if owned {
         child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
     }

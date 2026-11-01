@@ -4,7 +4,7 @@ use std::io;
 
 #[test]
 fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange() {
-    use std::process::Stdio;
+    use super::ProcessStdio;
     let input = vec![b'x'; 1_048_576];
     for literal in [true, false] {
         #[cfg(windows)]
@@ -20,9 +20,9 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
         )
         .expect("resolve fixture shell");
         command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn early-closing child");
         let input = if literal {
             crate::CaptureInput::Literal(&input)
@@ -66,19 +66,19 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
 #[cfg(unix)]
 #[test]
 fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
-    use std::process::Stdio;
+    use super::ProcessStdio;
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?.to_string();
     let mut command = command("stream-notify", std::path::Path::new(&address));
     command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let pid = tree
         .child
         .as_ref()
-        .map(std::process::Child::id)
+        .map(super::Child::id)
         .ok_or(io::ErrorKind::NotFound)?;
     let input = vec![b'x'; 1 << 20];
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -254,9 +254,9 @@ fn suspended_child_launch_fits_its_input_item_allowance() -> io::Result<()> {
     Ok(())
 }
 
+use super::{ProcessCommand, ProcessStdio};
 use std::fs;
 use std::io::{Read as _, Write as _};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -264,8 +264,8 @@ const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
 const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
 const BULK_BYTES: usize = 4 << 20;
 
-pub(super) fn command(mode: &str, root: &std::path::Path) -> Command {
-    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+pub(super) fn command(mode: &str, root: &std::path::Path) -> ProcessCommand {
+    let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
     command
         .args([
             "--exact",
@@ -275,9 +275,9 @@ pub(super) fn command(mode: &str, root: &std::path::Path) -> Command {
         .env_clear()
         .env(MODE, mode)
         .env(ROOT, root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     command
 }
 
@@ -326,8 +326,13 @@ fn process_tree_helper() {
         }
         "child" | "child-cancel" | "exit-parent" => {
             let mut grandchild = command("grandchild", &root);
-            grandchild.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-            let mut grandchild = grandchild.spawn().expect("spawn grandchild");
+            grandchild
+                .stdout(ProcessStdio::inherit())
+                .stderr(ProcessStdio::inherit());
+            let mut grandchild = grandchild
+                .to_std()
+                .and_then(|mut grandchild| grandchild.spawn())
+                .expect("spawn grandchild");
             ready(&root, "grandchild-ready", || {
                 grandchild
                     .try_wait()
@@ -504,7 +509,7 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
 #[test]
 fn spawn_failure_does_not_return_an_unowned_child() {
     let temporary = tempfile::tempdir().expect("temporary directory");
-    let error = ProcessTree::spawn(&mut Command::new(temporary.path().join("missing")))
+    let error = ProcessTree::spawn(&mut ProcessCommand::new(temporary.path().join("missing")))
         .err()
         .expect("missing executable must not spawn");
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
@@ -584,7 +589,7 @@ fn owned_streaming_stdout_rejects_empty_reads_and_reaches_eof() {
     let mut command = command("output", temporary.path());
     command
         .env("EXPLICIT_PROCESS_INPUT", "allowed")
-        .stderr(Stdio::null());
+        .stderr(ProcessStdio::null());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn streaming tree");
     assert_eq!(
         tree.read_stdout(&mut []).expect_err("empty read").kind(),
@@ -638,7 +643,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
     let mut command = command("output", temporary.path());
     command
         .env("EXPLICIT_PROCESS_INPUT", "allowed")
-        .stdin(Stdio::piped());
+        .stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
     let output = tree
         .wait_with_output(
@@ -697,7 +702,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
 fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-cancel", temporary.path());
-    command.stdin(Stdio::piped());
+    command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
     let input = vec![b'i'; BULK_BYTES];
     let cancelled = std::cell::Cell::new(false);
@@ -743,9 +748,9 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-save", temporary.path());
     command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn prompt reader");
     let input: Vec<u8> = (0..BULK_BYTES)
         .map(|n| u8::try_from(n % 251).unwrap())
@@ -791,7 +796,7 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
 fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-stall", temporary.path());
-    command.stdin(Stdio::piped());
+    command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
     ready(temporary.path(), "stdin-stall-ready", || {
         tree_exited(&mut tree)
@@ -826,7 +831,7 @@ fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
 fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-stall", temporary.path());
-    command.stdin(Stdio::piped());
+    command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn queued owner");
     tree.queue_stdin(vec![b'x'; BULK_BYTES])
         .expect("queue prompt");
@@ -851,9 +856,9 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut command = command("exit-code", temporary.path());
         command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::null())
+            .stderr(ProcessStdio::null());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn early exit");
         // No output pipes or queued input are armed: this is the original
         // child's exit event, retaining stdin for the subsequent closed-peer write.
@@ -892,24 +897,21 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
 fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
     #[cfg(windows)]
     let mut command = {
-        use std::os::windows::process::CommandExt as _;
-        let mut command = Command::new("powershell.exe");
-        command
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
-            ])
-            .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let mut command = ProcessCommand::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
+        ]);
         command
     };
     #[cfg(not(windows))]
-    let mut command = Command::new("cat");
+    let mut command = ProcessCommand::new("cat");
     command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn input echo");
     let input: Vec<u8> = (0..BULK_BYTES)
         .map(|index| u8::try_from(index % 251).expect("byte pattern"))
@@ -940,7 +942,7 @@ fn streaming_exchange_uses_the_same_capture_and_cleanup_owner() {
     ] {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut command = command("stdin-handshake", temporary.path());
-        command.stdin(Stdio::piped());
+        command.stdin(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
         let mut seen = Vec::new();
         let mut phase = 0;
@@ -993,15 +995,15 @@ fn streaming_exchange_uses_the_same_capture_and_cleanup_owner() {
     // stderr stays open. Waiting only for process exit would hang here.
     #[cfg(unix)]
     {
-        let mut command = Command::new("/bin/sh");
+        let mut command = ProcessCommand::new("/bin/sh");
         command
             .args([
                 "-c",
                 "read first; printf 'first-ack\n'; exec 1>&-; exec sleep 60",
             ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn withdrawn reply producer");
         let failure = tree
             .wait_with_output(
@@ -1053,7 +1055,7 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
             "SystemRoot",
             std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?,
         );
-        command.stdin(Stdio::piped());
+        command.stdin(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command)?;
         let mut observed_stdout = Vec::new();
         let mut observed_stderr = Vec::new();
@@ -1128,7 +1130,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     for parser_failure in [false, true] {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut command = command("stdin-handshake", temporary.path());
-        command.stdin(Stdio::piped());
+        command.stdin(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
         let mut seen = Vec::new();
         let failure = tree
@@ -1180,7 +1182,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     }
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-stall", temporary.path());
-    command.stdin(Stdio::piped());
+    command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
     ready(temporary.path(), "stdin-stall-ready", || {
         tree_exited(&mut tree)
@@ -1403,11 +1405,12 @@ fn exit_observation_retains_group_leader_until_cleanup() {
 
 #[cfg(all(feature = "test-support", unix))]
 mod seeded_capture {
+    use super::super::ProcessStdio;
     use super::ProcessTree;
     use crate::testing::Schedule;
     use crate::{CaptureHandler, CaptureSchedule, ProcessInput, ProcessOutput};
+    use std::io;
     use std::io::Write as _;
-    use std::{io, process::Stdio};
 
     struct Collect {
         bytes: Vec<u8>,
@@ -1449,9 +1452,13 @@ mod seeded_capture {
         };
         let mut command = crate::shell_command(script, Some("sh"))?;
         command
-            .stdin(if split { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(if split {
+                ProcessStdio::piped()
+            } else {
+                ProcessStdio::null()
+            })
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command)?;
         let release = tree.take_stdin();
         let runtime = tokio::runtime::Builder::new_current_thread()

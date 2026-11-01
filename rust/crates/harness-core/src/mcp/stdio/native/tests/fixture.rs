@@ -4,12 +4,12 @@ use std::{io, path::Path};
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#;
 const TOOLS: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
 
-pub(super) fn command(directory: &Path) -> Result<Command> {
+pub(super) fn command(directory: &Path) -> Result<ProcessCommand> {
     #[cfg(windows)]
     let mut command = {
         // cmd's SET /P discards subsequent lines already present in a pipe read.
         // Keep one buffered reader for the complete protocol conversation.
-        let mut command = Command::new("powershell.exe");
+        let mut command = ProcessCommand::new("powershell.exe");
         command.args([
             "-NoLogo",
             "-NoProfile",
@@ -44,7 +44,9 @@ fn coalesced_notification_and_request_preserve_both_protocol_lines() -> Result<(
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
     let mut command = command(directory.path())?;
-    command.stdin(Stdio::piped()).stdout(Stdio::piped());
+    command
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped());
     let mut child = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
     let initial = b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\"}\n";
     let coalesced = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n";

@@ -6,9 +6,12 @@
 //! returns only once every tree a dead owner left is dead, so nothing such a
 //! tree started can act after the new owner records its interruption.
 //!
-//! - Unix: the direct child is a warden forked before exec. It creates and
-//!   locks its record, watches the owner (Linux: pidfd; macOS: kqueue
-//!   `NOTE_EXIT`) and forks the program. When the owner or the program exits
+//! - Unix: the direct child is a warden, which runs before exec. It creates
+//!   and locks its record, watches the owner (Linux: pidfd; macOS: kqueue
+//!   `NOTE_EXIT`) and forks the program. On Linux the owner's one runner, a
+//!   small static image it execs once, clones each warden as the owner's
+//!   child, so no spawn forks the owner's address space; on macOS the owner
+//!   forks the warden. When the owner or the program exits
 //!   it kills every remaining descendant (Linux: as child subreaper; macOS:
 //!   its process group), unlinks the record and exits as the program did.
 //!   A fence takes each record's lock, which the kernel releases only when
@@ -16,7 +19,8 @@
 //!   on a PID. A record still linked after its lock is free belongs to a
 //!   warden killed outright; its recorded process group is killed and awaited.
 //! - Windows: each tree is a named Job with `KILL_ON_JOB_CLOSE`. A fence
-//!   opens each recorded Job by name, terminates it and awaits every member.
+//!   opens each recorded Job by name, terminates it and awaits that tree's
+//!   original retirement event, including every retained member handle.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -99,6 +103,17 @@ pub(super) struct Record {
     pid: libc::pid_t,
     #[cfg(windows)]
     path: PathBuf,
+    /// The tree's number with this owner's custodian, which the record names.
+    #[cfg(windows)]
+    tree: usize,
+    /// What a member presents to admit a process it started itself.
+    #[cfg(windows)]
+    secret: super::custodian_admission::Secret,
+    #[cfg(windows)]
+    custodian: std::sync::Arc<super::custodian::Custodian>,
+    /// Set once the custodian watches the tree, which may then have members.
+    #[cfg(windows)]
+    link: Option<super::custodian::Link>,
 }
 
 impl ProcessCustody {
@@ -192,8 +207,8 @@ impl Record {
         #[cfg(unix)]
         {
             let mut storage = [0; 24];
-            let name = super::warden::record_name(self.pid, &mut storage)
-                .ok_or(io::ErrorKind::InvalidInput)?;
+            let name =
+                super::record::name(self.pid, &mut storage).ok_or(io::ErrorKind::InvalidInput)?;
             // SAFETY: a live directory descriptor and a NUL-terminated name.
             let removed = unsafe {
                 libc::unlinkat(
@@ -214,7 +229,9 @@ impl Record {
         }
         #[cfg(windows)]
         {
-            windows::await_record(self)?;
+            if let Some(link) = &self.link {
+                link.await_members()?;
+            }
             match fs::remove_file(&self.path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
                 _ => Ok(()),
@@ -231,31 +248,53 @@ mod retirement_tests;
 mod unix {
     use super::{File, Path, ProcessCustody, Record, fs, io};
     use std::io::Read as _;
-    use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::process::CommandExt as _;
-    use std::process::Command;
 
     impl ProcessCustody {
-        /// Makes `command`'s direct child the warden of its tree. Answers
-        /// the custody directory, opened for this spawn, which the caller
-        /// keeps open while the spawn borrows it.
-        pub(in crate::process_tree) fn arm(&self, command: &mut Command) -> io::Result<File> {
+        /// Opens the custody directory for one spawn, which keeps it open
+        /// while the tree's record lives.
+        pub(in crate::process_tree) fn directory(&self) -> io::Result<File> {
             let directory = File::open(&self.path)?;
             // A directory put in place of the fenced one holds records no
             // fence of this custody has seen.
             if identity(&directory)? != self.identity {
                 return Err(io::Error::other("process custody directory was replaced"));
             }
-            let descriptor = directory.as_raw_fd();
-            let owner = libc::pid_t::try_from(std::process::id())
-                .map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: the warden makes only async-signal-safe calls, and the
-            // custody directory stays open while the borrowing spawn runs.
-            unsafe {
-                command.pre_exec(move || super::super::warden::enter(descriptor, owner));
-            }
             Ok(directory)
+        }
+
+        /// Starts `command` with a warden as its tree's direct child,
+        /// recorded in `directory`. On Linux the owner's runner clones the
+        /// warden; on macOS this owner forks it.
+        pub(in crate::process_tree) fn spawn(
+            command: &super::super::ProcessCommand,
+            directory: &File,
+            meter: Option<&dyn crate::NativeReadMeter>,
+            retained: &mut Option<super::super::ProcessTree>,
+        ) -> io::Result<()> {
+            #[cfg(target_os = "linux")]
+            {
+                super::super::platform::adopt(meter, retained, || {
+                    super::super::runner::start(command, directory)
+                })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                use std::os::fd::AsRawFd as _;
+                use std::os::unix::process::CommandExt as _;
+                let mut native = command.to_std()?;
+                let descriptor = directory.as_raw_fd();
+                let owner = libc::pid_t::try_from(std::process::id())
+                    .map_err(|_| io::ErrorKind::InvalidInput)?;
+                // SAFETY: the warden makes only async-signal-safe calls, and
+                // the custody directory stays open while the spawn runs.
+                unsafe {
+                    native.pre_exec(move || {
+                        super::super::warden::enter(descriptor, owner).map_err(Into::into)
+                    });
+                }
+                super::super::platform::spawn_controlled(&mut native, meter, retained)
+            }
         }
     }
 
@@ -296,8 +335,8 @@ mod unix {
         }
         let mut recorded = Vec::new();
         (&*record).read_to_end(&mut recorded)?;
-        let mut boot = [0; super::super::warden::BOOT_BYTES];
-        super::super::warden::boot_identity(&mut boot)?;
+        let mut boot = [0; super::super::record::BOOT_BYTES];
+        super::super::record::boot_identity(&mut boot)?;
         // A record from another boot, or one whose warden died before it
         // recorded its start (and so before it forked the program), names no
         // live tree.
@@ -323,14 +362,16 @@ mod unix {
     /// with that ID now is someone else's. With no such process at all, the
     /// group ID stays reserved while any member of the warden's group lives.
     fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
-        let mut current = [0; super::super::warden::START_BYTES];
+        let mut current = [0; super::super::record::START_BYTES];
         use crate::process_identity::{IncarnationState, ProcessIncarnation, ProcessObservation};
         let owner = ProcessIncarnation::new(
             u32::try_from(group).map_err(|_| io::ErrorKind::InvalidData)?,
             start,
         )
         .ok_or(io::ErrorKind::InvalidData)?;
-        let observation = match super::super::warden::start_identity(group, &mut current) {
+        let observation = match super::super::record::start_identity(group, &mut current)
+            .map_err(std::io::Error::from)
+        {
             Ok(length) => ProcessObservation::Present {
                 started: current.get(..length).ok_or(io::ErrorKind::InvalidData)?,
                 exited: false,
@@ -364,6 +405,7 @@ mod unix {
     /// Waits for the live members of `group` to exit. False when none lived.
     #[cfg(target_os = "linux")]
     fn await_members(group: libc::pid_t) -> io::Result<bool> {
+        use std::os::fd::AsRawFd as _;
         let mut watches = Vec::new();
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
@@ -513,15 +555,14 @@ use unix::fence;
 #[cfg(windows)]
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
         QueryInformationJobObject, TerminateJobObject,
     };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
-    };
+    use windows_sys::Win32::System::Threading::{OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 
     const PREFIX: &str = "acyclic-process-tree-";
     // JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE.
@@ -535,55 +576,78 @@ mod windows {
             .collect()
     }
 
+    fn retirement_name(record: &str) -> Vec<u16> {
+        job_name(&format!("{record}-retired"))
+    }
+
     impl ProcessCustody {
         /// Records a new tree before its Job exists; returns the record and
         /// the Job name the spawn must create.
         pub(in crate::process_tree) fn record(&self) -> io::Result<(Record, Vec<u16>)> {
             // One sequence for the whole process: Job names share one
             // namespace across every custody directory this process owns.
-            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+            let tree = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let custodian = super::super::custodian::current()?;
             // This process's PID and creation time name it among every
             // process, past or present, that may have shared the directory.
             let name = format!(
-                "{PREFIX}{}-{}-{sequence}",
+                "{PREFIX}{}-{}-{tree}",
                 std::process::id(),
                 crate::process_identity::current_process_started()?
             );
-            let path = self.path.join(&name);
+            // The custodian identity detects loss of the original tree's
+            // retirement producer; it is never a barrier for unrelated trees.
+            let path = self
+                .path
+                .join(format!("{name}{CUSTODIAN}{}", custodian.identity()));
             fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)?;
-            Ok((Record { path }, job_name(&name)))
+            Ok((
+                Record {
+                    path,
+                    tree,
+                    secret: super::super::custodian_admission::secret()?,
+                    custodian,
+                    link: None,
+                },
+                job_name(&name),
+            ))
         }
     }
 
     /// Separates a record's tree from the custodian it names.
     const CUSTODIAN: &str = "-custodian-";
 
-    pub(super) fn await_record(record: &Record) -> io::Result<()> {
-        let name = record
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(io::ErrorKind::InvalidData)?;
-        if let Some((_, identity)) = name.split_once(CUSTODIAN) {
-            super::super::custodian::await_custodian(identity)?;
-        }
-        Ok(())
-    }
-
     impl Record {
-        /// Names the tree's custodian in the record, before any member
-        /// starts. The rename is atomic: a fence sees the record with the
-        /// custodian or without it, and without it no member ever started.
-        pub(in crate::process_tree) fn name_custodian(&mut self, identity: &str) -> io::Result<()> {
-            let mut named = self.path.clone().into_os_string();
-            named.push(CUSTODIAN);
-            named.push(identity);
-            fs::rename(&self.path, &named)?;
-            self.path = named.into();
+        /// Where a member admits a suspended process it started itself.
+        pub(in crate::process_tree) fn admission(&self) -> String {
+            self.custodian.admission(self.tree, &self.secret)
+        }
+
+        /// Hands the tree's Job and its suspended first member to the
+        /// custodian; the member may resume only once this succeeds.
+        pub(in crate::process_tree) fn watch(
+            &mut self,
+            job: HANDLE,
+            process: HANDLE,
+        ) -> io::Result<()> {
+            let name = self
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split_once(CUSTODIAN))
+                .map(|(name, _)| name)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            self.link = Some(self.custodian.open(
+                self.tree,
+                &self.secret,
+                job,
+                process,
+                &retirement_name(name),
+            )?);
             Ok(())
         }
     }
@@ -595,6 +659,22 @@ mod windows {
         let (name, custodian) = name
             .split_once(CUSTODIAN)
             .map_or((name, None), |(name, custodian)| (name, Some(custodian)));
+        // Open the original event before the Job: once its producer releases
+        // both, a missing Job is already retired. Retaining this event also
+        // covers retirement racing this fence's Job open.
+        let event = retirement_name(name);
+        // SAFETY: a NUL-terminated original tree identity; owned on success.
+        let event = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, event.as_ptr()) };
+        let event = if event.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_FILE_NOT_FOUND.cast_signed()) {
+                return Err(error);
+            }
+            None
+        } else {
+            // SAFETY: OpenEventW transferred one owned handle.
+            Some(unsafe { OwnedHandle::from_raw_handle(event.cast()) })
+        };
         let wide = job_name(name);
         // SAFETY: a NUL-terminated name; the handle is owned on success.
         let job = unsafe { OpenJobObjectW(JOB_ACCESS, 0, wide.as_ptr()) };
@@ -604,58 +684,28 @@ mod windows {
                 return Err(error);
             }
         } else {
-            // A member leaves the Job's list before its process has fully
-            // exited; the custodian exits only once each has, so its exit
-            // ends the fence.
-            let fenced = terminate_and_await(job);
-            // SAFETY: the Job handle opened above.
-            unsafe { CloseHandle(job) };
-            fenced?;
+            // SAFETY: OpenJobObjectW transferred one owned handle.
+            let job = unsafe { OwnedHandle::from_raw_handle(job.cast()) };
+            // SAFETY: the owned Job has terminate access.
+            if unsafe { TerminateJobObject(job.as_raw_handle().cast(), 1) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if event.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "process tree retirement producer is unavailable",
+                ));
+            }
         }
-        // A missing Job proves that the custodian closed it after member
-        // retirement, but its own process and retained pipe handles can still
-        // be live. The recorded identity is the same barrier in either case.
-        if let Some(custodian) = custodian {
-            super::super::custodian::await_custodian(custodian)?;
+        if let Some(event) = event {
+            super::super::custodian::await_tree(
+                &event,
+                custodian.ok_or(io::ErrorKind::InvalidData)?,
+            )?;
         }
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(true),
-        }
-    }
-
-    fn terminate_and_await(job: HANDLE) -> io::Result<()> {
-        // SAFETY: an owned Job handle with terminate access.
-        if unsafe { TerminateJobObject(job, 1) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        loop {
-            let members = members(job)?;
-            if members.is_empty() {
-                return Ok(());
-            }
-            let handles: Vec<HANDLE> = members
-                .iter()
-                // SAFETY: opening a synchronize-only handle to a listed PID.
-                .map(|pid| unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, *pid) })
-                .filter(|handle| !handle.is_null())
-                .collect();
-            let waited = handles.chunks(64).try_for_each(|chunk| {
-                let count = u32::try_from(chunk.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
-                // SAFETY: up to 64 owned process handles; waits for all.
-                if unsafe { WaitForMultipleObjects(count, chunk.as_ptr(), 1, u32::MAX) }
-                    == WAIT_FAILED
-                {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-            for handle in handles {
-                // SAFETY: each handle opened above.
-                unsafe { CloseHandle(handle) };
-            }
-            waited?;
         }
     }
 
@@ -699,5 +749,7 @@ mod windows {
 }
 #[cfg(windows)]
 use windows::fence;
+#[cfg(all(windows, test))]
+pub(super) use windows::job_name;
 #[cfg(windows)]
 pub(super) use windows::members;

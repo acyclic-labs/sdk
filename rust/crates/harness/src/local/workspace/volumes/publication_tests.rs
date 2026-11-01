@@ -7,7 +7,7 @@ fn write_projected(path: &Path, bytes: &[u8]) -> Result<()> {
         // ProjFS suppresses notifications for its provider process. Exercise
         // the physical command boundary from a separate client process.
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe().map_err(storage)?)
+            acyclic_native_runtime::ProcessCommand::new(std::env::current_exe().map_err(storage)?)
                 .args([
                     "--exact",
                     "local::workspace::volumes::publication_tests::external_projection_writer",

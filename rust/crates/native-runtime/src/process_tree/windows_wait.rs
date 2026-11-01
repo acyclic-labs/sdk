@@ -1,8 +1,9 @@
 use super::super::windows_event::{Cleanup, Event};
+use crate::process_tree::Child;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::time::Instant;
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Power::{

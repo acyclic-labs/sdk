@@ -32,15 +32,13 @@ static SPAWNER: LazyLock<io::Result<mpsc::Sender<Job>>> = LazyLock::new(|| {
 pub(super) static CREATED_ON: std::sync::Mutex<Vec<std::thread::ThreadId>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Spawns `command` on the spawner thread, waiting for the result.
-pub(super) fn spawn(command: &mut Command) -> io::Result<Child> {
+/// Runs `create` on the spawner thread, waiting for its result.
+pub(super) fn run<T: Send + 'static>(
+    create: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
     let sender = SPAWNER
         .as_ref()
         .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
-    // The command travels to the spawner and back, so the caller keeps it
-    // (with whatever a failed spawn left in it) exactly as an inline spawn
-    // would.
-    let mut owned = std::mem::replace(command, Command::new(""));
     let (reply, result) = mpsc::sync_channel(1);
     let job: Job = Box::new(move || {
         #[cfg(test)]
@@ -48,16 +46,28 @@ pub(super) fn spawn(command: &mut Command) -> io::Result<Child> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(std::thread::current().id());
-        let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owned.spawn()))
+        let created = std::panic::catch_unwind(std::panic::AssertUnwindSafe(create))
             .unwrap_or_else(|_| Err(io::Error::other("process creation panicked")));
-        let _ = reply.send((owned, spawned));
+        let _ = reply.send(created);
     });
     sender
         .send(job)
         .map_err(|_| io::Error::other("the process spawner has stopped"))?;
-    let (owned, spawned) = result
+    result
         .recv()
-        .map_err(|_| io::Error::other("the process spawner has stopped"))?;
+        .map_err(|_| io::Error::other("the process spawner has stopped"))?
+}
+
+/// Spawns `command` on the spawner thread, waiting for the result.
+pub(super) fn spawn(command: &mut Command) -> io::Result<Child> {
+    // The command travels to the spawner and back, so the caller keeps it
+    // (with whatever a failed spawn left in it) exactly as an inline spawn
+    // would.
+    let mut owned = std::mem::replace(command, Command::new(""));
+    let (owned, spawned) = run(move || {
+        let spawned = owned.spawn();
+        Ok((owned, spawned))
+    })?;
     *command = owned;
     spawned
 }

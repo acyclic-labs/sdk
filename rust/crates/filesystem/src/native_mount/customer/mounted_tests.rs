@@ -198,7 +198,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             .ok_or("missing test module")?
             .1;
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe()?)
+            acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
                 .arg(format!(
                     "{module}::lazy_mount_preserves_guarded_publication_import_and_retirement"
                 ))

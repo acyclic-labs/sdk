@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn a_reused_pid_outside_the_job_is_never_waited_on() -> io::Result<()> {
         let guard = Guard::new()?;
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = std::process::Command::new(std::env::current_exe()?);
         command
             .args([
                 "--exact",
@@ -195,14 +195,13 @@ mod tests {
     #[test]
     fn the_one_slot_query_waits_on_a_live_member_before_proving_empty() -> io::Result<()> {
         use std::io::BufRead as _;
-        use std::process::Stdio;
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = crate::ProcessCommand::new(std::env::current_exe()?);
         command
             .args(["--exact", member_child_name(), "--nocapture"])
             .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "parent")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stdin(crate::ProcessStdio::piped())
+            .stdout(crate::ProcessStdio::piped())
+            .stderr(crate::ProcessStdio::null());
         let mut tree = crate::ProcessTree::spawn(&mut command)?;
         let mut output =
             std::io::BufReader::new(tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?);
@@ -255,7 +254,7 @@ mod tests {
             return Ok(());
         };
         let mut descendant = if mode == "parent" {
-            let child = Command::new(std::env::current_exe()?)
+            let child = std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", member_child_name(), "--nocapture"])
                 .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "child")
                 .stdin(Stdio::piped())

@@ -59,10 +59,10 @@ pub use process_tree::PreparedClosedProcess;
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, CaptureWakes, ControlledCapture,
-    OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessControl,
-    ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
-    ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome,
-    ProcessWake,
+    OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessCommand,
+    ProcessControl, ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
+    ProcessReadiness, ProcessStdio, ProcessTree, ProcessTreeIo, ProcessTreeStorage,
+    ProcessWaitOutcome, ProcessWake,
 };
 #[cfg(windows)]
 pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};

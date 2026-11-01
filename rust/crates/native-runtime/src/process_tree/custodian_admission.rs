@@ -1,11 +1,22 @@
-//! Acknowledged admission of a suspended process into the existing custodian.
+//! Acknowledged admission of a suspended process into the owner's custodian.
 //!
-//! A PID is only a rendezvous: the spawning caller retains its process handle
+//! A PID is only a rendezvous: the spawning member retains its process handle
 //! and does not resume it until the custodian holds and watches the same Job
-//! member. This also serves thin terminal adapters that cannot use `std::Command`.
+//! member. This serves thin terminal adapters that start members themselves.
+//! [`ENV`] holds `127.0.0.1:<port>/<tree>/<secret>`; a request is the
+//! little-endian PID, the little-endian 64-bit tree and the tree's 16-byte
+//! secret, and the reply is one byte, 1 once the process is watched as a
+//! member of that tree.
+//!
+//! Any local process can reach a loopback port, so the port alone admits
+//! nothing: the owner draws a random secret per tree and hands it only to
+//! the custodian and, through [`ENV`], to the tree's members. A request
+//! without it is refused, and even an admitted request only makes the
+//! custodian watch a process that is already a member of the tree's Job.
 
-use std::io::{self, Read as _, Write as _};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use super::custodian_admission_transport::{self as transport, Request};
+use std::io;
+use std::net::{Ipv4Addr, TcpListener};
 use std::sync::mpsc::{self, Receiver};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
@@ -13,9 +24,38 @@ use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
 pub(super) const ENV: &str = "ACYCLIC_PROCESS_CUSTODY_ADMISSION";
 pub(super) const ADMIT: usize = usize::MAX - 2;
 
-pub(super) struct Request {
-    pub pid: u32,
-    pub reply: mpsc::SyncSender<bool>,
+/// A tree's admission secret.
+pub(super) type Secret = [u8; 16];
+
+/// A fresh admission secret.
+pub(super) fn secret() -> io::Result<Secret> {
+    let mut secret = [0; 16];
+    getrandom::fill(&mut secret).map_err(io::Error::other)?;
+    Ok(secret)
+}
+
+pub(super) fn encode(secret: &Secret) -> String {
+    secret.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(super) fn decode(text: &str) -> Option<Secret> {
+    let mut secret = [0; 16];
+    if text.len() != 32 {
+        return None;
+    }
+    for (byte, pair) in secret.iter_mut().zip(text.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(secret)
+}
+
+/// Compares secrets in time independent of where they first differ.
+pub(super) fn matches(expected: &Secret, presented: &Secret) -> bool {
+    expected
+        .iter()
+        .zip(presented)
+        .fold(0, |difference, (a, b)| difference | (a ^ b))
+        == 0
 }
 
 pub(super) struct Server {
@@ -33,25 +73,14 @@ impl Server {
     pub fn start(self, port: HANDLE) -> io::Result<Receiver<Request>> {
         let (send, receive) = mpsc::channel();
         let port = port.expose_provenance();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()?;
         std::thread::Builder::new()
             .name("custodian-admission".into())
             .spawn(move || {
-                for stream in self.listener.incoming() {
-                    let Ok(mut stream) = stream else { break };
-                    let mut pid = [0; 4];
-                    if stream.read_exact(&mut pid).is_err() {
-                        continue;
-                    }
-                    let (reply, result) = mpsc::sync_channel(0);
-                    if send
-                        .send(Request {
-                            pid: u32::from_le_bytes(pid),
-                            reply,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
+                let _ = runtime.block_on(transport::serve(self.listener, move |request| {
+                    send.send(request).map_err(|_| io::ErrorKind::BrokenPipe)?;
                     // SAFETY: the custodian owns this completion port until exit.
                     if unsafe {
                         PostQueuedCompletionStatus(
@@ -62,26 +91,15 @@ impl Server {
                         )
                     } == 0
                     {
-                        break;
+                        return Err(io::Error::last_os_error());
                     }
-                    let admitted = result.recv().unwrap_or(false);
-                    let _ = stream.write_all(&[u8::from(admitted)]);
-                }
+                    Ok(())
+                }));
             })?;
         Ok(receive)
     }
 }
 
-/// The caller must hold this suspended process's handle through the reply.
-pub(super) fn admit(endpoint: &str, pid: u32) -> io::Result<()> {
-    let mut stream = TcpStream::connect(endpoint)?;
-    stream.set_nodelay(true)?;
-    stream.write_all(&pid.to_le_bytes())?;
-    let mut reply = [0];
-    stream.read_exact(&mut reply)?;
-    if reply == [1] {
-        Ok(())
-    } else {
-        Err(io::Error::other("custodian rejected process admission"))
-    }
-}
+#[cfg(test)]
+#[path = "custodian_admission_tests.rs"]
+mod tests;

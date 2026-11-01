@@ -1,6 +1,6 @@
 use super::*;
 use crate::obs::{ReportAck, ReportOutcome, ReportRequest, WaitReport};
-use std::process::Command;
+use crate::{ProcessCommand as Command, ProcessStdio as Stdio};
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
     net::windows::named_pipe::ServerOptions,
@@ -54,8 +54,8 @@ fn native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner() {
             let admitted_owner = if mode == "foreign" { owner ^ 0x8000_0000 } else { owner };
             command
                 .args(["--exact", TEST, "--nocapture"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .env(CHILD, mode)
                 .env("ACYCLIC_REPORT_PIPE", endpoint)
                 .env("ACYCLIC_REPORT_GENERATION", &generation)

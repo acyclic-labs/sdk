@@ -183,8 +183,9 @@ fn codex(args: &[&str]) -> Result<()> {
 }
 
 fn codex_output(args: &[&str]) -> Result<std::process::Output> {
-    use acyclic_native_runtime::{CaptureSchedule, ProcessInput, ProcessTree};
-    use std::process::Stdio;
+    use acyclic_native_runtime::{
+        CaptureSchedule, ProcessCommand, ProcessInput, ProcessStdio as Stdio, ProcessTree,
+    };
     let recovery = format!(
         "recovery argv: {}",
         serde_json::to_string(
@@ -193,7 +194,8 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
                 .collect::<Vec<_>>()
         )?
     );
-    let mut command = host_command("codex")?;
+    let resolved = host_command("codex")?;
+    let mut command = ProcessCommand::new(resolved.get_program());
     command
         .args(args)
         .stdin(Stdio::null())
@@ -294,14 +296,15 @@ fn codex_marketplace(package: &Path) -> Result<bool> {
 /// Install and hook trust use one initialized app-server and config writer.
 fn install_codex_plugin(package: &Path) -> Result<()> {
     use acyclic_native_runtime::{
-        CaptureInput, CaptureSchedule, ProcessInput, ProcessOutput, ProcessTree,
+        CaptureInput, CaptureSchedule, ProcessCommand, ProcessInput, ProcessOutput,
+        ProcessStdio as Stdio, ProcessTree,
     };
-    use std::process::Stdio;
     let recovery = format!(
         "recovery argv: {}",
         serde_json::to_string(&("acyclic", "install", "codex", "--plugin-root", package))?
     );
-    let mut command = host_command("codex")?;
+    let resolved = host_command("codex")?;
+    let mut command = ProcessCommand::new(resolved.get_program());
     command
         .arg("app-server")
         .stdin(Stdio::piped())

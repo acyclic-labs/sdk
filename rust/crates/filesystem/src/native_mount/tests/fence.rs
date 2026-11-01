@@ -457,15 +457,15 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     let mut children = Vec::new();
     for _ in 0..3 {
         let mut child = acyclic_native_runtime::ProcessTree::spawn(
-            std::process::Command::new(&executable)
+            acyclic_native_runtime::ProcessCommand::new(&executable)
                 .args([
                     "--exact",
                     "native_mount::tests::destination_reclaim_child_waits_for_external_release",
                     "--nocapture",
                 ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit())
+                .stdin(acyclic_native_runtime::ProcessStdio::piped())
+                .stdout(acyclic_native_runtime::ProcessStdio::piped())
+                .stderr(acyclic_native_runtime::ProcessStdio::inherit())
                 .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination),
         )?;
         let release = child

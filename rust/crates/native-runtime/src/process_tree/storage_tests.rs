@@ -52,7 +52,7 @@ fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
     let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let mut command = super::super::tests::command("stderr-bulk", root.path());
-    command.stdout(std::process::Stdio::null());
+    command.stdout(ProcessStdio::null());
     slot.spawn(&mut command, None).unwrap();
     let mut read_bytes = 0;
     loop {
@@ -151,7 +151,7 @@ fn malformed_private_storage_cannot_acknowledge_quiescence_or_spawn() {
         storage.terminate().unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
-    let mut command = Command::new("must-not-start");
+    let mut command = ProcessCommand::new("must-not-start");
     assert_eq!(
         storage.spawn(&mut command, None).unwrap_err().kind(),
         io::ErrorKind::InvalidData
@@ -168,9 +168,9 @@ fn native_session_events_retain_the_original_meter_and_process_owner() {
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let mut command = super::super::tests::command("stdin-save", root.path());
     command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::null())
+        .stderr(crate::ProcessStdio::null());
     slot.spawn(&mut command, Some(&custody)).unwrap();
     let before = original.used_operations.load(Ordering::Acquire);
     slot.queue_stdin(b"one retained native prompt".to_vec())

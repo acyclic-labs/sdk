@@ -166,14 +166,16 @@ impl FixtureCustody {
 
     /// Configure a test-support child to borrow this store and its lock namespace.
     /// Production builds do not recognize these environment variables.
-    pub fn configure(&self, command: &mut std::process::Command) {
-        command
-            .env(ADDRESS, self.address.to_string())
-            .env(
-                TOKEN,
-                blake3::Hash::from_bytes(self.token).to_hex().as_str(),
-            )
-            .env(DIRECTORY, &self.directory);
+    pub fn configure(&self, mut environment: impl FnMut(&str, &std::ffi::OsStr)) {
+        environment(ADDRESS, self.address.to_string().as_ref());
+        environment(
+            TOKEN,
+            blake3::Hash::from_bytes(self.token)
+                .to_hex()
+                .as_str()
+                .as_ref(),
+        );
+        environment(DIRECTORY, self.directory.as_os_str());
     }
 }
 

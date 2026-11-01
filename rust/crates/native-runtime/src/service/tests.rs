@@ -94,13 +94,13 @@ fn status_schedule_child() {
 
 #[test]
 fn process_status_keeps_unbounded_exit_and_rejects_invalid_deadline() -> io::Result<()> {
-    let command = || -> io::Result<std::process::Command> {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+    let command = || -> io::Result<crate::ProcessCommand> {
+        let mut command = crate::ProcessCommand::new(std::env::current_exe()?);
         command
             .args(["--exact", "service::tests::status_schedule_child"])
             .env("ACYCLIC_STATUS_SCHEDULE_CHILD", "1")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(crate::ProcessStdio::null())
+            .stderr(crate::ProcessStdio::null());
         Ok(command)
     };
     let status = process_status(&mut command()?, CaptureSchedule::Unbounded)?;

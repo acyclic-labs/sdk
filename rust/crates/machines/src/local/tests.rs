@@ -1,10 +1,10 @@
 use super::*;
 use acyclic_native_runtime::{
-    CaptureWakes, ProcessInput, ProcessOutput, ProcessTree, ProcessWake, TaskSpawner,
+    CaptureWakes, ProcessCommand, ProcessInput, ProcessOutput, ProcessStdio, ProcessTree,
+    ProcessWake, TaskSpawner,
 };
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -185,16 +185,16 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
     for mode in ["exit", "stop", "owner_lost"] {
         let stop = mode == "stop";
         let lose_owner = mode == "owner_lost";
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = ProcessCommand::new(std::env::current_exe()?);
         command
             .args(["--exact", "local::tests::child", "--nocapture"])
             .env(
                 "ACYCLIC_TEST_MACHINE_PROCESS",
                 if stop { "credit" } else { "exit" },
             )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut tree = ProcessTree::spawn(&mut command)?;
         let mut input = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
         let buffers = Buffers::default();

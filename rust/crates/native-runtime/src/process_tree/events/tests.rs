@@ -104,10 +104,10 @@ fn a_pipe_fires_when_its_data_arrives_and_not_before() -> io::Result<()> {
 #[test]
 fn an_exit_fires_for_a_child_that_exits_and_one_that_already_has() -> io::Result<()> {
     let mut tree = super::super::ProcessTree::spawn(
-        std::process::Command::new("true")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
+        super::super::ProcessCommand::new("true")
+            .stdin(super::super::ProcessStdio::null())
+            .stdout(super::super::ProcessStdio::null())
+            .stderr(super::super::ProcessStdio::null()),
     )?;
     tree.readiness()?.0.block().into_result()?;
     assert!(tree.try_wait(None)?.is_some());
@@ -128,18 +128,18 @@ fn hub_probe() -> io::Result<()> {
     }
     assert!(!started(), "nothing in this process has started the hub");
     #[cfg(unix)]
-    let mut command = std::process::Command::new("true");
+    let mut command = super::super::ProcessCommand::new("true");
     #[cfg(windows)]
     let mut command = {
-        let mut command = std::process::Command::new("cmd.exe");
+        let mut command = super::super::ProcessCommand::new("cmd.exe");
         command.args(["/d", "/c", "exit 0"]);
         command
     };
     let tree = super::super::ProcessTree::spawn(
         command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()),
+            .stdin(super::super::ProcessStdio::null())
+            .stdout(super::super::ProcessStdio::null())
+            .stderr(super::super::ProcessStdio::null()),
     )?;
     // No wait has armed anything: the tree itself holds the hub, so a
     // process's service threads and descriptors never depend on whether

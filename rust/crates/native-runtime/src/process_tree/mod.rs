@@ -4,9 +4,18 @@
 )]
 
 use crate::obs;
+#[cfg(unix)]
+use platform::Child;
 use std::io::{self, Read};
-use std::process::{Child, Command, ExitStatus, Output};
+use std::process::{ExitStatus, Output};
+
+mod command;
+pub use command::{ProcessCommand, ProcessStdio};
+#[cfg(windows)]
+mod windows_create;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+use windows_create::Child;
 
 mod capture;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,11 +49,19 @@ mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
 #[cfg(windows)]
 mod custodian_admission;
+#[cfg(any(windows, test))]
+mod custodian_admission_transport;
 mod custody;
 pub use custody::{ProcessCustody, ProcessCustodyLease};
 mod storage;
 pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
 #[cfg(unix)]
+mod record;
+#[cfg(target_os = "linux")]
+mod runner;
+#[cfg(unix)]
+mod sys;
+#[cfg(target_vendor = "apple")]
 mod warden;
 
 /// The clock the capture deadline reads. Tests freeze it so that expiry is
@@ -186,7 +203,7 @@ impl ProcessTree {
     pub const TERMINATION_OBSERVATIONS: u64 = 257;
 
     /// Starts a child in an owned operating-system process tree.
-    pub fn spawn(command: &mut Command) -> io::Result<Self> {
+    pub fn spawn(command: &mut ProcessCommand) -> io::Result<Self> {
         let mut custody = None;
         if let Err(admission) = Self::spawn_controlled(command, None, &mut custody) {
             if let Some(tree) = custody.as_mut() {
@@ -202,7 +219,10 @@ impl ProcessTree {
     /// dies first, the tree is killed, and a reopened owner's
     /// [`ProcessCustody::fence_stale`] returns only after it is dead.
     /// `command` must not be reused for another spawn.
-    pub fn spawn_in_custody(command: &mut Command, custody: &ProcessCustody) -> io::Result<Self> {
+    pub fn spawn_in_custody(
+        command: &mut ProcessCommand,
+        custody: &ProcessCustody,
+    ) -> io::Result<Self> {
         let mut retained = None;
         if let Err(error) = Self::spawn_in_custody_controlled(command, custody, None, &mut retained)
         {
@@ -219,7 +239,7 @@ impl ProcessTree {
     /// `retained`. The caller keeps this slot through recovery; an error does
     /// not mean that the tree is absent or that its effects can be settled.
     pub fn spawn_in_custody_controlled(
-        command: &mut Command,
+        command: &mut ProcessCommand,
         custody: &ProcessCustody,
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
@@ -231,9 +251,11 @@ impl ProcessTree {
         {
             let directory =
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    custody.arm(command)
+                    custody.directory()
                 })?;
-            let spawned = Self::spawn_controlled(command, meter, retained);
+            let spawned = Self::spawn_metered(command, meter, retained, |command, slot| {
+                ProcessCustody::spawn(command, &directory, meter, slot)
+            });
             if let Some(tree) = retained.as_mut()
                 && (tree.child.is_some() || tree.native_child.is_some())
             {
@@ -259,9 +281,24 @@ impl ProcessTree {
 
     /// Starts a child while retaining admitted custody and the original meter.
     pub fn spawn_controlled(
-        command: &mut Command,
+        command: &mut ProcessCommand,
         meter: Option<&dyn crate::NativeReadMeter>,
         custody: &mut Option<Self>,
+    ) -> io::Result<()> {
+        Self::spawn_metered(command, meter, custody, |command, slot| {
+            #[cfg(unix)]
+            return platform::spawn_controlled(&mut command.to_std()?, meter, slot);
+            #[cfg(windows)]
+            platform::spawn_controlled(command, meter, slot)
+        })
+    }
+
+    /// Pays for examining `command`, then starts it with `spawn`.
+    fn spawn_metered(
+        command: &mut ProcessCommand,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        custody: &mut Option<Self>,
+        spawn: impl FnOnce(&mut ProcessCommand, &mut Option<Self>) -> io::Result<()>,
     ) -> io::Result<()> {
         if custody.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
@@ -287,7 +324,7 @@ impl ProcessTree {
         );
         let program = std::path::Path::new(command.get_program()).file_name();
         operation.record("program", program.and_then(|name| name.to_str()));
-        operation.in_scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
+        operation.in_scope(|| operation.finish(spawn(command, custody)))
     }
 
     /// Starts a closed-stream Unix child using borrowed, terminated arguments, and retains it in this same process-tree owner before spawn cleanup.
@@ -1136,16 +1173,11 @@ impl ProcessTree {
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
             custody::Record::retire(&mut self.custody, meter)?;
-            let (reaped, recorded) =
-                platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
-            if reaped.is_some() {
-                self.child.take();
-                self.native_child.take();
-            }
+            let (_, recorded) =
+                platform::reap_exited_id(self.owned_child_id()? as libc::pid_t, meter)?;
+            self.child.take();
+            self.native_child.take();
             recorded?;
-            if reaped.is_none() {
-                return Err(io::ErrorKind::Other.into());
-            }
         }
         // No native child or configuration pointer can refer to this frame
         // after the physical reap and configuration cleanup above.

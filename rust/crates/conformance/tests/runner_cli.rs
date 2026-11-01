@@ -7,12 +7,9 @@ use acyclic_conformance::{
         harness_protocol_identity, harness_suite_digest,
     },
 };
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
 use serde::Deserialize;
-use std::{
-    fs,
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::{fs, io::Write};
 
 #[derive(Deserialize)]
 struct Suite {
@@ -70,9 +67,9 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     input.write_all(&bytes)?;
     input.seek(SeekFrom::Start(0))?;
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
-        Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
-            .stdin(Stdio::from(input))
-            .stdout(Stdio::piped()),
+        ProcessCommand::new(env!("CARGO_BIN_EXE_harness-conformance"))
+            .stdin(ProcessStdio::from(input))
+            .stdout(ProcessStdio::piped()),
     )?;
     let output = child
         .wait_with_output(
@@ -111,7 +108,7 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     ));
     fs::write(&path, serde_json::to_vec(&failed)?)?;
     let failed_output = acyclic_native_runtime::process_output(
-        Command::new(env!("CARGO_BIN_EXE_harness-conformance")).arg(&path),
+        ProcessCommand::new(env!("CARGO_BIN_EXE_harness-conformance")).arg(&path),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
     );

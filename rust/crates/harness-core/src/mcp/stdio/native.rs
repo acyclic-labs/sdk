@@ -3,7 +3,7 @@ use crate::mcp::sync::{
     atomic::{AtomicU32, Ordering},
 };
 use crate::{Error, OperationId, Result, mcp::McpToolTransport, runtime::ToolContext};
-use acyclic_native_runtime::{ProcessTree, run_blocking_io};
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree, run_blocking_io};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use rmcp::{
@@ -17,10 +17,7 @@ use rmcp::{
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use std::{
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -74,7 +71,11 @@ impl StdioMcpTransport {
 
     /// Starts one host-selected executable and keeps it for the connection's lifetime.
     /// Arguments, environment and workspace are supplied through `command`.
-    pub async fn spawn(mut command: Command, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
+    pub async fn spawn(
+        mut command: ProcessCommand,
+        maximum_bytes: u32,
+        timeout_ms: u32,
+    ) -> Result<Self> {
         validate_bounds(maximum_bytes, timeout_ms)?;
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         let timeout = Duration::from_millis(u64::from(timeout_ms));
@@ -83,9 +84,9 @@ impl StdioMcpTransport {
             let mut process = run_blocking_io(
                 move || {
                     command
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::inherit());
+                        .stdin(ProcessStdio::piped())
+                        .stdout(ProcessStdio::piped())
+                        .stderr(ProcessStdio::inherit());
                     ProcessTree::spawn(&mut command).map(|tree| ProcessOwner {
                         tree: std::sync::Mutex::new(Some(tree)),
                         runtime,

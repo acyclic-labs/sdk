@@ -64,8 +64,8 @@ fn wait_helper() -> io::Result<()> {
 }
 
 /// This test binary re-run as `wait_helper`, waiting on its original input pipe.
-fn helper_command() -> io::Result<Command> {
-    let mut command = Command::new(std::env::current_exe()?);
+fn helper_command() -> io::Result<ProcessCommand> {
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -74,8 +74,8 @@ fn helper_command() -> io::Result<Command> {
         ])
         .env_clear()
         .env(HELPER, "1")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::piped());
     Ok(command)
 }
 

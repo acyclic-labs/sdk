@@ -115,7 +115,7 @@ fn snapshot_enumeration_preserves_the_image_with_fewer_physical_queries() -> io:
         let current = std::thread::current();
         let name = current.name().expect("libtest names its test threads");
         let output = crate::process_output(
-            std::process::Command::new(std::env::current_exe()?)
+            crate::ProcessCommand::new(std::env::current_exe()?)
                 .args(["--exact", name, "--test-threads=1", "--nocapture"])
                 .env(CHILD, "1"),
             std::time::Duration::from_secs(5),

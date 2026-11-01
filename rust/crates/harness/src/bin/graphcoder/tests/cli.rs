@@ -1,10 +1,11 @@
 //! The shipping binary over a loopback model: argv, provider catalog, the local
 //! harness and its root agent, end to end.
+use acyclic_native_runtime::{ProcessCommand as Command, ProcessStdio as Stdio};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::Output,
     sync::{Arc, Mutex},
 };
 
@@ -114,7 +115,9 @@ fn fixture() -> Fixture {
 /// owner, retaining the original outer deadline without readiness polling.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
-    fixture.custody.configure(&mut command);
+    fixture.custody.configure(|key, value| {
+        command.env(key, value);
+    });
     command
         .env("CODEX_HOME", fixture.settings.join(".codex"))
         .env("HOME", &fixture.home)

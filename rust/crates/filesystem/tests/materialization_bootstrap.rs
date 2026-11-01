@@ -24,7 +24,7 @@ fn standalone_materialization_bootstraps_native_io() -> Result<(), Box<dyn std::
     let mut failures = Vec::new();
     for mode in ["checkout", "paths", "restore"] {
         let output = acyclic_native_runtime::process_output(
-            std::process::Command::new(std::env::current_exe()?)
+            acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
                 .args([
                     "--exact",
                     "standalone_materialization_bootstraps_native_io",

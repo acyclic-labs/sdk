@@ -1,11 +1,10 @@
 use super::*;
 use acyclic_native_runtime::{
-    CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessInput,
-    ProcessOutput, ProcessTree, run_blocking_io, shell_command,
+    CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessCommand,
+    ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -106,9 +105,9 @@ pub(super) async fn run_hook(
             command
                 .current_dir(&request.1)
                 .env("CLAUDE_PROJECT_DIR", &request.0)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stdin(ProcessStdio::piped())
+                .stdout(ProcessStdio::piped())
+                .stderr(ProcessStdio::piped());
             handler.check().map_err(Error::process_io)?;
             let tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
             Ok((tree, handler))
@@ -166,13 +165,15 @@ fn hook_command(
     workspace: &Path,
     cwd: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
-) -> Result<Command> {
+) -> Result<ProcessCommand> {
     Ok(match &hook.run {
         HookRun::Executable { executable, argv } => {
             let executable = expand_exec_path(executable, workspace, &environment)?;
-            let mut command = ExecutableSearch::from_environment(cwd, &environment)
-                .command(&*executable)
-                .map_err(Error::process_io)?;
+            let mut command = ProcessCommand::new(
+                ExecutableSearch::from_environment(cwd, &environment)
+                    .resolve(&*executable)
+                    .map_err(Error::process_io)?,
+            );
             for argument in argv {
                 command.arg(&*expand_exec_path(argument, workspace, &environment)?);
             }
@@ -319,9 +320,9 @@ mod tests {
                 assert_eq!(Path::new(command.get_program()), path);
                 command
                     .current_dir(fixture.path())
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
+                    .stdin(ProcessStdio::null())
+                    .stdout(ProcessStdio::piped())
+                    .stderr(ProcessStdio::piped());
                 let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
                 let output = tree
                     .wait_with_output(
