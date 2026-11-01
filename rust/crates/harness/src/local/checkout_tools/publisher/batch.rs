@@ -26,7 +26,9 @@ impl CheckoutPublisher {
                             },
                             change.path(),
                             self.tools.clock.now_unix_millis() / 1000,
-                            access.io.and_then(ContentIo::original_native_work),
+                            access
+                                .io
+                                .and_then(crate::store::HistoryIo::original_native_work),
                         )?;
                     }
                 }
@@ -119,7 +121,9 @@ impl CheckoutPublisher {
                         },
                         member.path(),
                         self.tools.clock.now_unix_millis() / 1000,
-                        access.io.and_then(ContentIo::original_native_work),
+                        access
+                            .io
+                            .and_then(crate::store::HistoryIo::original_native_work),
                     )?;
                 }
                 if native.is_some() || mount.view.source.is_none() {

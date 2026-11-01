@@ -304,7 +304,7 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let work = io.and_then(ContentIo::original_native_work);
+        let work = io.and_then(crate::store::HistoryIo::original_native_work);
         let (mount, relative) = self
             .tools
             .workspace
