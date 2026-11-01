@@ -8,18 +8,24 @@ use crate::{Error, NativeCustody, Result};
 /// diagnostic text or repeating the edit against a later source.
 #[derive(Debug)]
 pub struct EditRejection {
-    occurrences: usize,
+    cause: EditCause,
     presentation: Option<(String, EditPresentation)>,
     _custody: NativeCustody,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EditCause {
+    Occurrences(usize),
+    Unchanged,
+}
+
 pub(crate) type EditPresentation =
-    fn(usize, &str, &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
+    fn(EditCause, &str, &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 
 impl EditRejection {
     fn error(occurrences: usize) -> Error {
         Error::ExactEdit(Self {
-            occurrences,
+            cause: EditCause::Occurrences(occurrences),
             presentation: None,
             _custody: None,
         })
@@ -45,9 +51,12 @@ impl EditRejection {
 impl std::fmt::Display for EditRejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.presentation {
-            Some((path, format)) => format(self.occurrences, path, formatter),
-            None if self.occurrences == 0 => formatter.write_str("exact edit text is missing"),
-            None => formatter.write_str("exact edit text is ambiguous"),
+            Some((path, format)) => format(self.cause, path, formatter),
+            None => formatter.write_str(match self.cause {
+                EditCause::Occurrences(0) => "exact edit text is missing",
+                EditCause::Occurrences(_) => "exact edit text is ambiguous",
+                EditCause::Unchanged => "exact edit replacement is unchanged",
+            }),
         }
     }
 }
@@ -349,6 +358,18 @@ fn replace_into(
         }
         (start, 1)
     };
+    // Match validity takes precedence over no-change, as in the native edit
+    // contracts. Refuse before allocating an output or publishing a generation.
+    if old_text.len() == new_text.len() {
+        charge(work, 0, old_text.len() as u64)?;
+        if old_text == new_text {
+            return Err(Error::ExactEdit(EditRejection {
+                cause: EditCause::Unchanged,
+                presentation: None,
+                _custody: None,
+            }));
+        }
+    }
     let output_bytes = source
         .len()
         .checked_sub(
@@ -513,7 +534,10 @@ mod tests {
                                 match error {
                                     Error::ExactEdit(cause) => {
                                         assert!(non_overlapping > 1);
-                                        assert_eq!(cause.occurrences, non_overlapping);
+                                        assert_eq!(
+                                            cause.cause,
+                                            EditCause::Occurrences(non_overlapping)
+                                        );
                                     }
                                     _ => assert_eq!(non_overlapping, 1),
                                 }

@@ -22,11 +22,14 @@ root NOTICE. The JSON files are extracted declarations, not captured model
 responses. Adversarial protocol tests generate their own data and do not claim
 provider-fixture provenance.
 
-Missing-text and occurrence-count edit errors follow `getErrorReplaceResult`
+Missing-text, occurrence-count and no-change edit errors follow `getErrorReplaceResult`
 in Gemini CLI's `packages/core/src/tools/edit.ts` at the same pinned revision.
 Only its public diagnostic contract is adapted; matching and publication use
 the shared exact edit engine. Overlapping matches remain refused by that
-engine's stronger unique-match contract.
+engine's stronger unique-match contract. Missing or ambiguous matches take
+precedence over an identical replacement; a valid identical replacement
+refuses before allocating edited contents or publishing a generation. The
+Claude SDK likewise requires `new_string` to differ from `old_string`.
 
 Gemini search's default case-insensitive matching follows
 `performRipgrepSearch` in `packages/core/src/tools/ripGrep.ts` at that revision.

@@ -168,20 +168,23 @@ impl Adapter {
 // Public Gemini CLI getErrorReplaceResult; the shared matcher owns the cause
 // and count. Formatting adds no edit, source read or diagnostic String.
 fn google_edit_error(
-    occurrences: usize,
+    cause: crate::tool::edit::EditCause,
     path: &str,
     formatter: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
-    if occurrences == 0 {
-        write!(
+    match cause {
+        crate::tool::edit::EditCause::Unchanged => write!(
+            formatter,
+            "No changes to apply. The old_string and new_string are identical in file: {path}"
+        ),
+        crate::tool::edit::EditCause::Occurrences(0) => write!(
             formatter,
             "Could not find an exact match for 'old_string' in '{path}'. If previous edits modified the file or you are modifying lines outside your recent read window, please use ReadFile to inspect the target lines before retrying with an exact 'old_string'."
-        )
-    } else {
-        write!(
+        ),
+        crate::tool::edit::EditCause::Occurrences(occurrences) => write!(
             formatter,
             "Failed to edit, Expected 1 occurrence but found {occurrences} for old_string in file: {path}. If you intended to replace multiple occurrences, set 'allow_multiple' to true."
-        )
+        ),
     }
 }
 
@@ -228,9 +231,16 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
-        for source in ["missing", "one one one"] {
+        for (source, replacement) in [
+            ("missing", "two"),
+            ("one one one", "two"),
+            ("missing", "one"),
+            ("one one one", "one"),
+            ("one", "one"),
+        ] {
             let mut custody = crate::tool::edit::allocation(Some(&work), 0)?;
-            let result = crate::tool::edit::replace(source, "one", "two", false, 64, &mut custody);
+            let result =
+                crate::tool::edit::replace(source, "one", replacement, false, 64, &mut custody);
             let error = adapter
                 .present_error(result, &invocation, Some(&work))
                 .unwrap_err();
@@ -241,6 +251,18 @@ mod tests {
             assert!(error.to_string().contains("日本語/🦀.txt"));
             if source == "one one one" {
                 assert!(error.to_string().contains("found 3"));
+            }
+            if source == "one" {
+                assert_eq!(
+                    error.to_string(),
+                    "No changes to apply. The old_string and new_string are identical in file: 日本語/🦀.txt"
+                );
+            } else if source == "missing" {
+                assert!(
+                    error
+                        .to_string()
+                        .starts_with("Could not find an exact match")
+                );
             }
             assert!(work.live_allocation_bytes() > baseline);
             drop(error);

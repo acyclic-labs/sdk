@@ -90,6 +90,13 @@ async fn native_file_variants_use_original_publication_authority_and_recovery() 
                 assert_eq!(error.to_string(), format!("Could not find an exact match for 'old_string' in '{path}'. If previous edits modified the file or you are modifying lines outside your recent read window, please use ReadFile to inspect the target lines before retrying with an exact 'old_string'."));
             }
             assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["text"],"after after\n");
+            if !cc {
+                let before = call(&task,&tools[0],read_args.clone()).await?.1.value["file"].clone();
+                let identical = json!({"file_path":path,"old_string":"after","new_string":"after","allow_multiple":true});
+                let error = call(&task,&tools[2],identical).await.unwrap_err();
+                assert_eq!(error.to_string(), format!("No changes to apply. The old_string and new_string are identical in file: {path}"));
+                assert_eq!(call(&task,&tools[0],read_args.clone()).await?.1.value["file"],before);
+            }
             call(&task,&tools[1],json!({"file_path":path,"content":"later\n"})).await?;
             let context = crate::runtime::ToolContext::new(Arc::new(task.clone()),edited.operation_id,&edited.call_id)?;
             assert_eq!(tools[2].executor.reconcile(edited,Some(context)).await?,Some(result));
