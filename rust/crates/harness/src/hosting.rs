@@ -872,12 +872,30 @@ where
             let result = server
                 .dispatch(call.command(), &by, &approver, &authorization)
                 .await;
-            if matches!(
-                &result,
-                Ok(AgentReply::Diff { .. } | AgentReply::Usage { .. })
-            ) {
-                // The source may have awaited IO. No path or patch leaves after
-                // its original call credential or current host policy is revoked.
+            let query = match call.command() {
+                AgentCommand::Bind {}
+                | AgentCommand::Root {}
+                | AgentCommand::Children { .. }
+                | AgentCommand::Approvals { .. }
+                | AgentCommand::Reply { .. }
+                | AgentCommand::Settlement { .. }
+                | AgentCommand::Diff { .. }
+                | AgentCommand::Usage { .. }
+                | AgentCommand::Read { .. } => true,
+                AgentCommand::Prompt { .. }
+                | AgentCommand::Cancel { .. }
+                | AgentCommand::Compact { .. }
+                | AgentCommand::Rewind { .. }
+                | AgentCommand::ClearAll { .. }
+                | AgentCommand::Spawn { .. }
+                | AgentCommand::Decide { .. }
+                | AgentCommand::Stage { .. }
+                | AgentCommand::Staged { .. } => false,
+            };
+            if query {
+                // Reads may suspend during admission or source IO. Revalidate
+                // before disclosing either their data or source errors. Effect
+                // receipts retain their original commit outcome semantics.
                 let principal = authorization.principal()?;
                 let policy = server.platform.policy(&principal, call.command()).await?;
                 authorization.authorize(&server.resource, &[], &attributes, policy)?;

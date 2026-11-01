@@ -37,10 +37,11 @@ impl TurnExecutors for Never {
 struct Owner {
     denied: AtomicBool,
     childless: AtomicBool,
-    diff: std::sync::Mutex<Option<DiffPause>>,
+    diff: std::sync::Mutex<Option<QueryPause>>,
+    admission: std::sync::Mutex<Option<QueryPause>>,
 }
 
-struct DiffPause {
+struct QueryPause {
     entered: tokio::sync::oneshot::Sender<()>,
     release: tokio::sync::oneshot::Receiver<()>,
 }
@@ -63,6 +64,24 @@ impl Platform for Owner {
 
     fn runs_children(&self) -> bool {
         !self.childless.load(Ordering::SeqCst)
+    }
+
+    fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
+        Box::pin(async move {
+            let pause = self
+                .admission
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take();
+            if let Some(pause) = pause {
+                pause
+                    .entered
+                    .send(())
+                    .map_err(|()| StreamError::Unavailable)?;
+                pause.release.await.map_err(|_| StreamError::Unavailable)?;
+            }
+            Ok(())
+        })
     }
 
     fn diff<'a>(
@@ -553,7 +572,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     // policy during that wait must refuse disclosure, including an empty result.
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, resume) = tokio::sync::oneshot::channel();
-    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(DiffPause {
+    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(QueryPause {
         entered,
         release: resume,
     });
@@ -579,7 +598,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     // than leaving its original admitted channel pending forever.
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, resume) = tokio::sync::oneshot::channel();
-    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(DiffPause {
+    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(QueryPause {
         entered,
         release: resume,
     });
@@ -587,9 +606,33 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     assert!(matches!(
         call(&client, "agents", &diff).await?,
         Err(AgentControlFailure::Refused { code, reason })
-            if code == "agent_turn_error" && reason.contains("diff source owner closed")
+            if code == "agent_conflict" && reason.contains("diff source owner closed")
     ));
     waiting.await?;
+    // A source error can disclose state too. Revocation takes precedence over
+    // the original typed source failure after the same admitted wait.
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(QueryPause {
+        entered,
+        release: resume,
+    });
+    let query = call(&client, "agents", &diff);
+    tokio::pin!(query);
+    tokio::select! {
+        _ = &mut query => return Err("query ended before its source suspended".into()),
+        entered = waiting => entered?,
+    }
+    owner.denied.store(true, Ordering::SeqCst);
+    drop(release);
+    let refused = query
+        .await
+        .expect_err("a revoked query disclosed its source error");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
+    owner.denied.store(false, Ordering::SeqCst);
     let children = AgentCommand::Children {
         agent: root.clone(),
         page: Default::default(),
@@ -646,6 +689,55 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         0,
         "child status required separate record reads"
     );
+    // Admission itself may suspend after the original policy decision. The
+    // real child page and status still require current policy at disclosure.
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *owner
+        .admission
+        .lock()
+        .map_err(|_| "admission control poisoned")? = Some(QueryPause {
+        entered,
+        release: resume,
+    });
+    let query = call(&client, "agents", &children);
+    tokio::pin!(query);
+    tokio::select! {
+        _ = &mut query => return Err("child query ended before admission suspended".into()),
+        entered = waiting => entered?,
+    }
+    owner.denied.store(true, Ordering::SeqCst);
+    release
+        .send(())
+        .map_err(|()| "child admission closed before release")?;
+    let refused = query
+        .await
+        .expect_err("a suspended child query disclosed after revocation");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
+    owner.denied.store(false, Ordering::SeqCst);
+
+    // Dropping the admission producer must end the original query, too.
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *owner
+        .admission
+        .lock()
+        .map_err(|_| "admission control poisoned")? = Some(QueryPause {
+        entered,
+        release: resume,
+    });
+    drop(release);
+    let refused = call(&client, "agents", &children)
+        .await
+        .expect_err("a child query survived its admission producer");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::Unavailable)
+    ));
+    waiting.await?;
     // Nothing waits on an approval, so none is listed and none can be decided.
     assert!(matches!(
         call(
