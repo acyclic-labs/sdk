@@ -1,4 +1,18 @@
 import assert from 'node:assert/strict';
+import {randomInt} from 'node:crypto';
+
+// Counterbalance each adjacent pair of samples. Randomize its first order,
+// retain only that bit, and emit the reverse order next. Count is the caller's
+// explicit experiment size; no schedule or completed history is materialized.
+export function* pairOrders(count) {
+ assert.ok(Number.isSafeInteger(count)&&count>0,
+  'step=admit native pair count; recovery=supply a positive integer PAIRS');
+ let first;
+ for(let index=0;index<count;index++) {
+  if(index%2===0)first=randomInt(2);
+  yield {index,order:(first^(index%2))?['installed','bare']:['bare','installed']};
+ }
+}
 
 const phases=new Set(['node-spawn','stdin-write-admitted','stdin-write-complete','stdin-write-failed',
  'stdin-end-submitted','stdin-finish','stdin-close','stdout-first-write','stderr-first-write',
@@ -50,13 +64,16 @@ export class ProcessPhases {
  }
 }
 
-export function pairPhases(bare,installed) {
- assert.equal(bare.mode,'bare');assert.equal(installed.mode,'installed');
+export function pairPhases(first,second) {
+ assert.ok((first.mode==='bare'&&second.mode==='installed')||
+  (first.mode==='installed'&&second.mode==='bare'),'pair needs one bare and one installed leg');
+ const bare=first.mode==='bare'?first:second,installed=first.mode==='installed'?first:second;
  assert.deepEqual(bare.binding,installed.binding,'pair must retain original source, host, profile, policy and effect');
  assert.notEqual(bare.physical.operation,installed.physical.operation,'pair needs distinct original operations');
  assert.notEqual(bare.physical.ordinal,installed.physical.ordinal,'pair needs distinct original launches');
  assert.equal(bare.effect,installed.effect,'both native shells must produce the same exact bytes');
- return {schema:'acyclic.native-process-pair.v1',binding:bare.binding,raw:[bare,installed],
+ return {schema:'acyclic.native-process-pair.v2',binding:bare.binding,
+  launch_order:[first.mode,second.mode],raw:[first,second],
   launch_to_closed_delta_seconds:installed.physical.intervals.launch_to_closed-bare.physical.intervals.launch_to_closed,
   warm_turn_pairs:0};
 }
