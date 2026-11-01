@@ -362,10 +362,12 @@ impl TargetResolver for Devices {
 // reply at the device boundary. Changing a roster cannot change that claim.
 #[tokio::test]
 async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<()> {
-    for alias in [None, Some("user:ana")] {
+    for (name, alias) in [("shell", None), ("shell", Some("user:ana")), ("fs", None)] {
         for absent in [false, true] {
-            let scope =
-                RuntimeScope::new(Capabilities::new(["tool:call:shell"]), Limits::default())?;
+            let scope = RuntimeScope::new(
+                Capabilities::new([crate::contract::capability::tool_call(name)]),
+                Limits::default(),
+            )?;
             let task = admitted_context(scope.clone())?;
             let original = Arc::new(ContextOnlyTool {
                 admission: context_identity(&task).cloned(),
@@ -410,9 +412,9 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                     crate::tool::Tool {
                         hook_names: &[],
                         definition: crate::tool::ToolDefinition {
-                            name: "shell".into(),
+                            name: name.into(),
                             revision: "1".into(),
-                            description: "Shell".into(),
+                            description: "Workspace command".into(),
                             input_schema: json!({"type":"object"}),
                             output_schema: json!({"type":"object"}),
                             projection_schema: crate::tool::json_projection_schema(
@@ -420,8 +422,8 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                             ),
                         },
                         executor: defaults
-                            .get("shell", None, None)?
-                            .expect("stock shell")
+                            .get(name, None, None)?
+                            .expect("stock workspace command")
                             .executor
                             .clone(),
                         projection: Arc::new(Projection),
@@ -442,8 +444,8 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             let mut invocation = ToolInvocation {
                 operation_id: operation,
                 call_id: "command".into(),
-                name: "shell".into(),
-                arguments: json!({"command":"echo retained"}),
+                name: name.into(),
+                arguments: json!({"command":if name == "fs" { "status" } else { "echo retained" }}),
             };
             if let Some(alias) = alias {
                 invocation.arguments["target"] = alias.into();

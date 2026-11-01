@@ -230,6 +230,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                 .map_err(|_| Error::Invalid("filesystem author time overflow".into()))?,
                 request: Some(request),
             },
+            &root,
             &parsed.arguments,
             || async {
                 read_before_effect(

@@ -121,8 +121,10 @@ where
 
 /// Runs the shared command engine directly against a provider-backed volume.
 /// No physical checkout, process or machine is involved.
+/// Descendant publications retain the repository's authenticated policy cut.
 pub async fn run_volume_with_guard<F, Fut, P, O, S>(
     workspace: Workspace<'_, P, O, S>,
+    authority: &ManagedWorkspace<P, O>,
     args: &[String],
     before_effect: F,
 ) -> crate::Result<Output<P, O>>
@@ -133,22 +135,44 @@ where
     F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
     Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
+    if authority.id() != workspace.repository {
+        return Err(Error::Unauthorized(
+            "command policy authority differs from its repository".into(),
+        ));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if workspace.checkout.is_some() || !matches!(workspace.view, View::Volume(_)) {
         return Err(Error::Invalid(
             "volume commands require a volume view".into(),
         ));
     }
-    let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
-        Prepared::Complete(output) => return Ok(output),
-        Prepared::Ready {
-            executor,
-            tree,
-            patch,
-        } => (executor, tree, patch),
+    let cut = if authority.id() != workspace.view.workspace().id() {
+        Some(
+            authority
+                .capture_policy_cut(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| Error::from(failure.error))?,
+        )
+    } else {
+        None
     };
-    let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
-    finish(executor, command)
+    let command = async {
+        let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
+            Prepared::Complete(output) => return Ok(output),
+            Prepared::Ready {
+                executor,
+                tree,
+                patch,
+            } => (executor, tree, patch),
+        };
+        let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
+        finish(executor, command)
+    };
+    match cut {
+        Some(cut) => cut.scope(command).await,
+        None => command.await,
+    }
 }
 
 enum Prepared<'a, F, P: ?Sized + 'static, O: 'static, S> {

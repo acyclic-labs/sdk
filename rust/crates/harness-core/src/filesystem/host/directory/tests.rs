@@ -182,7 +182,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         &mut None,
     )?;
     for pinned in [None, Some(&generation)] {
-        let (bytes, length) = host
+        let (bytes, _, length) = host
             .read_private_range(
                 &volume,
                 &range_grant,
@@ -192,7 +192,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                     offset: 1,
                     length: 2,
                 },
-                None,
+                crate::conversation::ContentAccess::default(),
             )
             .await?;
         assert_eq!(bytes.as_ref(), if pinned.is_some() { b"ow" } else { b"ra" });
@@ -264,7 +264,7 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                         offset: 0,
                         length: 1,
                     },
-                    None,
+                    crate::conversation::ContentAccess::default(),
                 )
                 .await
                 .expect_err("root and descendant policy must both authorize saved ranges");
@@ -370,6 +370,148 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         "policy changes must not replace the pinned data cut"
     );
     assert_eq!(page.entries.len(), 6);
+    Ok(())
+}
+
+#[tokio::test]
+async fn descendant_restore_retains_the_original_repository_policy_cut()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (host, volume, _, writer) = fixture([true; 8], VolumeClass::Project).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
+    let root = host.open(&reference, None).await?;
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        host.filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(&root).await?;
+    let access = crate::filesystem::WorkspaceAccess::new(
+        &writer.copy_verifier(&mut None)?,
+        writer.policy_scope(),
+        writer.policy_scope().capabilities(),
+        Some(&volume),
+    )?;
+    let command_workspace = |selected| crate::tools::git::Workspace {
+        access: &access,
+        filesystem: &host.filesystem,
+        store: &store,
+        view: crate::tools::git::View::Volume(selected),
+        root: std::path::Path::new("/"),
+        repository: root.id(),
+        lease: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        checkout: None,
+        reserved: &[],
+        author: "test",
+        authored_at_seconds: 1,
+        request: None,
+    };
+    crate::tools::git::run_volume_with_guard(
+        command_workspace(&root),
+        &root,
+        &["commit".into(), "-m".into(), "base".into()],
+        || async { access.require(&root).await },
+    )
+    .await?;
+    let child = graph
+        .fork(&root, "restore-branch", acyclic_fs::IdempotencyKey::new())
+        .await?;
+    acyclic_fs::GitCompatRepository::new(root.id(), store.clone())
+        .register_branch_workspace("restore-branch", child.id(), None, true)
+        .await?;
+    let mut transaction = child
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    transaction
+        .write(
+            "/rows/02",
+            bytes::Bytes::from_static(b"changed"),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    transaction
+        .commit::<acyclic_fs::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?;
+    let before = child
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .id();
+    let changed = std::sync::atomic::AtomicBool::new(false);
+    let arguments = [
+        "restore".into(),
+        "--source".into(),
+        "main".into(),
+        "rows/02".into(),
+    ];
+    let refused = crate::tools::git::run_volume_with_guard(
+        command_workspace(&child),
+        &root,
+        &arguments,
+        || async {
+            access.require(&root).await?;
+            if !changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let mut policy: acyclic_fs::access::Policy =
+                    serde_json::from_slice(access::INITIAL_POLICY)?;
+                policy.version = 2;
+                write_policy(&root, &policy)
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+            }
+            Ok(())
+        },
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(Error::Conflict(_))),
+        "stale root cut published a restore"
+    );
+    assert_eq!(
+        child
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id(),
+        before
+    );
+    // A new explicit command captures the new cut and can make progress.
+    crate::tools::git::run_volume_with_guard(
+        command_workspace(&child),
+        &root,
+        &arguments,
+        || async { access.require(&root).await },
+    )
+    .await?;
+    assert_eq!(
+        child
+            .read(
+                "/rows/02",
+                4096,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await?
+            .value
+            .as_ref(),
+        b"row"
+    );
     Ok(())
 }
 
