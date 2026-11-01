@@ -9,6 +9,11 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod ordered;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use ordered::NativeOrdered;
+
 /// An admitted future whose custody outlives its physical allocation.
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {

@@ -11,6 +11,7 @@ where
     pub(super) async fn authenticate_summary_with_io(
         &self,
         file: &FileRef,
+        expected: Option<&crate::context::ContextSummary>,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -28,9 +29,6 @@ where
             else {
                 return Ok(false);
             };
-            if self.execution.is_some_and(|bound| bound.0 != operation) {
-                return Ok(false);
-            }
             crate::executor::with_history_io(io, |work| {
                 ContentGrant::authorize_volume(
                     &self.verifier,
@@ -73,7 +71,7 @@ where
             if provenance.descriptor().media_type() != "application/json" {
                 return Ok(false);
             }
-            let allowed = decode_summary(&bytes, operation, file, io)?;
+            let allowed = decode_summary(&bytes, operation, file, expected, io)?;
             drop(bytes);
             drop(provenance);
             drop(retry);
@@ -105,6 +103,7 @@ fn decode_summary(
     bytes: &[u8],
     operation: OperationId,
     file: &FileRef,
+    expected: Option<&crate::context::ContextSummary>,
     io: Option<&PreparationIo>,
 ) -> Result<bool> {
     let allowed = match io {
@@ -114,7 +113,8 @@ fn decode_summary(
                 bytes,
                 crate::wire::ErrorCode::Invalid,
             )?;
-            let allowed = payload_matches::<true>(&summary, operation, file);
+            let allowed = payload_matches::<true>(&summary, operation, file)
+                && expected.is_none_or(|expected| expected == &summary);
             drop(summary);
             drop(hold);
             allowed
@@ -124,6 +124,7 @@ fn decode_summary(
                 crate::contract::json_from_slice(bytes)
                     .map_err(|error| Error::Storage(error.to_string()))?;
             payload_matches::<true>(&summary, operation, file)
+                && expected.is_none_or(|expected| expected == &summary)
         }
     };
     Ok(allowed)

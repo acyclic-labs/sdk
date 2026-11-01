@@ -41,9 +41,9 @@ pub mod native_skills;
     not(target_arch = "wasm32")
 ))]
 mod skill_materializer;
-pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;
 pub(crate) use compaction::{clone_context, compact_projection};
+pub(crate) use compaction::{mandatory_message_count, mandatory_messages};
 mod snapshot;
 pub use snapshot::*;
 mod manifest;

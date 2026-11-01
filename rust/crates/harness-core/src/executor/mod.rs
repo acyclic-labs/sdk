@@ -78,6 +78,8 @@ mod retained_request;
 pub(crate) mod transcript;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod background_compaction;
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
 mod summary;
@@ -566,6 +568,8 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    session: Option<Arc<crate::filesystem::AgentSession>>,
     model: Model,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,

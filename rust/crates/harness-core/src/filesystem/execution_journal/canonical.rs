@@ -18,7 +18,12 @@ where
         if let Some(io) = io {
             io.check_cancellation()?;
         }
-        let ExecutionEvent::ContextCompacted { projection, .. } = event else {
+        let ExecutionEvent::ContextCompacted {
+            projection,
+            compaction,
+            ..
+        } = event
+        else {
             return Ok(());
         };
         crate::executor::with_history_io(io, |work| limits.validate_file(projection, work))?;
@@ -30,6 +35,29 @@ where
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "checkpoint source selection is not the committed admission",
+            ));
+        }
+        // Completion may belong to a retained producer from an earlier turn.
+        // Its original immutable upload receipt proves publication; a model
+        // event on this turn cannot substitute for that receipt.
+        let proof =
+            crate::executor::load_json::<crate::context::CompactionReference>(self, compaction, io)
+                .await?;
+        let summary = proof.0.summary.as_ref().ok_or_else(|| {
+            canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "compaction has no summary producer",
+            )
+        })?;
+        if !self
+            .authenticate_summary_with_io(&summary.output, Some(summary), io)
+            .await?
+        {
+            return Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "compaction summary has no original publication",
             ));
         }
         Ok(())

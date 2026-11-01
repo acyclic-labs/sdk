@@ -16,6 +16,8 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            session: None,
             model,
             max_output_tokens: None,
             provider,
@@ -35,6 +37,16 @@ impl StockExecutor {
             reconciliation_only: false,
             live_reply: None,
         }
+    }
+
+    /// Binds retained preparation to this agent's original serving owner.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn with_session(
+        mut self,
+        session: Option<Arc<crate::filesystem::AgentSession>>,
+    ) -> Self {
+        self.session = session;
+        self
     }
 
     /// Stages each model dispatch's text while it streams; see [`LiveReply`].

@@ -60,11 +60,6 @@ impl ExecutionSummary {
             }
             ExecutionEvent::ContextCompacted { step, .. } => {
                 self.contexts.get(step, io)? == Some(&false)
-                    && matches!(
-                        self.models
-                            .get(&(*step, crate::executor::ModelPurpose::Summary), io)?,
-                        Some(None)
-                    )
                     && !self
                         .models
                         .contains_key(&(*step, crate::executor::ModelPurpose::Response), io)?

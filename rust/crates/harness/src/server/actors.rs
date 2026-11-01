@@ -219,7 +219,7 @@ fn started<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
         }
     };
     let changes = server.bound().changes().map_err(super::failed)?;
-    let runtime = Runtime::start(server.clone());
+    let runtime = Runtime::start(server.clone()).map_err(super::failed)?;
     let completion = runtime.completion();
     Ok(Hosted::new(
         server,

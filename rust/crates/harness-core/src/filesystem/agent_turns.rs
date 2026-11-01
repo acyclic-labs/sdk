@@ -371,6 +371,13 @@ pub async fn agent_authority<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Binds retained preparation to the application's original serving owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        let _ = session;
+        Ok(())
+    }
+
     /// The executor's existing per-part render allowance, if finite. Selection
     /// chunks pending events under this same allowance before request admission.
     fn render_bytes(&self) -> Option<u64> {
@@ -471,6 +478,12 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Attaches preparation to the same owner that drives actor deliveries.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        self.executors.admit_session(session)
+    }
+
     /// Host signing each agent's authority with `issuer`'s custody, derived
     /// from `admission`. Every turn runs under one approval policy, resolved
     /// once: the agent's own policy file, chosen explicitly when it was

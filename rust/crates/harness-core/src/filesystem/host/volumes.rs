@@ -229,12 +229,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn volume_initialization(
         &self,
     ) -> acyclic_fs::VolumeInitialization<'static> {
-        acyclic_fs::VolumeInitialization {
-            config: acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
+        let mut config =
+            acyclic_fs::VolumeConfig::portable(if self.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
                 acyclic_fs::Lifecycle::Ephemeral
-            }),
+            });
+        // Independent agent work shares one volume. Its original authority
+        // composes disjoint writes while retaining captured policy/data fences.
+        config.concurrency = acyclic_fs::model::ConcurrencyMode::SerializedAuthority;
+        acyclic_fs::VolumeInitialization {
+            config,
             access_policy: Some(access::INITIAL_POLICY),
         }
     }

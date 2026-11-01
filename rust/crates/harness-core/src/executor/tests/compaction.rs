@@ -1,5 +1,189 @@
 use super::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn serving_summary_overlaps_turns_and_replays_exact_source() -> Result<()> {
+    use crate::filesystem::SessionWork;
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([81; 16]))?;
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [
+            ScriptedTurn::Text("first answer".into()),
+            ScriptedTurn::Text("retained summary".into()),
+            ScriptedTurn::Text("second answer".into()),
+            ScriptedTurn::Text("changed summary".into()),
+            ScriptedTurn::Text("changed answer".into()),
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Content {
+                delta: "partial summary".into(),
+            })]),
+            ScriptedTurn::Text("recovered answer".into()),
+            ScriptedTurn::Text("last foreground answer".into()),
+        ],
+        [ScriptedReconciliation {
+            orphan: false,
+            observed: vec![ModelEvent::Content {
+                delta: "partial summary".into(),
+            }],
+            continuation: Some(vec![
+                ModelEvent::Content {
+                    delta: " completed".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            ]),
+        }],
+    );
+    let source = |revision: &str| crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("keep".into()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("{revision}{}", "x".repeat(20_000))),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("y".repeat(20_000)),
+            },
+        ],
+        ..Default::default()
+    };
+    let executor = |revision: &str| {
+        StockExecutor::new(
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into()).unwrap(),
+            provider.native(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source(revision)),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        )
+        .with_session(Some(Arc::clone(&slot)))
+    };
+    let input = |bytes| TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("z".repeat(bytes)),
+        selected_context: None,
+        max_steps: 1,
+    };
+    let stock = executor("original");
+    assert_eq!(
+        stock
+            .execute(input(1_000), &journal)
+            .await
+            .expect("initial foreground turn")
+            .text,
+        "first answer"
+    );
+    // The foreground request completes while the retained producer has never
+    // been polled. A synchronous summary would consume the next scripted turn.
+    assert_eq!(provider.requests().len(), 1);
+    assert!(slot.summary.lock().unwrap().is_some());
+    let next = input(15_000);
+    let output = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = stock.execute(next.clone(), &journal) => result.expect("foreground demand while summary runs"),
+    };
+    assert_eq!(output.text, "second answer");
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        stock
+            .execute(next.clone(), &journal)
+            .await
+            .expect("completed foreground replay"),
+        output
+    );
+    assert_eq!(
+        provider.requests().len(),
+        3,
+        "replay redispatched an accepted model"
+    );
+    let records = journal
+        .replay(next.operation_id, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
+        .await?;
+    let compaction = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ContextCompacted { compaction, .. } => Some(compaction),
+            _ => None,
+        })
+        .expect("retained summary was installed");
+    let proof = load_json::<crate::context::CompactionReference>(&journal, compaction, None)
+        .await?
+        .0;
+    let mut summary = proof.summary.expect("original summary identity");
+    assert_eq!(summary.source_messages, 2, "recent suffix was summarized");
+    assert_ne!(summary.operation_id, next.operation_id);
+    assert!(
+        journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?
+    );
+    summary.source_digest[0] ^= 1;
+    assert!(
+        !journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?,
+        "changed source inherited the original result"
+    );
+    // A changed prefix must commission its own producer, preserving the old
+    // source/result rather than attaching it to the changed prefix.
+    let changed = executor("changed");
+    let changed_output = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = changed.execute(input(15_000), &journal) => result.expect("changed source demand"),
+    };
+    assert_eq!(changed_output.text, "changed answer");
+    assert_eq!(provider.requests().len(), 5);
+    let recovering = executor("recovering");
+    let recovery_input = input(15_000);
+    let interrupted = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = recovering.execute(recovery_input.clone(), &journal) => result,
+    };
+    assert!(matches!(interrupted, Err(Error::Indeterminate(_))));
+    assert_eq!(provider.requests().len(), 6);
+    let recovered = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = recovering.execute(recovery_input, &journal) => result.expect("accepted summary recovery"),
+    };
+    assert_eq!(recovered.text, "recovered answer");
+    assert_eq!(
+        provider.requests().len(),
+        7,
+        "accepted summary was regenerated"
+    );
+    assert_eq!(provider.reconciliations().len(), 1);
+    let lost = executor("lost");
+    assert_eq!(
+        lost.execute(input(1_000), &journal).await?.text,
+        "last foreground answer"
+    );
+    drop(owner);
+    let failed = lost.execute(input(15_000), &journal).await.unwrap_err();
+    assert_eq!(failed.code(), crate::wire::ErrorCode::Unavailable);
+    assert_eq!(
+        provider.requests().len(),
+        8,
+        "producer loss reran accepted work"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn incomplete_summaries_reconcile_until_completion_without_redispatch() -> Result<()> {
     for prefix in ["", "first-"] {

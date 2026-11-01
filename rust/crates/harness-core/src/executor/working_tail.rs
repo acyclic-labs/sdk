@@ -279,10 +279,13 @@ impl<'a> StockExecution<'a> {
         crate::context::validate_projected_context(&source, self.stock.limits, io)?;
         crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
         crate::context::validate_compaction(&proof, &source, &original_context, io)?;
-        if proof
-            .summary
-            .as_ref()
-            .is_none_or(|summary| summary.operation_id != cut.operation || summary.step != cut.step)
+        let Some(summary) = proof.summary.as_ref() else {
+            return Err(self.invalid_working_cut());
+        };
+        if (summary.operation_id != cut.operation || summary.step != cut.step)
+            && !journal
+                .authenticate_compaction_summary(summary, io)?
+                .await?
         {
             return Err(self.invalid_working_cut());
         }

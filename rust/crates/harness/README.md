@@ -56,6 +56,17 @@ selections retain exact versions and spans; the shared projection validates
 placement and bounds without truncation. Constructors do not grant authority
 or start effects.
 
+Native hosted stock turns prepare threshold summaries in the existing serving
+task once input passes three fifths of the reserved input capacity. The admitted
+response proceeds while that summary runs. A later turn can consume it only when
+its selected prefix, model binding and immutable publication receipt match;
+changed source selects new work. Summary model events and output retain the
+ordinary execution journal's recovery identity, so replay observes accepted work
+without generating it again. Serving-owner loss closes pending summary waits.
+New harness volumes use serialized authority to compose disjoint summary and
+foreground writes while preserving their captured content and policy checks.
+Standalone executors without a serving session retain demand-driven compaction.
+
 `HarnessBuilder` composes the stock journaled turn executor from an immutable model binding, context pipeline, and versioned tool registry, or accepts a replacement executor. `agent_loop` separately binds a typed live `AgentLoop` over the public `TaskContext`; it can recursively spawn and join ordinary tasks without a turn journal, while its Rust future is explicitly not resumable. The same builder can bind model and context stages for live task code independently of the turn executor. Conversation records are typed and ref-only: primary text, attachments, tool artifacts, and extension content are `FileRef`s pinned to an exact provider, owner, volume, generation, SHA-256 digest, length, and media type. Possessing a ref does not grant access; resolution requires a signed scope with either the matching volume read grant or an exact-version file read grant. Private-volume writes additionally require a host-signed acting-agent identity matching that volume's original owner; scoped descendants inherit that identity without being able to change it. An owner can delegate a pinned private-file read or a segment-bounded, read-only private-directory grant to any agent without creating a fork. The directory grant supports lazy discovery but cannot expose internal storage paths or grant writes.
 
 `CompositeContentVerifier` routes refs by exact owner volume. A `ContentMountResolver` resolves an unseen exact `FileRef` on demand and returns both its owner reader and a verified `ContentGrant`; the composite checks that grant against the ref on every use. Attached agents therefore need neither an eager copy nor registration of every private directory. Explicit volume bindings take precedence; both routes still verify pinned bytes at the owning provider before admission or model projection.

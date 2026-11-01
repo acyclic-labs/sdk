@@ -43,6 +43,19 @@ impl StockExecution<'_> {
                 message_limit,
             )
             .await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let background = self.background_summary(journal, &context, through)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let (summary, maximum) = if let Some(pending) = background {
+            self.demand_summary(&pending, &context).await?
+        } else {
+            (
+                self.summarize_compaction(journal, input, step, (&context, through), phase)
+                    .await?,
+                maximum,
+            )
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let summary = self
             .summarize_compaction(journal, input, step, (&context, through), phase)
             .await?;
@@ -303,7 +316,7 @@ impl StockExecution<'_> {
         Ok(request)
     }
 
-    fn prepare_summary_source(
+    pub(super) fn prepare_summary_source(
         &self,
         context: &crate::context::Context,
         through: usize,

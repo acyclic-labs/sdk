@@ -36,6 +36,36 @@ pub struct Context {
     pub current_input_index: Option<u32>,
 }
 impl Context {
+    /// Identity of exactly the selected summary prefix, using the same codec
+    /// as an owned Context without copying its messages or metadata.
+    pub(crate) fn prefix_digest(
+        &self,
+        through: usize,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<[u8; 32]> {
+        let first = self.messages.get(..through).ok_or_else(|| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "summary prefix exceeds selected context",
+            )
+        })?;
+        crate::executor::preparation_digest(
+            &BorrowedContext {
+                messages: ContextMessages {
+                    first,
+                    user: None,
+                    second: &[],
+                },
+                metadata: &self.metadata,
+                current_input_index: self
+                    .current_input_index
+                    .filter(|index| (*index as usize) < through),
+            },
+            io,
+        )
+    }
+
     pub(super) fn validate_current_input(
         &self,
         io: Option<&crate::executor::PreparationIo>,

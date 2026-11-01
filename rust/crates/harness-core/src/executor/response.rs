@@ -225,15 +225,24 @@ impl StockExecution<'_> {
                     "compacted context requires threshold policy",
                 ));
             };
-            if self.model_capacity()? != Some(final_accounting.capacity)
-                || proof.summary.as_ref().is_none_or(|summary| {
-                    summary.operation_id != input.operation_id || summary.step != step
-                })
+            if self.model_capacity()? != Some(final_accounting.capacity) || proof.summary.is_none()
             {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Storage,
                     "compacted context differs from its admission",
+                ));
+            }
+            if let Some(summary) = &proof.summary
+                && (summary.operation_id != input.operation_id || summary.step != step)
+                && !journal
+                    .authenticate_compaction_summary(summary, self.io)?
+                    .await?
+            {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "compacted summary publication is not authentic",
                 ));
             }
             if policy.needs_compaction(
@@ -337,6 +346,32 @@ impl StockExecution<'_> {
                 let selected_base = step == 0 && input.selected_context.is_some();
                 let possible_message_pressure = selected_base
                     && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if !token_pressure && !possible_message_pressure && self.stock.session.is_some() {
+                    let hard = u64::from(
+                        accounting.capacity.context_tokens
+                            - policy.response_reserve_tokens.max(
+                                accounting
+                                    .capacity
+                                    .output_reservation(self.output_tokens())?,
+                            ),
+                    );
+                    if input_tokens > hard.saturating_mul(3) / 5 {
+                        projection.context.messages =
+                            crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                        let (source, pre_stage) = self
+                            .response_compaction_source(
+                                journal,
+                                turn,
+                                &projection,
+                                &accounting,
+                                policy,
+                            )
+                            .await?;
+                        self.prefetch_compaction(journal, &source, &accounting, pre_stage, policy)
+                            .await?;
+                    }
+                }
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
