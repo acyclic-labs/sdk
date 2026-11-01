@@ -208,7 +208,9 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
             WriteRequest::Fork(request) => request.idempotency_key.clone(),
-            WriteRequest::Commit(request) => request.idempotency_key.clone(),
+            WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
+                request.idempotency_key.clone()
+            }
         };
         #[cfg(any(
             feature = "local",
