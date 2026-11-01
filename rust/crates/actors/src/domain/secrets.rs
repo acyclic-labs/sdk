@@ -13,7 +13,7 @@ pub struct SecretSelection {
     name: String,
     // Tag 2 carried the retired unversioned address; it is never reused.
     #[wire(tag = 3, message, import = "harness/v2/resources.proto")]
-    #[ts(type = "{ scope: string; name: string; version: string }")]
+    #[ts(type = "{ scope: string; name: string; version: bigint }")]
     reference: SecretRef,
 }
 
