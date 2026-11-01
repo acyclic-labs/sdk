@@ -54,10 +54,12 @@ pub struct ModelDispatch {
 }
 
 /// Concrete stream box admitted before invoking its builder.
+/// The first error or EOF terminates the stream; later polls return EOF.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
     stream: BoxStream<'a, Result<(ModelEvent, NativeAllocation)>>,
     custody: NativeAllocation,
+    terminated: bool,
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl<'a> NativeModelStream<'a> {
@@ -77,6 +79,7 @@ impl<'a> NativeModelStream<'a> {
         Ok(Self {
             stream: Box::pin(build()),
             custody,
+            terminated: false,
         })
     }
     /// Original ledger funding this stream.
@@ -93,10 +96,22 @@ impl futures::Stream for NativeModelStream<'_> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        if this.terminated {
+            return std::task::Poll::Ready(None);
+        }
         if let Err(cause) = this.custody.work().remaining() {
+            this.terminated = true;
             return std::task::Poll::Ready(Some(Err(cause.into())));
         }
-        this.stream.as_mut().poll_next(cx)
+        let next = this.stream.as_mut().poll_next(cx);
+        this.terminated = matches!(&next, std::task::Poll::Ready(None | Some(Err(_))));
+        next
+    }
+}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl futures::stream::FusedStream for NativeModelStream<'_> {
+    fn is_terminated(&self) -> bool {
+        self.terminated
     }
 }
 #[cfg(feature = "filesystem")]

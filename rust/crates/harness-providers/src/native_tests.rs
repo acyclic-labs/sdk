@@ -179,6 +179,11 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
                 work.receipt().source_bytes_read - source_before,
                 response.len() as u64
             );
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            // Cancellation after the original EOF must not create a new error.
+            work.cancellation().cancel();
+            assert!(stream.next().await.is_none());
+            assert!(stream.next().await.is_none());
         }
         assert_eq!(fixture.sent.load(Ordering::SeqCst), 1);
         assert_eq!(work.live_allocation_bytes(), before, "{adapter:?}");
@@ -224,10 +229,19 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
                 );
                 drop((event, custody));
             }
-            stream.next().await.transpose().map(drop)
+            let result = stream.next().await.transpose().map(drop);
+            assert!(result.is_err());
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            assert!(stream.next().await.is_none());
+            assert!(stream.next().await.is_none());
+            result
         }
         .await;
         assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().code(),
+            acyclic_harness_core::wire::ErrorCode::Cancelled
+        );
         assert_eq!(work.live_allocation_bytes(), baseline);
     }
     Ok(())
@@ -292,6 +306,8 @@ async fn returned_tool_aliases_are_terminal_on_ordinary_and_native_paths() -> Re
             } if custody.work().shares_allocation_context(&work)),
                 "{adapter:?}: {error:?}"
             );
+            assert!(futures::stream::FusedStream::is_terminated(&stream));
+            assert!(stream.next().await.is_none());
             drop(error);
         }
         assert_eq!(work.live_allocation_bytes(), baseline, "{adapter:?}");
