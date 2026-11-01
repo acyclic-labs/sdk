@@ -263,7 +263,8 @@ impl FileTool {
                     input.0.replace_all,
                     maximum,
                     &mut allocation,
-                )?,
+                )?
+                .text,
                 None,
                 None,
             )

@@ -234,7 +234,7 @@ pub(crate) fn replace(
     replace_all: bool,
     maximum_bytes: u64,
     work: &mut NativeCustody,
-) -> Result<String> {
+) -> Result<ReplacementPlan> {
     replace_sequence(
         source,
         std::iter::once(Replacement {
@@ -253,6 +253,15 @@ pub(crate) struct Replacement<'a> {
     pub old_text: &'a str,
     pub new_text: &'a str,
     pub replace_all: bool,
+}
+
+/// Facts produced by the same exact matcher before conditional publication.
+/// The count includes each transformation in a sequential edit, rather than
+/// attempting to reconstruct it from the final bytes or a later file head.
+#[derive(Debug)]
+pub(crate) struct ReplacementPlan {
+    pub text: String,
+    pub replacements: u64,
 }
 
 /// Retires a synchronous planner's temporary buffers after they are destroyed.
@@ -286,20 +295,31 @@ pub(crate) fn replace_sequence<'a>(
     replacements: impl IntoIterator<Item = Replacement<'a>>,
     maximum_bytes: u64,
     work: &mut NativeCustody,
-) -> Result<String> {
-    plan_output(work, |work| {
+) -> Result<ReplacementPlan> {
+    let mut count = 0u64;
+    let text = plan_output(work, |work| {
         let mut replacements = replacements.into_iter();
         let first = replacements
             .next()
             .ok_or_else(|| invalid(work, "exact edit sequence is empty"))?;
         let mut output = String::new();
         let mut scratch = String::new();
-        replace_into(source, first, maximum_bytes, work, &mut output)?;
+        count = replace_into(source, first, maximum_bytes, work, &mut output)?;
         for replacement in replacements {
-            replace_into(&output, replacement, maximum_bytes, work, &mut scratch)?;
+            let next = replace_into(&output, replacement, maximum_bytes, work, &mut scratch)?;
+            count = count.checked_add(next).ok_or_else(|| {
+                invalid(
+                    work,
+                    "exact edit replacement count overflow; recovery: split the edit sequence",
+                )
+            })?;
             std::mem::swap(&mut output, &mut scratch);
         }
         Ok(output)
+    })?;
+    Ok(ReplacementPlan {
+        text,
+        replacements: count,
     })
 }
 
@@ -313,7 +333,7 @@ fn replace_into(
     maximum_bytes: u64,
     work: &mut NativeCustody,
     output: &mut String,
-) -> Result<()> {
+) -> Result<u64> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
@@ -403,7 +423,7 @@ fn replace_into(
         cursor = start + old_text.len();
     }
     output.push_str(&source[cursor..]);
-    Ok(())
+    Ok(count as u64)
 }
 
 #[cfg(test)]
@@ -426,12 +446,13 @@ mod tests {
                 replace_all: false,
             });
             let output = replace_sequence("one", edits, 64, &mut custody)?;
-            assert_eq!(output, if length % 2 == 0 { "one" } else { "two" });
+            assert_eq!(output.text, if length % 2 == 0 { "one" } else { "two" });
+            assert_eq!(output.replacements, length as u64);
             // An allocation retained for every prior intermediate result would
             // fail this same bound as the sequence grows.
             assert_eq!(
                 work.live_allocation_bytes(),
-                baseline + output.capacity() as u64
+                baseline + output.text.capacity() as u64
             );
             drop(output);
             drop(custody);
@@ -464,11 +485,11 @@ mod tests {
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         let mut work = None;
         assert_eq!(
-            replace("before 🦀 after", "🦀", "日本語", false, 64, &mut work)?,
+            replace("before 🦀 after", "🦀", "日本語", false, 64, &mut work)?.text,
             "before 日本語 after"
         );
         assert_eq!(
-            replace("a\r\nb\n", "\r\n", "\n", false, 8, &mut work)?,
+            replace("a\r\nb\n", "\r\n", "\n", false, 8, &mut work)?.text,
             "a\nb\n"
         );
         assert!(matches!(
@@ -488,8 +509,11 @@ mod tests {
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
         let mut work = None;
-        assert_eq!(replace("abc", "b", "", false, 3, &mut work)?, "ac");
-        assert_eq!(replace("abc", "abc", "xyz", false, 3, &mut work)?, "xyz");
+        assert_eq!(replace("abc", "b", "", false, 3, &mut work)?.text, "ac");
+        assert_eq!(
+            replace("abc", "abc", "xyz", false, 3, &mut work)?.text,
+            "xyz"
+        );
         assert!(replace("abc", "b", "long", false, 4, &mut work).is_err());
         assert!(replace("abc", "abc", "a", false, 2, &mut work).is_err());
         assert!(replace("abc", "a", "a", false, 0, &mut work).is_err());
@@ -521,12 +545,16 @@ mod tests {
                                 })
                                 .collect();
                             let result = replace(&source, &needle, "X", false, 64, &mut work);
+                            let all = replace(&source, &needle, "X", true, 64, &mut work).unwrap();
+                            assert_eq!(all.text, source.replace(&needle, "X"));
                             assert_eq!(
-                                replace(&source, &needle, "X", true, 64, &mut work).unwrap(),
-                                source.replace(&needle, "X")
+                                all.replacements,
+                                source.match_indices(&needle).count() as u64
                             );
                             if matches.len() == 1 {
-                                assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
+                                let plan = result.unwrap();
+                                assert_eq!(plan.text, source.replacen(&needle, "X", 1));
+                                assert_eq!(plan.replacements, 1);
                             } else {
                                 let error = result.unwrap_err();
                                 assert_eq!(error.code(), crate::wire::ErrorCode::Conflict);

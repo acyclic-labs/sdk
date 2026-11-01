@@ -60,7 +60,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             source.volume(),
             write,
             source.path(),
-            result.as_bytes(),
+            result.text.as_bytes(),
             source.descriptor().media_type(),
             source.display_name(),
             maximum_bytes,
