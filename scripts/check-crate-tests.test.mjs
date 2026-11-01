@@ -30,8 +30,7 @@ test("checks original default members alone in bounded worker targets", async ()
   }
   const packages = ["first", "second", "third"];
   let active = 0, peak = 0;
-  let releaseFirst;
-  const firstHeld = new Promise(resolve => { releaseFirst = () => resolve(undefined); });
+  const { promise: firstHeld, resolve: releaseFirst } = Promise.withResolvers();
   const commands = [], buildDirectories = [];
   const checking = checkCrateTests(packages, 2, "/shared target", async (args, buildDirectory) => {
     commands.push(args);
@@ -42,7 +41,7 @@ test("checks original default members alone in bounded worker targets", async ()
     return args.includes("second") ? 101 : 0;
   });
   const admittedPeak = peak;
-  releaseFirst();
+  releaseFirst(undefined);
   const failures = await checking;
   assert.equal(admittedPeak, 2);
   assert.deepEqual(failures, ["second"]);
