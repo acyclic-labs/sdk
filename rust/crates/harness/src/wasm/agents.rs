@@ -330,7 +330,7 @@ pub struct WasmAgents {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     sender: Sender,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     run: Option<BrowserRun>,
 }
 
@@ -389,10 +389,10 @@ impl WasmAgents {
         brief: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         IntentId::try_from(intent).map_err(agent_error)?;
-        if brief
-            .as_ref()
-            .is_some_and(|text| text.len() as u64 > self.maximum_bytes)
-        {
+        if brief.as_ref().is_some_and(|text| {
+            self.maximum_bytes
+                .is_some_and(|maximum| text.len() as u64 > maximum)
+        }) {
             return Err(js_error(Error::Invalid(
                 "agent brief exceeds file byte limit".into(),
             )));
@@ -835,7 +835,7 @@ impl WasmAgents {
         // Rust-owned verified bytes, copied out of the reader's buffer.
         Ok(Vec::from(
             reader
-                .read(&file, self.maximum_bytes, None, None)
+                .read(&file, file.descriptor().byte_length(), None, None)
                 .map_err(js_error)?
                 .await
                 .map_err(js_error)?
