@@ -9,14 +9,14 @@ mod interpreter;
 struct Call {
     name: allocator::BridgeText,
     arguments: allocator::BridgeText,
-    reply: oneshot::Sender<acyclic_stream::OwnedBytes>,
+    reply: oneshot::Sender<Option<acyclic_stream::OwnedBytes>>,
 }
 
 enum Request {
     Tool(Call),
     Log {
         arguments: allocator::BridgeText,
-        reply: oneshot::Sender<acyclic_stream::OwnedBytes>,
+        reply: oneshot::Sender<Option<acyclic_stream::OwnedBytes>>,
     },
 }
 
@@ -338,7 +338,7 @@ impl StockExecution<'_> {
                                     }
                                     result = stage_json(journal, identity.0, &key, &entry, self.io) => { result?; }
                                 }
-                                let _ = reply.send(acyclic_stream::OwnedBytes::from_static(b"null"));
+                                let _ = reply.send(None);
                                 continue;
                             }
                         };
@@ -389,7 +389,7 @@ impl StockExecution<'_> {
                                 .map(Into::into)
                                 .map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript response encoding failed"))?,
                         };
-                        let _ = call.reply.send(reply);
+                        let _ = call.reply.send(Some(reply));
                     }
                 }
             };
