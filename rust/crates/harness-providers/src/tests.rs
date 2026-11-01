@@ -3,8 +3,8 @@ use acyclic_harness_core::{
     context::ModelContextCapacity,
     conversation::Limits,
     model::{
-        Model, ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
-        ModelRole, PreparedModelRequest,
+        Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage,
+        ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
 };
 use acyclic_stream::BoxProviderFuture;
@@ -401,11 +401,37 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
         let mut request = prepared.request().clone();
         request.tools = vec![code.clone()];
         let original = projection::body(&provider, &request)?;
+        let mut late = code.clone();
+        late.name = "late".into();
+        request.tools.push(late);
         request.messages.push(ModelMessage {
             role: ModelRole::User,
             content: ModelContent::Text(json!({"kind":"tools.changed", "tools":[{"name":"late", "input_schema":{"type":"object"}}]}).to_string()),
         });
-        let changed = projection::body(&provider, &request)?;
+        request.messages.extend([
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::ToolCall(
+                    acyclic_harness_core::model::ToolCall::new(
+                        "old".into(),
+                        "late".into(),
+                        json!({"code":"42"}),
+                    ),
+                )),
+            },
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "old".into(),
+                    name: "late".into(),
+                    content: acyclic_harness_core::model::ToolResultContent::Json {
+                        value: json!(42),
+                    },
+                }),
+            },
+        ]);
+        let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+        let changed = projection::body(&provider, prepared.request())?;
         assert_eq!(original["tools"], changed["tools"]);
         let (name, schema) = match adapter {
             Adapter::Chat => (

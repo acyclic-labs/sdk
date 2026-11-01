@@ -17,12 +17,22 @@ pub struct ModelRequest {
     pub model: Model,
     /// Ordered reconstructable context.
     pub messages: Vec<ModelMessage>,
-    /// Visible registered tools.
+    /// Registered tool definitions, including schemas retained for history validation.
     pub tools: Vec<crate::tool::ToolDefinition>,
     /// Optional output token ceiling.
     pub max_output_tokens: Option<u32>,
 }
 impl ModelRequest {
+    /// Native declarations sent to providers. Dynamic code capabilities retain
+    /// their validation schemas here and are announced through tools.changed.
+    pub fn model_tools(&self) -> impl Iterator<Item = &crate::tool::ToolDefinition> {
+        let code =
+            !cfg!(target_arch = "wasm32") && self.tools.iter().any(|tool| tool.name == "code");
+        self.tools
+            .iter()
+            .filter(move |tool| !code || crate::tools::catalog().any(|spec| spec.name == tool.name))
+    }
+
     pub(super) fn validate(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
         self.validate_with_instruction_budget(limits, io)
             .map(|_| ())

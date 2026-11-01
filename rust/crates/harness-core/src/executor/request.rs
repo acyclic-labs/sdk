@@ -274,7 +274,7 @@ impl StockExecution<'_> {
         Ok(ModelRequest {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
-            tools: model_tool_declarations(tools),
+            tools,
             max_output_tokens: self.output_budget()?,
         })
     }
@@ -310,11 +310,11 @@ impl StockExecution<'_> {
         let io = scope.io();
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
-        let tools = model_tool_declarations(if self.request_tools_required(&request.messages)? {
+        let tools = if self.request_tools_required(&request.messages)? {
             stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, io)?
         } else {
             Vec::new()
-        });
+        };
         if request.model != self.stock.model
             || request.tools != tools
             || request.max_output_tokens != self.output_budget()?
@@ -327,17 +327,6 @@ impl StockExecution<'_> {
         }
         Ok(())
     }
-}
-
-// The native catalog is fixed. Dynamic capabilities live in appended notices
-// and the interpreter's table, never the provider's cached declaration prefix.
-fn model_tool_declarations(
-    mut tools: Vec<crate::tool::ToolDefinition>,
-) -> Vec<crate::tool::ToolDefinition> {
-    if !cfg!(target_arch = "wasm32") && tools.iter().any(|tool| tool.name == "code") {
-        tools.retain(|tool| crate::tools::catalog().any(|spec| spec.name == tool.name));
-    }
-    tools
 }
 
 fn completed_model_events(

@@ -159,11 +159,13 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     assert_eq!(echo.0.load(Ordering::SeqCst), 2);
     let before = first_model.requests();
     let after = second_model.requests();
-    assert_eq!(before[0].tools, after[0].tools);
+    assert_eq!(
+        before[0].model_tools().collect::<Vec<_>>(),
+        after[0].model_tools().collect::<Vec<_>>()
+    );
     assert_eq!(
         after[0]
-            .tools
-            .iter()
+            .model_tools()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         ["code"]
@@ -255,13 +257,13 @@ async fn inner_approval_replays_receipts_and_refusal_is_a_js_exception_with_a_lo
             input.operation_id,
             0,
             "program".into(),
-            "run_js".into(),
+            "code".into(),
             json!({"code":"await tools['example.echo']({value: 42})"}),
             None,
         )?;
         let loads = journal.4.load(Ordering::SeqCst);
         let ExecutionProgress::Ready(replayed) = execution
-            .run_js(
+            .code(
                 &journal,
                 (input.operation_id, 0),
                 &invocation,
@@ -585,7 +587,15 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     boundary_executor
         .execute(input(), &Journal::default())
         .await?;
+    // Each result retains its complete admitted per-part allowance even though
+    // context framing and the other messages exceed that same byte count.
     assert_eq!(result(&model).as_str().unwrap().len(), string_bytes);
+    let (mut fitting, model, _) = executor("'x'.repeat(40000)", allowed()?, true)?;
+    fitting.limits.render_bytes = render_bytes as u64;
+    let mut turn = input();
+    turn.input = ModelContent::Text("context".repeat(1000));
+    fitting.execute(turn, &Journal::default()).await?;
+    assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
         "'x'.repeat(1000000)",
@@ -734,5 +744,97 @@ async fn cancelling_the_parent_interrupts_cpu_code_and_records_retirement() -> R
         ExecutionProgress::Failed(ToolFailureKind::Interrupted)
     ));
     assert!(journal.0.lock().unwrap().iter().any(|record| matches!(&record.event, ExecutionEvent::ToolFailed { call_id, reason: ToolFailureKind::Interrupted, .. } if call_id == "program")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_dynamic_exchange_keeps_its_validation_schema() -> Result<()> {
+    let (executor, _, _) = executor("42", allowed()?, true)?;
+    let execution = StockExecution::ordinary(&executor);
+    let prior = vec![
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Part(ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                "old".into(),
+                "example.echo".into(),
+                json!({"value":7}),
+            ))),
+        },
+        ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "old".into(),
+                name: "example.echo".into(),
+                content: crate::model::ToolResultContent::Json {
+                    value: json!({"value":7}),
+                },
+            }),
+        },
+    ];
+    let prepared = execution.prepare_request(&input(), 1, &prior).await?;
+    let request = prepared.request();
+    assert!(request.tools.iter().any(|tool| tool.name == "example.echo"));
+    assert_eq!(
+        request
+            .model_tools()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["code"]
+    );
+    // Hiding a declaration must neither drop validation nor admit a bad result.
+    let mut corrupted = request.clone();
+    let result = corrupted
+        .messages
+        .iter_mut()
+        .find_map(|message| match &mut message.content {
+            ModelContent::Part(ModelContentPart::ToolResult { content, .. }) => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    *result = crate::model::ToolResultContent::Json { value: json!(7) };
+    assert!(crate::model::PreparedModelRequest::prepare(corrupted, executor.limits, None).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn multiple_results_reach_continuation_with_per_part_render_bounds() -> Result<()> {
+    let (mut executor, _, _) = executor("42", allowed()?, true)?;
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn(["first", "second"].map(|id| {
+                ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    id.into(),
+                    "code".into(),
+                    json!({"code":"'x'.repeat(40000)"}),
+                ))
+            })),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count),
+    );
+    executor.provider = model.clone();
+    executor.limits.render_bytes = 65_536;
+    let mut turn = input();
+    turn.input = ModelContent::Text("context".repeat(1000));
+    let journal = Journal::default();
+    executor.execute(turn.clone(), &journal).await?;
+    let requests = model.requests();
+    let values = requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ModelContent::Part(ModelContentPart::ToolResult {
+                content: crate::model::ToolResultContent::Json { value },
+                ..
+            }) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(values[0].as_str().unwrap().len(), 40000);
+    assert_eq!(values[1].as_str().unwrap().len(), 40000);
+    assert!(serde_json::to_vec(&requests[1].messages).unwrap().len() > 65_536);
+    // The same durable exchange remains valid on replay, without a second model call.
+    executor.execute(turn, &journal).await?;
+    assert_eq!(model.requests().len(), 2);
     Ok(())
 }

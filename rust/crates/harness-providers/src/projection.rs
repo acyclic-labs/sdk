@@ -250,8 +250,7 @@ pub(crate) fn body_named<'a>(
     gemini.finish()?;
     sequence::finish(adapter, &mut messages)?;
     let tools = request
-        .tools
-        .iter()
+        .model_tools()
         .map(|tool| Ok(tool.model_declaration(names.wire(&tool.name)?)))
         .collect::<Result<Vec<_>>>()?;
     let tools = acyclic_model_render::ToolDeclarations::new(adapter, tools)

@@ -47,6 +47,8 @@ contains the turn's current granted tools and their original schemas. The notice
 retains its position as later steps append calls/results, preserving that prefix.
 New turns use the latest bound registry; each program binds a fresh table from
 that same snapshot. The turn's admitted tools remain pinned for receipt replay.
+Dynamic schemas stay in the admitted request for validating earlier exchanges;
+only the provider declaration iterator filters them from the native prefix.
 Use it for multi-step reads, filters and loops, for example:
 
 ```javascript
@@ -70,8 +72,10 @@ credit feeds them to ordinary settlement. Each settled call publishes a
 its promise resolves. Follow that directory to stream tool name, success/failure
 and input/output JSON byte counts, associated with the parent call and ordinal.
 Logs stay in files without accumulating in the result or being omitted by a
-count limit. Results use the caller's admitted render budget; oversized final
-values become `{ truncated: true, bytes }`.
+count limit. Each result uses the caller's admitted per-part render budget;
+oversized final values become `{ truncated: true, bytes }`. Input, history and
+other results retain their own per-part allowances. The whole request passes
+ordinary verified token admission, without an additional aggregate JSON limit.
 Intermediate tool results remain inside the interpreter and ordinary journal
 artifacts; they are not added to model history.
 
