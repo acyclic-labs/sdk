@@ -76,13 +76,25 @@ fn executors_with_targets(
     matching_limits: bool,
     targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
 ) -> Result<Arc<dyn TurnExecutors>> {
+    executors_with_render_bytes(model, matching_limits, targets, None)
+}
+
+fn executors_with_render_bytes(
+    model: Arc<ScriptedModelProvider>,
+    matching_limits: bool,
+    targets: Option<Arc<dyn acyclic_harness_core::runtime::TargetResolver>>,
+    render_bytes: Option<u64>,
+) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
-    let base = acyclic_harness_core::conversation::Limits {
+    let mut base = acyclic_harness_core::conversation::Limits {
         model_steps: 1,
         ..Default::default()
     };
+    if let Some(render_bytes) = render_bytes {
+        base.render_bytes = render_bytes;
+    }
     let bindings = acyclic_harness_core::runtime::Bindings {
         targets,
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
@@ -284,7 +296,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
                 },
             ),
             TurnAdmission::LocalRoot,
-            executors(model.clone())?,
+            executors_with_render_bytes(model.clone(), true, None, Some(4096))?,
             LIMITS,
             Default::default(),
         ));
@@ -311,6 +323,20 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
             coalesce_key: Some("workspace".into()),
         },
     };
+    for name in ["wide-first", "wide-second"] {
+        let wide = InboxRecord::Notice {
+            id: intent(name),
+            notice: Notice {
+                source: "filesystem".into(),
+                kind: "files.changed".into(),
+                body: serde_json::json!({"name": name, "details": "x".repeat(2300)}),
+                wake: false,
+                coalesce_key: None,
+            },
+        };
+        host.send(&path, &super::user(), &wide).await?;
+        host.drain(&path).await?;
+    }
     for name in ["alpha", "beta"] {
         host.send(&path, &super::user(), &event(name, false))
             .await?;
@@ -326,7 +352,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         "freeze must precede request admission"
     );
     let selected = turn_notices(&frozen)?.ok_or("no frozen range")?;
-    assert_eq!(selected.range, 1..3);
+    assert_eq!(selected.range, 1..5);
     // An exact delivered-intent replay cannot extend or replace the frozen range.
     host.send(&path, &super::user(), &waking).await?;
     host.drain(&path).await?;
@@ -351,7 +377,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
         "restored turn: {settled:?}; requests: {:?}",
         model.requests()
     );
-    assert_eq!(settled.pending_notices, Some(3..5));
+    assert_eq!(settled.pending_notices, Some(5..7));
     let mut entries = stream
         .read(ReadRequest {
             key: None,
@@ -400,19 +426,44 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     );
     let first = batches(&requests[0]);
     let second = batches(&requests[1]);
-    assert_eq!(
-        first.len(),
-        1,
-        "one block includes both quiet and waking events"
+    assert_eq!(first.len(), 2, "parts share the original finite allowance");
+    let flattened = first.iter().flatten().cloned().collect::<Vec<_>>();
+    let limits = acyclic_harness_core::conversation::Limits {
+        render_bytes: 4096,
+        ..Default::default()
+    };
+    assert!(
+        ModelContent::Part(ModelContentPart::Notices {
+            notices: flattened.clone()
+        })
+        .validate_limits(limits, &mut None)
+        .is_err(),
+        "the former whole-range block exceeds the same admitted credit"
     );
-    assert_eq!(first[0].len(), 2);
+    for block in &first {
+        ModelContent::Part(ModelContentPart::Notices {
+            notices: block.clone(),
+        })
+        .validate_limits(limits, &mut None)?;
+    }
     assert_eq!(
-        first[0][0].body,
+        flattened.len(),
+        4,
+        "no notice is omitted at a part boundary"
+    );
+    assert_eq!(flattened[0].body["name"], "wide-first");
+    assert_eq!(flattened[1].body["name"], "wide-second");
+    assert_eq!(
+        flattened[2].body,
         serde_json::json!({"paths": ["alpha", "beta"], "revision": "beta"})
     );
-    assert_eq!(second.len(), 2);
-    assert_eq!(second[0], first[0], "rendered history is immutable");
-    assert_eq!(second[1][0].body["paths"], serde_json::json!(["gamma"]));
+    assert_eq!(second.len(), 3);
+    assert_eq!(
+        &second[..2],
+        first.as_slice(),
+        "rendered history is immutable"
+    );
+    assert_eq!(second[2][0].body["paths"], serde_json::json!(["gamma"]));
     assert_eq!(
         &requests[1].messages[..requests[0].messages.len()],
         requests[0].messages.as_slice()
@@ -420,7 +471,7 @@ async fn quiet_notices_freeze_before_dispatch_and_keep_the_original_frontier() -
     // The former latest-batch substitution changes the already admitted prefix.
     let mut rewritten = requests[0].messages.clone();
     rewritten[1].content = ModelContent::Part(ModelContentPart::Notices {
-        notices: second[1].clone(),
+        notices: second[2].clone(),
     });
     assert_ne!(rewritten, requests[1].messages[..rewritten.len()]);
     selected.validate(&path.child(&id(218))?)?;

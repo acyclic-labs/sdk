@@ -371,6 +371,12 @@ pub async fn agent_authority<'v>(
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// The executor's existing per-part render allowance, if finite. Selection
+    /// chunks pending events under this same allowance before request admission.
+    fn render_bytes(&self) -> Option<u64> {
+        None
+    }
+
     /// Executor for `agent`'s turn `turn` on `input`.
     fn executor<'a>(
         &'a self,
@@ -846,9 +852,10 @@ fn roster_id(turn: OperationId) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-fn notice_id(turn: OperationId) -> uuid::Uuid {
+fn notice_id(turn: OperationId, block: usize) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.notices.v1");
     hasher.update(&turn.into_bytes());
+    hasher.update(&(block as u64).to_le_bytes());
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     uuid::Uuid::from_bytes(bytes)
@@ -861,10 +868,10 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
     agent: &AgentPath,
     selected: Option<&crate::agent::NoticeSelection>,
     input: ModelContent,
-) -> Result<(Option<ModelContent>, Option<ModelContent>)> {
+    maximum: Option<u64>,
+) -> Result<(Vec<ModelContent>, Option<ModelContent>)> {
     use crate::model::ModelContentPart;
-    use acyclic_model_render::PendingNotices;
-    let mut pending = PendingNotices::default();
+    let mut pending = NoticeBlocks::new(maximum);
     if let Some(selected) = selected {
         selected.validate(agent).map_err(agent_error)?;
         let mut from = selected.range.start;
@@ -890,9 +897,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                     crate::agent::InboxRecord::decode(&record.value).map_err(agent_error)?
                     && !notice.wake
                 {
-                    pending
-                        .push(notice)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    pending.push(notice)?;
                 }
                 from += 1;
             }
@@ -906,9 +911,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
     let input = match input {
         ModelContent::Part(ModelContentPart::Notices { notices }) => {
             for notice in notices {
-                pending
-                    .push(notice)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                pending.push(notice)?;
             }
             None
         }
@@ -922,9 +925,7 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
                 return Err(Error::Invalid("notice input lost its event block".into()));
             };
             for notice in notices {
-                pending
-                    .push(notice)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                pending.push(notice)?;
             }
             match parts.len() {
                 0 => None,
@@ -934,11 +935,80 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
         }
         other => Some(other),
     };
-    let notices = pending.finish();
-    Ok((
-        (!notices.is_empty()).then_some(ModelContent::Part(ModelContentPart::Notices { notices })),
-        input,
-    ))
+    Ok((pending.finish(), input))
+}
+
+/// Partition before coalescing: individually admitted notices cannot grow one
+/// unbounded coalesced paths array. Each block retains the original event order;
+/// coalescing is restricted to that unsent block and can only reduce its size.
+struct NoticeBlocks {
+    pending: acyclic_model_render::PendingNotices,
+    blocks: Vec<ModelContent>,
+    maximum: Option<u64>,
+    envelope: u64,
+    bytes: u64,
+    count: usize,
+}
+
+impl NoticeBlocks {
+    fn new(maximum: Option<u64>) -> Self {
+        Self {
+            pending: Default::default(),
+            blocks: Vec::new(),
+            maximum,
+            envelope: 0,
+            bytes: 0,
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, notice: crate::conversation::wire::Notice) -> Result<()> {
+        if let Some(maximum) = self.maximum {
+            if self.envelope == 0 {
+                self.envelope = crate::executor::json::json_byte_length(
+                    &crate::model::ModelContentPart::Notices {
+                        notices: Vec::new(),
+                    },
+                    maximum,
+                    &mut None,
+                )?;
+                self.bytes = self.envelope;
+            }
+            // Count the original event once, without a temporary JSON buffer.
+            let bytes = crate::executor::json::json_byte_length_at_depth(
+                &notice,
+                maximum - self.envelope,
+                256,
+                &mut None,
+            )?;
+            let separator = u64::from(self.count != 0);
+            if bytes + separator > maximum - self.bytes {
+                self.flush();
+            }
+            self.bytes += bytes + u64::from(self.count != 0);
+        }
+        self.pending
+            .push(notice)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        self.count += 1;
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        if self.count != 0 {
+            let notices = std::mem::take(&mut self.pending).finish();
+            self.blocks.push(ModelContent::Part(
+                crate::model::ModelContentPart::Notices { notices },
+            ));
+            self.bytes = self.envelope;
+            self.count = 0;
+        }
+    }
+
+    fn finish(mut self) -> Vec<ModelContent> {
+        self.flush();
+        self.blocks
+    }
 }
 
 /// Stable, domain-separated identity of a directive.
@@ -1089,6 +1159,7 @@ impl<'a> TurnContext<'a> {
         reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
         roster: Option<&FileRef>,
+        render_bytes: Option<u64>,
     ) -> Result<SelectedModelContext> {
         let Self {
             checkpoint,
@@ -1154,13 +1225,14 @@ impl<'a> TurnContext<'a> {
             }
             let text = staged_text(reader, &output).await?;
             let (notices, content) =
-                selected_notices(stream, &agent.path, notices.as_ref(), content).await?;
-            if let Some(notices) = notices {
+                selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
+                    .await?;
+            for (block, notices) in notices.into_iter().enumerate() {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
                     content: notices,
                 });
-                message_ids.push(notice_id(settled));
+                message_ids.push(notice_id(settled, block));
             }
             if let Some(content) = content {
                 messages.push(ModelMessage {
@@ -1178,14 +1250,20 @@ impl<'a> TurnContext<'a> {
         if let Some(roster) = roster {
             announce(&mut messages, &mut message_ids, turn, roster);
         }
-        let (notices, input) =
-            selected_notices(stream, &agent.path, current_notices.as_ref(), input.clone()).await?;
-        if let Some(notices) = notices {
+        let (notices, input) = selected_notices(
+            stream,
+            &agent.path,
+            current_notices.as_ref(),
+            input.clone(),
+            render_bytes,
+        )
+        .await?;
+        for (block, notices) in notices.into_iter().enumerate() {
             messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: notices,
             });
-            message_ids.push(notice_id(turn));
+            message_ids.push(notice_id(turn, block));
         }
         if let Some(input) = input {
             messages.push(ModelMessage {
@@ -1320,6 +1398,7 @@ where
                     &*bindings.content.reader,
                     input,
                     roster.as_ref().map(|(file, _)| file),
+                    self.executors.render_bytes(),
                 )
                 .await?;
             // The original selection validator requires the current input to
