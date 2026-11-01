@@ -7,6 +7,7 @@ export {
   WasmAgentProviders as BrowserAgentProviders,
   WasmMachinesWorkspace as BrowserMachinesWorkspace,
   AgentGuest,
+  decodeAgentRecord,
   decodeReadResponse,
   type WasmBrowserAgentOptions as BrowserAgentOptions,
   type WasmDelivered as BrowserDelivered,

@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { fromBinary } from "@bufbuild/protobuf";
 import {
   BrowserAgentAuthority, BrowserAgentRegistry, BrowserAgents,
-  decodeReadResponse, initializeBrowserRuntime, type BrowserAgentOptions,
+  decodeAgentRecord, decodeReadResponse, initializeBrowserRuntime, type BrowserAgentOptions,
 } from "@acyclic-labs/harness/browser";
 import { ReadResponseSchema, RecordBatchSchema } from "./fixtures/stream/stream/v1/stream_pb.js";
 import { fixtureAuthority, initializeFixtureAuthority } from "./fixtures/authority/fixture-authority.mjs";
@@ -64,7 +64,12 @@ test("installed browser entry hosts an agent turn", async () => {
         const batch = fromBinary(RecordBatchSchema, decodeReadResponse(frame.codec, frame.data, frame.decodedLength));
         if (batch.records.length === 0) continue;
         expect(batch.records[0].sequence).toBe(0n);
-        output = JSON.parse(new TextDecoder().decode(batch.records[0].value)).output;
+        const record = decodeAgentRecord(batch.records[0].value) as { output: unknown };
+        output = record.output;
+        const unsupported = JSON.parse(new TextDecoder().decode(batch.records[0].value));
+        unsupported.version++;
+        expect(() => decodeAgentRecord(new TextEncoder().encode(JSON.stringify(unsupported))))
+          .toThrow(/version/i);
         break;
       }
     } finally { cursor.close(); cursor.free(); }

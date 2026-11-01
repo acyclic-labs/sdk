@@ -75,6 +75,13 @@ fn agent_error(error: crate::agent::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 
+/// Decode a followed agent record with the canonical versioned reader.
+#[wasm_bindgen(js_name = decodeAgentRecord, unchecked_return_type = "unknown")]
+pub fn decode_agent_record(bytes: &[u8]) -> std::result::Result<JsValue, JsValue> {
+    let record: serde_json::Value = crate::agent::decode_record(bytes).map_err(agent_error)?;
+    to_js(&record)
+}
+
 fn stream_error(error: StreamError) -> JsValue {
     acyclic_stream::wasm_error(error)
 }
