@@ -110,6 +110,184 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
 }
 
 #[cfg(target_os = "linux")]
+async fn full_diagnostic_pipe() -> io::Result<(io::PipeReader, InheritedOutput)> {
+    use std::{future::poll_fn, pin::Pin, task::Poll};
+    use tokio::io::AsyncWrite as _;
+
+    let (reader, original) = io::pipe()?;
+    let mut output = InheritedOutput::from_file(std::os::fd::OwnedFd::from(original).into())?;
+    let chunk = [b'x'; 8192];
+    output.write_all(&chunk).await?;
+    loop {
+        let written = poll_fn(|cx| {
+            Poll::Ready(match Pin::new(&mut output).poll_write(cx, &chunk) {
+                Poll::Ready(result) => Some(result),
+                Poll::Pending => None,
+            })
+        })
+        .await;
+        let Some(written) = written else { break };
+        assert_ne!(written?, 0);
+    }
+    Ok((reader, output))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<()> {
+    use std::{
+        future::poll_fn,
+        sync::atomic::{AtomicBool, Ordering},
+        task::Poll,
+    };
+
+    let runtime = acyclic_native_runtime::coordination_runtime()?;
+    runtime.block_on(async {
+        for case in [
+            "report",
+            "generation",
+            "deadline",
+            "owner-lost",
+            "producer-lost",
+        ] {
+            let (reader, writer) = full_diagnostic_pipe().await?;
+            let report = WaitReport::default();
+            let dispatch = tracing::Dispatch::new(
+                subscriber(&report, Some("off".into()), || Ok(None))
+                    .unwrap()
+                    .0,
+            );
+            let _subscriber = tracing::dispatcher::set_default(&dispatch);
+            let (text, receiver) = TextOutput::channel(vec![vec![0; 64].into_boxed_slice()])?;
+            text.record(|buffer| buffer.write_str("pending diagnostic\n"))
+                .unwrap();
+            let (owner, child) = tokio::net::UnixStream::pair()?;
+            let port = ReportPort::new(GENERATION.into(), child)?;
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let retired = Arc::new(AtomicBool::new(false));
+            let physical = retired.clone();
+            let completion = acyclic_native_runtime::spawn_persistence(
+                "report",
+                "terminal",
+                acyclic_native_runtime::PersistenceKey::new(
+                    std::ptr::from_ref(&report) as usize,
+                    0,
+                ),
+                move || {
+                    entered.send(()).unwrap();
+                    let result = held
+                        .recv()
+                        .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe));
+                    physical.store(true, Ordering::Release);
+                    result
+                },
+            );
+            let (terminate, signal) = tokio::sync::oneshot::channel();
+            let shutdown = async {
+                signal.await.unwrap();
+                Ok(143)
+            }
+            .boxed()
+            .shared();
+            let stopped = shutdown.clone();
+            let operation = async {
+                stopped.await.unwrap();
+                completion.await??;
+                Ok(0)
+            };
+            let original = observe(&report, Ok(Some(port)), shutdown, true, operation);
+            let mut host = Box::pin(diagnostics(original, Some((receiver, writer))));
+            let controller = async {
+                let mut owner = BufReader::new(owner);
+                let mut line = String::new();
+                owner.read_line(&mut line).await?;
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&line)?["generation"],
+                    GENERATION
+                );
+                started.await.unwrap();
+                if case == "owner-lost" {
+                    return Ok::<_, io::Error>(());
+                }
+                let mut selected = request();
+                if case == "generation" {
+                    selected.generation = selected.request_id.clone();
+                }
+                if case == "deadline" {
+                    selected.deadline_unix_ms = 0;
+                }
+                let mut bytes = serde_json::to_vec(&selected)?;
+                bytes.push(b'\n');
+                owner.get_mut().write_all(&bytes).await?;
+                line.clear();
+                owner.read_line(&mut line).await?;
+                let ack: ReportAck = serde_json::from_str(&line)?;
+                assert_eq!(ack.request_id, selected.request_id);
+                assert_eq!(ack.generation, selected.generation);
+                if matches!(case, "generation" | "deadline") {
+                    assert_eq!(ack.outcome, ReportOutcome::Unsupported);
+                    assert!(ack.waits.is_empty());
+                } else {
+                    assert_eq!(ack.outcome, ReportOutcome::Report);
+                    assert_eq!(ack.waits.len(), 1);
+                    assert_eq!(ack.waits[0].primitive, "persistence-completion");
+                    let live = report.snapshot();
+                    assert_eq!(live.len(), 1);
+                    assert_eq!(ack.waits[0].key, live[0].key);
+                    assert_eq!(ack.waits[0].job, live[0].job);
+                    assert_eq!(ack.waits[0].origin, live[0].origin);
+                    assert_eq!(ack.waits[0].predecessor, live[0].predecessor);
+                }
+                Ok(())
+            };
+            tokio::select! {
+                result = &mut host => panic!("original terminal preceded release: {result:?}"),
+                result = controller => result?,
+            }
+            assert!(!retired.load(Ordering::Acquire));
+            assert_eq!(text.stats().retained, 1);
+            terminate.send(()).unwrap();
+            poll_fn(|cx| {
+                assert!(
+                    host.as_mut().poll(cx).is_pending(),
+                    "cancellation is not physical retirement"
+                );
+                Poll::Ready(())
+            })
+            .await;
+            assert!(!retired.load(Ordering::Acquire));
+            if case == "producer-lost" {
+                drop(release);
+            } else {
+                release.send(()).unwrap();
+            }
+            let ((result, report_result), failure) = host.await;
+            report_result?;
+            assert!(failure.is_none());
+            if case == "producer-lost" {
+                assert_eq!(
+                    result.unwrap_err().downcast::<io::Error>().unwrap().kind(),
+                    io::ErrorKind::BrokenPipe
+                );
+            } else {
+                assert_eq!(result.unwrap(), 0);
+            }
+            assert!(retired.load(Ordering::Acquire));
+            assert!(report.snapshot().is_empty());
+            assert_eq!(text.stats().retained, 0);
+            let terminal = text.terminal_stats();
+            assert_eq!(terminal.published, Some(1));
+            assert_eq!(terminal.pending, 0);
+            assert_eq!(terminal.writer_accepted, Some(0));
+            assert_eq!(terminal.incomplete, Some(1));
+            drop(reader);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<()> {
     use std::{future::poll_fn, os::fd::AsFd as _, pin::Pin, task::Poll};
