@@ -80,6 +80,44 @@ proptest! {
             max_output_tokens: Some(output),
         };
         let prepared = PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let count = {
+            let mut result = None;
+            let physical = acyclic_test_support::measure(|| {
+                result = Some(prepared.serialized_token_upper_bound(None));
+            });
+            let count = result.unwrap().unwrap().0;
+            let retained = (count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64;
+            prop_assert_eq!(physical.bytes_current, retained as i64);
+            // Only the result vector grows. Its geometric allocations do not
+            // depend on the byte length of any serialized message.
+            prop_assert!(physical.bytes_total < retained * 2);
+            let buffered = acyclic_test_support::measure(|| {
+                for message in &request.messages {
+                    std::hint::black_box(serde_json::to_vec(message).unwrap());
+                }
+            });
+            prop_assert!(buffered.bytes_total > physical.bytes_total);
+
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 16 * 1024 * 1024);
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(cause, _)| TestCaseError::fail(cause.to_string()))?;
+            let baseline = work.live_allocation_bytes();
+            let (native, custody) = prepared.serialized_token_upper_bound(Some(&work)).unwrap();
+            prop_assert_eq!(&native, &count);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline
+                + std::mem::size_of::<crate::context::ModelTokenCount>() as u64
+                + (native.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64);
+            drop(native);
+            drop(custody);
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            cancellation.cancel();
+            prop_assert!(prepared.serialized_token_upper_bound(Some(&work)).is_err());
+            prop_assert_eq!(work.live_allocation_bytes(), baseline);
+            count
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let count = prepared.serialized_token_upper_bound(None).unwrap().0;
         prop_assert_eq!(count.validate(&prepared, &mut None).unwrap(), prepared.bytes().len() as u64);
         for (message, tokens) in request.messages.iter().zip(&count.message_tokens) {
