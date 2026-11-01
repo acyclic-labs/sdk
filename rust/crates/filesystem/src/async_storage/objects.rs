@@ -52,27 +52,18 @@ pub trait AsyncObjectStore: ProviderPlatform {
     }
     /// Whether decoded-cache hooks may retain or reject a decoded page.
     ///
-    /// Return false only when both hooks have their default no-cache behavior.
-    /// The default preserves existing providers' cache and admission hooks.
+    /// Return false only when lookup has its default no-cache behavior.
+    /// The default permits a provider's original miss to retain admission policy.
     fn supports_decoded_cache(&self) -> bool {
         true
     }
 
-    /// Borrows an immutable decoded cache entry.
-    fn decoded_cache_get(
+    /// Observes a decoded value or retains its original miss across I/O.
+    fn decoded_cache_lookup(
         &self,
-        _key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, crate::storage::ObjectStoreError> {
-        Ok(None)
-    }
-
-    /// Offers one authenticated decoded representation to a disposable cache.
-    fn decoded_cache_admit(
-        &self,
-        _key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, crate::storage::ObjectStoreError> {
-        Ok(DecodedCacheAdmission::Uncached(value))
+        key: DecodedCacheKey,
+    ) -> Result<DecodedCacheLookup<'_>, crate::storage::ObjectStoreError> {
+        Ok(DecodedCacheLookup::Miss(DecodedCacheMiss::uncached(key)))
     }
 
     /// Writes one immutable object.

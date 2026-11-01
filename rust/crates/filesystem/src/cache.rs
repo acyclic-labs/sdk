@@ -481,17 +481,35 @@ impl<S> CachedObjectStore<S> {
         Ok(Some(value))
     }
 
-    pub(crate) fn decoded_admit(
+    pub(crate) fn decoded_lookup(
+        &self,
+        key: DecodedCacheKey,
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError>
+    where
+        S: acyclic_stream::ProviderPlatform,
+    {
+        let epoch = self.shared.fill_epoch();
+        Ok(match self.decoded_get(key)? {
+            Some(value) => crate::async_storage::DecodedCacheLookup::Hit(value),
+            None => crate::async_storage::DecodedCacheLookup::Miss(
+                crate::async_storage::DecodedCacheMiss::new(key, epoch, self),
+            ),
+        })
+    }
+
+    #[cfg(test)]
+    fn decoded_admit(
         &self,
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        self.decoded_admit_bounded::<true>(key, value)
+        self.decoded_admit_bounded::<true>(key, self.shared.fill_epoch(), value)
     }
 
     fn decoded_admit_bounded<const ENFORCE: bool>(
         &self,
         key: DecodedCacheKey,
+        epoch: u64,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
         let key = self.shared.key(key);
@@ -501,6 +519,9 @@ impl<S> CachedObjectStore<S> {
         let mut state = self.lock_state()?;
         let cutoff = state.clock;
         loop {
+            if epoch != self.shared.fill_epoch() {
+                return Ok(DecodedCacheAdmission::Uncached(value));
+            }
             if let Some(existing) = state.decoded.get(&key) {
                 return Ok(DecodedCacheAdmission::Shared(existing.value.clone()));
             }
@@ -730,3 +751,16 @@ mod decoded_model;
 #[cfg(not(loom))]
 #[path = "cache/decoded_properties.rs"]
 mod decoded_properties;
+
+impl<S: acyclic_stream::ProviderPlatform> crate::async_storage::DecodedCacheOrigin
+    for CachedObjectStore<S>
+{
+    fn admit(
+        &self,
+        key: DecodedCacheKey,
+        epoch: u64,
+        value: DecodedCacheValue,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        self.decoded_admit_bounded::<true>(key, epoch, value)
+    }
+}

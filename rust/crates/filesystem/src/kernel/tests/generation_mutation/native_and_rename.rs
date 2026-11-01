@@ -9,10 +9,10 @@ struct NoGenerationCalls;
     reason = "The fixture must fail if denied work reaches the provider."
 )]
 impl AsyncObjectStore for NoGenerationCalls {
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
         _: crate::async_storage::DecodedCacheKey,
-    ) -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::ObjectStoreError> {
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, crate::ObjectStoreError> {
         panic!("denied generation entered provider cache");
     }
 

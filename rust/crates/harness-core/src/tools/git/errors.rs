@@ -1,17 +1,17 @@
 use crate::Error;
 use acyclic_fs::{GitCompatError, GitCompatRunError};
 
-pub(super) fn run_error(
-    error: GitCompatRunError<acyclic_fs::LocalCoreStateStoreError, Error>,
+pub(super) fn run_error<S: super::CommandStore>(
+    error: GitCompatRunError<S::StoreError, Error>,
 ) -> Error {
     let error = match error {
         GitCompatRunError::Executor(error) => return error,
         GitCompatRunError::Compat(error) => error,
     };
-    compat_error(error)
+    compat_error::<S>(error)
 }
 
-pub(super) fn compat_error(error: GitCompatError<acyclic_fs::LocalCoreStateStoreError>) -> Error {
+pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::StoreError>) -> Error {
     match error {
         GitCompatError::InvalidCommand(message) => Error::Invalid(message),
         GitCompatError::UnknownObject(name) => Error::NotFound(name),
@@ -19,7 +19,7 @@ pub(super) fn compat_error(error: GitCompatError<acyclic_fs::LocalCoreStateStore
         GitCompatError::Unsupported { command, reason } => {
             Error::Unsupported(format!("{command}: {reason}"))
         }
-        GitCompatError::Store(error) => Error::from(error),
+        GitCompatError::Store(error) => S::error(error),
         GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
             Error::Storage(error.to_string())
         }
@@ -32,7 +32,7 @@ pub(super) fn compat_error(error: GitCompatError<acyclic_fs::LocalCoreStateStore
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     #[test]
@@ -44,13 +44,15 @@ mod tests {
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let custody = work.claim(123, 1, WorkCounters::UNCHARGED)?;
-        let error = run_error(GitCompatRunError::Executor(
-            acyclic_fs::LazyWorkspaceError::NativeRecordIo(
-                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-                Some(custody),
-            )
-            .into(),
-        ));
+        let error = run_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
+            GitCompatRunError::Executor(
+                acyclic_fs::LazyWorkspaceError::NativeRecordIo(
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                    Some(custody),
+                )
+                .into(),
+            ),
+        );
         assert_eq!(work.live_allocation_bytes(), baseline + 123);
         let Error::NativeSource { source, .. } = &error else {
             return Err(Error::Invalid("native source cause was lost".into()));

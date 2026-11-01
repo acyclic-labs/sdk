@@ -54,18 +54,8 @@ where
     }
 }
 
-// Preparation can await storage and merge drivers. Revalidate after it,
-// before handing any prepared result to a publication using the lease permit.
-pub(super) async fn prepared<T, P, F, Fut>(preparation: P, before_effect: &F) -> Result<T, Error>
-where
-    P: Future<Output = Result<T, Error>>,
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<(), Error>>,
-{
-    let value = preparation.await?;
-    before_effect().await?;
-    Ok(value)
-}
+#[cfg(test)]
+pub(super) use super::helpers::prepared;
 
 #[doc(hidden)]
 pub async fn publish_checkout_transition<F, Fut>(

@@ -7,7 +7,7 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     context: &mut AuthorityWork<'_>,
 ) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>>
 + acyclic_stream::ProviderTask {
-    read_many_representation::<false, S>(store, requests, context)
+    read_many_representation::<Decoded, S>(store, requests, context)
 }
 
 pub(crate) fn read_many_stored_sequential<S: AsyncObjectStore + ?Sized>(
@@ -16,10 +16,40 @@ pub(crate) fn read_many_stored_sequential<S: AsyncObjectStore + ?Sized>(
     context: &mut AuthorityWork<'_>,
 ) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>>
 + acyclic_stream::ProviderTask {
-    read_many_representation::<true, S>(store, requests, context)
+    read_many_representation::<Stored, S>(store, requests, context)
 }
 
-async fn read_many_representation<const STORED: bool, S: AsyncObjectStore + ?Sized>(
+// Select the provider future before forming the batch state machine. The
+// decoded path must not also contain the stored representation's read path.
+trait ReadRepresentation {
+    fn read<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        request: &ObjectReadRequest,
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask;
+}
+struct Decoded;
+struct Stored;
+impl ReadRepresentation for Decoded {
+    fn read<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        request: &ObjectReadRequest,
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask {
+        store.read(request.object_id, request.maximum_bytes, context)
+    }
+}
+impl ReadRepresentation for Stored {
+    fn read<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        request: &ObjectReadRequest,
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask {
+        store.read_stored(request.object_id, request.maximum_bytes, context)
+    }
+}
+
+async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?Sized>(
     store: &S,
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
@@ -56,15 +86,7 @@ async fn read_many_representation<const STORED: bool, S: AsyncObjectStore + ?Siz
             .map_err(crate::ObjectStoreError::from)?;
         for request in requests {
             let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
-            let read = if STORED {
-                store
-                    .read_stored(request.object_id, request.maximum_bytes, &mut read_work)
-                    .await
-            } else {
-                store
-                    .read(request.object_id, request.maximum_bytes, &mut read_work)
-                    .await
-            };
+            let read = R::read(store, request, &mut read_work).await;
             if !batch.is_native() {
                 batch.work = batch
                     .work

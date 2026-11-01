@@ -505,6 +505,29 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
                         *expected.get_mut(&key).unwrap() += 1;
                     }
                     prop_assert!(work.items - before <= 9 * 40 + 1);
+                    let before = work.items;
+                    let mut expected_owner = expected.get(&key).copied();
+                    let observed = table.get_retained_mut(
+                        key,
+                        |value| Some(*value) == expected_owner,
+                        |items| work.items += items,
+                    );
+                    prop_assert_eq!(observed.as_deref(), expected.get(&key));
+                    if let Some(value) = observed {
+                        *value += 1;
+                        *expected.get_mut(&key).unwrap() += 1;
+                    }
+                    prop_assert!(work.items - before <= 9 * 40 + 1);
+                    expected_owner = expected.get(&key).map(|value| value + 1);
+                    prop_assert!(
+                        table
+                            .get_retained_mut(
+                                key,
+                                |value| Some(*value) == expected_owner,
+                                |items| work.items += items,
+                            )
+                            .is_none()
+                    );
                 }
                 let mut row = table.first(&mut work).map_err(TestCaseError::fail)?;
                 for expected in &expected {
@@ -581,6 +604,26 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
         );
         let mut empty = FixedIndex::<usize, Allocation, N>::default();
         assert_eq!(empty.get_mut([0; N], &mut work).err(), Some("cancelled"));
+        let before = work.items;
+        work.maximum_items = Some(before);
+        assert!(
+            table
+                .get_retained_mut([0; N], |value| *value == 1, |items| work.items += items)
+                .is_none()
+        );
+        *table
+            .get_retained_mut([0; N], |value| *value == 0, |items| work.items += items)
+            .ok_or("original retained owner was refused during cancellation")? = 2;
+        assert!(work.items - before <= 2 * (9 * N + 1) as u64);
+        assert!(
+            empty
+                .get_retained_mut(
+                    [0; N],
+                    |_| panic!("absent owner predicate"),
+                    |_| panic!("absent node observation"),
+                )
+                .is_none()
+        );
         assert_eq!(empty.seek_after([0; N], &mut work).err(), Some("cancelled"));
         assert!(
             empty
@@ -596,5 +639,38 @@ fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
     boundary::<8>()?;
     boundary::<24>()?;
     boundary::<40>()?;
+    // An old retained registration must not mutate a successor at the same key.
+    let mut work = Work::default();
+    let mut table = FixedIndex::default();
+    table.get_or_try_insert_with([7; 8], &mut work, |_| Ok(0))?;
+    let original = table
+        .remove_if([7; 8], |generation| *generation == 0)
+        .ok_or("missing original registration")?;
+    table.get_or_try_insert_with([7; 8], &mut work, |_| Ok(1))?;
+    let claims = work.claims;
+    let live = work.live.get();
+    work.cancelled = true;
+    assert!(
+        table
+            .get_retained_mut(
+                [7; 8],
+                |generation| *generation == 0,
+                |items| work.items += items
+            )
+            .is_none()
+    );
+    *table
+        .get_retained_mut(
+            [7; 8],
+            |generation| *generation == 1,
+            |items| work.items += items,
+        )
+        .ok_or("successor retirement was refused")? = 2;
+    assert_eq!(*original.value(), 0);
+    assert_eq!(work.claims, claims);
+    assert_eq!(work.live.get(), live);
+    drop(table);
+    drop(original);
+    assert_eq!(work.live.get(), 0);
     a_full_scan_negative_exposes_population_work_hidden_by_the_fixed_key_index()
 }

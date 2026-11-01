@@ -141,6 +141,7 @@ pub(crate) const TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES: u64 = {
         "invocation",
         "metadata",
         "target",
+        "filesystem",
         "operation_id",
         "call_id",
         "name",

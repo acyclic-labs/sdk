@@ -22,6 +22,26 @@ impl TaskContext {
         self
     }
 
+    /// Follows this turn's original journal stop signal.
+    /// Only reversible preparation may be abandoned when this resolves;
+    /// admitted effects retain their original publication owner until settlement.
+    pub fn model_cancellation(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::BoxProviderFuture<'_, Result<()>>> {
+        Ok(self
+            .journal
+            .as_ref()
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "task has no original execution journal",
+                )
+            })?
+            .model_cancellation())
+    }
+
     /// Authenticates an original model call's committed terminal observation.
     /// Missing bindings, unreadable records and foreign identities refuse;
     /// an absent terminal record remains unresolved.

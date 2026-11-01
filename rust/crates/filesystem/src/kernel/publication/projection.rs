@@ -58,21 +58,11 @@ async fn check_inner<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
         root: candidate,
         lease,
     } = candidate;
-    let mut work = match &*accounting {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { work, .. } => {
-            crate::AuthorityWork::native(work, cancellation)
-        }
-        _ => crate::AuthorityWork::new(accounting.remaining()?, cancellation),
-    };
+    let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
     let current = authority
         .head_payload(request.authority_id, 4096, &mut work)
         .await;
-    let spent = work.spent();
     drop(work);
-    if accounting.standalone_parts().is_some() {
-        accept_backend(accounting, spent)?;
-    }
     let ((head, payload), _custody) = current?;
     // Only this exact expected head can win the CAS. A stale candidate cannot
     // change policy, even if another publisher wins while we inspect objects.

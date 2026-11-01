@@ -285,10 +285,7 @@ impl Ticket {
             ticket.settled = true;
             return Ok(None);
         };
-        let Some(cost) = core
-            .capacity(authority, anchor, accounting, cancellation)
-            .await?
-        else {
+        let Some(cost) = core.capacity(authority, anchor, accounting).await? else {
             ticket.abort();
             ticket.settled = true;
             return Ok(None);

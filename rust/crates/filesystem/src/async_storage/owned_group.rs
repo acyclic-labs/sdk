@@ -137,43 +137,22 @@ impl<G: OwnedAuthorityGuard> OwnedAuthorityGroup<G> {
     }
 
     async fn run<A: AsyncAuthorityStore>(mut self, owner: A) {
-        let cancellation = self
-            .accounting
-            .as_ref()
-            .unwrap_or_else(|| unreachable!("running accounting"))
-            .cancellation();
         let result = async {
             let mut accounting = self
                 .accounting
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("running accounting"))
                 .borrow();
-            let mut work = AuthorityWork::new(
-                accounting
-                    .remaining()
-                    .map_err(super::work::authority_error)?,
-                &cancellation,
-            );
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                work = AuthorityWork::native(original, &cancellation);
-            }
-            let result = owner
+            let mut work = super::work::AuthorityFrame::borrow(&mut accounting)
+                .map_err(super::work::authority_error)?;
+            owner
                 .compare_and_append_group(
                     &self.requests.value,
                     &self.cuts.value,
                     &mut work,
                     self.guard.as_mut(),
                 )
-                .await;
-            let completed = work.spent();
-            drop(work);
-            if accounting.standalone_parts().is_some() {
-                accounting
-                    .accept_backend(completed)
-                    .map_err(super::work::authority_error)?;
-            }
-            result
+                .await
         }
         .await;
         self.finish(result);

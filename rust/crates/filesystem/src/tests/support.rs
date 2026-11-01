@@ -58,16 +58,13 @@ impl OwnedReadObjectStore {
 }
 
 impl AsyncObjectStore for OwnedReadObjectStore {
-    fn decoded_cache_admit(
+    fn decoded_cache_lookup(
         &self,
-        _key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        if self.reject_decoded_admission.load(Ordering::Relaxed) {
-            Err(ObjectStoreError::Corrupt)
-        } else {
-            Ok(DecodedCacheAdmission::Uncached(value))
-        }
+        key: DecodedCacheKey,
+    ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
+        Ok(crate::async_storage::DecodedCacheLookup::Miss(
+            crate::async_storage::DecodedCacheMiss::new(key, 0, self),
+        ))
     }
 
     async fn put(
@@ -140,3 +137,22 @@ pub(crate) use objects::{
     put_attribute_page, put_blob_page, put_extent_page, put_file_metadata, put_file_table_page,
     put_generation_root, put_object, put_tree_page,
 };
+
+impl crate::async_storage::DecodedCacheOrigin for OwnedReadObjectStore {
+    fn admit(
+        &self,
+        _key: DecodedCacheKey,
+        _epoch: u64,
+        value: DecodedCacheValue,
+    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
+        if self.reject_decoded_admission.load(Ordering::Relaxed) {
+            Err(ObjectStoreError::Corrupt)
+        } else {
+            Ok(DecodedCacheAdmission::Uncached(value))
+        }
+    }
+}
+
+#[path = "support/paused_objects.rs"]
+mod paused_objects;
+pub(crate) use paused_objects::PausedStore;

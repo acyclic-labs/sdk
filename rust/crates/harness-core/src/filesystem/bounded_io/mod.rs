@@ -16,6 +16,7 @@ mod codec_properties;
 #[cfg(all(test, not(loom)))]
 mod custody_tests;
 mod history;
+mod index;
 mod quota;
 mod records;
 mod scope;

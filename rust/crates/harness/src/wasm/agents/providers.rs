@@ -21,7 +21,7 @@ use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, EmbeddedCapabilities, Fs, LogicalObjectStore, ObjectId,
     ObjectRead, ObjectReadRequest, ObjectStoreError, PublicationHold, PublicationScope,
     StreamAuthorityStore,
-    async_storage::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue},
+    async_storage::{DecodedCacheKey, DecodedCacheLookup},
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
@@ -55,19 +55,11 @@ impl AsyncObjectStore for Objects {
         each!(self, store => store.supports_decoded_cache())
     }
 
-    fn decoded_cache_get(
+    fn decoded_cache_lookup(
         &self,
         key: DecodedCacheKey,
-    ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
-        each!(self, store => store.decoded_cache_get(key))
-    }
-
-    fn decoded_cache_admit(
-        &self,
-        key: DecodedCacheKey,
-        value: DecodedCacheValue,
-    ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        each!(self, store => store.decoded_cache_admit(key, value))
+    ) -> Result<DecodedCacheLookup<'_>, ObjectStoreError> {
+        each!(self, store => store.decoded_cache_lookup(key))
     }
 
     async fn put(
@@ -182,7 +174,10 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
         let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
+        let ancestry =
+            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(Arc::clone(&stream)));
         let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
+            .and_then(|host| host.with_project_families(ancestry))
             .map_err(js_error)?;
         Ok(Self {
             stream,
@@ -286,15 +281,18 @@ impl Providers {
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
-        let turns = Arc::new(FilesystemTurnHost::new(
-            Arc::clone(&self.stream),
-            Arc::clone(&self.filesystem),
-            owner.issuer.clone(),
-            admission.clone(),
-            Arc::new(Self::executors(options, registry)?),
-            turn_limits,
-            options.preset.approval_policy.clone(),
-        ));
+        let turns = Arc::new(
+            FilesystemTurnHost::new(
+                Arc::clone(&self.stream),
+                Arc::clone(&self.filesystem),
+                owner.issuer.clone(),
+                admission.clone(),
+                Arc::new(Self::executors(options, registry)?),
+                turn_limits,
+                options.preset.approval_policy.clone(),
+            )
+            .with_filesystem_tools(),
+        );
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),

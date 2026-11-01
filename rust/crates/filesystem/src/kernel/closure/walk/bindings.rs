@@ -11,13 +11,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             return Ok(());
         };
         Self::require_kind(root, ObjectKind::BindingPage)?;
-        if map_get(&self.binding_proofs, &record.file_id).is_some_and(|proof| proof.root == root) {
+        if map_get(&self.binding_proofs, &record.file_id)?.is_some_and(|proof| proof.root == root) {
             return Ok(());
         }
         let mut leaves = ProofVec::new(&self.meter);
         let mut pending: ProofVec<'a, PendingPage<Binding>> = ProofVec::new(&self.meter);
         pending.push((root, None, None, false))?;
-        let mut pages = ProofVec::new(&self.meter);
+        let mut pages = ProofSet::new(&self.meter);
         while let Some((id, lower, upper, exiting)) = pending.values.pop() {
             if exiting {
                 self.complete(id)?;
@@ -88,7 +88,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     pub(super) fn validate_binding_relations(
         &self,
         root: FileId,
-        records: &ProofVec<'a, (FileId, FileRecord)>,
+        records: &ProofMap<'a, FileId, FileRecord>,
         directories: &DirectoryProofs<'a>,
     ) -> Result<(), crate::FsError> {
         for (file_id, record) in &records.values {
@@ -100,7 +100,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 }
                 continue;
             }
-            let proof = map_get(&self.binding_proofs, file_id).ok_or_else(mismatch)?;
+            let proof = map_get(&self.binding_proofs, file_id)?.ok_or_else(mismatch)?;
             if record.bindings != Some(proof.root) {
                 return Err(mismatch().into());
             }
@@ -108,7 +108,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             for binding in Self::binding_entries(proof) {
                 self.examine(1)?;
                 count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-                let pages = map_get(directories, &binding.parent).ok_or_else(mismatch)?;
+                let pages = map_get(directories, &binding.parent)?.ok_or_else(mismatch)?;
                 let forward = self
                     .proven_tree_entry(pages, &binding.name)?
                     .ok_or_else(mismatch)?;
@@ -139,7 +139,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     return Err(mismatch().into());
                 }
             } else if change.before.is_none() {
-                let proof = map_get(&self.binding_proofs, &record.file_id).ok_or_else(mismatch)?;
+                let proof = map_get(&self.binding_proofs, &record.file_id)?.ok_or_else(mismatch)?;
                 let mut entries = Self::binding_entries(proof);
                 if record.bindings != Some(proof.root)
                     || entries.next().is_none()
@@ -156,7 +156,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .as_ref()
                 .ok_or(crate::ObjectStoreError::Corrupt)?;
             let mismatch = || ClosureError::BindingRelationMismatch(entry.file_id);
-            let proof = map_get(&self.binding_proofs, &entry.file_id).ok_or_else(mismatch)?;
+            let proof = map_get(&self.binding_proofs, &entry.file_id)?.ok_or_else(mismatch)?;
             let binding = Self::binding_entries(proof).next().ok_or_else(mismatch)?;
             if binding.parent != forward.directory_id || binding.name != entry.name {
                 return Err(mismatch().into());

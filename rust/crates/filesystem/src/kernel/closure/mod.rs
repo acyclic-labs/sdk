@@ -181,7 +181,7 @@ mod memory;
 pub(crate) use memory::{CachedProofs, ObservedProof, ProofGuard, ProofMeter};
 mod published;
 use crate::kernel::allocation::retained::RetainedArc;
-use memory::{ProofVec, map_get, map_insert, set_insert};
+use memory::{ProofMap, ProofSet, ProofVec, map_get, map_insert, set_insert};
 use published::ProofSlot;
 pub(crate) use published::Unpublished;
 mod walk;

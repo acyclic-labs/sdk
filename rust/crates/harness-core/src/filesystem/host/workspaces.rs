@@ -27,13 +27,17 @@ where
 #[derive(Clone, Copy)]
 pub(super) enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
-    Authorized(acyclic_fs::access::PolicyFence, &'a ContentGrant),
+    Authorized(
+        acyclic_fs::access::PolicyFence,
+        &'a ContentGrant,
+        Option<acyclic_fs::access::PolicyFence>,
+    ),
 }
 
 impl FilePublication<'_> {
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
-            Self::Authorized(fence, _) => Some(fence),
+            Self::Authorized(fence, _, _) => Some(fence),
             Self::Replace(_) => None,
         }
     }
@@ -43,8 +47,9 @@ fn require_publication_time(
     publication: FilePublication<'_>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    if let FilePublication::Authorized(_, grant) = publication {
+    if let FilePublication::Authorized(_, grant, root_fence) = publication {
         grant.recheck(io)?;
+        require_publication_fence(root_fence)?;
     }
     require_publication_fence(publication.fence())
 }
@@ -87,7 +92,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await,
             )?,
             None => io.sdk(
-                workspace
+                self.current_generation(&workspace, io)
+                    .await?
                     .read(path, maximum_bytes, io, io.cancellation())
                     .await,
             )?,
@@ -105,28 +111,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: Option<&GenerationRef>,
         path: &str,
     ) -> Result<WorkspaceStat> {
-        let workspace = self.open(workspace, None).await?;
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let workspace = self.open(workspace, Some(&io)).await?;
         match generation {
-            Some(reference) => self
-                .generation(&workspace, reference, None)
-                .await?
-                .stat(
-                    path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error)),
-            None => workspace
-                .stat(
-                    path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error)),
+            Some(reference) => io.sdk(
+                self.generation(&workspace, reference, Some(&io))
+                    .await?
+                    .stat(path, &io, io.cancellation())
+                    .await,
+            ),
+            None => io.sdk(
+                self.select_current_workspace(&workspace, &io)
+                    .await?
+                    .stat(path, &io, io.cancellation())
+                    .await,
+            ),
         }
     }
 
@@ -151,33 +150,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         after: Option<&LogicalName>,
         maximum_entries: u32,
     ) -> Result<DirectoryPage> {
-        let workspace = self.open(workspace, None).await?;
-        match generation {
-            Some(reference) => self
-                .generation(&workspace, reference, None)
-                .await?
-                .list_directory(
-                    path,
-                    after,
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| map_error(failure.error)),
-            None => workspace
-                .list_directory(
-                    path,
-                    after,
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| map_error(failure.error)),
-        }
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let workspace = self.open(workspace, Some(&io)).await?;
+        let (page, _custody) = match generation {
+            Some(reference) => io.sdk(
+                self.generation(&workspace, reference, Some(&io))
+                    .await?
+                    .list_directory(path, after, maximum_entries, &io, io.cancellation())
+                    .await,
+            )?,
+            None => io.sdk(
+                self.select_current_workspace(&workspace, &io)
+                    .await?
+                    .list_directory(path, after, maximum_entries, &io, io.cancellation())
+                    .await,
+            )?,
+        };
+        Ok(page)
     }
 
     pub(in crate::filesystem) fn generation_ref_id(
@@ -428,7 +417,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &owned
         };
         let workspace = self.open(reference, Some(io)).await?;
-        let head = io.sdk(workspace.head(io, io.cancellation()).await)?;
+        let head = self.current_generation(&workspace, io).await?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let resource = crate::core::copy_resource(reference.as_resource(), &mut quota)?;
@@ -502,14 +491,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: GenerationId,
         io: &PreparationIo,
     ) -> Result<Generation<A, O>> {
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        if let Some((root, store)) = &self.project_family
-            && workspace.id() == *root
+        if let Some(family) = &self.project_family
+            && family.applies(workspace.id())
         {
-            return crate::conversation::BoundedContentFuture::new(Some(io), || {
-                self.project_generation(workspace, generation, *root, store, io)
-            })?
-            .await;
+            return family.generation(self, workspace, generation, io)?.await;
         }
 
         io.sdk(

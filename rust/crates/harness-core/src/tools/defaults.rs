@@ -44,6 +44,7 @@ pub fn bind_defaults(
         let available = match spec.binding {
             super::ToolBinding::Volume => volume,
             super::ToolBinding::Workspace => workspace(spec.name),
+            super::ToolBinding::Filesystem => volume || workspace(spec.name),
         };
         if !available {
             continue;

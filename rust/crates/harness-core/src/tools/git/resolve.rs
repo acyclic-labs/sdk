@@ -1,11 +1,17 @@
 use super::*;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
-    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<LocalGeneration, Error> {
+    pub(super) async fn generation(
+        &self,
+        tree: GitTreeRef,
+    ) -> Result<ManagedGeneration<P, O>, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
                 .workspace(reference.workspace_id)
@@ -18,6 +24,11 @@ where
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| Error::from(failure.error).into()),
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let View::Checkout(current) = self.lazy_current else {
@@ -54,7 +65,7 @@ where
                         initial.authored_generation,
                     )
                     .await
-                    .map_err(Error::from)?;
+                    .map_err(S::lineage_error)?;
                 child
                     .exactify(
                         "/",
@@ -64,6 +75,14 @@ where
                     .await
                     .map_err(Error::from)
             }
+            #[cfg(not(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            )))]
+            GitTreeRef::Lazy(_) => Err(Error::Unsupported(
+                "native source snapshots require a native checkout".into(),
+            )),
         }
     }
 
@@ -73,7 +92,7 @@ where
     }
 
     /// Takes the workspace selected by a branch switch.
-    pub(crate) fn switched_workspace(&self) -> Result<Option<OwnedView>, Error> {
+    pub(crate) fn switched_workspace(&self) -> Result<Option<OwnedView<P, O>>, Error> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))
@@ -84,28 +103,7 @@ where
     pub(crate) async fn workspace(
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
-    ) -> Result<LocalWorkspace, Error> {
-        if workspace_id == self.current.id() {
-            self.access.require(&self.current).await?;
-            return Ok(self.current.clone());
-        }
-        let graph = WorkspaceGraph::new(self.store.clone());
-        graph
-            .authorize_descendant(workspace_id, self.repository_id)
-            .await
-            .map_err(|error| match error {
-                acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => {
-                    Error::Unauthorized("Git workspace is outside its repository lineage".into())
-                }
-                error => Error::from(error),
-            })?;
-        let workspace = acyclic_fs::WorkspaceResolver::resolve(
-            &((*self.fs).clone(), WorkspaceGraph::new(self.store.clone())),
-            workspace_id,
-        )
-        .await
-        .map_err(Error::from)?;
-        self.access.require(&workspace).await?;
-        Ok(workspace)
+    ) -> Result<ManagedWorkspace<P, O>, Error> {
+        self.repository_access().workspace(workspace_id).await
     }
 }

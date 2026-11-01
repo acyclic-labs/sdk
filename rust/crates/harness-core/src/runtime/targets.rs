@@ -168,7 +168,11 @@ pub(crate) fn call_target(
 
 pub(crate) fn is_workspace_call(invocation: &crate::tool::ToolInvocation) -> bool {
     crate::tools::catalog().any(|spec| {
-        spec.name == invocation.name && spec.binding == crate::tools::ToolBinding::Workspace
+        spec.name == invocation.name
+            && matches!(
+                spec.binding,
+                crate::tools::ToolBinding::Workspace | crate::tools::ToolBinding::Filesystem
+            )
     })
 }
 

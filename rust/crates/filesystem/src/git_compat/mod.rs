@@ -40,6 +40,10 @@ mod commands;
 pub use commands::*;
 mod store;
 pub use store::*;
+#[cfg(feature = "distributed")]
+mod stream_store;
+#[cfg(feature = "distributed")]
+pub use stream_store::{StreamGitCompatStore, StreamGitCompatStoreError};
 mod errors;
 pub use errors::*;
 mod repository;
