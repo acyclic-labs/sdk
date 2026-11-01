@@ -4,6 +4,14 @@ use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Reasoning};
 use serde_json::{Map, Value, json};
 
+fn prefix_cache_key(prefix: [u8; 32]) -> String {
+    let digest = blake3::Hash::from(prefix).to_hex();
+    let mut key = String::with_capacity("profile-v1:".len() + digest.len());
+    key.push_str("profile-v1:");
+    key.push_str(digest.as_str());
+    key
+}
+
 pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
     if binding.fixed_effort().is_some() && adapter != Adapter::Responses {
         return Err(invalid(
@@ -47,10 +55,7 @@ pub(super) fn project(
             // append to the conversation instead of replacing its prefix.
             fields.insert(
                 "prompt_cache_key".into(),
-                json!(format!(
-                    "profile-v1:{}",
-                    blake3::Hash::from(binding.prefix_digest()).to_hex()
-                )),
+                Value::String(prefix_cache_key(binding.prefix_digest())),
             );
         }
         Adapter::Anthropic => {
@@ -388,6 +393,38 @@ mod tests {
             }
             if adapter == Adapter::Responses {
                 let key = body["prompt_cache_key"].clone();
+                let prefix = profile.prefix_digest();
+                let mut exact = None;
+                let exact_cost = acyclic_test_support::measure(|| {
+                    exact = Some(prefix_cache_key(prefix));
+                });
+                // Restoring the original formatter preserves every byte but
+                // must regress the same one-allocation oracle.
+                let mut formatted = None;
+                let formatted_cost = acyclic_test_support::measure(|| {
+                    formatted = Some(format!(
+                        "profile-v1:{}",
+                        blake3::Hash::from(prefix).to_hex()
+                    ));
+                });
+                assert_eq!(exact, formatted);
+                assert_eq!(exact_cost.count_total, 1);
+                assert!(formatted_cost.count_total > exact_cost.count_total);
+                assert!(formatted_cost.bytes_total > exact_cost.bytes_total);
+                assert_eq!(key, json!(exact));
+                println!(
+                    "{}",
+                    json!({
+                        "version": 1,
+                        "task": "prefix-cache-key-allocation",
+                        "prefix_digest": prefix,
+                        "key": key,
+                        "exact_allocations": exact_cost.count_total,
+                        "formatted_allocations": formatted_cost.count_total,
+                        "exact_bytes": exact_cost.bytes_total,
+                        "formatted_bytes": formatted_cost.bytes_total,
+                    })
+                );
                 let reviewer = RoleFile::parse(
                     "---\nversion: 1\nname: reviewer\nmodel: fixture/model\ncontext: fresh\nmay_spawn: []\nmax_output_tokens: 64\n---\n",
                 )?;
