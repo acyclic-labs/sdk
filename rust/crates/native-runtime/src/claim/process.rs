@@ -219,6 +219,7 @@ fn path_bytes(path: &Path) -> io::Result<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn bytes_path(bytes: &[u8]) -> Option<PathBuf> {
     #[cfg(unix)]
     {

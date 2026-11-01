@@ -164,7 +164,7 @@ impl futures::Stream for FiniteRead {
         _: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let cursor = self.get_mut();
-        let result = match cursor.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
+        let result = match cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
             Ok(Some(_)) => cursor.take_record().map(Ok),
             Ok(None) => None,
             Err(error) => Some(Err(error)),

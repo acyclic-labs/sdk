@@ -268,6 +268,7 @@ fn field(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 impl<B: AsRef<[u8]>> Record<B> {
+    #[cfg(test)]
     pub(super) fn borrowed(&self) -> Record<&[u8]> {
         Record {
             process: self.process.borrowed(),

@@ -174,10 +174,9 @@ const REPLAY_PAGE: u32 = 1_024;
 pub const CHILDREN_PAGE_ITEMS: u32 = 1_024;
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Maximum caller retry-identity width.
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
-/// Maximum canonical path text accepted by the single-command wire format.
-pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
+/// Filesystem resource index prefix width. Complete paths remain in metadata
+/// and are authorized after coarse indexed selection.
+pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
 
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
