@@ -39,7 +39,7 @@ proptest! {
         let insert = NotebookEdit::Insert { cell:NotebookCell::Index {index:insert_at as u64,id:None},after:false,id:"inserted".into(),cell_type:"markdown".into(),source:new_source };
         let (inserted, _insert_hold) = edit(&source, &insert, None).unwrap();
         let (removed, _remove_hold) = edit(&inserted, &NotebookEdit::Delete {cell:NotebookCell::Id {id:"inserted".into()}}, None).unwrap();
-        prop_assert_eq!(serde_json::from_str::<Value>(&removed).unwrap(), original);
+        prop_assert_eq!(&serde_json::from_str::<Value>(&removed).unwrap(), &original);
         prop_assert!(edit(&source, &NotebookEdit::Insert {cell:NotebookCell::Index {index:0,id:None},after:false,id,cell_type:"raw".into(),source:String::new()}, None).is_err(), "duplicate cell id accepted");
 
         let after = NotebookEdit::Insert {
