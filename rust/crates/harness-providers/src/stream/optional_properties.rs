@@ -89,4 +89,93 @@ proptest! {
             prop_assert!(parse(&mut State::new(16384), adapter, &frame.to_string()).is_err(), "present malformed optional field must refuse");
         }
     }
+
+    #[test]
+    fn anthropic_tool_input_admission_preserves_the_original_batch(
+        argument in ".{0,80}",
+    ) {
+        use futures::TryStreamExt as _;
+
+        let input = json!({"value":argument});
+        let initial = json!({"type":"content_block_start","index":0,
+            "content_block":{"type":"tool_use","id":"original-call","name":"original-tool","input":input}});
+        let second = json!({"type":"content_block_start","index":1,
+            "content_block":{"type":"tool_use","id":"next-call","name":"next-tool","input":{}}});
+        let stop = json!({"type":"content_block_stop","index":1});
+        let terminal = json!({"type":"message_stop"});
+        let dispatch = acyclic_harness_core::model::ModelDispatch {
+            operation_id: acyclic_harness_core::OperationId::from_bytes([1;16]),
+            step:0,
+            request_digest:[0;32],
+        };
+        let mut malformed = Vec::new();
+        for value in [Value::Null, json!(false), json!(7), json!("{}"), json!([])] {
+            let mut frame = second.clone();
+            frame["content_block"]["input"] = value;
+            malformed.push(frame);
+        }
+        for value in [Value::Null, json!(false), json!(7), json!({}), json!([])] {
+            malformed.push(json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"input_json_delta","partial_json":value}}));
+        }
+        let mut absent = second.clone();
+        absent["content_block"].as_object_mut().unwrap().remove("input");
+        malformed.push(absent);
+        malformed.push(json!({"type":"content_block_delta","index":0,
+            "delta":{"type":"input_json_delta"}}));
+        for frame in malformed {
+            let mut state = State::new(16384);
+            prop_assert!(parse(&mut state, Adapter::Anthropic, &initial.to_string()).unwrap().is_empty());
+            let receipt = state.budget.used();
+            prop_assert!(parse(&mut state, Adapter::Anthropic, &frame.to_string()).is_err());
+            prop_assert_eq!(state.calls.len(),1);
+            prop_assert_eq!(&state.calls[&0].arguments, &input.to_string());
+            prop_assert_eq!(state.budget.used(), receipt, "invalid input allocated retained call storage");
+
+            let frames = format!("data: {initial}\n\ndata: {frame}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
+            let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
+            let result = futures::executor::block_on(events(
+                Adapter::Anthropic, Box::pin(body), 16384, dispatch,
+            ).try_collect::<Vec<_>>());
+            prop_assert!(result.is_err(), "malformed input released the original pending tool batch");
+        }
+
+        let delta = json!({"type":"content_block_delta","index":1,
+            "delta":{"type":"input_json_delta","partial_json":input.to_string()}});
+        let empty = json!({"type":"content_block_delta","index":1,
+            "delta":{"type":"input_json_delta","partial_json":""}});
+        let mut state = State::new(16384);
+        for frame in [&initial, &second, &empty, &delta, &stop] {
+            prop_assert!(parse(&mut state, Adapter::Anthropic, &frame.to_string()).unwrap().is_empty());
+        }
+        // Original producer loss still terminates without exposing its pending calls.
+        prop_assert!(finish(state, Adapter::Anthropic, dispatch).is_err());
+
+        let frames = format!("data: {initial}\n\ndata: {second}\n\ndata: {empty}\n\ndata: {delta}\n\ndata: {stop}\n\ndata: {terminal}\n\n");
+        let body = futures::stream::iter([Ok(bytes::Bytes::from(frames))]);
+        let accepted = futures::executor::block_on(events(
+            Adapter::Anthropic, Box::pin(body), 16384, dispatch,
+        ).try_collect::<Vec<_>>()).unwrap();
+        let calls: Vec<_> = accepted.iter().filter_map(|event| match event {
+            ModelEvent::ToolCall(call) => Some(call),
+            _ => None,
+        }).collect();
+        prop_assert_eq!(calls.len(),2);
+        prop_assert_eq!(&calls[0].arguments, &input);
+        prop_assert_eq!(&calls[1].arguments, &input);
+
+        // The former guard ignores every non-object initial input, making it
+        // indistinguishable from the executable empty-object placeholder.
+        let mut state = State::new(16384);
+        let malformed_input = json!([argument]);
+        let former_admits = malformed_input.as_object().is_some_and(|map| !map.is_empty());
+        prop_assert!(!former_admits);
+        for frame in [&initial, &second, &stop, &terminal] {
+            parse(&mut state, Adapter::Anthropic, &frame.to_string()).unwrap();
+        }
+        let accepted = finish(state, Adapter::Anthropic, dispatch).unwrap();
+        prop_assert!(accepted.iter().any(|event| matches!(event,
+            ModelEvent::ToolCall(call) if call.name == "next-tool" && call.arguments == json!({})
+        )), "former dropped input did not expose the empty-object substitution");
+    }
 }
