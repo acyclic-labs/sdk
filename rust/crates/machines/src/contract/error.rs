@@ -53,6 +53,15 @@ pub enum ProviderError {
         "guest file outcome is indeterminate on machine {0}; recovery: reconcile the original file operation without redispatch"
     )]
     FileIndeterminate(MachineId),
+    /// Before dispatch, `machine` is absent and no work was submitted. After
+    /// possible dispatch, it retains the original Machine's uncertain outcome;
+    /// this failure never authorizes redispatch.
+    #[error("guest deadline source lost (possibly dispatched machine: {machine:?}): {cause}")]
+    DeadlineSourceLost {
+        machine: Option<MachineId>,
+        #[source]
+        cause: DeadlineSourceLost,
+    },
     #[error("operation failed")]
     Failed,
     #[error("operation cancelled")]
@@ -74,6 +83,7 @@ impl ProviderError {
             Self::OperationIndeterminate(_) => "operation_indeterminate",
             Self::CommandIndeterminate(_) => "command_indeterminate",
             Self::FileIndeterminate(_) => "file_indeterminate",
+            Self::DeadlineSourceLost { .. } => "deadline_source_lost",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }

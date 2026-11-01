@@ -115,7 +115,7 @@ impl WasmMachinesWorkspace {
 #[cfg(target_arch = "wasm32")]
 mod deadline {
     use acyclic_auth::operation::{BudgetError, Context};
-    use acyclic_machines::{ProviderError, grpc::transport::Deadline};
+    use acyclic_machines::{DeadlineStop, ProviderError, grpc::transport::Deadline};
     use acyclic_stream::ProviderTask;
     use std::{future::Future, time::Duration};
 
@@ -167,24 +167,33 @@ mod deadline {
             Some(self.context.remaining().unwrap_or(Duration::ZERO))
         }
 
-        async fn run<F>(&self, future: F) -> Option<F::Output>
+        async fn run<F>(&self, future: F) -> Result<F::Output, DeadlineStop>
         where
             F: Future + ProviderTask,
             F::Output: ProviderTask,
         {
-            if self
-                .remaining()
-                .is_some_and(|remaining| remaining.is_zero())
-                || !self.current()
-            {
-                return None;
-            }
-            let result = self.context.run(future).await.ok()?;
-            (!self
-                .remaining()
-                .is_some_and(|remaining| remaining.is_zero())
-                && self.current())
-            .then_some(result)
+            let check = || {
+                self.context.remaining().map_err(|error| match error {
+                    BudgetError::Stopped(acyclic_auth::operation::Stopped::Deadline) => {
+                        DeadlineStop::Expired
+                    }
+                    BudgetError::ClockUnavailable
+                    | BudgetError::Stopped(acyclic_auth::operation::Stopped::Cancelled) => {
+                        DeadlineStop::Cancelled
+                    }
+                })?;
+                self.authority
+                    .verifier(&mut None)
+                    .map_err(|_| DeadlineStop::Cancelled)?;
+                Ok(())
+            };
+            check()?;
+            let result = self.context.run(future).await.map_err(|stop| match stop {
+                acyclic_auth::operation::Stopped::Deadline => DeadlineStop::Expired,
+                acyclic_auth::operation::Stopped::Cancelled => DeadlineStop::Cancelled,
+            })?;
+            check()?;
+            Ok(result)
         }
     }
 }

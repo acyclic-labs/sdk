@@ -361,7 +361,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                         self.backend.exec(command, deadline.until()).await
                     })
                     .await
-                    .unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))?;
+                    .map_err(|stop| stop.command(machine))??;
                 Ok(match busy {
                     None => output,
                     // The Machine stays busy for as long as its output is observable.
@@ -387,9 +387,9 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                 let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
                 let _busy = self.busy();
                 deadline
-            .run(self.running(machine))
-            .await
-            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
+                    .run(self.running(machine))
+                    .await
+                    .map_err(DeadlineStop::before_dispatch)??;
                 self.backend.read(access, limit, &deadline).await
             }
         )
@@ -409,9 +409,9 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                 let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
                 let _busy = self.busy();
                 deadline
-            .run(self.running(machine))
-            .await
-            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
+                    .run(self.running(machine))
+                    .await
+                    .map_err(DeadlineStop::before_dispatch)??;
                 self.backend.write(access, data, truncate, &deadline).await
             }
         )

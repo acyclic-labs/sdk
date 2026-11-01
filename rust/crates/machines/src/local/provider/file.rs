@@ -12,61 +12,61 @@ impl LocalBackend {
         deadline: &GuestDeadline,
         transfer: impl FnOnce(&File) -> io::Result<T> + Send + 'static,
     ) -> Result<Result<T, NonZeroU32>, ProviderError> {
-        admission(&access)?;
-        let mut owner = self.execution()?;
-        let mut observed = owner.state.subscribe();
-        let mut wait = PhysicalWait {
-            state: owner.state.clone(),
-            control: owner.control.clone(),
-            completed: false,
-        };
-        let machine = self.machine.id;
-        let operation = move || {
-            let result = (|| {
-                owner
-                    .check()
-                    .map_err(|_| ProviderError::FileIndeterminate(machine))?;
-                admission(&access)?;
-                let result = (|| {
-                    let file = open(&access.path, write)?;
-                    // Never interpret a pipe/device as an offset-addressed file.
-                    if !file.metadata()?.is_file() {
-                        return Err(io::ErrorKind::Unsupported.into());
-                    }
-                    admission(&access).map_err(io::Error::other)?;
-                    owner.check()?;
-                    transfer(&file)
-                })();
-                match result {
-                    Ok(value) => Ok(Ok(value)),
-                    Err(error) => errno(error).map(Err),
-                }
-            })();
-            owner.retired(true);
-            result
-        };
-        let submitted = acyclic_native_runtime::run_blocking_io(operation, None)
-            .map_err(|_| ProviderError::FileIndeterminate(self.machine.id))?;
-        // The native worker retains its physical lease even if this wait ends.
-        // Deadline, stop or observer loss latches uncertainty; only actual
-        // worker completion can release its original cleanup guard.
-        let result = deadline
+        deadline
             .run(async {
-                tokio::select! {
+                admission(&access)?;
+                let mut owner = self.execution()?;
+                let mut observed = owner.state.subscribe();
+                let mut wait = PhysicalWait {
+                    state: owner.state.clone(),
+                    control: owner.control.clone(),
+                    completed: false,
+                };
+                let machine = self.machine.id;
+                let operation = move || {
+                    let result = (|| {
+                        owner
+                            .check()
+                            .map_err(|_| ProviderError::FileIndeterminate(machine))?;
+                        admission(&access)?;
+                        let result = (|| {
+                            let file = open(&access.path, write)?;
+                            // Never interpret a pipe/device as an offset-addressed file.
+                            if !file.metadata()?.is_file() {
+                                return Err(io::ErrorKind::Unsupported.into());
+                            }
+                            admission(&access).map_err(io::Error::other)?;
+                            owner.check()?;
+                            transfer(&file)
+                        })();
+                        match result {
+                            Ok(value) => Ok(Ok(value)),
+                            Err(error) => errno(error).map(Err),
+                        }
+                    })();
+                    owner.retired(true);
+                    result
+                };
+                let submitted = acyclic_native_runtime::run_blocking_io(operation, None)
+                    .map_err(|_| ProviderError::FileIndeterminate(self.machine.id))?;
+                // The native worker retains its physical lease even if this wait ends.
+                // Deadline, stop or observer loss latches uncertainty; only actual
+                // worker completion can release its original cleanup guard.
+                let result = tokio::select! {
                     biased;
                     _ = observed.wait_for(|state| *state != PhysicalState::Live) => None,
                     result = std::panic::AssertUnwindSafe(submitted).catch_unwind() => Some(result),
+                };
+                match result {
+                    Some(Ok(Ok(value))) => {
+                        wait.completed = true;
+                        value
+                    }
+                    _ => Err(ProviderError::FileIndeterminate(self.machine.id)),
                 }
             })
             .await
-            .flatten();
-        match result {
-            Some(Ok(Ok(value))) => {
-                wait.completed = true;
-                value
-            }
-            _ => Err(ProviderError::FileIndeterminate(self.machine.id)),
-        }
+            .map_err(|stop| stop.file(self.machine.id))?
     }
 }
 
