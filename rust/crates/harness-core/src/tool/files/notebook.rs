@@ -329,6 +329,7 @@ pub(super) fn edit(
     };
     let mut index = None;
     let mut selected = None;
+    let mut selected_cell = None;
     let mut previous = None;
     let mut next = None;
     let mut previous_end = None;
@@ -379,17 +380,20 @@ pub(super) fn edit(
                 }
                 index = position.checked_add(u64::from(after));
             }
+            if let NotebookEdit::Insert { id, .. } = operation {
+                duplicate |= cell.as_ref().and_then(|cell| cell.id.as_deref()) == Some(id.as_str());
+            }
             if Some(position) == index {
                 selected = Some(raw);
+                if !matches!(operation, NotebookEdit::Insert { .. }) {
+                    selected_cell = cell;
+                }
                 previous = previous_end;
             }
             if index.and_then(|index| index.checked_add(1)) == Some(position) {
                 next = Some(span(source, raw).0);
             }
             previous_end = Some(span(source, raw).1);
-            if let NotebookEdit::Insert { id, .. } = operation {
-                duplicate |= cell.as_ref().and_then(|cell| cell.id.as_deref()) == Some(id.as_str());
-            }
         },
         work,
     )?;
@@ -418,7 +422,10 @@ pub(super) fn edit(
             ..
         } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
+            let cell = match selected_cell {
+                Some(cell) => cell,
+                None => decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?,
+            };
             (replacement, _replacement_hold) = encoded(new_source, work)?;
             let (start, end) = span(source, cell.source);
             substitutions[0] = Some((start, end, &replacement));
@@ -486,7 +493,10 @@ pub(super) fn edit(
         }
         NotebookEdit::Delete { .. } => {
             let raw = selected.ok_or_else(|| executor::rejection(work, "cell is missing"))?;
-            let _cell = decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?;
+            let _cell = match selected_cell {
+                Some(cell) => cell,
+                None => decode(std::marker::PhantomData::<Cell<'_>>, raw.get(), work)?,
+            };
             let (start, end) = span(source, raw);
             substitutions[0] = Some(if let Some(previous) = previous {
                 (previous, end, "")
