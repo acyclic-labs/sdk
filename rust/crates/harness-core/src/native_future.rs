@@ -1,7 +1,8 @@
 //! One native future allocation and its original-ledger custody.
 
 use crate::Result;
-use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use acyclic_fs::NativeMaterializationWork;
 use acyclic_stream::BoxProviderFuture;
 use std::{
     future::Future,
@@ -13,28 +14,58 @@ use std::{
 #[must_use = "native futures must be awaited or dropped"]
 pub struct NativeFutureBundle<'a, T> {
     future: BoxProviderFuture<'a, Result<T>>,
-    custody: NativeAllocation,
+    custody: crate::NativeCustody,
 }
 
 impl<'a, T> NativeFutureBundle<'a, T> {
     /// Borrows the future's original ledger.
     #[must_use]
-    pub const fn work(&self) -> &NativeMaterializationWork {
-        self.custody.work()
+    pub fn work(&self) -> crate::NativeWork<'_> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            self.custody
+                .as_ref()
+                .map(acyclic_fs::NativeAllocation::work)
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        {
+            let _ = &self.custody;
+            None
+        }
     }
 
     /// Admits the concrete allocation before invoking its builder.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn new<F>(work: &NativeMaterializationWork, build: impl FnOnce() -> F) -> Result<Self>
     where
-        F: Future<Output = Result<T>> + Send + 'a,
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
     {
-        work.remaining()?;
-        let bytes = std::mem::size_of::<F>() as u64;
-        let custody = work.claim(
-            bytes,
-            u64::from(bytes != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
+        Self::new_optional(Some(work), build)
+    }
+
+    /// Uses the same allocation path for callers without native accounting.
+    /// Custody remains outside the boxed future until its allocation is freed.
+    pub fn new_optional<F>(work: crate::NativeWork<'_>, build: impl FnOnce() -> F) -> Result<Self>
+    where
+        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
+    {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = work
+            .map(|work| {
+                work.remaining()?;
+                let bytes = std::mem::size_of::<F>() as u64;
+                work.claim(
+                    bytes,
+                    u64::from(bytes != 0),
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = work;
+            None
+        };
         Ok(Self {
             future: Box::pin(build()),
             custody,
@@ -50,7 +81,7 @@ impl<T> Future for NativeFutureBundle<'_, T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use acyclic_fs::{CancellationToken, WorkBudget};
@@ -147,7 +178,7 @@ mod tests {
             dropped: &dropped,
             baseline,
         })?;
-        assert!(future.work().shares_ledger(&work));
+        assert!(future.work().expect("original ledger").shares_ledger(&work));
         drop(future);
         assert!(dropped.load(Ordering::SeqCst));
         assert_eq!(work.remaining()?.peak_allocation_bytes, baseline);

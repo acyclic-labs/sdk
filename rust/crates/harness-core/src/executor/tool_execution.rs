@@ -231,10 +231,11 @@ impl StockExecution<'_> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
-                if let Some(authorization) = tool
-                    .executor
-                    .authorize_replay(context.as_ref(), &invocation)
-                {
+                if let Some(authorization) = tool.executor.authorize_replay(
+                    context.as_ref(),
+                    &invocation,
+                    self.native_work(),
+                )? {
                     authorization.await?;
                 }
                 self.replay_tool_output(

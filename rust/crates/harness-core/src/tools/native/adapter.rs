@@ -12,6 +12,28 @@ pub(super) struct Adapter {
 }
 
 impl ToolExecutor for Adapter {
+    fn authorize_replay<'a>(
+        &'a self,
+        context: Option<&'a ToolContext>,
+        invocation: &'a ToolInvocation,
+        work: crate::NativeWork<'a>,
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        Ok(Some(crate::NativeFutureBundle::new_optional(
+            work,
+            || async move {
+                let adapted = self.adapt(invocation, work)?;
+                if let Some(authorization) =
+                    self.original
+                        .executor
+                        .authorize_replay(context, &adapted.invocation, work)?
+                {
+                    authorization.await?;
+                }
+                Ok(())
+            },
+        )?))
+    }
+
     fn workspace_binding(&self) -> Option<crate::tool::WorkspaceBinding> {
         self.original.executor.workspace_binding()
     }

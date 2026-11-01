@@ -92,8 +92,9 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
-    ) -> Option<BoxFuture<'a, Result<()>>> {
-        None
+        _work: crate::NativeWork<'a>,
+    ) -> Result<Option<crate::NativeFutureBundle<'a, ()>>> {
+        Ok(None)
     }
 
     /// Whether dropping an invocation future retires all its I/O before return.
