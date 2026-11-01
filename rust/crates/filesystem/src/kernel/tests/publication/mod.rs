@@ -184,7 +184,7 @@ fn regular(
 }
 fn entry(name: &[u8], file_id: FileId) -> TestResult<TreeEntry> {
     Ok(TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 255)?,
+        name: LogicalName::new(NameEncoding::Utf8, name.to_vec())?,
         file_id,
         kind: FileKind::Regular,
     })
@@ -193,9 +193,6 @@ fn entry(name: &[u8], file_id: FileId) -> TestResult<TreeEntry> {
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: 16,
-        maximum_files: 16,
-        maximum_object_bytes: 64 * 1024,
         profile: crate::model::FilesystemProfile::Portable,
         symbolic_links: true,
         hard_links: true,

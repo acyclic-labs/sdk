@@ -9,7 +9,12 @@ fn complete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let headers = RecordHeaders::new(keys, attributes)?;
     let meter = Arc::new(Meter::default());
-    let plan = PreparedHeaders::new(&meter.original(), headers.payload_bytes())?;
+    let plan = PreparedHeaders::new_shape(
+        &meter.original(),
+        headers.payload_bytes(),
+        headers.keys().len(),
+        headers.attributes().len(),
+    )?;
     let allocations = meter.allocations.load(Ordering::SeqCst);
     meter.cancelled.store(true, Ordering::SeqCst);
     meter.deny_allocation.store(true, Ordering::SeqCst);
@@ -60,8 +65,8 @@ fn prepared_headers_cover_empty_payloads_unicode_names_and_the_full_payload_boun
 proptest! {
     #[test]
     fn arbitrary_prepared_header_shapes_keep_exact_utf8_names_and_original_custody(
-        keys in prop::collection::btree_set(prop::collection::vec(any::<u8>(), 0..32), 0..=MAX_RECORD_KEYS),
-        attributes in prop::collection::btree_map("[a-zλ🙂]{1,12}", prop::collection::vec(any::<u8>(), 0..32), 0..=MAX_RECORD_ATTRIBUTES),
+        keys in prop::collection::btree_set(prop::collection::vec(any::<u8>(), 0..32), 0..=129),
+        attributes in prop::collection::btree_map("[a-zλ🙂]{1,12}", prop::collection::vec(any::<u8>(), 0..32), 0..=65),
     ) {
         let keys = keys.into_iter().map(OwnedBytes::from).collect();
         let attributes = attributes.into_iter().map(|(name, value)| Attribute { name, value: value.into() }).collect();

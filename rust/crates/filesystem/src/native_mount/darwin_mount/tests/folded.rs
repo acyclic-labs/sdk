@@ -2,8 +2,8 @@ use super::*;
 use proptest::prelude::*;
 
 // The real Darwin pager must reach every unambiguous entry and EOF, regardless
-// of how many empty filtered source pages precede them. Only changed epochs
-// spend the bounded restart allowance; every page still charges native work.
+// of how many empty filtered source pages precede them. Every page still
+// charges the original native work.
 fn filtered_pages(pages: usize, visible: bool) -> TestResult {
     let names = (0..pages * DIRECTORY_PAGE_SIZE as usize / 2)
         .flat_map(|index| [format!("A{index:05}"), format!("a{index:05}")])
@@ -39,9 +39,9 @@ fn filtered_pages(pages: usize, visible: bool) -> TestResult {
 }
 
 #[test]
-fn folded_filtered_pages_do_not_exhaust_the_restart_allowance() -> TestResult {
+fn folded_filtered_pages_reach_visible_entries_and_eof() -> TestResult {
     for visible in [false, true] {
-        filtered_pages(MAXIMUM_LISTING_RESTARTS + 1, visible)?;
+        filtered_pages(9, visible)?;
     }
     Ok(())
 }
@@ -51,7 +51,7 @@ proptest! {
 
     #[test]
     fn folded_filtered_pager_preserves_visibility_and_eof(
-        pages in 0..MAXIMUM_LISTING_RESTARTS + 3,
+        pages in 0..11,
         visible in any::<bool>(),
     ) {
         filtered_pages(pages, visible).map_err(|error| TestCaseError::fail(error.to_string()))?;

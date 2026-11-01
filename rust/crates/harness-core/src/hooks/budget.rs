@@ -6,7 +6,7 @@ use serde::Serialize;
 /// The fold never stops at overflow: its bounded exhausted state keeps guard
 /// decisions and policies, even after it has discarded optional context.
 pub(super) struct Budget {
-    maximum: u64,
+    maximum: Option<u64>,
     state: State,
 }
 
@@ -35,11 +35,20 @@ struct DiagnosticRef<'a, M> {
 }
 
 impl Budget {
-    pub(super) fn new(maximum: u64) -> Result<Self> {
+    pub(super) fn new(maximum: impl Into<Option<u64>>) -> Result<Self> {
         Self::existing(maximum, &HookOutput::default())
     }
 
-    pub(super) fn existing(maximum: u64, output: &HookOutput) -> Result<Self> {
+    pub(super) fn existing(maximum: impl Into<Option<u64>>, output: &HookOutput) -> Result<Self> {
+        let Some(maximum) = maximum.into() else {
+            return Ok(Self {
+                maximum: None,
+                state: State::Available {
+                    used: 0,
+                    replacement: 0,
+                },
+            });
+        };
         // Reserve the largest exhausted representation before an external
         // effect starts; even overflow must have a publishable outcome.
         #[derive(Serialize)]
@@ -68,7 +77,7 @@ impl Budget {
             maximum,
         )?;
         Ok(Self {
-            maximum,
+            maximum: Some(maximum),
             state: State::Available {
                 used: encoded_size(output, maximum)?,
                 replacement: encoded_size(&output.updated_input, maximum)?,
@@ -103,6 +112,9 @@ impl Budget {
         output: &HookOutput,
         plan: Plan<'a>,
     ) -> std::result::Result<Reservation<'a>, Plan<'a>> {
+        let Some(maximum) = self.maximum else {
+            return Ok(Reservation { plan: Some(plan) });
+        };
         let State::Available { used, replacement } = &mut self.state else {
             return Err(plan);
         };
@@ -110,20 +122,20 @@ impl Budget {
             let mut next = *used;
             if let Some(text) = &plan.blocked {
                 next = next
-                    .checked_add(encoded_size(text, self.maximum)?)
+                    .checked_add(encoded_size(text, maximum)?)
                     .ok_or_else(exceeded)?
                     - 4;
             }
             if let Some(text) = &plan.approval {
                 next = next
-                    .checked_add(encoded_size(text, self.maximum)?)
+                    .checked_add(encoded_size(text, maximum)?)
                     .ok_or_else(exceeded)?
                     - 4;
             }
             let mut contexts = output.additional_context.len();
             for text in plan.context.iter().flatten() {
                 next = next
-                    .checked_add(encoded_size(text, self.maximum)? + u64::from(contexts > 0))
+                    .checked_add(encoded_size(text, maximum)? + u64::from(contexts > 0))
                     .ok_or_else(exceeded)?;
                 contexts += 1;
             }
@@ -135,7 +147,7 @@ impl Budget {
                                 cause,
                                 blocking: *blocking,
                             },
-                            self.maximum,
+                            maximum,
                         )? + u64::from(!output.diagnostics.is_empty()),
                     )
                     .ok_or_else(exceeded)?;
@@ -149,7 +161,7 @@ impl Budget {
                 }
                 None => *replacement,
             };
-            if next > self.maximum {
+            if next > maximum {
                 return Err(exceeded());
             }
             Ok((next, input))
@@ -235,10 +247,12 @@ impl Budget {
         stderr: &[u8],
     ) -> Result<bool> {
         // This test entry point starts with an existing outcome.
-        self.state = State::Available {
-            used: encoded_size(output, self.maximum)?,
-            replacement: encoded_size(&output.updated_input, self.maximum)?,
-        };
+        if let Some(maximum) = self.maximum {
+            self.state = State::Available {
+                used: encoded_size(output, maximum)?,
+                replacement: encoded_size(&output.updated_input, maximum)?,
+            };
+        }
         let plan = Plan::inspect(output, event, code, stdout, stderr)
             .map_err(|message| Error::Invalid(message.into()))?;
         let updated = plan.input.is_some();

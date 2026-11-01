@@ -109,7 +109,7 @@ fn production_capture_has_no_outer_file_owner_allocation() -> Result<(), Box<dyn
                 &root,
                 &path,
                 &snapshot,
-                8,
+                Some(8),
                 &scope.native,
                 &mut bytes,
             ));

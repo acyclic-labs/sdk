@@ -4,21 +4,29 @@ use crate::{Error, Result, runtime::ToolContext, tool::ToolResult};
 use serde_json::{Map, Value};
 
 /// The call's scope limits that bound it: rendered bytes and path bytes.
-pub(super) fn limits(context: &ToolContext) -> (u64, usize) {
+pub(super) fn limits(context: &ToolContext) -> (Option<u64>, Option<std::num::NonZeroUsize>) {
     let limits = context.effective_scope().limits();
     (limits.render_bytes, limits.path_bytes)
 }
 
 /// Refuses an operand the model must correct: a command longer than one
 /// rendered part, or a shell `cwd` longer than a path.
-pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usize)) -> Result<()> {
+pub(super) fn operands(
+    name: &str,
+    arguments: &Value,
+    (render, path): (Option<u64>, Option<std::num::NonZeroUsize>),
+) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
-    if text("command").len() as u64 > render {
+    if let Some(render) = render
+        && text("command").len() as u64 > render
+    {
         return Err(Error::Invalid(format!(
             "{name} command exceeds its {render}-byte bound"
         )));
     }
-    if text("cwd").len() > path {
+    if let Some(path) = path
+        && text("cwd").len() > path.get()
+    {
         return Err(Error::Invalid(format!(
             "{name} cwd exceeds its {path}-byte bound"
         )));
@@ -28,7 +36,10 @@ pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usiz
 
 /// The shell's bounded view of its separately retained complete process log.
 /// Other results proceed intact to the shared model projection and spill path.
-pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
+pub(super) fn result(name: &str, result: ToolResult, maximum: Option<u64>) -> Result<ToolResult> {
+    let Some(maximum) = maximum else {
+        return Ok(result);
+    };
     if name == super::shell::PLATFORM.name {
         if let Value::Object(fields) = result.value {
             if let Some(text) = fields.get("text").and_then(Value::as_str)
@@ -169,7 +180,7 @@ mod tests {
             value: json!({"success": true, "exit_code": 0, "stop": null,
                 "stdout": "o".repeat(4096), "stderr": ""}),
         };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
+        let bounded = result(super::super::shell::PLATFORM.name, flooded, Some(BOUND)).unwrap();
         assert!(
             projected_len(&bounded) <= BOUND,
             "{}",
@@ -188,7 +199,16 @@ mod tests {
                 "stdout": "\"o\n".repeat(4096), "stderr": "é".repeat(4096),
             }),
         };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
+        let original_stdout = flooded.value["stdout"].as_str().unwrap().as_ptr();
+        let complete = result(super::super::shell::PLATFORM.name, flooded, None).unwrap();
+        assert_eq!(
+            complete.value["stdout"].as_str().unwrap().as_ptr(),
+            original_stdout
+        );
+        assert_eq!(complete.value["stdout"], "\"o\n".repeat(4096));
+        assert_eq!(complete.value["stderr"], "é".repeat(4096));
+        assert!(complete.value.get("truncated").is_none());
+        let bounded = result(super::super::shell::PLATFORM.name, complete, Some(BOUND)).unwrap();
         assert!(projected_len(&bounded) <= BOUND);
         assert_eq!(bounded.value["exit_code"], 3);
         assert_eq!(bounded.value["truncated"], true);
@@ -199,14 +219,29 @@ mod tests {
     // Operands are rejected before an effect, independently of output spill.
     #[test]
     fn oversized_operands_are_rejected() {
-        assert!(operands("fs", &json!({"command":"x".repeat(257)}), (BOUND, 8)).is_err());
+        assert!(
+            operands(
+                "fs",
+                &json!({"command":"x".repeat(257)}),
+                (Some(BOUND), std::num::NonZeroUsize::new(8))
+            )
+            .is_err()
+        );
         assert!(
             operands(
                 "shell",
                 &json!({"command":"ls","cwd":"d".repeat(9)}),
-                (BOUND, 8)
+                (Some(BOUND), std::num::NonZeroUsize::new(8))
             )
             .is_err()
+        );
+        assert!(
+            operands(
+                "shell",
+                &json!({"command": "x".repeat(4096), "cwd": "d".repeat(9)}),
+                (None, None)
+            )
+            .is_ok()
         );
     }
 }

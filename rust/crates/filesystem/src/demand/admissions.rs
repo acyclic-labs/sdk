@@ -1,6 +1,6 @@
 use super::ownership::accounting as mount_accounting;
 use super::*;
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, feature = "native-mount", feature = "native-watch"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
 #[cfg(any(test, feature = "native-watch"))]
 use crate::kernel::allocation::AllocationLedger;
@@ -304,7 +304,7 @@ impl DemandWork {
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, feature = "native-mount", feature = "native-watch"))]
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
@@ -312,7 +312,7 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         token.prepare_cancelled_measured(&mut self.allocations, &mut self.work, self.budget)
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(any(test, feature = "native-mount", feature = "native-watch"))]
     pub(crate) fn finish_cancelled(
         &mut self,
         prepared: Cancelled<'static>,

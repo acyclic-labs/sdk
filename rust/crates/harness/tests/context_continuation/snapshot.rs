@@ -93,8 +93,8 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         missing: std::sync::atomic::AtomicBool::new(false),
     });
     let limits = Limits {
-        context_messages: 8,
-        attachments: 4,
+        context_messages: std::num::NonZeroUsize::new(8),
+        attachments: std::num::NonZeroUsize::new(4),
         ..Limits::default()
     };
     let stage = Arc::new(
@@ -145,7 +145,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             reader.clone(),
             ContextPlacement::Prepend,
             Limits {
-                render_bytes: 1,
+                render_bytes: Some(1),
                 ..limits
             },
         )
@@ -158,7 +158,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .run(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None
@@ -186,7 +186,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .run(
                 &input,
                 Limits {
-                    file_bytes: narrow_file_bytes,
+                    file_bytes: Some(narrow_file_bytes),
                     ..limits
                 },
                 None
@@ -220,7 +220,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             snapshot.clone(),
             delta.clone(),
             Limits {
-                attachments: 1,
+                attachments: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             None,
@@ -247,7 +247,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             snapshot.clone(),
             delta.clone(),
             Limits {
-                render_bytes: combined_bytes - 1,
+                render_bytes: Some(combined_bytes - 1),
                 ..limits
             },
             None,
@@ -278,7 +278,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
         operation_id: OperationId::new(),
         input: input.input.clone(),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let journal = storage.journal();
     let output = executor.execute(turn.clone(), journal.as_ref()).await?;

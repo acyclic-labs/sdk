@@ -36,6 +36,18 @@ impl<T> Signal<T> {
             .0
             .pop_front())
     }
+    pub(crate) fn wake(&self) -> Result<(), StreamError> {
+        let wake = self
+            .state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .1
+            .take();
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+        Ok(())
+    }
     pub(crate) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
         let wake = cx.waker().clone();
         let previous = {

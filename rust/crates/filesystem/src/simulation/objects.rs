@@ -120,23 +120,10 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
                 Err(ObjectStoreError::Corrupt)
             };
         }
-        let next_count = state
-            .pending_objects
-            .len()
-            .checked_add(1)
-            .ok_or(crate::WorkError::Overflow)?;
         let next_bytes = state
             .pending_object_bytes
             .checked_add(bytes.len() as u64)
             .ok_or(crate::WorkError::Overflow)?;
-        if next_count > state.options.maximum_pending_objects
-            || next_bytes > state.options.maximum_pending_object_bytes
-        {
-            return Err(write_error(
-                "simulation delayed-object bound exhausted",
-                work,
-            ));
-        }
         state.pending_objects.insert(object_id, bytes);
         state.pending_object_bytes = next_bytes;
         Ok(())

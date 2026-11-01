@@ -23,19 +23,19 @@ impl FileProjectionPolicy {
         media_type.starts_with("text/") || media_type == "application/json"
     }
 
-    /// How a file a user attaches to a prompt projects: supported images and PDFs
-    /// natively, under the default render credit; anything else as bounded text.
+    /// Projects supported images and PDFs natively from their immutable source
+    /// extent; other attachments use the caller-selected text projection.
     #[must_use]
     pub fn for_attachment(file: &FileRef) -> Self {
         match file.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                let bounds = crate::conversation::Limits::default().render_bytes;
+                let bytes = file.descriptor().byte_length();
                 Self::Native(Box::new(NativeMediaPolicy {
                     intent: NativeMediaIntent::Image {
                         detail: ImageDetail::Auto,
                     },
-                    maximum_bytes: bounds,
-                    maximum_work: bounds,
+                    maximum_bytes: bytes,
+                    maximum_work: bytes,
                     configuration: None,
                 }))
             }
@@ -64,16 +64,24 @@ impl FileProjectionPolicy {
         limits.validate_file(file, work)?;
         history_step(work, 1)?;
         if matches!(self, Self::BoundedFull)
-            && file.descriptor().byte_length() > limits.render_bytes
+            && limits
+                .render_bytes
+                .is_some_and(|maximum| file.descriptor().byte_length() > maximum)
         {
             return Err(invalid(work, "model file exceeds render limit"));
         }
         if let Self::ProjectInstructions(source) = self {
             source.validate(work)?;
-            if source.path().len() > limits.path_bytes {
+            if limits
+                .path_bytes
+                .is_some_and(|maximum| source.path().len() > maximum.get())
+            {
                 return Err(invalid(work, "instruction source exceeds path bound"));
             }
-            if InstructionSource::with_identity(file, source).framed_bytes()? > limits.render_bytes
+            let framed_bytes = InstructionSource::with_identity(file, source).framed_bytes()?;
+            if limits
+                .render_bytes
+                .is_some_and(|maximum| framed_bytes > maximum)
             {
                 return Err(invalid(work, "project instructions exceed render bound"));
             }
@@ -111,7 +119,7 @@ impl NativeConfigurationBinding {
         let _bytes;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
+            _bytes = io.encode(self, Some(io.remaining()?.bytes_encoded), false)?;
             _hold = io.guard_owned(_bytes.len() as u64)?;
         }
         self.configuration.validate()?;
@@ -127,7 +135,7 @@ impl NativeConfigurationBinding {
                     admission.selected(),
                     admission.configurations(),
                 ),
-                io.remaining()?.bytes_encoded,
+                Some(io.remaining()?.bytes_encoded),
                 false,
             )?;
             _hold = io.guard_bytes(&bytes)?;
@@ -289,7 +297,9 @@ impl NativeMediaPolicy {
             limits.validate_file(&binding.configuration.content, work)?;
             history_step(work, 1)?;
             if binding.configuration.content.descriptor().media_type() != "application/json"
-                || binding.configuration.content.descriptor().byte_length() > limits.render_bytes
+                || limits.render_bytes.is_some_and(|maximum| {
+                    binding.configuration.content.descriptor().byte_length() > maximum
+                })
             {
                 return Err(invalid(work, "native options require bounded JSON"));
             }

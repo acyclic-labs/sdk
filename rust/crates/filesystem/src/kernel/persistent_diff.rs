@@ -51,12 +51,13 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<F::Key, F::Value>, KernelOwnedAllocation), FsError> {
-    if maximum_changes == 0 {
+    let maximum_changes = maximum_changes.into();
+    if maximum_changes == Some(0) {
         return Err(FsError::InvalidDiff);
     }
     let mut cursor = Cursor::<F>::new(before, after, limits, accounting)?;
@@ -67,14 +68,14 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
             return Err(allocation_error(error));
         }
     };
-    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
+    let maximum = maximum_changes.map(|maximum| maximum as usize);
     let result = async {
         while let Some(change) = cursor.next(store, accounting, cancellation).await? {
-            if values.value.len() == maximum {
+            if maximum == Some(values.value.len()) {
                 change.retire(accounting)?;
                 return Ok(true);
             }
-            if let Err(error) = values.ensure_for_push(maximum, accounting) {
+            if let Err(error) = values.ensure_for_push(maximum.unwrap_or(usize::MAX), accounting) {
                 change.retire(accounting)?;
                 return Err(error);
             }
@@ -121,7 +122,7 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -142,7 +143,7 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,

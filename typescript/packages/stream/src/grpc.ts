@@ -1,5 +1,6 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { checkedReadSequence } from "./record.js";
+import { grpcDeadlines, deadlineSignal } from "@acyclic-labs/actors/deadline";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
@@ -7,7 +8,7 @@ import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
-import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
+import { createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
@@ -47,7 +48,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
     const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
     await validateWireRequest({ kind: "follow", path, from });
-    const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
+    const deadline = deadlineSignal(timeoutMs, () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");

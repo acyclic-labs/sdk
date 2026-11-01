@@ -1,7 +1,7 @@
 use acyclic_harness::{
     AgentId, Result,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    goal::{GOAL_METADATA_HEADROOM, GoalState, GoalStatus, GoalView},
+    goal::{GoalState, GoalStatus, GoalView},
     resources::ProviderRef,
 };
 
@@ -26,9 +26,12 @@ pub fn file(bytes: &[u8]) -> Result<FileRef> {
 
 fn round_trip(view: &GoalView, reason: Option<&str>) -> Result<()> {
     for status in [GoalStatus::Active, GoalStatus::Blocked, GoalStatus::Done] {
-        let bytes = view.status_contents(status, reason)?;
-        assert!(bytes.len() as u64 <= LIMIT);
-        let rewritten = GoalView::from_file(file(bytes.as_bytes())?, bytes.as_bytes(), LIMIT)?;
+        let bytes = view.status_contents(status, reason);
+        let rewritten = GoalView::from_file(
+            file(bytes.as_bytes())?,
+            bytes.as_bytes(),
+            bytes.len() as u64,
+        )?;
         assert_eq!(rewritten.status, status);
         assert_eq!(rewritten.markdown, view.markdown);
         assert_eq!(rewritten.reason.as_deref(), reason);
@@ -42,14 +45,7 @@ pub fn check(data: &[u8]) -> Result<()> {
     }
     let state = GoalState::from_bytes(data, LIMIT);
     let view = GoalView::from_file(file(data)?, data, LIMIT);
-    if let Ok(state) = &state {
-        assert_eq!(
-            view.is_ok(),
-            state.markdown.len() + GOAL_METADATA_HEADROOM <= LIMIT as usize
-        );
-    } else {
-        assert!(view.is_err());
-    }
+    assert_eq!(view.is_ok(), state.is_ok());
     if let Ok(view) = view {
         let state = state?;
         assert_eq!(state.status, view.status);
@@ -59,9 +55,8 @@ pub fn check(data: &[u8]) -> Result<()> {
     }
     // Even malformed frontmatter exercises arbitrary Unicode reason encoding.
     if let Ok(text) = std::str::from_utf8(data) {
-        let reason: String = text.chars().take(12).collect();
         let view = GoalView::from_file(file(b"Goal")?, b"Goal", LIMIT)?;
-        round_trip(&view, Some(&reason))?;
+        round_trip(&view, Some(text))?;
     }
     Ok(())
 }

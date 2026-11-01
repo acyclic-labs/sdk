@@ -76,9 +76,6 @@ fn headers(
     keys: Vec<Bytes>,
     attributes: Vec<wire::Attribute>,
 ) -> Result<crate::RecordHeaders, StreamError> {
-    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
-        return Err(StreamError::LimitExceeded);
-    }
     crate::changes::record_headers(
         value,
         keys.into_iter().map(Into::into).collect(),

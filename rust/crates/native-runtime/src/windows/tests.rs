@@ -62,6 +62,7 @@ fn positional_batches_complete_without_changing_source_cursor() -> io::Result<()
     file.seek(SeekFrom::Start(13))?;
     let file = Arc::new(NativeFilePayload {
         file,
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     });
     let (sender, receiver) = mpsc::sync_channel(1);

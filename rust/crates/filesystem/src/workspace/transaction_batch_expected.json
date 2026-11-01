@@ -1,35 +1,35 @@
 {
   "staging.false": {
     "allocations": [
-      666,
-      91,
-      144,
-      227155,
-      11452,
-      43931
+      1055,
+      83,
+      139,
+      267509,
+      13587,
+      45605
     ],
     "work": {
-      "allocationOperations": 455,
+      "allocationOperations": 399,
       "authorityBytesRead": 0,
       "authorityBytesWritten": 0,
       "authorityRecordsAppended": 0,
       "authorityRecordsRead": 0,
-      "backendReadOperations": 7,
+      "backendReadOperations": 5,
       "backendWriteOperations": 10,
-      "bytesCopied": 22918,
+      "bytesCopied": 20350,
       "bytesEncoded": 2146,
-      "bytesHashed": 4663,
+      "bytesHashed": 4236,
       "durabilityOperations": 0,
       "itemsExamined": 968,
       "itemsReturned": 56,
       "materializations": 0,
-      "objectBytesRead": 245,
+      "objectBytesRead": 208,
       "objectBytesWritten": 1623,
-      "objectProbes": 7,
+      "objectProbes": 5,
       "outputBytes": 0,
       "pageReads": 53,
       "pageWrites": 8,
-      "peakAllocationBytes": 67122464,
+      "peakAllocationBytes": 67122393,
       "sourceBytesRead": 547,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 22
@@ -40,9 +40,9 @@
       108,
       5,
       58,
-      41363,
+      39123,
       1709,
-      33133
+      30893
     ],
     "work": {
       "allocationOperations": 105,
@@ -65,7 +65,7 @@
       "outputBytes": 0,
       "pageReads": 5,
       "pageWrites": 0,
-      "peakAllocationBytes": 15589,
+      "peakAllocationBytes": 15469,
       "sourceBytesRead": 0,
       "sourceEntriesVisited": 0,
       "sourcePathComponents": 17

@@ -838,7 +838,7 @@ fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
     let result = super::pump::Pump::new(
         &mut tree,
         CaptureSchedule::Unbounded,
-        4096,
+        Some(4096),
         None,
         None,
         [Vec::new(), Vec::new()],
@@ -1474,7 +1474,8 @@ mod seeded_capture {
             };
             let operation = async move {
                 if scheduled {
-                    tree.capture_driven(capture, 64, None, collect, None).await
+                    tree.capture_driven(capture, Some(64), None, collect, None)
+                        .await
                 } else {
                     tree.capture(capture, 64, None, collect).await
                 }

@@ -10,7 +10,7 @@ proptest! {
         executable in ".{0,48}",
         argv in prop::collection::vec(".{0,24}", 0..5),
         shell in prop::option::of(prop_oneof![Just("sh".to_owned()), Just("unknown".to_owned())]),
-        timeout in any::<u64>(),
+        timeout in prop::option::of(any::<u64>()),
         block in any::<bool>(),
         exec in any::<bool>(),
         matcher in ".{0,24}",

@@ -48,7 +48,10 @@ impl MemoryStream {
             })],
         };
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
+        let (paths, _paths) =
+            self.paths(&state, std::iter::once(&receipt.destination), |prefix| {
+                receipt.destination.as_str() == prefix
+            })?;
         let retained = self.reserve_retained(state)?;
         let time = crate::preparation::committed_time(
             state.last_committed_at_micros,

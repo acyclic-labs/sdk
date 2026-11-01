@@ -7,12 +7,10 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
     request: &NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
 ) -> Result<(MaterializationPlan, NativeAllocation), NativeWorkspacePublicationError> {
-    let (changes, changes_allocation) = publication_step(work, || {
-        from.diff_to(to, u32::MAX, work, work.cancellation())
-    })
-    .await?;
+    let (changes, changes_allocation) =
+        publication_step(work, || from.diff_to(to, None, work, work.cancellation())).await?;
     let (changed, changed_allocation) = publication_step(work, || {
-        changes.changed_paths(u32::MAX, work, work.cancellation())
+        changes.changed_paths(None, work, work.cancellation())
     })
     .await?;
     let mut changed_allocation =

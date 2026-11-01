@@ -6,8 +6,8 @@ letters, ask the model for exactly one token with logprobs, and turn the
 logprobs of the option letters into a distribution. It is a generative
 model read through its next-token distribution, so:
 
-  * one request per question (the state is re-sent each time; provider-side
-    prompt caching may soften that), run concurrently;
+  * one request per letter-labelled group (the state is re-sent each time;
+    provider-side prompt caching may soften that), questions run concurrently;
   * calibration is whatever the model gives; `temperature` rescales it;
   * a letter the model never put in its top-k gets a floor logprob, so the
     distribution still covers every option;
@@ -19,6 +19,7 @@ Needs OPENROUTER_API_KEY (or `api_key=`). Model must support `logprobs` and
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -83,7 +84,7 @@ def _key_from_files() -> Optional[str]:
 def _default_post(url: str, headers: dict, body: dict) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.urlopen(req) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{url} -> {e.code}: {e.read().decode(errors='replace')[:400]}") from None
@@ -155,17 +156,52 @@ class OpenRouterBackend(Backend):
             raise RuntimeError(f"{self.model} returned no logprobs; pick a model with logprobs+top_logprobs")
         return to_logits(letter_logprobs(top, len(q.options))), out.get("usage") or {}
 
+    def _score(self, state: str, q: Question) -> tuple[list[float], list[dict]]:
+        # The next-token alphabet is a frame size, not a question-size limit.
+        # Larger questions form a balanced tree of conditional group choices.
+        # Accumulate in log space so tiny leaf probabilities survive until the
+        # one final temperature/normalization pass over the complete option set.
+        if len(q.options) <= len(LETTERS):
+            logits, usage = self._one(state, q)
+            return logits, [usage]
+        leaves = [0.0] * len(q.options)
+        pending = [(0, len(q.options), 0.0)]
+        responses = []
+        while pending:
+            start, stop, mass = pending.pop()
+            count = stop - start
+            if count == 1:
+                leaves[start] = mass
+                continue
+            width = (count + len(LETTERS) - 1) // len(LETTERS)
+            groups = [(i, min(i + width, stop)) for i in range(start, stop, width)]
+            if width == 1:
+                question = Question(q.question, q.options[start:stop])
+            else:
+                question = Question(
+                    "Choose the group containing the best answer to this question:\n" + q.question,
+                    tuple(json.dumps(q.options[a:b], ensure_ascii=False) for a, b in groups),
+                )
+            logits, usage = self._one(state, question)
+            responses.append(usage)
+            maximum = max(logits)
+            normalizer = math.log(sum(math.exp(value - maximum) for value in logits))
+            for (a, b), value in zip(groups, logits):
+                pending.append((a, b, mass + (value - maximum) - normalizer))
+        return leaves, responses
+
     def _decide(self, state: str, questions: list[Question]) -> DecideResult:
         t0 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=self.concurrency) as ex:
-            results = list(ex.map(lambda q: self._one(state, q), questions))
+            results = list(ex.map(lambda q: self._score(state, q), questions))
         ms = (time.perf_counter() - t0) * 1000.0
         decisions, tokens, usd = [], 0, 0.0
         self.last_responses = []
-        for q, (logits, usage) in zip(questions, results):
+        for q, (logits, responses) in zip(questions, results):
             decisions.append(Decision.from_probs(q, fmt.distribution(logits, self.temperature)))
-            tokens += int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0))
-            usd += float(usage.get("cost", 0.0) or 0.0)
-            self.last_responses.append(usage)
-        return DecideResult(decisions, Timing(prefill_ms=0.0, branch_ms=ms, forwards=len(questions), tokens=tokens,
+            for usage in responses:
+                tokens += int(usage.get("prompt_tokens", 0)) + int(usage.get("completion_tokens", 0))
+                usd += float(usage.get("cost", 0.0) or 0.0)
+                self.last_responses.append(usage)
+        return DecideResult(decisions, Timing(prefill_ms=0.0, branch_ms=ms, forwards=len(self.last_responses), tokens=tokens,
                                               usd=usd if usd else None))

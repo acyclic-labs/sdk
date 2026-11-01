@@ -111,7 +111,7 @@ class AcyclicCLI:
 
 # ----------------------------------------------------------------- rendering
 
-def unified_diff(base_path: str, fork_path: str, rel: str, max_chars: int) -> str:
+def unified_diff(base_path: str, fork_path: str, rel: str, max_chars: Optional[int]) -> str:
     def read(p):
         try:
             with open(p, encoding="utf-8", errors="replace") as f:
@@ -120,17 +120,17 @@ def unified_diff(base_path: str, fork_path: str, rel: str, max_chars: int) -> st
             return []
     a, b = read(os.path.join(base_path, rel)), read(os.path.join(fork_path, rel))
     text = "".join(difflib.unified_diff(a, b, "a/" + rel, "b/" + rel, n=2))
-    if len(text) > max_chars:
+    if max_chars is not None and len(text) > max_chars:
         text = text[:max_chars] + f"\n... (+{len(text) - max_chars} chars)\n"
     return text
 
 
 def render_fork(repo: str, fork: Fork, changes: Sequence[ForkChange], probe: Optional[str],
-                max_files: int, max_chars_per_file: int) -> str:
+                max_files: Optional[int], max_chars_per_file: Optional[int]) -> str:
     lines = [f"=== {fork.name} ({fork.id})", f"Changed paths: {len(changes)}"]
     for c in changes[:max_files]:
         lines.append(f"  {c.status} {c.path}")
-    if len(changes) > max_files:
+    if max_files is not None and len(changes) > max_files:
         lines.append(f"  ... {len(changes) - max_files} more")
     for c in changes[:max_files]:
         if c.status in ("A", "M"):
@@ -170,7 +170,7 @@ class ForkArena:
     """
 
     def __init__(self, cli: AcyclicCLI, backend: Backend, log: Optional[DecisionLog] = None, *,
-                 task: str = "", max_files: int = 12, max_chars_per_file: int = 1_500,
+                 task: str = "", max_files: Optional[int] = None, max_chars_per_file: Optional[int] = None,
                  extra_questions: Optional[Callable[[list[Fork]], Sequence[Question]]] = None):
         self.cli = cli
         self.backend = backend

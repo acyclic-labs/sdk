@@ -27,9 +27,6 @@ pub fn validate_resource(resource: &str) -> Result<(), StreamError> {
 }
 
 fn envelope(resource: &str) -> Result<(), StreamError> {
-    if resource.len() > 3 * crate::MAX_PATH_BYTES + "streams:/".len() {
-        return Err(StreamError::LimitExceeded);
-    }
     if !acyclic_auth::valid_resource(resource) {
         return Err(StreamError::InvalidArgument);
     }

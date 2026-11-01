@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,8 @@ const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolc
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
 
 // The command and toolchain injection are for offline staging controls. The CLI
-// always uses spawnSync and the checked-in NuGet package tool pins.
-export function generate(args, { command = spawnSync, toolchain = pinned } = {}) {
+// always uses captureCommand and the checked-in NuGet package tool pins.
+export function generate(args, { command = captureCommand, toolchain = pinned } = {}) {
   return generateProtocPackage(args, {
     command, toolchain, directory, backend: "dotnet", language: "C#",
     pluginArgument: "grpc-csharp", pluginKey: "grpc_csharp",

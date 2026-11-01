@@ -144,7 +144,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
-                max_steps: 2,
+                max_steps: Some(2),
             };
             let result = executor
                 .execute(input.clone(), &journal)
@@ -361,7 +361,7 @@ async fn complete_failures_obey_pinned_render_limits() -> Result<()> {
         ]));
         let tool = Arc::new(DiagnosticTool(text, count, AtomicUsize::new(0)));
         let limits = Limits {
-            render_bytes,
+            render_bytes: Some(render_bytes),
             ..Limits::default()
         };
         let executor = uncompacted_executor(

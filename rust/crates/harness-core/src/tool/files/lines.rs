@@ -78,8 +78,9 @@ pub(super) async fn read(
 ) -> Result<(ToolResult, crate::NativeCustody)> {
     let maximum = context.effective_scope().limits().render_bytes;
     let quantum = maximum
-        .min(crate::tool::output::VIEW_BYTES)
-        .min(context.effective_scope().limits().file_bytes);
+        .into_iter()
+        .chain(context.effective_scope().limits().file_bytes)
+        .fold(crate::tool::output::VIEW_BYTES, u64::min);
     if quantum == 0 {
         return Err(executor::rejection(
             work,

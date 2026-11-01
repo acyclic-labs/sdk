@@ -20,7 +20,7 @@ pub async fn resolve_file_mentions(
     root: &ContextRoot,
     generation: &GenerationRef,
     reader: &dyn ContentResidencyVerifier,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
 ) -> Result<Vec<FileMention>> {
     let locate = |path: &str| {
         if root.directory.is_empty() {
@@ -39,10 +39,11 @@ pub(crate) async fn resolve_file_mentions_at(
     root: &ContextRoot,
     generation: &GenerationRef,
     reader: &dyn ContentResidencyVerifier,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
     locate: impl Fn(&str) -> String,
 ) -> Result<Vec<FileMention>> {
-    if maximum_bytes == 0 || input.len() as u64 > maximum_bytes {
+    let maximum_bytes = maximum_bytes.into();
+    if maximum_bytes.is_some_and(|maximum| maximum == 0 || input.len() as u64 > maximum) {
         return Err(Error::Invalid("mention input exceeds byte bound".into()));
     }
     let mut result = Vec::new();
@@ -59,8 +60,12 @@ pub(crate) async fn resolve_file_mentions_at(
             };
             let (file, bytes) = source.read_remaining(reader, remaining).await?;
             remaining = remaining
-                .checked_sub(bytes.len() as u64)
-                .ok_or_else(|| Error::Storage("mention reader exceeded bound".into()))?;
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(bytes.len() as u64)
+                        .ok_or_else(|| Error::Storage("mention reader exceeded bound".into()))
+                })
+                .transpose()?;
             files.insert(path.into(), file.clone());
             file
         };

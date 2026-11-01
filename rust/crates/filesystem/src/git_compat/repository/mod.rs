@@ -13,7 +13,8 @@ pub struct GitCompatRepository<S> {
 
 /// Whether a request still awaits its durable reply; its saved result is
 /// kept exactly as long, after which the reply answers any replay.
-pub type GitRequestUnanswered = std::sync::Arc<dyn Fn(OperationId) -> bool + Send + Sync>;
+pub type GitRequestUnanswered =
+    std::sync::Arc<dyn Fn(OperationId) -> std::io::Result<bool> + Send + Sync>;
 
 /// The request a command runs as.
 #[derive(Clone)]

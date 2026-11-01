@@ -37,6 +37,18 @@ struct Gate {
 struct Objects {
     fs: crate::LocalFs,
     gate: Arc<Gate>,
+    // Signal actual field retirement without retaining the publication owner.
+    retirement: acyclic_native_runtime::OwnershipAnchor,
+}
+
+impl Objects {
+    fn new(fs: crate::LocalFs, gate: Arc<Gate>) -> Self {
+        Self {
+            fs,
+            gate,
+            retirement: acyclic_native_runtime::OwnershipAnchor::new(()),
+        }
+    }
 }
 
 impl AsyncObjectStore for Objects {
@@ -259,7 +271,7 @@ async fn proposal_core(
             config,
             head: expected,
             rebase: true,
-            reads: crate::kernel::CheckoutDependencies::new([], [], 1)?,
+            reads: crate::kernel::CheckoutDependencies::new([], [])?,
         },
         base,
         delta,
@@ -343,10 +355,8 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         release: tokio::sync::Notify::new(),
         fail: matches!(delivery, Delivery::Failure),
     });
-    let owner = Owner(Arc::new(Objects {
-        fs,
-        gate: Arc::clone(&gate),
-    }));
+    let owner = Owner(Arc::new(Objects::new(fs, Arc::clone(&gate))));
+    let owner_released = owner.0.retirement.release_barrier();
     let weak = Arc::downgrade(&owner.0);
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
     composition_events(&mut boundaries, async {

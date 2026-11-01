@@ -9,15 +9,6 @@ pub use history::*;
 
 use crate::Error;
 
-/// Default finite cold input allowance.
-#[must_use]
-pub const fn default_projection_read_limits() -> HistoryReadLimits {
-    HistoryReadLimits {
-        maximum_events: 64,
-        maximum_bytes: 32 * acyclic_stream::MAX_COMMAND_BYTES as u64,
-    }
-}
-
 pub(crate) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>,
     kind: crate::wire::ErrorCode,

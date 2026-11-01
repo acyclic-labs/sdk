@@ -1,5 +1,5 @@
+import { captureCommand } from "./process-capture.mjs";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -23,7 +23,7 @@ const fixturePattern = new RegExp(retiredPattern, "i");
 if (!fixturePattern.test(`${"p" + "ython"} fixture`) || fixturePattern.test("node fixture.mjs")) {
   throw new Error("retired-runtime content gate failed its fixtures");
 }
-const git = (...args) => spawnSync("git", args, { cwd: rootPath, encoding: "utf8" });
+const git = (...args) => captureCommand("git", args, { cwd: rootPath, encoding: "utf8" });
 const tracked = git("ls-files", "-z", "--cached", "--others", "--exclude-standard");
 if (tracked.error || tracked.status !== 0) throw tracked.error ?? new Error(tracked.stderr.trim());
 const exemptPrefixes = ["arena/"];

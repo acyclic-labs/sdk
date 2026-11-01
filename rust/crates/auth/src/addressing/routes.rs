@@ -107,32 +107,25 @@ impl RoutePattern {
     }
     /// Match path including its query string, without decoding or case folding it.
     pub fn matches(&self, value: &str) -> Result<bool, RouteError> {
-        let url = url::Url::parse(value).map_err(|_| RouteError::Url)?;
-        if !matches!(url.scheme(), "http" | "https")
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(RouteError::Url);
-        }
-        let host = url.host_str().ok_or(RouteError::Url)?;
+        Ok(self.matches_request(&request_url(value)?))
+    }
+    fn matches_request(&self, url: &url::Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
         let host_matches = if self.host_wildcard {
             host.ends_with(&self.host)
         } else {
             host == self.host
         };
-        let path = format!(
-            "{}{}",
-            url.path(),
-            url.query().map_or(String::new(), |q| format!("?{q}"))
-        );
-        Ok(host_matches
+        let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+        host_matches
             && self.scheme.as_ref().is_none_or(|s| s == url.scheme())
             && if self.path_wildcard {
                 path.starts_with(&self.path)
             } else {
                 path == self.path
-            })
+            }
     }
     fn specificity(&self) -> (bool, usize, usize, bool, bool) {
         (
@@ -143,6 +136,19 @@ impl RoutePattern {
             self.scheme.is_some(),
         )
     }
+}
+
+fn request_url(value: &str) -> Result<url::Url, RouteError> {
+    let url = url::Url::parse(value).map_err(|_| RouteError::Url)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(RouteError::Url);
+    }
+    Ok(url)
 }
 
 /// A route may deliberately suppress a broader Worker route by omitting target.
@@ -158,13 +164,17 @@ pub fn select_route<'a>(
     routes: &'a [WorkerRoute],
     url: &str,
 ) -> Result<Option<Option<&'a str>>, RouteError> {
+    if routes.is_empty() {
+        return Ok(None);
+    }
+    let url = request_url(url)?;
     let mut best: Option<&WorkerRoute> = None;
     let mut ambiguous = false;
     for route in routes {
         if let Some(target) = &route.target {
             validate_dns_label(target.as_bytes()).map_err(|_| RouteError::Target)?;
         }
-        if !route.pattern.matches(url)? {
+        if !route.pattern.matches_request(&url) {
             continue;
         }
         match best {

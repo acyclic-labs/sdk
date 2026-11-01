@@ -126,9 +126,7 @@ async fn evidence_fixture() -> TestResult<(
         commit,
         permit: PublicationPermit::Unrestricted,
     };
-    let mut config = VolumeConfig::portable(Lifecycle::Durable);
-    config.limits.maximum_objects_per_generation = 17;
-    config.limits.maximum_files_per_generation = 19;
+    let config = VolumeConfig::portable(Lifecycle::Durable);
     Ok((request, proof, append, config))
 }
 

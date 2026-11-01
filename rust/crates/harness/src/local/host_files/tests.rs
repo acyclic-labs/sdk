@@ -400,19 +400,20 @@ async fn projection_event(
     events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
     owner: &mut tokio::task::JoinHandle<Result<()>>,
 ) -> Result<()> {
-    let failed = |cause| {
-        Error::Storage(format!(
-            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
-        ))
-    };
     tokio::select! {
         event = events.recv() => match event {
             Some(Ok(_)) => Ok(()),
-            Some(Err(error)) => Err(failed(error.to_string())),
-            None => Err(failed("notification producer closed".into())),
+            Some(Err(error)) => Err(projection_failure(error)),
+            None => Err(projection_failure("notification producer closed")),
         },
-        result = owner => Err(failed(format!("workspace owner ended: {result:?}"))),
+        result = owner => Err(projection_failure(format!("workspace owner ended: {result:?}"))),
     }
+}
+
+fn projection_failure(cause: impl std::fmt::Display) -> Error {
+    Error::Storage(format!(
+        "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
+    ))
 }
 
 #[test]
@@ -473,16 +474,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
+    let mut serving = Box::pin(serve(Arc::clone(&local)));
+    // Endpoint publication and request-watch registration precede its first
+    // suspension, just as in the native child-process fixture.
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let mut owner = tokio::spawn(serving);
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !descriptor.is_file() {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    assert!(descriptor.is_file());
     // Follow only coordination files once published, before any native view
     // is admitted. The observer never traverses mounted agent filesystems.
     watcher.unwatch(checkout.path()).map_err(storage)?;
@@ -503,11 +501,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
-    std::fs::write(
-        requests.join("oversized.json"),
-        vec![b'x'; usize::try_from(MAXIMUM_BYTES).map_err(storage)? + 1],
-    )
-    .map_err(storage)?;
     let foreign = OperationId::new();
     std::fs::write(
         requests.join(format!("{foreign}.json")),
@@ -544,9 +537,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
     let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
-    while !other_descriptor.is_file() {
-        projection_event(&mut changes, &mut other_owner).await?;
-    }
+    projection_settled(&mut changes, &mut other_owner, || {
+        Ok(other_descriptor.is_file())
+    })
+    .await?;
     watcher.unwatch(other_checkout.path()).map_err(storage)?;
     let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
     let opening_registry = Arc::clone(&registry);
@@ -821,22 +815,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while std::fs::read_dir(&requests)
+    projection_settled(&mut changes, &mut owner, || {
+        Ok(std::fs::read_dir(&requests)
             .map_err(storage)?
             .next()
-            .is_some()
-        {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
+            .is_none())
     })
-    .await
-    .map_err(storage)??;
-    assert!(
-        !owner.is_finished(),
-        "invalid writable projections must not stop the owner"
-    );
+    .await?;
     #[cfg(unix)]
     assert_eq!(
         std::fs::read(outside.path()).map_err(storage)?,
@@ -850,22 +835,17 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let mut pending = 0;
-            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if entry.map_err(storage)?.path() != debris {
-                    pending += 1;
-                }
+    // The original watcher has followed every status since before the
+    // requests were submitted; early withdrawals cannot lose their wake.
+    projection_settled(&mut changes, &mut owner, || {
+        for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+            if entry.map_err(storage)?.path() != debris {
+                return Ok(false);
             }
-            if pending == 0 {
-                return Ok::<_, Error>(());
-            }
-            projection_event(&mut changes, &mut owner).await?;
         }
+        Ok(true)
     })
-    .await
-    .map_err(storage)??;
+    .await?;
     assert_eq!(
         std::fs::read(&debris).map_err(storage)?,
         b"unrelated status is not a reply",
@@ -940,7 +920,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(!lock(&bridge.watching).watched);
     assert!(
-        !owner.is_finished(),
+        futures::poll!(&mut owner).is_pending(),
         "client failure must not kill the workspace owner"
     );
     // The owner is still alive: failure of its native exit observation must
@@ -978,7 +958,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(
-        projection_event(&mut ended, &mut owner).await,
+        projection_settled(&mut ended, &mut owner, || Ok(false)).await,
         Err(Error::Storage(ref error)) if error.contains("notification producer closed")
     ));
     assert!(local.agent.is_none());
@@ -1024,6 +1004,26 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Err(Error::NotFound(_))
     ));
     Ok(())
+}
+
+/// Reuses the original watcher armed before publication and observes its
+/// producer and workspace-owner terminal events while waiting for settlement.
+async fn projection_settled(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+    owner: &mut tokio::task::JoinHandle<Result<()>>,
+    mut settled: impl FnMut() -> Result<bool>,
+) -> Result<()> {
+    loop {
+        if let std::task::Poll::Ready(result) = futures::poll!(&mut *owner) {
+            return Err(projection_failure(format!(
+                "workspace owner ended: {result:?}"
+            )));
+        }
+        if settled()? {
+            return Ok(());
+        }
+        projection_event(events, owner).await?;
+    }
 }
 
 #[test]

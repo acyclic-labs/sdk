@@ -24,7 +24,6 @@ async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_remova
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.detached".to_vec(),
-        128,
     )?;
     assert!(
         detached
@@ -233,7 +232,6 @@ async fn detached_inline_file_seek_and_attribute_absence_are_exact() -> TestResu
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.inline".to_vec(),
-        config().limits.maximum_component_bytes,
     )?;
     detached
         .change_named_attribute(

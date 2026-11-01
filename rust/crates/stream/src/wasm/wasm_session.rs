@@ -15,26 +15,25 @@ impl WasmSession {
         connect: js_sys::Function,
         acknowledge: bool,
         revision_scope: Option<Box<[u8]>>,
+        registration_timeout: Option<u32>,
     ) -> Self {
         Self {
             client: session_io::client(
                 connect,
                 revision_scope.map(|scope| crate::RevisionScope::new(scope.into_vec())),
-            ),
+            )
+            .with_registration_timeout(registration_timeout),
             acknowledge,
         }
     }
 
-    /// Adds, replaces or drops a bounded credential slot on every pooled session.
+    /// Adds, replaces or drops a credential slot on every pooled session.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(
         &self,
         slot: u32,
         credential: js_sys::Uint8Array,
     ) -> Result<(), JsValue> {
-        if slot as usize >= crate::session::Limits::default().channels {
-            return Err(js_error(StreamError::Capacity));
-        }
         if credential.length() as usize > MAX_COMMAND_BYTES {
             return Err(js_error(StreamError::LimitExceeded));
         }

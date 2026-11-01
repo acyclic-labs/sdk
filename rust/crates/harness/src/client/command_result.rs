@@ -1,7 +1,8 @@
-//! Settled command outcomes, their process exit codes and their bounded
-//! result encoding.
+//! Settled command outcomes, their process exit codes and lossless result encoding.
 use crate::{Error, Result, wire};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 /// Settled task outcome with stable process exit codes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -61,45 +62,11 @@ impl HeadlessOutcome {
     }
 }
 
-// Stop the serializer at the encoded bound, including JSON escaping and wrapper
-// fields. Overflow still publishes a terminal outcome; it cannot strand a claim.
-struct Output {
-    bytes: Vec<u8>,
-    maximum: u64,
-    overflow: bool,
-}
-
-impl std::io::Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if (self.bytes.len() as u64)
-            .checked_add(bytes.len() as u64)
-            .is_none_or(|n| n > self.maximum)
-        {
-            self.overflow = true;
-            return Err(std::io::ErrorKind::FileTooLarge.into());
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Encode a bounded outcome for command files or a live query projection.
-/// Both use the same terminal omission envelope when the encoded result is too large.
-pub fn encode_command_result(
-    sequence: u64,
-    result: &Result<Value>,
-    maximum: u64,
-) -> Result<Vec<u8>> {
+/// Encode the complete settled outcome for command files and live query projections.
+pub fn encode_command_result(sequence: u64, result: &Result<Value>) -> Result<Vec<u8>> {
     use serde::{Serializer as _, ser::SerializeMap as _};
     let codec = |error: serde_json::Error| Error::Invalid(error.to_string());
-    let mut output = Output {
-        bytes: Vec::new(),
-        maximum,
-        overflow: false,
-    };
+    let mut output = Vec::new();
     let completion = HeadlessOutcome::of(result);
     let encoded = (|| -> serde_json::Result<()> {
         let mut serializer = serde_json::Serializer::new(&mut output);
@@ -112,19 +79,8 @@ pub fn encode_command_result(
         }
         map.end()
     })();
-    if output.overflow {
-        output.bytes.clear();
-        output.overflow = false;
-        serde_json::to_writer(
-            &mut output,
-            &json!({"sequence":sequence,"output_omitted":true,
-                "completion":completion}),
-        )
-        .map_err(codec)?;
-    } else {
-        encoded.map_err(codec)?;
-    }
-    Ok(output.bytes)
+    encoded.map_err(codec)?;
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -146,14 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_result_settles_as_an_omitted_terminal_outcome() -> Result<()> {
+    fn command_results_preserve_escaped_unicode_output() -> Result<()> {
         for stdout in ["x".repeat(256), "\"\n".repeat(128), "λ".repeat(128)] {
-            let bytes = encode_command_result(3, &Ok(json!({"stdout": stdout})), 64)?;
-            assert!(bytes.len() <= 64);
+            let bytes = encode_command_result(3, &Ok(json!({"stdout": &stdout})))?;
             let value: Value =
                 serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
             assert_eq!(value["sequence"], 3);
-            assert_eq!(value["output_omitted"], true);
+            assert_eq!(value["ok"]["stdout"], stdout);
             assert_eq!(value["completion"], "completed");
         }
         Ok(())

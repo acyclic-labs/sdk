@@ -225,7 +225,7 @@ pub fn decode_attachment_manifest(
         let encoded_hold;
         let encoded = io.encode(
             &(ManifestVersion::V1, &decoded.0),
-            io.remaining()?.bytes_encoded,
+            Some(io.remaining()?.bytes_encoded),
             false,
         )?;
         encoded_hold = io.guard_bytes(&encoded)?;
@@ -262,11 +262,11 @@ pub fn decode_attachment_manifest(
 pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     verifier: &'a V,
     reference: &'a FileRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
-    if reference.descriptor().byte_length() > maximum_bytes {
+    if maximum_bytes.is_some_and(|maximum| reference.descriptor().byte_length() > maximum) {
         return Err(content_error(
             io,
             crate::wire::ErrorCode::Invalid,
@@ -275,7 +275,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     }
     let hold;
     let bytes = verifier
-        .read(reference, maximum_bytes, ceiling, io)?
+        .read(reference, reference.descriptor().byte_length(), ceiling, io)?
         .await?;
     #[cfg(feature = "filesystem")]
     {
@@ -354,7 +354,10 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
 ) -> Result<(Vec<Attachment>, Option<ContentHold<'a>>)> {
     crate::executor::with_history_io(io, |work| {
         limits.validate_record(reference, work)?;
-        if item_count as usize > limits.attachments {
+        if limits
+            .attachments
+            .is_some_and(|maximum| item_count as usize > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,

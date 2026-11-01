@@ -156,6 +156,34 @@ struct FiniteRead {
     remaining: u32,
 }
 
+impl futures::Stream for FiniteRead {
+    type Item = Result<Record, StreamError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let cursor = self.get_mut();
+        let result = match cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
+            Ok(Some(_)) => cursor.take_record().map(Ok),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        };
+        if !matches!(result, Some(Ok(_))) {
+            cursor.remaining = 0;
+            cursor.window = None;
+        }
+        std::task::Poll::Ready(result)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // The immutable pin bounds even a keyed seek. Later appends cannot
+        // enlarge this cut, and each successful delivery consumes one slot.
+        let maximum = u64::from(self.remaining).min(self.history.tail.saturating_sub(self.next));
+        (0, Some(maximum as usize))
+    }
+}
+
 impl FiniteRead {
     fn new(path: &PathState, request: ReadRequest) -> Self {
         let tail = request.key.as_ref().map_or_else(

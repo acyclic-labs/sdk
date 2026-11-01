@@ -231,13 +231,8 @@ where
         root,
         |candidate| candidate.cmp(key),
         |value, accounting| {
-            let (value, allocation) = persistent_io::clone_value::<F>(
-                value,
-                limits.maximum_name_bytes,
-                accounting,
-                data_custody,
-                0,
-            )?;
+            let (value, allocation) =
+                persistent_io::clone_value::<F>(value, accounting, data_custody, 0)?;
             let bytes = F::value_owned_bytes(&value);
             Ok(Owned::new(value, allocation, bytes))
         },
@@ -278,11 +273,7 @@ where
     if !limits.page_limits_valid(1) {
         return Err(query_error(Error::InvalidLimits));
     }
-    let mut visited = VisitedObjectSet::new_with_accounting(
-        usize::from(limits.maximum_page_height)
-            .min(usize::try_from(limits.maximum_visited_pages).unwrap_or(usize::MAX)),
-        accounting,
-    )?;
+    let mut visited = VisitedObjectSet::new_with_accounting(accounting)?;
     let mut lower: Option<Owned<F::Key>> = None;
     let mut upper: Option<Owned<F::Key>> = None;
     let mut page = root;
@@ -356,13 +347,8 @@ where
                     if let Some(previous) = lower.take() {
                         previous.retire(accounting)?;
                     }
-                    let (value, allocation) = persistent_io::clone_key::<F>(
-                        &child.first,
-                        limits.maximum_name_bytes,
-                        accounting,
-                        data_custody,
-                        0,
-                    )?;
+                    let (value, allocation) =
+                        persistent_io::clone_key::<F>(&child.first, accounting, data_custody, 0)?;
                     let bytes = F::key_owned_bytes(&value);
                     lower = Some(Owned::new(value, allocation, bytes));
                     if let Some(next) = children.get(selected + 1) {
@@ -371,7 +357,6 @@ where
                         }
                         let (value, allocation) = persistent_io::clone_key::<F>(
                             &next.first,
-                            limits.maximum_name_bytes,
                             accounting,
                             data_custody,
                             0,

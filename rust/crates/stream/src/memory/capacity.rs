@@ -1,9 +1,14 @@
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
-    if limit == 0 || usize::try_from(limit).map_or(true, |limit| limit > MAX_ITEMS) {
-        Err(StreamError::LimitExceeded)
+    if limit == 0 {
+        Err(StreamError::InvalidArgument)
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn page_limit(limit: u32) -> Result<u32, StreamError> {
+    validate_limit(limit)?;
+    Ok(limit.min(crate::CHILDREN_PAGE_ITEMS))
 }
 
 fn reserved(state: &State) -> (usize, usize) {
@@ -56,16 +61,17 @@ std::thread_local! { static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::
 fn missing_paths<'a>(
     state: &'a State,
     destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
+    explicit: impl Fn(&str) -> bool + Copy + 'a,
 ) -> impl Iterator<Item = (&'a StreamPath, usize)> + 'a {
     let mut previous = "";
-    let all = destinations.clone();
     // Existing destinations imply indexed ancestors; no hierarchy work remains.
+    // The explicit lookup uses the same canonical slice as destinations, so an
+    // ancestor lookup never rescans the whole request or allocates another index.
     destinations
         .filter(|path| !contains_path(state, path.as_str()))
         .flat_map(move |destination| {
             let path = destination.as_str();
             let before = previous;
-            let all = all.clone();
             previous = path;
             path.match_indices('/')
                 .map(|(end, _)| end)
@@ -79,8 +85,7 @@ fn missing_paths<'a>(
                         && !before
                             .strip_prefix(prefix)
                             .is_some_and(|suffix| suffix.starts_with('/'))
-                        && (*end == path.len()
-                            || !all.clone().any(|other| other.as_str() == prefix))
+                        && (*end == path.len() || !explicit(prefix))
                 })
                 .map(move |end| (destination, end))
         })
@@ -91,10 +96,12 @@ fn reserve_paths(
     path: &StreamPath,
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    let (count, bytes) = missing_paths(state, std::iter::once(path))
-        .fold((0usize, 0usize), |(count, bytes), (_, end)| {
-            (count + 1, bytes.saturating_add(end))
-        });
+    let (count, bytes) = missing_paths(state, std::iter::once(path), |prefix| {
+        path.as_str() == prefix
+    })
+    .fold((0usize, 0usize), |(count, bytes), (_, end)| {
+        (count + 1, bytes.saturating_add(end))
+    });
     if limits
         .paths
         .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
@@ -114,10 +121,19 @@ fn reserve_coordinated(
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     reserve_commit(state, limits)?;
-    let (new_paths, path_bytes) = missing_paths(state, request.mutations.iter().map(mutation_path))
-        .fold((0usize, 0usize), |(count, bytes), (_, end)| {
-            (count + 1, bytes.saturating_add(end))
-        });
+    let (new_paths, path_bytes) = missing_paths(
+        state,
+        request.mutations.iter().map(mutation_path),
+        |prefix| {
+            request
+                .mutations
+                .binary_search_by(|mutation| mutation_path(mutation).as_str().cmp(prefix))
+                .is_ok()
+        },
+    )
+    .fold((0usize, 0usize), |(count, bytes), (_, end)| {
+        (count + 1, bytes.saturating_add(end))
+    });
     let mut records = 0_usize;
     let mut bytes = 0_usize;
     for mutation in &request.mutations {
@@ -175,9 +191,7 @@ fn checked_subtree(
 ) -> Result<Arc<NamespaceNode>, StreamError> {
     let source = state.paths.node(source).ok_or(StreamError::NotFound)?;
     let node = Namespace::excluded(source, exclude, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
-    if destination.as_str().len().saturating_add(node.max_suffix()) > crate::MAX_PATH_BYTES
-        || destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS
-    {
+    if destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS {
         return Err(StreamError::InvalidPath);
     }
     Ok(node)
@@ -193,7 +207,10 @@ fn reserve_fork(
         &request.destination,
         &request.exclude,
     )?;
-    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination)).fold(
+    let (count, bytes) = missing_paths(state, std::iter::once(&request.destination), |prefix| {
+        request.destination.as_str() == prefix
+    })
+    .fold(
         (
             node.count() - 1,
             (node.count() - 1)

@@ -31,11 +31,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             return Err(FsError::PendingLiveMutation);
         }
         let (decision, allocation) = self
-            .rebase_head_with_accounting(
-                self.volume.config.limits.maximum_checkout_dependencies,
-                accounting,
-                cancellation,
-            )
+            .rebase_head_with_accounting(None, accounting, cancellation)
             .await?;
         match decision {
             RebaseDecision::Safe { .. } => Ok(()),

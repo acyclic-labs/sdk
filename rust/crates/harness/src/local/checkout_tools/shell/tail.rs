@@ -10,13 +10,13 @@ pub(super) struct Tail {
     bytes: VecDeque<u8>,
     channels: VecDeque<(bool, usize)>,
     total: u64,
-    maximum: usize,
+    maximum: Option<usize>,
     path: PathBuf,
     spill: Option<std::fs::File>,
 }
 
 impl Tail {
-    pub(super) fn new(path: PathBuf, maximum: usize) -> Self {
+    pub(super) fn new(path: PathBuf, maximum: Option<usize>) -> Self {
         Self {
             bytes: VecDeque::new(),
             channels: VecDeque::new(),
@@ -33,18 +33,25 @@ impl Tail {
                 "shell output count overflow; recovery: reconcile the original command",
             )
         })?;
-        if self.spill.is_none() && self.total > self.maximum as u64 {
+        if self.spill.is_none()
+            && self
+                .maximum
+                .is_some_and(|maximum| self.total > maximum as u64)
+        {
             self.ensure_spill()?;
         }
         if let Some(file) = &mut self.spill {
             file.write_all(bytes).map_err(|error| io::Error::new(error.kind(), format!("shell spill write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
         }
-        let keep = bytes.len().min(self.maximum);
-        let remove = self
-            .bytes
-            .len()
-            .saturating_add(keep)
-            .saturating_sub(self.maximum);
+        let keep = self
+            .maximum
+            .map_or(bytes.len(), |maximum| bytes.len().min(maximum));
+        let remove = self.maximum.map_or(0, |maximum| {
+            self.bytes
+                .len()
+                .saturating_add(keep)
+                .saturating_sub(maximum)
+        });
         self.bytes.drain(..remove);
         let mut evicted = remove;
         while evicted > 0 {
@@ -91,7 +98,7 @@ impl Tail {
     pub(super) fn settle(
         mut self,
         mut result: crate::tool::ToolResult,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> crate::Result<crate::tool::ToolResult> {
         let (stdout, stderr, omitted) = self.text();
         let fields = result.value.as_object_mut().ok_or_else(|| crate::Error::Invalid(
@@ -151,7 +158,7 @@ mod tests {
         fn chunks_preserve_tail_and_complete_spill(bytes in prop::collection::vec(any::<u8>(), 0..4096), maximum in 0usize..128, chunk in 1usize..256, render in 256u64..1024) {
             let directory = tempfile::tempdir()?;
             let path = directory.path().join("output");
-            let mut tail = Tail::new(path.clone(), maximum);
+            let mut tail = Tail::new(path.clone(), Some(maximum));
             let mut channels = Vec::new();
             for (index, bytes) in bytes.chunks(chunk).enumerate() {
                 let stderr = index % 2 == 1;
@@ -166,7 +173,7 @@ mod tests {
             prop_assert_eq!(tail.spill.is_some(), bytes.len() > maximum);
             let result = tail.settle(crate::tool::ToolResult {
                 value: serde_json::json!({"exit_code": 0, "spill": ".volumes/scratch/output"}),
-            }, render)?;
+            }, Some(render))?;
             let projected = serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":result.value["text"]}]}).to_string();
             prop_assert!(projected.len() as u64 <= render);
             let omitted = result.value["omitted_bytes"].as_u64().unwrap();

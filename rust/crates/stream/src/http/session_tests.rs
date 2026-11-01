@@ -1,7 +1,10 @@
 use super::*;
 use futures::TryFutureExt as _;
 use futures::{StreamExt, stream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 use tonic::{Request, Response, Status, Streaming};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 

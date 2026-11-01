@@ -23,7 +23,7 @@ fn relocation_requires_credit_for_both_original_and_replacement_buffers() -> Res
             Ok(Bytes::from(vec![b' '; ORIGINAL])),
             Ok(Bytes::from_static(b"x")),
         ]));
-        let result = futures::executor::block_on(read(body, 4 * ORIGINAL, Some(&work)));
+        let result = futures::executor::block_on(read(body, Some(4 * ORIGINAL), Some(&work)));
         if overlap {
             let body = result?;
             assert_eq!(body.bytes.len(), ORIGINAL + 1);

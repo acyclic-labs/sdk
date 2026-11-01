@@ -328,7 +328,7 @@ impl<'a> RecordIndex<'a> {
         &self,
         bucket: [u8; 32],
         include_started: bool,
-        maximum: usize,
+        maximum: Option<usize>,
         select: impl Fn(&ExecutionEvent) -> bool,
         io: Option<&PreparationIo>,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
@@ -341,7 +341,7 @@ impl<'a> RecordIndex<'a> {
         for record in started.iter().chain(self.bucket(bucket, io)?.iter()) {
             crate::model::charge_items(io, 1)?;
             if select(&record.event) {
-                if selected.len() >= maximum {
+                if maximum.is_some_and(|maximum| selected.len() >= maximum) {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
@@ -405,7 +405,7 @@ impl StockExecution<'_> {
         operation: OperationId,
         step: u32,
         include_started: bool,
-        maximum: usize,
+        maximum: Option<usize>,
         select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
         self.selected_records(
@@ -427,7 +427,7 @@ impl StockExecution<'_> {
         step: u32,
         call_id: Option<&str>,
         include_started: bool,
-        maximum: usize,
+        maximum: Option<usize>,
         select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
         validate_journal(journal, self.io)?;

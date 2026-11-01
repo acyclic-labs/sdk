@@ -62,7 +62,6 @@ fn extent_replace(bencher: Bencher, patches: usize) {
             &store,
             (root, 64),
             &changes,
-            8,
             DecodeLimits::default(),
             budget,
             &cancellation,

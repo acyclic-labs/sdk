@@ -11,7 +11,7 @@
 
 use crate::{FileLock, FileLockMode};
 use std::fs::OpenOptions;
-use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
+use std::io::{self, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,8 +39,9 @@ fn shared_lock_probe(file: std::fs::File) -> io::Result<FileLock> {
 }
 
 /// The claim protocol on this machine's files and processes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 struct Native {
+    meter: Option<std::sync::Arc<dyn crate::NativeReadMeter>>,
     /// How the liveness probe locks another process's lock; a seam so tests
     /// can make it fail as an OS lock does other than by contention.
     probe: LockProbe,
@@ -49,6 +50,7 @@ struct Native {
 impl Native {
     const SYSTEM: Self = Self {
         probe: shared_lock_probe,
+        meter: None,
     };
 }
 
@@ -92,15 +94,9 @@ impl Host for Native {
         file.unlock()
     }
 
-    fn read(&self, file: &FileLock) -> io::Result<Vec<u8>> {
+    fn read(&self, file: &FileLock) -> io::Result<record::ReadRecord> {
         let mut file: &std::fs::File = file;
-        file.seek(SeekFrom::Start(0))?;
-        // One byte past the limit, so an oversized file never decodes whole,
-        // in the one allocation the check's bound counts.
-        let mut bytes = Vec::with_capacity(record::RECORD_LIMIT + 1);
-        file.take(record::RECORD_LIMIT as u64 + 1)
-            .read_to_end(&mut bytes)?;
-        Ok(bytes)
+        record::ReadRecord::read(&mut file, self.meter.as_ref())
     }
 
     fn write(&self, file: &FileLock, bytes: &[u8]) -> io::Result<()> {
@@ -121,8 +117,8 @@ impl Host for Native {
         ProcessOwner::existing().map(|owner| &owner.process)
     }
 
-    fn liveness(&self, process: &record::Process, probes: &mut u64) -> Liveness {
-        process::liveness(process, probes, self.probe)
+    fn liveness(&self, process: &record::Process<&[u8]>, probes: &mut u64) -> io::Result<Liveness> {
+        process::liveness(process, probes, self.probe, self.meter.as_ref())
     }
 
     fn token(&self) -> u64 {
@@ -135,18 +131,6 @@ impl Host for Native {
         TABLE.get_or_init(Table::new)
     }
 }
-
-#[cfg(target_os = "linux")]
-const CHECK_ALLOCATIONS: u64 = 8;
-/// Measured on Linux only; elsewhere path conversions may allocate more.
-#[cfg(not(target_os = "linux"))]
-const CHECK_ALLOCATIONS: u64 = 16;
-/// Every buffer the check allocates is bounded by the record, which is at most
-/// [`record::RECORD_LIMIT`] bytes.
-#[cfg(target_os = "linux")]
-const CHECK_ALLOCATION_BYTES: u64 = 5 * (record::RECORD_LIMIT as u64 + 1);
-#[cfg(not(target_os = "linux"))]
-const CHECK_ALLOCATION_BYTES: u64 = 8 * (record::RECORD_LIMIT as u64 + 1);
 
 /// Exclusive ownership of one store, held by this process for as long as the
 /// value lives.
@@ -229,19 +213,10 @@ impl std::fmt::Debug for StoreHandle {
 }
 
 impl StoreClaim {
-    /// The most backend reads one [`StoreClaim::check`] makes: the record,
-    /// then the probes of its owner.
+    /// The most logical observations one [`StoreClaim::check`] reports: the
+    /// record, then its owner probes. Physical reads are metered individually
+    /// by [`StoreClaim::check_metered`], including every record chunk.
     pub const CHECK_READ_OPERATIONS: u64 = 1 + process::PROBES;
-
-    /// The most allocations one [`StoreClaim::check`] makes: the record's
-    /// buffer and its three fields, then its owner's process-lock path, that
-    /// path's terminated copy for the open, and the lock's and the process's
-    /// identities that its probes read.
-    pub const CHECK_ALLOCATIONS: u64 = CHECK_ALLOCATIONS;
-
-    /// The most bytes one [`StoreClaim::check`] allocates in all; its peak
-    /// is no larger.
-    pub const CHECK_ALLOCATION_BYTES: u64 = CHECK_ALLOCATION_BYTES;
 
     /// Claims the store whose claim file is `path`, creating the file if needed.
     pub fn acquire(path: &Path) -> io::Result<Self> {
@@ -258,13 +233,13 @@ impl StoreClaim {
     /// [`StoreClaim::acquire`], probing other processes' locks with `probe`.
     #[cfg(test)]
     pub(crate) fn acquire_probing(path: &Path, probe: LockProbe) -> io::Result<Self> {
-        Self::acquire_with(Native { probe }, path)
+        Self::acquire_with(Native { probe, meter: None }, path)
     }
 
     /// [`StoreClaim::check`], probing other processes' locks with `probe`.
     #[cfg(test)]
     pub(crate) fn check_probing(file: &FileLock, probe: LockProbe) -> io::Result<ClaimCheck> {
-        Self::check_with(&Native { probe }, file)
+        Self::check_with(&Native { probe, meter: None }, file)
     }
 
     /// Whether the claim file `file` names an owner that excludes others: a
@@ -296,10 +271,26 @@ impl StoreClaim {
         self._claim.path()
     }
 
-    /// [`StoreClaim::is_claimed`], with the reads it made, for callers that
-    /// account their I/O. At most [`StoreClaim::CHECK_READ_OPERATIONS`].
+    /// [`StoreClaim::is_claimed`], with its logical record/probe observations.
+    /// At most [`StoreClaim::CHECK_READ_OPERATIONS`]. Native callers account
+    /// actual physical I/O with [`StoreClaim::check_metered`].
     pub fn check(file: &FileLock) -> io::Result<ClaimCheck> {
         Self::check_with(&Native::SYSTEM, file)
+    }
+
+    /// Checks a claim using the caller's existing native ledger and cancellation.
+    /// Every actual record buffer is admitted before its allocation boundary.
+    pub fn check_metered(
+        file: &FileLock,
+        meter: &std::sync::Arc<dyn crate::NativeReadMeter>,
+    ) -> io::Result<ClaimCheck> {
+        Self::check_with(
+            &Native {
+                probe: shared_lock_probe,
+                meter: Some(meter.clone()),
+            },
+            file,
+        )
     }
 
     fn check_with(host: &Native, file: &FileLock) -> io::Result<ClaimCheck> {
@@ -320,15 +311,12 @@ pub struct ClaimCheck {
     pub read_operations: u64,
 }
 
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) use record::RECORD_LIMIT;
-
 /// The process lock that a claim file's record names, if it holds one.
 #[cfg(test)]
 pub(crate) fn recorded_process_lock(claim: &[u8]) -> Option<std::path::PathBuf> {
     match record::Contents::decode(claim) {
         record::Contents::Record(record) => process::bytes_path(&record.process.lock),
-        record::Contents::Empty | record::Contents::Torn | record::Contents::Oversized => None,
+        record::Contents::Empty | record::Contents::Torn | record::Contents::Malformed => None,
     }
 }
 

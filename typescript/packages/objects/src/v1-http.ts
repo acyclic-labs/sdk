@@ -10,6 +10,7 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;
   /** Optional caller response capacity; omission imposes no logical total. */
   readonly maximumResponseBytes?: number;
+  readonly maximumRequestBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
   /** Optional caller deadline in milliseconds; omitted or zero is unbounded. */

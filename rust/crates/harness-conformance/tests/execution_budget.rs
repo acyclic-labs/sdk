@@ -83,3 +83,34 @@ async fn the_public_host_still_exhausts_the_same_executor_step() -> Result {
     assert_eq!(observed.unused_turns, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn an_unlimited_recipe_completes_beyond_sixteen_executor_steps() -> Result {
+    let root = corpus();
+    let mut recipe = scenario_data::load_value(&root, &root.join("errors/unbound/plain.json"))?;
+    let object = recipe.as_object_mut().ok_or("missing recipe")?;
+    object.remove("expect");
+    object.remove("driver");
+    object.remove("max_steps");
+    let original = object
+        .get("turns")
+        .and_then(Value::as_array)
+        .ok_or("missing scripted turns")?;
+    let mut turns = Vec::new();
+    for index in 0..24 {
+        let mut turn = original[0].clone();
+        turn[0]["call_id"] = Value::String(format!("missing-{index}"));
+        turns.push(turn);
+    }
+    turns.push(original[1].clone());
+    object.insert("turns".into(), Value::Array(turns));
+    let observed = substrate::Local.execute(recipe, Vec::new()).await?;
+    let CaseObservation::Executor(observed) = observed else {
+        return Err("host did not execute the shared executor".into());
+    };
+    assert!(observed.result.is_ok(), "{:?}", observed.result);
+    assert_eq!(observed.text.as_deref(), Some("done"));
+    assert_eq!(observed.requests.len(), 25);
+    assert_eq!(observed.unused_turns, 0);
+    Ok(())
+}

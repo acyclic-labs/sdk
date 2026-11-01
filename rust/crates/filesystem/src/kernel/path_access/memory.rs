@@ -228,14 +228,12 @@ pub(super) fn drop_cache<S>(
 }
 pub(super) fn copy_name(
     source: &LogicalName,
-    maximum: u32,
     accounting: &mut KernelAccounting<'_>,
     custody: Option<&crate::kernel::ProofDataCustody>,
 ) -> Result<(LogicalName, KernelOwnedAllocation), crate::FsError> {
     // Use the same canonical clone leaf, including its per-field observation.
     crate::kernel::persistent_io::clone_key::<crate::kernel::tree_mutation::TreeFormat>(
         source,
-        maximum,
         accounting,
         custody,
         custody.map_or(0, crate::kernel::ProofDataCustody::operation_cache_bytes),

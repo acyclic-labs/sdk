@@ -26,7 +26,7 @@ struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
     // Last: signal after the owner's destructor and every retained fence.
-    release: ReleaseSignal,
+    release: OwnershipReleaseSignal,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -34,12 +34,7 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
-            release: ReleaseSignal(Arc::new(ReleaseState {
-                complete: AtomicBool::new(false),
-                blocking_lock: Mutex::new(()),
-                blocking: Condvar::new(),
-                asynchronous: tokio::sync::Notify::new(),
-            })),
+            release: OwnershipReleaseSignal::new(()),
         }
     }
 
@@ -108,20 +103,57 @@ impl OwnershipAnchor {
 }
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
-pub struct OwnershipReleaseBarrier {
-    released: Arc<ReleaseState>,
+pub struct OwnershipReleaseBarrier<T = ()> {
+    released: Arc<ReleaseState<T>>,
 }
 
-struct ReleaseState {
+struct ReleaseState<T> {
     complete: AtomicBool,
     blocking_lock: Mutex<()>,
     blocking: Condvar,
     asynchronous: tokio::sync::Notify,
+    value: T,
 }
 
-struct ReleaseSignal(Arc<ReleaseState>);
+/// Publishes retirement after the preceding payload and fence fields drop.
+pub struct OwnershipReleaseSignal<T = ()>(Arc<ReleaseState<T>>);
 
-impl Drop for ReleaseSignal {
+impl<T> OwnershipReleaseSignal<T> {
+    /// Shared control allocation, including its Arc counters.
+    #[must_use]
+    pub const fn allocation_bytes() -> usize {
+        crate::arc_allocation_bytes::<ReleaseState<T>>()
+    }
+
+    /// Creates the original retirement condition with its retained observer state.
+    /// Callers admit this allocation before construction.
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(ReleaseState {
+            complete: AtomicBool::new(false),
+            blocking_lock: Mutex::new(()),
+            blocking: Condvar::new(),
+            asynchronous: tokio::sync::Notify::new(),
+            value,
+        }))
+    }
+
+    /// State retained by this condition and its retirement observers.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.0.value
+    }
+
+    /// Observes this condition without retaining its payload owner.
+    #[must_use]
+    pub fn release_barrier(&self) -> OwnershipReleaseBarrier<T> {
+        OwnershipReleaseBarrier {
+            released: Arc::clone(&self.0),
+        }
+    }
+}
+
+impl<T> Drop for OwnershipReleaseSignal<T> {
     fn drop(&mut self) {
         let guard = self
             .0
@@ -135,7 +167,13 @@ impl Drop for ReleaseSignal {
     }
 }
 
-impl OwnershipReleaseBarrier {
+impl<T> OwnershipReleaseBarrier<T> {
+    /// Original observer state, retained through physical retirement.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.released.value
+    }
+
     /// Returns whether the final owner's cleanup and all fences have completed.
     #[must_use]
     pub fn is_released(&self) -> bool {
@@ -155,7 +193,7 @@ impl OwnershipReleaseBarrier {
     }
 
     /// Blocks until the final owner's cleanup and retained fences complete.
-    pub fn wait(self) {
+    pub fn wait(&self) {
         self.wait_for(None);
     }
 
@@ -172,7 +210,7 @@ impl OwnershipReleaseBarrier {
         }
     }
 
-    fn wait_for(self, deadline: Option<std::time::Instant>) -> bool {
+    fn wait_for(&self, deadline: Option<std::time::Instant>) -> bool {
         let mut guard = self
             .released
             .blocking_lock

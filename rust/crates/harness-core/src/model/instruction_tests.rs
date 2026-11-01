@@ -104,9 +104,9 @@ proptest! {
         let rendered = source.render(body.as_bytes(), None).unwrap();
         prop_assert_eq!(&rendered, &expected);
         prop_assert_eq!(source.framed_bytes().unwrap(), expected.len() as u64);
-        let mut remaining = expected.len() as u64;
-        source.reserve(&mut remaining, None).unwrap();
-        prop_assert_eq!(remaining, 0);
+        let mut remaining = Some(expected.len() as u64);
+        prop_assert_eq!(source.reserve(&mut remaining, None).unwrap(), body.len() as u64);
+        prop_assert_eq!(remaining, Some(0));
         prop_assert!(source.reserve(&mut remaining, None).is_err());
         let per_file_only = [source, source].iter().all(|source| source.framed_bytes().unwrap() <= expected.len() as u64);
         prop_assert!(per_file_only, "negative control must accept overflowing total");
@@ -115,11 +115,13 @@ proptest! {
         let mut work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0).unwrap();
         let sources = InstructionSources::new(&files, &mut quota).unwrap();
-        let reservation = sources.reservation(u64::MAX, None).unwrap();
+        let reservation = sources.reservation(None, None).unwrap();
         prop_assert_eq!(reservation, serde_json::to_vec(&message).unwrap().len() as u64 + expected.len() as u64 + 1);
+        prop_assert_eq!(sources.reservation(Some(reservation), None).unwrap(), reservation);
+        prop_assert!(sources.reservation(Some(reservation - 1), None).is_err());
         let decoded: ModelMessage = serde_json::from_slice(&serde_json::to_vec(&message).unwrap()).unwrap();
         prop_assert_eq!(decoded, message);
-        prop_assert!(sources.reservation(expected.len() as u64, None).is_err());
+        prop_assert!(sources.reservation(Some(expected.len() as u64), None).is_err());
         let alternate = self::file(&path, &body, "arbitrary");
         prop_assert!(source.same_content(&alternate));
         let different = self::file(&format!("other/{path}"), &body, &label);

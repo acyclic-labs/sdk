@@ -346,7 +346,7 @@ proptest::proptest! {
                     if observe_directory {
                         let limits = pending.checkout.volume_config().limits;
                         let path = crate::kernel::NamespacePath::new(components.iter().map(|component| crate::kernel::LogicalName::new(
-                            crate::kernel::NameEncoding::Utf8, component.to_vec(), limits.maximum_component_bytes,
+                            crate::kernel::NameEncoding::Utf8, component.to_vec(),
                         )).collect::<Result<_, _>>()?, limits)?;
                         unbounded!(pending.checkout, lookup_no_follow(&path))?;
                     }
@@ -426,7 +426,6 @@ async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
                                 crate::kernel::LogicalName::new(
                                     crate::kernel::NameEncoding::Utf8,
                                     name.as_bytes().to_vec(),
-                                    limits.maximum_component_bytes,
                                 )
                             })
                             .collect::<Result<Vec<_>, _>>()?,

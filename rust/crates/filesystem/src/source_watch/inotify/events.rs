@@ -15,6 +15,15 @@ impl Shared {
         let Some(mut reading) = self.service_reading() else {
             return;
         };
+        if hub::hub()
+            .and_then(|hub| hub.check().map_err(DemandError::from))
+            .is_err()
+        {
+            // Logical failure was already published by the router. Retire
+            // through the same cursor and original cleanup credits.
+            self.retire_in_service(reading);
+            return;
+        }
         if self.stopping.load(Ordering::Acquire) {
             // A controller that could not stop leaves retirement to delivery.
             if self.delivery.original.is_some() && !self.controller_alive.load(Ordering::Acquire) {
@@ -74,7 +83,7 @@ impl Shared {
             .inbox
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take(&mut reading.buffer, maximum);
+            .take(&mut reading.buffer, maximum, self, work);
         reading.cursor = 0;
         reading.alias_cursor = 0;
         match taken {
@@ -86,12 +95,12 @@ impl Shared {
                 })?;
                 Ok(None)
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                 reading.buffer = Vec::new();
                 reading.filled = 0;
                 Ok(Some(self.delivery.is_exact()))
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
@@ -100,6 +109,7 @@ impl Shared {
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
+        hub::hub()?.check()?;
         if self.delivery.original.is_some() && !self.delivery.is_exact() {
             return Ok(false);
         }
@@ -118,6 +128,7 @@ impl Shared {
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
+        hub::hub()?.check()?;
         if self.delivery.original.is_some() && !self.delivery.is_exact() {
             return Ok(false);
         }

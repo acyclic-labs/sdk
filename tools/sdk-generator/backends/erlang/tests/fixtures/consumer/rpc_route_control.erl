@@ -55,11 +55,13 @@ run() ->
       end,Methods),
       length(Methods)
     end || {_Pb,S,Client,_,Methods}<-Specs],
-    23=lists:sum(Counts),23=ets:info(rpc_route_counts,size),
+    21=lists:sum(Counts),21=ets:info(rpc_route_counts,size),
+    Streaming=length([M || {_,_,_,_,Methods}<-Specs,M<-Methods,maps:get(output_stream,M)]),
+    io:format("PASS RPC shapes: ~p unary, ~p server streaming~n",[lists:sum(Counts)-Streaming,Streaming]),
     ok=grpcbox_channel:stop(route_control),
     ok=application:stop(grpcbox),
     scalar_controls(),
-    io:format("PASS archive-installed Erlang clients: 23 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and two encoding rejections on port ~p~n",[Port]),ok.
+    io:format("PASS archive-installed Erlang clients: 21 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and two encoding rejections on port ~p~n",[Port]),ok.
 
 admit_vectors(Pb,Service,Path) ->
     {ok,Bytes}=file:read_file(Path),

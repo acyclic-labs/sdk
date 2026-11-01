@@ -19,7 +19,7 @@ test("every browser session attempt resolves a fresh credential before dialing",
     controller.abort(stopped);
     await expect(connect(undefined, controller.signal)).rejects.toBe(stopped);
     expect(calls).toBe(values.length + 1);
-  }), { numRuns: 64 });
+  }), { numRuns: 64, examples: [[["a".repeat(262_145), "renewed"]]] });
 });
 
 test("cancellation while renewing prevents the browser dial", async () => {

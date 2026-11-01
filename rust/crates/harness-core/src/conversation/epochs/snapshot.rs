@@ -281,7 +281,7 @@ impl Snapshot {
                 completion: self.outcome.as_ref(),
             }),
         });
-        let record = io.encode(&wire, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let record = io.encode(&wire, Some(acyclic_stream::MAX_RECORD_BYTES as u64), false)?;
         let hold = io.guard_bytes(&record)?;
         Ok(EncodedSnapshot {
             condition,

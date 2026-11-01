@@ -28,7 +28,6 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -51,107 +50,663 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
-async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn() -> Result {
-    struct Calls {
-        count: Arc<AtomicUsize>,
-        pause: bool,
-    }
-    impl TurnDriver for Calls {
+async fn physical_driver_frames_settle_without_losing_the_terminal_commit() -> Result {
+    use acyclic_harness_core::conversation::{FileDescriptor, FileRef};
+    use acyclic_stream::{ReadRequest, StreamProvider as _};
+    use futures::TryStreamExt as _;
+
+    struct Frames(Vec<Out>, Option<(bool, usize, bool)>);
+    impl TurnDriver for Frames {
         fn step<'a>(
             &'a self,
-            _: &'a AgentState,
-            _: u64,
-            input: Option<Queued>,
+            agent: &'a AgentState,
+            cursor: u64,
+            _: Option<Queued>,
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
-            assert!(matches!(
-                input,
-                Some(Queued {
-                    input: TurnInput::Notice { .. },
-                    ..
-                })
-            ));
-            self.count.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
-                Ok(TurnStep {
-                    reserved_children: 0,
-                    checkpoint: None,
-                    outs: Vec::new(),
-                    wait: if self.pause {
-                        Wait::Approval(intent("decision"))
+                let wait = if let Some((approval, status_bytes, escaped)) = self.1 {
+                    let phase = if approval {
+                        Phase::WaitingApproval { id: intent("x") }
                     } else {
-                        Wait::Input
-                    },
+                        Phase::WaitingHost { host: "x".into() }
+                    };
+                    let envelope = StatusRecord {
+                        phase,
+                        cursor,
+                        conversation: agent.conversation_tail
+                            + self
+                                .0
+                                .iter()
+                                .filter(|out| matches!(out, Out::Conversation(_)))
+                                .count() as u64,
+                    }
+                    .encode()?
+                    .len()
+                        - 1;
+                    let text = if escaped { "\"" } else { "x" }.repeat(status_bytes - envelope);
+                    if approval {
+                        Wait::Approval(IntentId::try_from(text)?)
+                    } else {
+                        Wait::Host(text)
+                    }
+                } else {
+                    Wait::Done(AgentOutcome::Succeeded { result: None })
+                };
+                Ok(TurnStep {
+                    checkpoint: Some(vec![7]),
+                    outs: self.0.clone(),
+                    wait,
                     drops: None,
                 })
             })
         }
     }
 
-    for pause in [false, true] {
+    let maximum = acyclic_stream::MAX_RECORD_BYTES;
+    let done = |message: String| {
+        InboxRecord::ChildDone(ChildDone {
+            child: AgentPath::root(&id(3)),
+            outcome: AgentOutcome::Failed { message },
+        })
+    };
+    let envelope = done(String::new()).encode()?.len();
+    let exact = done("x".repeat(maximum - envelope));
+    assert_eq!(exact.encode()?.len(), maximum);
+    // The logical text fits; JSON escaping plus the original versioned header
+    // exceeds the physical frame. Counting only the text cannot protect it.
+    let escaped = done("\u{0001}".repeat(maximum / 3));
+    assert!(escaped.encode()?.len() > maximum);
+    let peer = AgentPath::root(&id(2));
+    for (out, admitted, wait) in [
+        (Out::Conversation(vec![b'x'; maximum]), true, None),
+        (Out::Conversation(vec![b'x'; maximum + 1]), false, None),
+        (
+            Out::Send {
+                to: peer.clone(),
+                record: exact,
+            },
+            true,
+            None,
+        ),
+        (
+            Out::Send {
+                to: peer.clone(),
+                record: escaped,
+            },
+            false,
+            None,
+        ),
+        // The wait is also retained inside the original checkpoint. Keep its
+        // admitted control within that separately configured physical record.
+        (
+            Out::Conversation(vec![b'x']),
+            true,
+            Some((false, maximum / 2, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((false, maximum + 1, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((false, maximum, true)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            true,
+            Some((true, maximum / 2, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((true, maximum + 1, false)),
+        ),
+        (
+            Out::Conversation(vec![b'x']),
+            false,
+            Some((true, maximum, true)),
+        ),
+    ] {
         let provider = Arc::new(MemoryStream::default());
-        let count = Arc::new(AtomicUsize::new(0));
+        super::create(&provider, id(2)).await?;
+        let conversation = matches!(out, Out::Conversation(_));
+        let expected = out.clone();
         let host = AgentHost::new(
             provider.clone(),
-            Calls {
-                count: count.clone(),
-                pause,
+            Frames(vec![out], wait),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let mut adoption = adopted(id(1));
+        adoption.brief = Some(super::driver::file("frames")?);
+        let root = host.create(&intent("create"), adoption).await?;
+        host.drain(&root).await?;
+        let state = host.state(&root).await?;
+        if admitted && let Some((approval, ..)) = wait {
+            assert!(if approval {
+                matches!(state.phase, Phase::WaitingApproval { .. })
+            } else {
+                matches!(state.phase, Phase::WaitingHost { .. })
+            });
+            assert_eq!(
+                state
+                    .turn
+                    .as_ref()
+                    .ok_or("missing waiting checkpoint")?
+                    .checkpoint,
+                vec![7]
+            );
+        } else {
+            assert_eq!(
+                state.phase,
+                Phase::Done {
+                    outcome: if admitted {
+                        AgentOutcome::Succeeded { result: None }
+                    } else {
+                        AgentOutcome::Failed {
+                            message: INADMISSIBLE_EFFECT.into(),
+                        }
+                    }
+                }
+            );
+            assert!(state.turn.is_none());
+        }
+        let status = values(&provider, root.status()?).await?;
+        if admitted && wait.is_some() {
+            assert_eq!(
+                status.last().ok_or("missing waiting status")?.len(),
+                wait.ok_or("missing wait selection")?.1
+            );
+        }
+        assert_eq!(
+            StatusRecord::decode(status.last().ok_or("missing terminal status")?)?.phase,
+            state.phase
+        );
+        let records = values(&provider, root.conversation()?).await?;
+        if admitted && conversation {
+            let Out::Conversation(bytes) = &expected else {
+                unreachable!()
+            };
+            assert_eq!(records.as_slice(), std::slice::from_ref(bytes));
+        } else {
+            assert!(records.is_empty());
+        }
+        let sent = values(&provider, peer.inbox()?).await?;
+        assert_eq!(sent.len(), 1 + usize::from(admitted && !conversation));
+        if admitted && !conversation {
+            let Out::Send { record, .. } = &expected else {
+                unreachable!()
+            };
+            assert_eq!(&InboxRecord::decode(&sent[1])?, record);
+        }
+    }
+    fn result_file(field: usize, bytes: usize) -> acyclic_harness_core::Result<FileRef> {
+        let original = super::driver::file("result")?;
+        FileRef::new(
+            original.volume().clone(),
+            if field == 0 {
+                "x".repeat(bytes)
+            } else {
+                "result".into()
+            },
+            if field == 3 {
+                "x".repeat(bytes)
+            } else {
+                original.version().into()
+            },
+            FileDescriptor::new(
+                [0; 32],
+                0,
+                if field == 2 {
+                    format!("application/{}", "x".repeat(bytes))
+                } else {
+                    "application/x".into()
+                },
+            )?,
+            if field == 1 {
+                "x".repeat(bytes)
+            } else {
+                "result".into()
+            },
+            &mut None,
+        )
+    }
+
+    struct Results {
+        field: usize,
+        bytes: usize,
+        children: bool,
+        parent_only: bool,
+    }
+    impl TurnDriver for Results {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            cursor: u64,
+            input: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                if self.children && agent.parent.is_none() {
+                    return Ok(TurnStep {
+                        checkpoint: None,
+                        outs: if matches!(
+                            input,
+                            Some(Queued {
+                                input: TurnInput::Brief { .. },
+                                ..
+                            })
+                        ) {
+                            vec![Out::Spawn {
+                                intent: intent("result"),
+                                brief: Some(
+                                    super::driver::file("child")
+                                        .map_err(|e| Error::Turn(Box::new(e)))?,
+                                ),
+                                volumes: Vec::new(),
+                            }]
+                        } else {
+                            Vec::new()
+                        },
+                        wait: Wait::Input,
+                        drops: None,
+                    });
+                }
+                let outcome = |bytes| {
+                    result_file(self.field, bytes)
+                        .map(|file| AgentOutcome::Succeeded {
+                            result: Some(Box::new(file)),
+                        })
+                        .map_err(|error| Error::Turn(Box::new(error)))
+                };
+                let bytes = if self.parent_only {
+                    let envelope = InboxRecord::ChildDone(ChildDone {
+                        child: agent.path.clone(),
+                        outcome: outcome(1)?,
+                    })
+                    .encode()?
+                    .len()
+                        - 1;
+                    acyclic_stream::MAX_RECORD_BYTES + 1 - envelope
+                } else {
+                    self.bytes
+                };
+                let outcome = outcome(bytes)?;
+                if self.parent_only {
+                    assert!(
+                        StatusRecord {
+                            phase: Phase::Done {
+                                outcome: outcome.clone()
+                            },
+                            cursor,
+                            conversation: agent.conversation_tail + 1
+                        }
+                        .encode()?
+                        .len()
+                            <= acyclic_stream::MAX_RECORD_BYTES
+                    );
+                    assert_eq!(
+                        InboxRecord::ChildDone(ChildDone {
+                            child: agent.path.clone(),
+                            outcome: outcome.clone()
+                        })
+                        .encode()?
+                        .len(),
+                        acyclic_stream::MAX_RECORD_BYTES + 1
+                    );
+                }
+                Ok(TurnStep {
+                    checkpoint: Some(vec![7]),
+                    outs: vec![Out::Conversation(vec![b'x'])],
+                    wait: Wait::Done(outcome),
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    // Both generated envelopes matter: a child's notification can overflow
+    // while its own status fits. Exercise every unbounded FileRef text field.
+    for (children, field, bytes, parent_only) in [
+        (false, 0, maximum / 2, false),
+        (false, 0, maximum, false),
+        (false, 1, maximum / 2, false),
+        (false, 1, maximum, false),
+        (false, 2, maximum / 2, false),
+        (false, 2, maximum, false),
+        (false, 3, maximum / 2, false),
+        (false, 3, maximum, false),
+        (true, 0, maximum / 2, false),
+        (true, 0, maximum, false),
+        (true, 1, maximum / 2, false),
+        (true, 1, maximum, false),
+        (true, 2, maximum / 2, false),
+        (true, 2, maximum, false),
+        (true, 3, maximum / 2, false),
+        (true, 3, maximum, false),
+        (true, 2, 0, true),
+    ] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider.clone(),
+            Results {
+                field,
+                bytes,
+                children,
+                parent_only,
             },
             ActorReference::new(b"account", b"agents", b"owner")?,
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             Arc::new(SystemClock),
         )?;
-        let root = host.create(&intent("create"), adopted(id(1))).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        let notice = |name: &str, wake| InboxRecord::Notice {
-            id: intent(name),
-            notice: acyclic_harness_core::conversation::wire::Notice {
-                source: "filesystem".into(),
-                kind: "arbitrary.open.tag".into(),
-                body: serde_json::json!({"paths": [name]}),
-                wake,
-                coalesce_key: Some("files".into()),
-            },
+        let mut adoption = adopted(id(1));
+        adoption.brief = Some(super::driver::file("frames")?);
+        let root = host.create(&intent("create"), adoption).await?;
+        host.drain(&root).await?;
+        let target = if children {
+            root.child(&AgentId::derive(&root.id(), "result"))?
+        } else {
+            root.clone()
         };
-        let quiet = notice("before", false);
-        host.send(&root, &user(), &quiet).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        assert_eq!(count.load(Ordering::SeqCst), 0);
-
-        let waking = notice("waking", true);
-        host.send(&root, &user(), &waking).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        let before = host.state(&root).await?;
-        // The original append key owns delivery deduplication, including a
-        // caller retry after losing the successful acknowledgement.
-        host.send(&root, &user(), &waking).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-
-        let after = notice("after", false);
-        host.send(&root, &user(), &after).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        assert_eq!(count.load(Ordering::SeqCst), 1);
-        let reopened = host.state(&root).await?;
-        assert_eq!(reopened.pending_notices, Some(1..4));
-        assert_eq!(reopened.phase, before.phase);
-        assert_eq!(reopened.turn, before.turn);
-        let records = values(&provider, root.inbox()?).await?;
-        let notices = records
-            .iter()
-            .map(|record| InboxRecord::decode(record))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        assert_eq!(
-            notices,
-            vec![
-                InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
-                quiet,
-                waking,
-                after
-            ]
+        if children {
+            host.drain(&target).await?;
+        }
+        let admitted = bytes < maximum && !parent_only;
+        let outcome = if admitted {
+            AgentOutcome::Succeeded {
+                result: Some(Box::new(result_file(field, bytes)?)),
+            }
+        } else {
+            AgentOutcome::Failed {
+                message: INADMISSIBLE_EFFECT.into(),
+            }
+        };
+        let state = host.state(&target).await?;
+        assert!(
+            matches!(state.phase, Phase::Done { .. }),
+            "completion missing: children={children} field={field} bytes={bytes} parent_only={parent_only}"
         );
+        assert_eq!(
+            state.phase,
+            Phase::Done {
+                outcome: outcome.clone()
+            }
+        );
+        assert!(state.turn.is_none());
+        assert_eq!(
+            values(&provider, target.conversation()?).await?.len(),
+            usize::from(admitted)
+        );
+        let status = provider
+            .read(ReadRequest {
+                path: target.status()?,
+                from: state.status_tail - 1,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or("missing result status")?;
+        assert_eq!(StatusRecord::decode(&status.value)?.phase, state.phase);
+        if children {
+            let records = provider
+                .read(ReadRequest {
+                    path: root.inbox()?,
+                    from: 1,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?
+                .try_next()
+                .await?
+                .ok_or("missing result notification")?;
+            assert_eq!(records.commit_id, status.commit_id);
+            assert_eq!(
+                InboxRecord::decode(&records.value)?,
+                InboxRecord::ChildDone(ChildDone {
+                    child: target,
+                    outcome
+                })
+            );
+            host.drain(&root).await?;
+            assert!(host.state(&root).await?.open_children.is_empty());
+        }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn large_failure_publishes_complete_diagnostic_with_original_child_settlement() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use acyclic_stream::{AppendRequest, StreamProvider as _, StreamProviderExt as _};
+    use futures::TryStreamExt as _;
+
+    #[derive(Clone)]
+    struct Failing(String);
+    impl TurnDriver for Failing {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            _: u64,
+            input: Option<Queued>,
+            _: CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                if agent.parent.is_some() {
+                    return Err(Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+                        self.0.clone(),
+                    ))));
+                }
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: if matches!(
+                        input,
+                        Some(Queued {
+                            input: TurnInput::Brief { .. },
+                            ..
+                        })
+                    ) {
+                        vec![Out::Spawn {
+                            intent: intent("large-failure"),
+                            brief: Some(
+                                super::driver::file("child")
+                                    .map_err(|error| Error::Turn(Box::new(error)))?,
+                            ),
+                            volumes: Vec::new(),
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    // Controls and multibyte text exercise both JSON expansion and chunk edges.
+    let driver = Failing(format!(
+        "{}complete suffix",
+        "\u{0001}\"é".repeat(acyclic_stream::MAX_RECORD_BYTES)
+    ));
+    let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+        driver.0.clone(),
+    )))
+    .to_string();
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        driver.clone(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let mut adoption = adopted(id(1));
+    adoption.brief = Some(super::driver::file("root")?);
+    let root = host.create(&intent("create"), adoption).await?;
+    // A fork inherits its ancestor's staged records. Even the same diagnostic
+    // bytes must use the child's original identity rather than that inherited
+    // slot; an interrupted ancestor publication must not prevent settlement.
+    let ancestor = Diagnostic {
+        agent: root.clone(),
+        digest: *blake3::hash(expected.as_bytes()).as_bytes(),
+        bytes: expected.len() as u64,
+    };
+    provider
+        .append(AppendRequest {
+            path: ancestor.path()?,
+            records: vec![
+                expected.as_bytes()[..acyclic_stream::MAX_RECORD_BYTES]
+                    .to_vec()
+                    .into(),
+            ],
+            if_tail: Some(0),
+            idempotency_key: intent_key("ancestor-diagnostic", &["original"])?,
+        })
+        .await?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let child = root.child(&AgentId::derive(&root.id(), "large-failure"))?;
+    let snapshot = store(&provider)?.load(&host.actor(&child)?).await?;
+    let cursor = snapshot
+        .state()
+        .and_then(|state| state.cursor(INBOX))
+        .ok_or("missing child cursor")?;
+    let mut records = provider
+        .read(acyclic_stream::ReadRequest {
+            path: child.inbox()?,
+            from: cursor,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?;
+    let record = records.try_next().await?.ok_or("missing child adoption")?;
+    let step = step(
+        &driver,
+        &child,
+        None,
+        cursor + 1,
+        Wake::Inbox {
+            sequence: cursor,
+            record: InboxRecord::decode(&record.value)?,
+        },
+        CancellationToken::new(),
+    )
+    .await?;
+    let Out::Diagnostic { diagnostic, text } = step
+        .outs
+        .iter()
+        .find(|out| matches!(out, Out::Diagnostic { .. }))
+        .ok_or("missing diagnostic staging")?
+    else {
+        return Err("unexpected staging effect".into());
+    };
+    assert_eq!(text, &expected);
+    assert_eq!(diagnostic.bytes, expected.len() as u64);
+    let before = values(&provider, root.inbox()?).await?;
+    // Neither an absent payload nor an incomplete prefix may publish the status
+    // or notify the parent. A failed conditional leaves the same key unspent.
+    let request = lower(
+        &step,
+        cursor + 1,
+        intent_key("partial-diagnostic", &["one"])?,
+    )?;
+    for prefix in 0..2 {
+        if prefix == 1 {
+            let path = diagnostic.path()?;
+            provider
+                .append(AppendRequest {
+                    idempotency_key: intent_key("diagnostic", &[path.as_str(), "0"])?,
+                    path,
+                    records: vec![
+                        text.as_bytes()[..acyclic_stream::MAX_RECORD_BYTES]
+                            .to_vec()
+                            .into(),
+                    ],
+                    if_tail: Some(0),
+                })
+                .await?;
+        }
+        assert!(matches!(
+            submit(provider.as_ref(), request.clone()).await?,
+            Submitted::Conflict(_)
+        ));
+        assert_eq!(values(&provider, root.inbox()?).await?, before);
+    }
+    host.host(&child)?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = host.state(&child).await?;
+    assert_eq!(
+        state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone()
+            }
+        }
+    );
+    let mut complete = Vec::new();
+    for from in 0..diagnostic.records() {
+        let page: Vec<_> = diagnostic
+            .page(provider.as_ref(), from, 1)
+            .await?
+            .try_collect()
+            .await?;
+        assert_eq!(page.len(), 1);
+        complete.extend_from_slice(&page[0].value);
+    }
+    assert_eq!(complete, expected.as_bytes());
+    assert_eq!(blake3::hash(&complete).as_bytes(), &diagnostic.digest);
+    let child_status = provider
+        .read(acyclic_stream::ReadRequest {
+            path: child.status()?,
+            from: state.status_tail - 1,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing terminal status")?;
+    let parent_done = provider
+        .read(acyclic_stream::ReadRequest {
+            path: root.inbox()?,
+            from: before.len() as u64,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing parent notification")?;
+    assert_eq!(child_status.commit_id, parent_done.commit_id);
+    assert_eq!(
+        StatusRecord::decode(&child_status.value)?.phase,
+        state.phase
+    );
+    assert_eq!(
+        InboxRecord::decode(&parent_done.value)?,
+        InboxRecord::ChildDone(ChildDone {
+            child,
+            outcome: AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone()
+            },
+        })
+    );
+    // This finite host has no activation dispatcher running. Deliver the
+    // parent's committed ChildDone through its existing event-owned drain.
+    host.drain(&root).await?;
+    assert!(host.state(&root).await?.open_children.is_empty());
     Ok(())
 }
 
@@ -177,7 +732,6 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -258,65 +812,50 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 }
 
 #[tokio::test]
-async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
-    for oversized in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
-        let driver = super::script(vec![TurnStep {
-            reserved_children: 0,
-            checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
-            outs: vec![
-                Out::Conversation(b"first".to_vec()),
-                Out::Conversation(b"second".to_vec()),
-            ],
-            wait: Wait::Approval(intent("decision")),
-            drops: None,
-        }]);
-        let host = AgentHost::new(
-            provider.clone(),
-            driver,
-            ActorReference::new(b"account", b"agents", b"owner")?,
-            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-            Arc::new(SystemClock),
-        )?;
-        let root = host.create(&intent("create"), adopted(id(1))).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        let before = host.state(&root).await?;
-        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
-            id: intent("approval"),
-        });
-        assert!(matches!(
-            host.send(&root, &user(), &input).await?,
-            Delivered::Committed { .. }
-        ));
-        let failures = host.runtime().drain().await;
-        assert!(failures.is_empty(), "{failures:?}");
-        // Reopening decodes the actual checkpoint published by the handler.
-        let committed = host.state(&root).await?;
-        assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
-        assert_eq!(committed.status_tail, before.status_tail + 1);
-        assert_eq!(
-            values(&provider, root.conversation()?).await?,
-            vec![b"first".to_vec(), b"second".to_vec()]
-        );
-        assert_eq!(
-            values(&provider, root.status()?).await?.len() as u64,
-            committed.status_tail
-        );
-        if oversized {
-            assert_eq!(committed.turn, None);
-            assert_eq!(
-                committed.phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Failed {
-                        message: OVERSIZED_STATE.into(),
-                    }
-                }
-            );
-        } else {
-            assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
-        }
-    }
+async fn committed_checkpoints_carry_final_tails() -> Result {
+    let provider = Arc::new(MemoryStream::default());
+    let driver = super::script(vec![TurnStep {
+        checkpoint: Some(vec![7; 8]),
+        outs: vec![
+            Out::Conversation(b"first".to_vec()),
+            Out::Conversation(b"second".to_vec()),
+        ],
+        wait: Wait::Approval(intent("decision")),
+        drops: None,
+    }]);
+    let host = AgentHost::new(
+        provider.clone(),
+        driver,
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let before = host.state(&root).await?;
+    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child: root.child(&id(2))?,
+        id: intent("approval"),
+    });
+    assert!(matches!(
+        host.send(&root, &user(), &input).await?,
+        Delivered::Committed { .. }
+    ));
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    // Reopening decodes the actual checkpoint published by the handler.
+    let committed = host.state(&root).await?;
+    assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
+    assert_eq!(committed.status_tail, before.status_tail + 1);
+    assert_eq!(
+        values(&provider, root.conversation()?).await?,
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+    assert_eq!(
+        values(&provider, root.status()?).await?.len() as u64,
+        committed.status_tail
+    );
+    assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
     Ok(())
 }
 
@@ -414,6 +953,125 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         .on_record(delivery, Some(checkpoint), CancellationToken::new())
         .await?;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn conversation_follow_waits_on_actual_status_publication_and_preserves_refusals() -> Result {
+    use acyclic_stream::{
+        CommitMutation, CommitOutcome, CommitRequest, FollowRequest, StreamError, StreamProvider,
+        StreamProviderExt,
+    };
+    use futures::TryStreamExt;
+
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    // The primitive's missing-path contract still refuses and creates nothing.
+    host.drain(&root).await?;
+    assert!(matches!(
+        provider
+            .follow(FollowRequest::new(root.conversation()?, 0))
+            .await,
+        Err(StreamError::NotFound)
+    ));
+    assert!(matches!(
+        host.follow_conversation(&root, 1).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    let mut cancelled = Box::pin(host.follow_conversation(&root, 0));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(cancelled.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    drop(cancelled);
+    assert!(matches!(
+        provider.tail(root.conversation()?).await,
+        Err(StreamError::NotFound)
+    ));
+
+    let mut following = Box::pin(host.follow_conversation(&root, 0));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(following.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    let entry = ConversationEntry {
+        inbox: 1,
+        input: TurnInput::Message {
+            from: user(),
+            id: intent("message"),
+            body: Box::new(super::driver::file("input")?),
+            attachments: None,
+        },
+        output: super::driver::file("output")?,
+        outcome: Default::default(),
+        goal: None,
+        targets: None,
+        tool_results: None,
+    }
+    .encode()?;
+    assert!(matches!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: root.conversation()?,
+                        records: vec![entry.clone().into()]
+                    },
+                    CommitMutation::Append {
+                        path: root.status()?,
+                        records: vec![
+                            StatusRecord {
+                                phase: Phase::Idle,
+                                cursor: 2,
+                                conversation: 1
+                            }
+                            .encode()?
+                            .into()
+                        ]
+                    },
+                ],
+                idempotency_key: intent_key("conversation-follow", &["publish"])?,
+            })
+            .await?,
+        CommitOutcome::Committed(_)
+    ));
+    let mut records = following.await?;
+    let first = records
+        .try_next()
+        .await?
+        .ok_or("conversation follow ended")?;
+    assert_eq!(first.sequence, 0);
+    assert_eq!(first.value.as_ref(), entry.as_slice());
+    drop(records);
+    assert!(matches!(
+        host.follow_conversation(&root, 2).await,
+        Err(Error::Stream(StreamError::OutOfRange))
+    ));
+    assert!(matches!(
+        host.follow_conversation(&AgentPath::root(&id(9)), 0).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+
+    let closed = host.create(&intent("closed"), adopted(id(2))).await?;
+    host.archive(&closed, &user(), &intent("archive")).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    assert!(matches!(
+        host.state(&closed).await?.phase,
+        Phase::Done { .. }
+    ));
+    assert!(matches!(
+        host.follow_conversation(&closed, 0).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
     Ok(())
 }
 
@@ -625,47 +1283,6 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
 }
 
 #[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
-    let provider = Arc::new(MemoryStream::default());
-    let host = AgentHost::new(
-        provider,
-        Spawner(AtomicUsize::new(1)),
-        ActorReference::new(b"account", b"agents", b"owner")?,
-        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(SystemClock),
-    )?;
-    let root = host.create(&intent("create"), adopted(id(1))).await?;
-    let request = |n: usize| {
-        InboxRecord::Spawn(SpawnRequest {
-            by: user(),
-            id: intent(&format!("s{n}")),
-            brief: Box::new(super::driver::file("task").expect("file")),
-        })
-    };
-    let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
-        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
-            return Err("spawn request was not committed".into());
-        };
-        last = inbox;
-    }
-    let failures = host.runtime().drain().await;
-    assert!(failures.is_empty(), "{failures:?}");
-    let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
-    assert_eq!(
-        host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
@@ -707,5 +1324,110 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(host.state(&root).await?.open_children.len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn notice_delivery_wakes_once_and_quiet_delivery_preserves_the_paused_turn() -> Result {
+    struct Calls {
+        count: Arc<AtomicUsize>,
+        pause: bool,
+    }
+    impl TurnDriver for Calls {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            input: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            assert!(matches!(
+                input,
+                Some(Queued {
+                    input: TurnInput::Notice { .. },
+                    ..
+                })
+            ));
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(TurnStep {
+                    reserved_children: 0,
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: if self.pause {
+                        Wait::Approval(intent("decision"))
+                    } else {
+                        Wait::Input
+                    },
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    for pause in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let count = Arc::new(AtomicUsize::new(0));
+        let host = AgentHost::new(
+            provider.clone(),
+            Calls {
+                count: count.clone(),
+                pause,
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let notice = |name: &str, wake| InboxRecord::Notice {
+            id: intent(name),
+            notice: acyclic_harness_core::conversation::wire::Notice {
+                source: "filesystem".into(),
+                kind: "arbitrary.open.tag".into(),
+                body: serde_json::json!({"paths": [name]}),
+                wake,
+                coalesce_key: Some("files".into()),
+            },
+        };
+        let quiet = notice("before", false);
+        host.send(&root, &user(), &quiet).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+
+        let waking = notice("waking", true);
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let before = host.state(&root).await?;
+        // The original append key owns delivery deduplication, including a
+        // caller retry after losing the successful acknowledgement.
+        host.send(&root, &user(), &waking).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        let after = notice("after", false);
+        host.send(&root, &user(), &after).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let reopened = host.state(&root).await?;
+        assert_eq!(reopened.pending_notices, Some(1..4));
+        assert_eq!(reopened.phase, before.phase);
+        assert_eq!(reopened.turn, before.turn);
+        let records = values(&provider, root.inbox()?).await?;
+        let notices = records
+            .iter()
+            .map(|record| InboxRecord::decode(record))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(
+            notices,
+            vec![
+                InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
+                quiet,
+                waking,
+                after
+            ]
+        );
+    }
     Ok(())
 }

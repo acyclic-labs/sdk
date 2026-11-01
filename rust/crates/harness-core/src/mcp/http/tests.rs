@@ -130,7 +130,7 @@ async fn envelope_and_callback_negative_controls() -> Result<()> {
                 b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sampling/createMessage\"}\n\n"
             ))])),
             operation,
-            4096,
+            Some(4096),
             None,
         )
         .await,

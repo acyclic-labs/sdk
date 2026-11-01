@@ -25,10 +25,34 @@ struct CancellationState {
     _native_allocation: Option<crate::NativeAllocation>,
 }
 
+enum CancellationWake {
+    Future(Waker),
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    Notification(fn()),
+}
+
+impl CancellationWake {
+    fn wake(self) {
+        match self {
+            Self::Future(waker) => waker.wake(),
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+            Self::Notification(notify) => notify(),
+        }
+    }
+
+    fn will_wake(&self, other: &Waker) -> bool {
+        match self {
+            Self::Future(waker) => waker.will_wake(other),
+            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+            Self::Notification(_) => false,
+        }
+    }
+}
+
 #[derive(Default)]
 struct CancellationWaiter {
     // Acquired without the head or links; no locks span waker clone/drop/calls.
-    waker: Mutex<Option<Waker>>,
+    waker: Mutex<Option<CancellationWake>>,
     // State lock protects list edits; the waiting future owns the node.
     links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
     #[cfg(not(target_arch = "wasm32"))]

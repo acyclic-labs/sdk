@@ -49,3 +49,29 @@ test("terminal errors follow buffered records and settle blocked producers", asy
   expect((await reader.next()).done).toBe(true);
   expect(queue.available).toBe(1);
 });
+
+
+test("unbounded ingress preserves bursts, wrapped growth and detached disposal", async () => {
+  const queue = new SessionQueue<number | undefined>();
+  const reader = queue[Symbol.asyncIterator]();
+  for (let value = 0; value < 64; value += 1) queue.push(value);
+  for (let value = 0; value < 37; value += 1) expect((await reader.next()).value).toBe(value);
+  for (let value = 64; value < 3073; value += 1) queue.push(value);
+  queue.push(undefined);
+  for (let value = 37; value < 3073; value += 1) expect((await reader.next()).value).toBe(value);
+  expect((await reader.next()).value).toBeUndefined();
+  for (let value = 0; value < 1025; value += 1) queue.push(value);
+  const discarded: (number | undefined)[] = [];
+  queue.discard(value => {
+    discarded.push(value);
+    // Reentrant production grows the NEW buffer while the wrapped old one
+    // is still retiring. Its original geometry must stay immutable.
+    for (let copy = 0; copy < 4; copy += 1) queue.push(value);
+  });
+  expect(discarded).toEqual(Array.from({ length: 1025 }, (_, value) => value));
+  for (let value = 0; value < 1025; value += 1) {
+    for (let copy = 0; copy < 4; copy += 1) expect((await reader.next()).value).toBe(value);
+  }
+  queue.end();
+  expect((await reader.next()).done).toBe(true);
+});

@@ -730,9 +730,6 @@ pub(super) fn durable_head(commit: &DurableCommit) -> Head {
 pub(crate) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::for_volume(config),
-        maximum_objects: config.limits.maximum_objects_per_generation,
-        maximum_files: config.limits.maximum_files_per_generation,
-        maximum_object_bytes: config.limits.maximum_generation_bytes,
         profile: config.profile,
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,
@@ -746,7 +743,7 @@ fn original_publication_head(
 ) -> Result<Head, FsError> {
     let decoded = crate::kernel::decode_publication_evidence_with_accounting(
         &record.payload,
-        MAXIMUM_VOLUME_EVENT_BYTES,
+        record.payload.len() as u64,
         accounting,
     )?;
     Ok(decoded.origin.map_or(

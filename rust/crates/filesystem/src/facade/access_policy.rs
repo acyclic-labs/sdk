@@ -1,13 +1,59 @@
 use super::*;
-use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
+use crate::access::POLICY_METADATA_KEY;
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 mod binding;
 
-fn policy_name(
-    maximum_bytes: u32,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<AttributeName>, FsError> {
+/// One original-ledger reservation for all storage discovered while compiling.
+/// State discovery has no fixed number of allocation stages.
+struct PolicyStorage {
+    allocation: KernelOwnedAllocation,
+    bytes: u64,
+}
+
+impl PolicyStorage {
+    fn new(accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        Ok(Self {
+            allocation: accounting.claim_owned(0, 0)?,
+            bytes: 0,
+        })
+    }
+
+    fn admit(
+        &mut self,
+        bytes: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let bytes = u64::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        self.allocation.absorb(&mut allocation)?;
+        self.bytes = total;
+        Ok(())
+    }
+
+    fn retain(
+        mut self,
+        bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<KernelOwnedAllocation, FsError> {
+        if bytes > self.bytes {
+            accounting.release_owned(&mut self.allocation, self.bytes)?;
+            return Err(FsError::InvalidAccessPolicy);
+        }
+        accounting.reconcile_owned(&mut self.allocation, self.bytes, bytes)?;
+        Ok(self.allocation)
+    }
+
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        self.retain(0, accounting).map(drop)
+    }
+}
+
+fn policy_name(accounting: &mut KernelAccounting<'_>) -> Result<Owned<AttributeName>, FsError> {
     let copied = WorkCounters {
         bytes_copied: POLICY_METADATA_KEY.len() as u64,
         ..WorkCounters::UNCHARGED
@@ -16,7 +62,7 @@ fn policy_name(
     let mut bytes = Owned::<Vec<u8>>::allocate(POLICY_METADATA_KEY.len(), accounting)?;
     bytes.value.extend_from_slice(POLICY_METADATA_KEY);
     accounting.record_completed(copied)?;
-    match AttributeName::new(AttributeClass::PosixXattr, bytes.value, maximum_bytes) {
+    match AttributeName::new(AttributeClass::PosixXattr, bytes.value) {
         Ok(name) => Ok(Owned::new(name, bytes.allocation, bytes.bytes)),
         Err(error) => {
             retire_allocation(bytes.allocation, bytes.bytes, accounting)?;
@@ -34,21 +80,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        if bytes.len() as u64 > MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes) {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let volume = Volume {
             fs: self.clone(),
             id,
             config,
         };
-        let name = policy_name(config.limits.maximum_component_bytes, accounting)?;
+        let name = policy_name(accounting)?;
         let result = attributes::change_attribute(
             &volume,
             FileMetadata::default(),
             &name.value,
             Some((bytes, NamedAttributeWriteMode::Create)),
-            MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes),
             accounting,
             cancellation,
         )
@@ -90,15 +132,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if let Some(view) = cache.get(self.volume.id, revision) {
             return Ok(view);
         }
-        let name = policy_name(
-            self.volume.config.limits.maximum_component_bytes,
-            accounting,
-        )?;
+        let name = policy_name(accounting)?;
         let bytes = attributes::read_attribute(
             &self.volume,
             metadata,
             &name.value,
-            MAXIMUM_POLICY_RECORD_BYTES,
             accounting,
             cancellation,
         )
@@ -131,10 +169,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     > {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let metadata = self
                     .read_metadata_with_accounting(
@@ -147,7 +182,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &self.volume,
                     metadata,
                     &name.value,
-                    MAXIMUM_POLICY_RECORD_BYTES,
                     &mut accounting,
                     cancellation,
                 )
@@ -191,19 +225,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if self.mode.mutations == MutationMode::None {
                 return Err(FsError::MutationNotAllowed);
             }
-            if bytes.len() as u64
-                > MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes)
-            {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let root = self.root.root_file_id;
                 let metadata = self
@@ -214,7 +240,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     metadata,
                     &name.value,
                     Some((bytes, mode)),
-                    MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes),
                     &mut accounting,
                     cancellation,
                 )
@@ -350,8 +375,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .checked_mul((size_of::<crate::access::Rule>() + 128) as u64)
         .ok_or(crate::WorkError::Overflow)?;
     let mut decode = accounting.claim_owned(decode_bytes, 1)?;
-    let mut stages = [None, None];
-    let mut stage = 0;
+    let mut storage = PolicyStorage::new(accounting)?;
     let mut admission_error = None;
     let compiled = (|| {
         accounting.charge(WorkCounters {
@@ -366,14 +390,8 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             &policy,
             volume.config,
             &mut remaining,
-            |bytes| match accounting.claim_owned(bytes as u64, 1) {
-                Ok(allocation) => {
-                    *stages.get_mut(stage).ok_or(crate::access::InvalidPolicy(
-                        "invalid policy compilation stage",
-                    ))? = Some((allocation, bytes as u64));
-                    stage += 1;
-                    Ok(())
-                }
+            |bytes| match storage.admit(bytes, accounting) {
+                Ok(()) => Ok(()),
                 Err(error) => {
                     admission_error = Some(error);
                     Err(crate::access::InvalidPolicy(
@@ -405,9 +423,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         cache.insert(volume.id, revision, Arc::clone(&compiled))?;
         Ok(compiled)
     })();
-    for (mut allocation, bytes) in stages.into_iter().flatten() {
-        accounting.release_owned(&mut allocation, bytes)?;
-    }
+    storage.retire(accounting)?;
     accounting.release_owned(&mut decode, decode_bytes)?;
     compiled
 }

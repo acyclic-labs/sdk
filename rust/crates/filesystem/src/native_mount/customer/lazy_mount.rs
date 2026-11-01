@@ -77,12 +77,8 @@ where
             let std::path::Component::Normal(name) = component else {
                 return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
             };
-            let mut name = crate::native_name::host_name_bytes_with_native_work(
-                name,
-                config.profile,
-                config.limits.maximum_component_bytes,
-                &work,
-            )?;
+            let mut name =
+                crate::native_name::host_name_bytes_with_native_work(name, config.profile, &work)?;
             path.1.absorb(&mut name.1)?;
             path.0.push(name.0.1);
         }

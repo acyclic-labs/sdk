@@ -135,9 +135,8 @@ impl NativeFs {
         };
         let options = SourceOptions {
             mode,
-            maximum_paths: options.maximum_paths.into_inner(),
-            maximum_extent_spans: options.maximum_extent_spans.into_inner(),
-            maximum_queued_changes: options.maximum_queued_changes.into_inner(),
+            maximum_paths: options.maximum_paths.map(NapiU32::into_inner),
+            maximum_extent_spans: options.maximum_extent_spans.map(NapiU32::into_inner),
             excluded_paths: options
                 .excluded_paths
                 .unwrap_or_default()
@@ -145,10 +144,7 @@ impl NativeFs {
                 .map(|path| PortablePath::parse(&path, VolumeLimits::default()).map_err(napi_error))
                 .collect::<Result<Vec<_>>>()?,
         };
-        if options.maximum_paths == 0
-            || options.maximum_extent_spans == 0
-            || options.maximum_queued_changes == 0
-        {
+        if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
             return Err(Error::new(
                 Status::InvalidArg,
                 "source bounds must be nonzero",
@@ -181,7 +177,7 @@ impl NativeFs {
             .inner
             .create_volume(
                 config,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -202,7 +198,7 @@ impl NativeFs {
             .create_volume_with_id(
                 volume_id,
                 config,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -217,7 +213,7 @@ impl NativeFs {
             .inner
             .open_volume(
                 volume_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -236,7 +232,7 @@ impl NativeFs {
             .export_object(
                 decode_object_id(&object_id)?,
                 bigint_u64(&maximum_bytes, "maximumBytes")?,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -258,7 +254,7 @@ impl NativeFs {
             .import_object(
                 decode_object_id(&object_id)?,
                 bytes.to_vec(),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -284,7 +280,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 maximum_objects,
                 bigint_u64(&maximum_object_bytes, "maximumObjectBytes")?,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -327,7 +323,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 &objects,
                 maximum_objects,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -351,7 +347,7 @@ impl NativeFs {
             .restore_volume(
                 &manifest,
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await

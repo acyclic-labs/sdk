@@ -1,4 +1,4 @@
-use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
+use crate::StreamError;
 use std::{fmt, sync::Arc};
 
 /// Permanent account-relative slash-separated ASCII path.
@@ -70,19 +70,12 @@ impl StreamPath {
     /// Checks the canonical path grammar without allocating a path owner.
     ///
     /// # Errors
-    /// Returns an invalid-path error for a noncanonical or oversized path.
+    /// Returns an invalid-path error for a noncanonical path.
     pub fn validate(path: &str) -> Result<(), StreamError> {
-        if path.is_empty()
-            || path.len() > MAX_PATH_BYTES
-            || !path.is_ascii()
-            || path.starts_with('/')
-            || path.ends_with('/')
-        {
+        if path.is_empty() || !path.is_ascii() || path.starts_with('/') || path.ends_with('/') {
             return Err(StreamError::InvalidPath);
         }
-        let mut count = 0_usize;
         for segment in path.split('/') {
-            count = count.checked_add(1).ok_or(StreamError::LimitExceeded)?;
             if segment.is_empty()
                 || segment == "."
                 || segment == ".."
@@ -93,9 +86,6 @@ impl StreamPath {
             {
                 return Err(StreamError::InvalidPath);
             }
-        }
-        if count > MAX_ITEMS {
-            return Err(StreamError::LimitExceeded);
         }
         Ok(())
     }
@@ -126,12 +116,8 @@ impl StreamPath {
         if let Err(error) = Self::validate(&suffix[1..]) {
             return Ok(Err(error));
         }
-        let length = self.as_str().len().checked_add(suffix.len());
-        if length.is_none_or(|length| length > MAX_PATH_BYTES) {
+        if self.as_str().len().checked_add(suffix.len()).is_none() {
             return Ok(Err(StreamError::InvalidPath));
-        }
-        if self.as_str().split('/').count() + suffix[1..].split('/').count() > MAX_ITEMS {
-            return Ok(Err(StreamError::LimitExceeded));
         }
         Self::native_parts(&[self.as_str(), suffix], meter).map(Ok)
     }

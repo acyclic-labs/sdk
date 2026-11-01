@@ -37,6 +37,10 @@
     "./addressing": {
       "types": "./dist/addressing.d.ts",
       "default": "./dist/addressing.js"
+    },
+    "./deadline": {
+      "types": "./dist/deadline.d.ts",
+      "default": "./dist/deadline.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -63,6 +67,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",
+    "@connectrpc/connect": "2.2.0",
     "@acyclic-labs/auth": "0.2.0"
   },
   "optionalDependencies": {
@@ -75,7 +80,6 @@
     "packageName": "@acyclic-labs/actors"
   },
   "devDependencies": {
-    "@connectrpc/connect": "2.2.0",
     "@connectrpc/connect-node": "2.2.0",
     "typescript": "7.0.2",
     "@types/node": "26.6.5"

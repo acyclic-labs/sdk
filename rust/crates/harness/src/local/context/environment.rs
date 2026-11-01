@@ -3,14 +3,7 @@
 //! Facts are recorded once at admission. Resumed turns use the retained manifest.
 use std::path::Path;
 mod porcelain;
-use porcelain::summarize;
-use std::time::Duration;
-
-/// Porcelain bytes summarized; larger repositories report a partial count.
-const GIT_STATUS_BYTES: u64 = 64 * 1024;
-/// A slow `git status` only drops the summary, never delays the turn further.
-const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
-
+use porcelain::Summary;
 pub(super) fn sdk_status(
     state: &acyclic_fs::GitCompatState,
     tree: acyclic_fs::GitTreeRef,
@@ -129,96 +122,53 @@ async fn git_status_from(
     command: impl FnOnce() -> Option<tokio::process::Command>,
 ) -> Option<String> {
     use tokio::io::AsyncReadExt as _;
-    tokio::time::timeout(GIT_STATUS_TIMEOUT, async {
-        let cwd = cwd.to_owned();
-        let directory =
-            acyclic_native_runtime::spawn_blocking(move || WorktreeDirectory::discover(&cwd))
-                .await
-                .ok()?
-                .ok()??;
-        let mut command = command()?;
-        for name in REPOSITORY_ENVIRONMENT {
-            command.env_remove(name);
-        }
-        let mut child = command
-            .current_dir(directory.0)
-            .args([
-                "status",
-                "--porcelain=v1",
-                "--branch",
-                "-z",
-                "--untracked-files=normal",
-            ])
-            // Read-only: never take the index lock another git process may need.
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .ok()?;
-        let stdout = child.stdout.take()?;
-        let mut bytes = Vec::new();
-        stdout
-            .take(GIT_STATUS_BYTES + 1)
-            .read_to_end(&mut bytes)
+    let cwd = cwd.to_owned();
+    let directory =
+        acyclic_native_runtime::spawn_blocking(move || WorktreeDirectory::discover(&cwd))
             .await
-            .ok()?;
-        let truncated = bytes.len() as u64 > GIT_STATUS_BYTES;
-        if truncated {
-            child.start_kill().ok()?;
-            child.wait().await.ok()?;
-        } else if !child.wait().await.ok()?.success() {
-            return None;
+            .ok()?
+            .ok()??;
+    let mut command = command()?;
+    for name in REPOSITORY_ENVIRONMENT {
+        command.env_remove(name);
+    }
+    let mut child = command
+        .current_dir(directory.0)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "-z",
+            "--untracked-files=normal",
+        ])
+        // Read-only: never take the index lock another git process may need.
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut summary = Summary::new();
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        let count = stdout.read(&mut chunk).await.ok()?;
+        if count == 0 {
+            break;
         }
-        Some(summarize(&bytes, truncated))
-    })
-    .await
-    .ok()?
+        summary.push(&chunk[..count]);
+    }
+    if !child.wait().await.ok()?.success() {
+        return None;
+    }
+    Some(summary.finish())
 }
 
 #[cfg(test)]
 mod tests {
+    use super::porcelain::summarize;
     use super::*;
-
-    #[test]
-    fn git_environment_discovery_shares_the_summary_deadline() -> std::io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .start_paused(true)
-            .max_blocking_threads(1)
-            .build()?;
-        let (entered, started) = std::sync::mpsc::channel();
-        let (release, wait) = std::sync::mpsc::channel();
-        let occupied = runtime.spawn_blocking(move || {
-            entered.send(()).map_err(std::io::Error::other)?;
-            wait.recv().map_err(std::io::Error::other)
-        });
-        started.recv().map_err(std::io::Error::other)?;
-        runtime.block_on(async {
-            let command_started = std::cell::Cell::new(false);
-            let status = git_status_from(root.path(), || {
-                command_started.set(true);
-                None
-            });
-            tokio::pin!(status);
-            let first = futures::poll!(status.as_mut());
-            tokio::time::advance(GIT_STATUS_TIMEOUT).await;
-            let settled = futures::poll!(status.as_mut());
-            // Release the worker before assertions, including in the old-shape control.
-            release.send(()).map_err(std::io::Error::other)?;
-            occupied.await.map_err(std::io::Error::other)??;
-            assert!(first.is_pending());
-            assert!(
-                matches!(settled, std::task::Poll::Ready(None)),
-                "Git discovery escaped the summary deadline"
-            );
-            assert!(!command_started.get());
-            Ok::<(), std::io::Error>(())
-        })?;
-        Ok(())
-    }
 
     #[tokio::test]
     async fn git_environment_outside_worktree_never_starts_a_command() -> std::io::Result<()> {
@@ -297,16 +247,16 @@ mod tests {
         let porcelain =
             b"## main...origin/main [ahead 1]\0M  staged.rs\0 M edited.rs\0MM both.rs\0R  new.rs\0old.rs\0?? scratch.txt\0UU conflict.rs\0!! ignored\0";
         assert_eq!(
-            summarize(porcelain, false),
+            summarize(porcelain),
             "branch main...origin/main [ahead 1]; 3 staged, 2 modified, 1 untracked, 1 conflicted"
         );
-        assert_eq!(summarize(b"## main\0", false), "branch main; clean");
+        assert_eq!(summarize(b"## main\0"), "branch main; clean");
         assert_eq!(
-            summarize(b"## main\0?? a\0?? b", true),
+            summarize(b"## main\0?? a\0?? b"),
             "branch main; 1 untracked, more changes not counted"
         );
         // A rename's source path is not a change, even when it reads like one.
-        assert_eq!(summarize(b"R  new.rs\0?? old\0", false), "1 staged");
-        assert_eq!(summarize(b"?? old\0", false), "1 untracked");
+        assert_eq!(summarize(b"R  new.rs\0?? old\0"), "1 staged");
+        assert_eq!(summarize(b"?? old\0"), "1 untracked");
     }
 }

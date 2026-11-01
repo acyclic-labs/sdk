@@ -282,9 +282,6 @@ pub enum RebaseError<E: std::error::Error> {
 /// Dependency-proof construction errors.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum DependencyError {
-    /// Dependency admission bound must be non-zero.
-    #[error("maximum dependencies must be non-zero")]
-    ZeroLimit,
     /// Content ranges must contain at least one byte.
     #[error("content dependency range is empty")]
     EmptyContentRange,
@@ -297,12 +294,6 @@ pub enum DependencyError {
     /// The same exact region was captured with two different base states.
     #[error("dependency region has contradictory captured states")]
     ContradictoryState,
-    /// Distinct dependency count exceeded its hard bound.
-    #[error("dependency count exceeds maximum {maximum}")]
-    TooManyDependencies {
-        /// Configured maximum.
-        maximum: u32,
-    },
 }
 
 mod classification;

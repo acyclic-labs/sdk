@@ -163,7 +163,6 @@ where
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.config.profile,
-            limits: self.config.limits,
             _native_allocation: allocation,
             native_callback_guard: self.native_callback_guard.clone(),
         });

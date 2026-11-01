@@ -199,31 +199,9 @@ impl EntryClosure {
         Ok(())
     }
 
-    /// Largest canonical v1 encoding permitted by the existing manifest
-    /// contract, plus its fixed-width Objects references. This introduces no
-    /// additional restriction on admitted manifests or payload byte lengths.
-    pub const MAX_ENCODED_BYTES: usize = {
-        // Each digest byte occupies at most three decimal digits; a u64
-        // occupies at most twenty. Include the original field punctuation.
-        let object = br#"{"digest":[],"length":}"#.len() + 32 * 3 + 31 + 20;
-        br#"{"schemaVersion":1,"manifest":,"artifact":,"assets":[]}"#.len()
-            + crate::MAX_JSON_BYTES
-            + object * (crate::MAX_ITEMS + 1)
-            + crate::MAX_ITEMS.saturating_sub(1)
-    };
-
-    /// Admit descriptor bytes before typed JSON allocation or an Objects read.
-    pub fn admit_length(length: u64) -> Result<(), ManifestError> {
-        if length > Self::MAX_ENCODED_BYTES as u64 {
-            return Err(invalid("encoding-size"));
-        }
-        Ok(())
-    }
-
     /// Admit a stored descriptor under the originally selected environment and
     /// entry. Version, selection and reference shape are checked once here.
     pub fn decode(bytes: &[u8], environment: &str, entry: &str) -> Result<Self, ManifestError> {
-        Self::admit_length(bytes.len() as u64)?;
         let mut record: ClosureV1 = serde_json::from_slice(bytes).map_err(ManifestError::json)?;
         if record.schema_version != 1 {
             return Err(invalid("unsupported-version"));

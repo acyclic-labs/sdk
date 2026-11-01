@@ -97,21 +97,24 @@ enum CreatePlan {
 /// Deterministic single-process authority store.
 pub struct MemoryAuthorityStore {
     operation_claims: acyclic_stream::OperationClaims,
-    maximum_payload_bytes: u64,
+    maximum_payload_bytes: Option<std::num::NonZeroU64>,
     // Lock order: authority map -> allocation ledger (native accounting only).
     // Never await, enter an object store, or call an owner guard while held.
     authorities: Mutex<HashMap<AuthorityId, AuthorityState>>,
 }
 
 impl MemoryAuthorityStore {
-    /// Creates a store with a hard per-record payload bound.
-    pub fn new(maximum_payload_bytes: u64) -> Result<Self, AuthorityStoreError> {
-        if maximum_payload_bytes == 0 {
-            return Err(AuthorityStoreError::PayloadTooLarge {
-                observed: 0,
-                maximum: 0,
-            });
-        }
+    /// Creates a store with an optional caller-selected per-record payload policy.
+    pub fn new(maximum_payload_bytes: impl Into<Option<u64>>) -> Result<Self, AuthorityStoreError> {
+        let maximum_payload_bytes = maximum_payload_bytes
+            .into()
+            .map(|maximum| {
+                std::num::NonZeroU64::new(maximum).ok_or(AuthorityStoreError::PayloadTooLarge {
+                    observed: 0,
+                    maximum: 0,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             maximum_payload_bytes,
             authorities: Mutex::new(HashMap::new()),
@@ -126,10 +129,12 @@ impl MemoryAuthorityStore {
     ) -> Result<u64, FsError> {
         accounting.check()?;
         let bytes = commit.payload.len() as u64;
-        if bytes > self.maximum_payload_bytes {
+        if let Some(maximum) = self.maximum_payload_bytes
+            && bytes > maximum.get()
+        {
             return Err(AuthorityStoreError::PayloadTooLarge {
                 observed: bytes,
-                maximum: self.maximum_payload_bytes,
+                maximum: maximum.get(),
             }
             .into());
         }
@@ -178,7 +183,7 @@ impl MemoryAuthorityStore {
 impl Default for MemoryAuthorityStore {
     fn default() -> Self {
         Self {
-            maximum_payload_bytes: 16 * 1024 * 1024,
+            maximum_payload_bytes: None,
             operation_claims: acyclic_stream::OperationClaims::default(),
             authorities: Mutex::new(HashMap::new()),
         }

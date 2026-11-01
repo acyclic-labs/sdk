@@ -2,6 +2,7 @@ use super::*;
 use crate::native::response_bytes;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncReadExt as _;
 
 fn work(cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {

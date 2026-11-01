@@ -42,11 +42,10 @@ cases! {
     workspace_absent: WorkspaceError::NotFound => NotFound;
     workspace_name_empty: WorkspaceError::Name(WorkspaceNameError::Empty) => InvalidArgument;
     workspace_name_reserved: WorkspaceError::Name(WorkspaceNameError::Reserved) => InvalidArgument;
-    workspace_name_long: WorkspaceError::Name(WorkspaceNameError::TooLong) => InvalidArgument;
     workspace_name_character: WorkspaceError::Name(WorkspaceNameError::InvalidCharacter) => InvalidArgument;
     workspace_name_allocation: WorkspaceError::Name(WorkspaceNameError::Allocation) => ResourceExhausted;
     workspace_path: WorkspaceError::Path("not canonical".into()) => InvalidArgument;
-    workspace_namespace: WorkspaceError::NamespacePath(NamespacePathError::TooDeep) => InvalidArgument;
+    workspace_namespace: WorkspaceError::NamespacePath(NamespacePathError::PrefixOutOfRange) => InvalidArgument;
     workspace_engine: WorkspaceError::Engine("invalid internal state".into()) => Internal;
     workspace_filesystem: fs(FsError::WorkspaceDeleted) => NotFound;
     workspace_cancelled: WorkspaceError::Cancelled(CancellationError) => Cancelled;
@@ -135,6 +134,7 @@ fn every_stream_category_survives_the_authority_wrapper() {
         (E::InvalidResponse, Code::DataLoss),
         (E::InvalidPath, Code::InvalidArgument),
         (E::InvalidArgument, Code::InvalidArgument),
+        (E::InvalidResponse, Code::DataLoss),
         (E::LimitExceeded, Code::InvalidArgument),
         (E::NotFound, Code::NotFound),
         (E::AlreadyExists, Code::AlreadyExists),
@@ -258,9 +258,7 @@ cases! {
     fs_decode: fs(FsError::Decode(CanonicalDecodeError::Truncated)) => DataLoss;
     fs_volume_created: fs(FsError::VolumeCreated(VolumeCreatedError::Decode(CanonicalDecodeError::Truncated))) => DataLoss;
     fs_retention_created: fs(FsError::RetentionCreated(RetentionCreatedError::Decode(CanonicalDecodeError::Truncated))) => DataLoss;
-    fs_path: fs(FsError::Path(PathLookupError::TooManyPaths)) => ResourceExhausted;
     fs_directory: fs(FsError::Directory(DirectoryReadError::Cancelled)) => Cancelled;
-    fs_record: fs(FsError::FileRecord(FileRecordReadError::TooManyQueries)) => ResourceExhausted;
     fs_file_read: fs(FsError::FileRead(FileRangeReadError::InvalidRange)) => InvalidArgument;
     fs_blob_build: fs(FsError::BlobBuild(BlobBuildError::InvalidOptions)) => InvalidArgument;
     fs_blob_read: fs(FsError::BlobRead(BlobReadError::InvalidRange)) => InvalidArgument;
@@ -294,8 +292,6 @@ cases! {
     fs_no_mutations: fs(FsError::NoPendingMutations) => FailedPrecondition;
     fs_refresh: fs(FsError::RefreshNotAllowed) => FailedPrecondition;
     fs_pending_rebase: fs(FsError::PendingMutationsRequireRebase) => FailedPrecondition;
-    fs_pending_bound: fs(FsError::TooManyPendingMutations) => ResourceExhausted;
-    fs_capacity: fs(FsError::ExcessiveMutationCapacity) => ResourceExhausted;
     fs_mutation_allocation: fs(FsError::PendingMutationAllocationFailed) => ResourceExhausted;
     fs_pending_merge: fs(FsError::PreparedMergePending) => FailedPrecondition;
     fs_diff: fs(FsError::InvalidDiff) => DataLoss;

@@ -6,6 +6,140 @@ use crate::{
 use futures::StreamExt;
 
 #[test]
+fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
+    use crate::{FollowRequest, RecordStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Wake as _, Waker};
+
+    struct Parent(AtomicUsize);
+    impl std::task::Wake for Parent {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    futures::executor::block_on(async {
+        let provider = MemoryStream::default();
+        let mut sources = ReadySources::<RecordStream, SourceReader>::with_readers();
+        let parents: [_; 3] = std::array::from_fn(|_| Arc::new(Parent(AtomicUsize::new(0))));
+        let wakers = parents.each_ref().map(|parent| Waker::from(parent.clone()));
+        let mut contexts = wakers.each_ref().map(Context::from_waker);
+        let paths: [_; 2] =
+            std::array::from_fn(|id| StreamPath::new(format!("ready/keyed/{id}")).unwrap());
+        for (id, path) in paths.iter().enumerate() {
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"initial".as_slice().into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            sources.register(
+                wire::SessionChannel {
+                    channel_id: id as u64,
+                    generation: 1,
+                },
+                crate::records_only(
+                    provider
+                        .follow(FollowRequest::new(path.clone(), 1))
+                        .await
+                        .unwrap(),
+                ),
+            );
+            assert!(sources.poll_one(id as u64, &mut contexts[id]).is_pending());
+        }
+        assert!(sources.poll_next(&mut contexts[2]).is_pending());
+        for parent in &parents {
+            parent.0.store(0, Ordering::SeqCst);
+        }
+        provider
+            .append(AppendRequest {
+                path: paths[0].clone(),
+                records: vec![b"first".as_slice().into()],
+                if_tail: Some(1),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            parents[0].0.load(Ordering::SeqCst) > 0,
+            "a different keyed reader must not replace this wake"
+        );
+        assert_eq!(parents[1].0.load(Ordering::SeqCst), 0);
+        assert!(parents[2].0.load(Ordering::SeqCst) > 0);
+        let Poll::Ready(Ok(Some(Ok(record)))) = sources.poll_one(0, &mut contexts[0]) else {
+            panic!("committed first record must be ready");
+        };
+        assert_eq!(record.value.as_slice(), b"first");
+        assert!(sources.poll_one(0, &mut contexts[0]).is_pending());
+        assert!(sources.poll_next(&mut contexts[2]).is_pending());
+        parents[0].0.store(0, Ordering::SeqCst);
+        parents[2].0.store(0, Ordering::SeqCst);
+        sources.remove(0);
+        assert!(
+            parents[0].0.load(Ordering::SeqCst) > 0,
+            "removal must settle the original keyed wait"
+        );
+        assert!(
+            parents[2].0.load(Ordering::SeqCst) > 0,
+            "removal must wake the combined reader too"
+        );
+        assert!(matches!(
+            sources.poll_one(0, &mut contexts[0]),
+            Poll::Ready(Ok(None))
+        ));
+        assert!(sources.poll_next(&mut contexts[2]).is_pending());
+        provider
+            .append(AppendRequest {
+                path: paths[1].clone(),
+                records: vec![b"second".as_slice().into()],
+                if_tail: Some(1),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        assert!(parents[1].0.load(Ordering::SeqCst) > 0);
+        let Poll::Ready(Ok(Some(Ok(record)))) = sources.poll_next(&mut contexts[2]) else {
+            panic!("committed second record must be ready");
+        };
+        assert_eq!(record.value.as_slice(), b"second");
+        sources.remove(1);
+        // Exhaust the actual immutable provider read through the same owner.
+        let records: Vec<_> = provider
+            .read(ReadRequest {
+                path: paths[1].clone(),
+                from: 1,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        sources.register(
+            wire::SessionChannel {
+                channel_id: 2,
+                generation: 1,
+            },
+            Box::pin(futures::stream::iter(records)),
+        );
+        assert!(matches!(
+            sources.poll_next(&mut contexts[2]),
+            Poll::Ready(Ok(Some(Ok(_))))
+        ));
+        assert!(
+            matches!(sources.poll_next(&mut contexts[2]), Poll::Ready(Ok(None))),
+            "the last source EOF has no later producer to wake it"
+        );
+    });
+}
+
+#[test]
 fn late_cancelled_wakes_cannot_disarm_a_live_source() {
     use crate::{FollowRequest, RecordStream};
     use std::sync::atomic::{AtomicUsize, Ordering};

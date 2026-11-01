@@ -2,8 +2,8 @@
 use crate::wire;
 use std::collections::HashSet;
 
-fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
+pub(crate) fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty()
 }
 
 fn valid_actor_scope(account: &[u8], namespace: Option<&str>, id: &str) -> bool {
@@ -89,11 +89,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
-            (Some(limits), None) => {
-                limits.handler_timeout_millis > 0
-                    && limits.memory_bytes > 0
-                    && limits.checkpoint_bytes > 0
-            }
+            (Some(limits), None) => domain::ActorLimits::try_from(limits.clone()).is_ok(),
             (None, Some(limits)) => {
                 limits.cpu_millis > 0
                     && limits.memory_bytes > 0
@@ -145,11 +141,10 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
+        || !request
+            .limits
+            .as_ref()
+            .is_some_and(|limits| domain::ActorLimits::try_from(limits.clone()).is_ok())
     {
         return Err(ContractError::InvalidArgument);
     }

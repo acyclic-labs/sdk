@@ -177,10 +177,12 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
-    /// Checks argv admission and an optional positive lifetime in milliseconds.
-    /// A supplied lifetime also covers an implicit wake of a suspended Machine.
-    /// Omission registers no relative deadline; authority expiry is independent.
-    pub fn new(argv: Vec<String>, timeout_ms: Option<u64>) -> Result<Self, ProviderError> {
+    /// Requires a program, NUL-free arguments and an optional positive caller deadline.
+    pub fn new(
+        argv: Vec<String>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self, ProviderError> {
+        let timeout_ms = timeout_ms.into();
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)
             || argv.iter().any(|value| value.contains('\0'))

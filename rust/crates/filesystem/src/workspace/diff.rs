@@ -55,7 +55,7 @@ impl<A, O> ChangeSet<A, O> {
 /// Complete path delta from the same retained producer used by paged queries.
 pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
-    maximum_entries: u32,
+    maximum_entries: impl Into<Option<u32>>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
@@ -81,7 +81,7 @@ async fn collect_paths<O: AsyncObjectStore>(
     mut cursor: crate::kernel::changed_paths::Cursor<'_>,
     objects: &O,
     roots: [Option<&crate::kernel::GenerationRoot>; 2],
-    maximum_entries: u32,
+    maximum_entries: impl Into<Option<u32>>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
@@ -92,13 +92,13 @@ async fn collect_paths<O: AsyncObjectStore>(
             return Err(error.into());
         }
     };
-    let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+    let maximum = maximum_entries.into().map(|maximum| maximum as usize);
     let result = async {
         while let Some(path) = cursor
             .next(objects, roots, accounting, cancellation)
             .await?
         {
-            if paths.value.len() == maximum {
+            if maximum == Some(paths.value.len()) {
                 path.retire(accounting)?;
                 return Err(WorkspaceError::ChangedPathLimit);
             }
@@ -115,7 +115,7 @@ async fn collect_paths<O: AsyncObjectStore>(
                         .ok_or(crate::WorkError::Overflow)?,
                 ));
                 accounting.admit(copied)?;
-                paths.ensure_for_push(maximum, accounting)?;
+                paths.ensure_for_push(maximum.unwrap_or(usize::MAX), accounting)?;
                 accounting.record_completed(copied)
             })();
             if let Err(error) = prepared {
@@ -147,7 +147,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
     /// Resolves changed paths while retaining their actual result allocation.
     pub async fn changed_paths<W: crate::facade::FsWork>(
         &self,
-        maximum_entries: u32,
+        maximum_entries: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(Vec<ChangedPath>, crate::AuthorityAllocation), WorkspaceError> {
@@ -172,7 +172,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
 
     async fn changed_paths_with_accounting(
         &self,
-        maximum_entries: u32,
+        maximum_entries: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
     pub async fn compose(
         &self,
         next: &ChangeSet<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<ChangeSet<A, O>>, WorkspaceError> {

@@ -312,7 +312,8 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                commands: mpsc::channel(2).0,
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands: commands::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
                 active: Arc::clone(&pool.active),
@@ -320,6 +321,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
             },
+            registration_timeout: None,
             revisions: Arc::default(),
         };
         let a = client.cursor(1, a_progress, receiver)?;

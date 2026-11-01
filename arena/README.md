@@ -10,7 +10,7 @@ This is a separate product built on top of [acyclic](https://acyclic.dev) (forks
 | `packages/jev` | `acyclic-jev`, the Python SDK: typed decisions, swarms, fork arena, gate, hash-chained log, evals | [README](packages/jev/README.md) |
 
 ```
-cd packages/arena && bun install && bun x tsc -b
+cd packages/arena && bun install && bun run build
 export OPENROUTER_API_KEY=sk-or-...
 cd your-repo && acyclic init
 arena race "add slugify() to util.py with a test" --models deepseek/deepseek-v4-flash,anthropic/claude-haiku-4.5 --test "pytest -q" --promote

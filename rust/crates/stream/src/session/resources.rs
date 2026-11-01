@@ -316,8 +316,8 @@ fn path_ranges(
         }
         key.extend_from_slice(&bytes);
     }
-    if key.len() >= crate::MAX_RECORD_KEY_BYTES {
-        key.truncate(crate::MAX_RECORD_KEY_BYTES);
+    if key.len() >= crate::RESOURCE_INDEX_PREFIX_BYTES {
+        key.truncate(crate::RESOURCE_INDEX_PREFIX_BYTES);
         let mut end = key.clone();
         while end.last() == Some(&255) {
             end.pop();

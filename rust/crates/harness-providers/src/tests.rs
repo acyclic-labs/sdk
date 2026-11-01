@@ -336,7 +336,7 @@ pub(super) fn provider_with(
                 response_field: crate::TokenCountField::InputTokens,
                 framing_tokens: 0,
             }),
-            max_event_bytes: 4096,
+            max_event_bytes: Some(4096),
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
         }),
@@ -531,7 +531,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             response_field: crate::TokenCountField::InputTokens,
             framing_tokens: 0,
         }),
-        max_event_bytes: 4096,
+        max_event_bytes: Some(4096),
         retry: crate::RetrySpec::DEFAULT,
         timeouts: crate::TimeoutSpec::DEFAULT,
     };

@@ -190,8 +190,8 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     let options = CaptureOptions {
         source_root: source.path().to_path_buf(),
         expected_root_identity: capture_root_identity(source.path())?,
-        maximum_paths: paths.saturating_add(1),
-        maximum_extent_spans: 1024,
+        maximum_paths: Some(paths.saturating_add(1)),
+        maximum_extent_spans: Some(1024),
     };
     let started = Instant::now();
     let receipt = boxed(capture_baseline(

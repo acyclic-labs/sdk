@@ -274,7 +274,6 @@ impl TurnDriver for DelayedTurn {
             }
             Ok(TurnStep {
                 checkpoint: None,
-                reserved_children: 0,
                 outs: Vec::new(),
                 wait: Wait::Input,
                 drops: None,

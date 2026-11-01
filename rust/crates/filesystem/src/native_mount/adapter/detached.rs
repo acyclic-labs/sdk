@@ -55,7 +55,6 @@ pub(super) struct CheckoutDetachedFile<A: 'static, O: 'static> {
     runtime: CallbackRuntime,
     cancellation: CancellationToken,
     profile: FilesystemProfile,
-    limits: VolumeLimits,
 }
 
 impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
@@ -109,7 +108,7 @@ impl<A: 'static, O: 'static> CheckoutDetachedFile<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile)?;
         let mut state = await_lock(
             self.state.lock(),
             inputs.carrier,
@@ -255,11 +254,6 @@ where
         maximum_bytes: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        if u64::from(maximum_bytes) > self.limits.maximum_read_bytes {
-            return Err(MountSourceError::from(FsError::FileRead(
-                crate::kernel::FileRangeReadError::InvalidRange,
-            )));
-        }
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = work.cancellation();
@@ -435,7 +429,7 @@ where
             let cancellation = work.cancellation();
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
-            let name = inputs.attribute_name(name, self.profile, self.limits)?;
+            let name = inputs.attribute_name(name, self.profile)?;
             let state = await_lock(
                 self.state.lock(),
                 inputs.carrier,
@@ -465,7 +459,7 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let cursor = cursor
-                .map(|bytes| inputs.attribute_name(bytes, self.profile, self.limits))
+                .map(|bytes| inputs.attribute_name(bytes, self.profile))
                 .transpose()?;
             let state = await_lock(
                 self.state.lock(),

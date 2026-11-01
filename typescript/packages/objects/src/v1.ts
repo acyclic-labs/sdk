@@ -18,9 +18,6 @@ export function objectsV1Error(value: unknown): ObjectsV1Error {
   return new ObjectsV1Error(typeof code === "number" && code in wire.ErrorCode && code !== wire.ErrorCode.UNSPECIFIED ? code : wire.ErrorCode.UNAVAILABLE);
 }
 
-/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
-
 /** The BLAKE3-256 digest naming `bytes` as a plain blob, captured before returning. */
 export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
   const ready = ensureObjectsWasm();

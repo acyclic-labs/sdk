@@ -42,9 +42,6 @@ pub enum GenerationMutationError {
     /// Volume limits or semantic configuration are invalid.
     #[error(transparent)]
     Config(#[from] VolumeConfigError),
-    /// Mutation endpoints exceed the admitted shared-path batch bound.
-    #[error("generation mutation endpoint count exceeds the volume path limit")]
-    TooManyPaths,
     /// A newly created record must begin with exactly one namespace binding.
     #[error("new file record must have link count one")]
     InvalidInitialLinkCount,
@@ -201,8 +198,7 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
 > {
     accounting.check()?;
     preflight_generation_mutations(&operations, config)?;
-    let (plan, plan_allocation) =
-        MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
+    let (plan, plan_allocation) = MutationPlan::compile_with_accounting(operations, accounting)?;
     let plan = Owned {
         value: plan,
         allocation: plan_allocation,
@@ -452,7 +448,6 @@ impl Owned<TransactionState> {
                         edit.directory_id,
                         name,
                         present,
-                        config.limits.maximum_component_bytes,
                         accounting,
                     )?;
                 }
@@ -476,7 +471,6 @@ impl Owned<TransactionState> {
                     store,
                     root,
                     group,
-                    u32::try_from(group.len()).map_err(|_| WorkError::Overflow)?,
                     DecodeLimits::for_volume(config),
                     accounting,
                     cancellation,
@@ -619,7 +613,6 @@ impl Owned<TransactionState> {
                 store,
                 root,
                 &mutations.value,
-                config.limits.maximum_mutations_per_batch,
                 DecodeLimits::for_volume(config),
                 accounting,
                 cancellation,
@@ -723,7 +716,6 @@ impl Owned<TransactionState> {
                 store,
                 generation.file_table,
                 &mutations.value,
-                u32::try_from(mutations.value.len()).map_err(|_| WorkError::Overflow)?,
                 DecodeLimits::for_volume(config),
                 accounting,
                 cancellation,
@@ -844,7 +836,6 @@ async fn verify_created_identities<S: AsyncObjectStore>(
             store,
             generation.file_table,
             &ids.value,
-            config.limits.maximum_mutations_per_batch,
             DecodeLimits::for_volume(config),
             accounting,
             cancellation,
@@ -964,7 +955,6 @@ async fn load_initial_lookups<S: AsyncObjectStore>(
             store,
             generation.file_table,
             &ids.value,
-            u32::try_from(ids.value.len()).map_err(|_| WorkError::Overflow)?,
             DecodeLimits::for_volume(config),
             accounting,
             cancellation,
@@ -1986,12 +1976,8 @@ impl TransactionState {
         leaf.accounting
             .record_completed(delta)
             .map_err(accounting_error)?;
-        let name = LogicalName::new(
-            name.encoding(),
-            copied,
-            self.config.limits.maximum_component_bytes,
-        )
-        .map_err(|_| GenerationMutationError::InconsistentState)?;
+        let name = LogicalName::new(name.encoding(), copied)
+            .map_err(|_| GenerationMutationError::InconsistentState)?;
         Ok((name, bytes))
     }
 
@@ -2254,13 +2240,7 @@ fn preflight_generation_mutations(
     config: VolumeConfig,
 ) -> Result<(), crate::FsError> {
     config.validate().map_err(GenerationMutationError::from)?;
-    let mut endpoints = 0_u32;
     for operation in operations {
-        if let Some([first, second]) = operation.paths() {
-            endpoints = endpoints
-                .checked_add(if first == second { 1 } else { 2 })
-                .ok_or_else(|| crate::FsError::Mutation(GenerationMutationError::TooManyPaths))?;
-        }
         match operation {
             Mutation::Create { record, .. } | Mutation::Restore { record, .. } => {
                 if !record.kind.is_supported_by_profile(config.profile) {
@@ -2316,11 +2296,6 @@ fn preflight_generation_mutations(
             | Mutation::File { .. }
             | Mutation::CloneFileRange { .. } => {}
         }
-    }
-    if endpoints > config.limits.maximum_paths_per_batch {
-        return Err(crate::FsError::Mutation(
-            GenerationMutationError::TooManyPaths,
-        ));
     }
     Ok(())
 }

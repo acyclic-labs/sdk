@@ -12,8 +12,6 @@ enum StreamLimit {
   STREAM_LIMIT_MAX_RECORD_BYTES = 65536;
   STREAM_LIMIT_MAX_ITEMS = 1024;
   STREAM_LIMIT_MAX_COMMAND_BYTES = 1056768;
-  STREAM_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
-  STREAM_LIMIT_MAX_PATH_BYTES = 65535;
 }
 
 // One committed publication of an authority (account/storage scope) in one

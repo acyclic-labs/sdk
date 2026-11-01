@@ -19,7 +19,6 @@ import type {
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
   Revision as WireRevision,
 } from "../generated/proto/stream/v1/stream_pb.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export type { TokenOperation } from "./token-operations.js";
@@ -53,7 +52,7 @@ export interface TailResult { readonly tail: Sequence; readonly applied?: Revisi
 export interface ReadResult { readonly records: readonly EncodedRecord[]; readonly applied?: Revision }
 /** Opaque stable 32-byte commit identity. */
 export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId" };
-/** Opaque non-empty caller retry identity, bounded by the canonical Stream contract. */
+/** Opaque non-empty exact caller retry identity. */
 export type IdempotencyKey = Uint8Array & { readonly [streamIdentityBrand]: "IdempotencyKey" };
 
 export function commitId(value: Uint8Array): CommitId {
@@ -61,7 +60,7 @@ export function commitId(value: Uint8Array): CommitId {
   return value.slice() as CommitId;
 }
 export function idempotencyKey(value: Uint8Array): IdempotencyKey {
-  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES) throw new RangeError(`idempotency key must contain 1..${StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES} bytes`);
+  if (!(value instanceof Uint8Array) || value.byteLength < 1) throw new RangeError("idempotency key must be non-empty bytes");
   return value.slice() as IdempotencyKey;
 }
 /** Rust-compatible UTF-8 path ordering for pages and cursors. */

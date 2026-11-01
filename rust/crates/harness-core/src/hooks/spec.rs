@@ -124,8 +124,8 @@ pub struct HookRule {
 pub struct HookSpec {
     /// Native executable or script passed to the shared shell selector.
     pub run: HookRun,
-    /// Positive execution deadline in milliseconds.
-    pub timeout_ms: u64,
+    /// Optional positive caller execution deadline in milliseconds.
+    pub timeout_ms: Option<u64>,
     /// How execution and output failures affect the caller.
     pub failure: HookFailure,
 }
@@ -189,7 +189,7 @@ impl HookSpec {
         if command.trim().is_empty()
             || command.contains('\0')
             || !arguments_valid
-            || self.timeout_ms == 0
+            || self.timeout_ms == Some(0)
         {
             return Err(Error::Invalid(
                 "hook command and timeout must be positive".into(),

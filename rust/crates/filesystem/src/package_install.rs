@@ -69,10 +69,11 @@ fn checksum(file: &mut File) -> io::Result<String> {
 }
 
 fn read_identity(path: &Path) -> io::Result<Option<Identity>> {
-    match private_file::read(path, 65_536) {
-        Ok(bytes) => serde_json::from_slice(&bytes.0)
-            .map(Some)
-            .map_err(|_| invalid("unsafe Acyclic install transaction or identity")),
+    match private_file::read_with(path, None, |file, _| {
+        serde_json::from_reader(io::BufReader::with_capacity(16_384, file))
+            .map_err(|_| invalid("unsafe Acyclic install transaction or identity"))
+    }) {
+        Ok(identity) => Ok(Some(identity)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }

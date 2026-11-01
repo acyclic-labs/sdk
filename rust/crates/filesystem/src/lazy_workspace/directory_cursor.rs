@@ -43,7 +43,7 @@ impl LazyDirectoryCursor {
             cancellation: work.cancellation(),
         };
         let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
-            decode_fields(bytes, profile, limits, &mut observe)
+            decode_fields(bytes, profile, &mut observe)
         })?;
         let directory = NamespacePath::parse_in_profile(
             &input.0.1,
@@ -144,14 +144,9 @@ fn encode_fields(
 fn decode_fields(
     bytes: &[u8],
     profile: crate::FilesystemProfile,
-    limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
-    let maximum = DOMAIN.len() as u64
-        + 256
-        + u64::from(limits.maximum_path_bytes)
-        + u64::from(limits.maximum_component_bytes);
-    let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, 1, bytes.len() as u64, observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
     let generation =
         crate::GenerationId::from_root(decoder.object(crate::ObjectKind::GenerationRoot, observe)?);
@@ -168,8 +163,7 @@ fn decode_fields(
     observe(ReadAllocationStep::Hashed(LazySnapshotRef::hash_bytes(
         generation,
     )))?;
-    let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
-        .map_err(|_| {
+    let directory = String::from_utf8(decoder.bytes(observe)?).map_err(|_| {
         CanonicalDecodeError::Invariant(CanonicalInvariant::Static("cursor directory is not UTF-8"))
     })?;
     let phase = match decoder.u8(observe)? {
@@ -193,12 +187,9 @@ fn decode_fields(
                 ))
                 .into());
             }
-            let name = LogicalName::new(
-                encoding,
-                decoder.bounded_bytes(limits.maximum_component_bytes, observe)?,
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error)))?;
+            let name = LogicalName::new(encoding, decoder.bytes(observe)?).map_err(|error| {
+                CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error))
+            })?;
             LazyDirectoryPhase::Authored(Some(name))
         }
         tag => {

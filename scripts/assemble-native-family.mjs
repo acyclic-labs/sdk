@@ -1,13 +1,12 @@
+import { commandOutput } from "./process-capture.mjs";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gunzipSync } from "node:zlib";
 import { isDeepStrictEqual } from "node:util";
-import { tarEntries } from "./archive-utils.mjs";
+import { readTarGzip, collectBody } from "./archive-utils.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
 import { isWasmArtifactPath, wasmArtifactFiles } from "./archive-utils.mjs";
 
@@ -30,7 +29,7 @@ function run(command, args, options = {}) {
   const npmCli = join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
   const executable = process.platform === "win32" && command === "npm" ? process.execPath : command;
   const commandArgs = executable === process.execPath && command === "npm" ? [npmCli, ...args] : args;
-  const result = execFileSync(executable, commandArgs, {
+  const result = commandOutput(executable, commandArgs, {
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
@@ -146,12 +145,12 @@ function assertNativeReceipt(receipt, metadata) {
   if (JSON.stringify(reconstructed) !== JSON.stringify(metadata.build_inputs) || objectDigest(reconstructed) !== receipt.published_build_inputs_sha256) fail("native receipt reconstructed build inputs differ from published recipe");
 }
 
-function archiveFiles(path) {
+async function archiveFiles(path) {
   const files = new Map();
-  for (const entry of tarEntries(gunzipSync(readFileSync(path)))) {
+  await readTarGzip(path, async entry => {
     if (!entry.path.startsWith("package/") || entry.path.split("/").some(part => part === ".." || part === ".") || !["0", "\0", "5"].includes(entry.type) || files.has(entry.path)) fail("native package archive has an unsafe or duplicate entry");
-    if (entry.type !== "5") files.set(entry.path, entry.body);
-  }
+    if (entry.type !== "5") files.set(entry.path, await collectBody(entry));
+  });
   return files;
 }
 
@@ -160,7 +159,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
   const assembly = JSON.parse(await readFile(join(output, assemblyFile), "utf8"));
   if (assembly.schema !== `acyclic.${family.key}.native-package-assembly.v2` || assembly.source_commit !== sourceSha || assembly.parent.version !== version || assembly.parent.name !== expectedInventory.parent.name || assembly.parent.asset !== parentAsset(version) || assembly.source_sha256 !== expectedInventory.source_sha256 || JSON.stringify(assembly.targets) !== JSON.stringify(expectedInventory.targets)) fail("native assembly release identity or source differs");
   if (digest(join(output, assembly.parent.asset)) !== assembly.parent.sha256) fail("native assembly parent digest differs");
-  const parent = archiveFiles(join(output, assembly.parent.asset));
+  const parent = await archiveFiles(join(output, assembly.parent.asset));
   const wasmBytes = parent.get("package/generated/wasm/producer-receipt.json");
   if (!wasmBytes || `sha256:${createHash("sha256").update(wasmBytes).digest("hex")}` !== assembly.wasm_receipt_sha256) fail("WASM producer receipt digest differs");
   assertWasmReceipt(JSON.parse(wasmBytes.toString("utf8")), parent, sourceSha, expectedInventory, version);
@@ -176,7 +175,7 @@ async function verifyNativeAssembly(output, sourceSha, version, expectedInventor
   const dependencies = {};
   for (const entry of assembly.companions) {
     if (!entry.asset.startsWith(`${companionDirectory}/`) || !/^[^/\\]+\.tgz$/u.test(entry.asset.slice(companionDirectory.length + 1)) || entry.version !== version || digest(join(output, entry.asset)) !== entry.sha256) fail("native companion archive identity or digest differs");
-    const files = archiveFiles(join(output, entry.asset));
+    const files = await archiveFiles(join(output, entry.asset));
     const manifest = JSON.parse(files.get("package/package.json").toString("utf8"));
     const expected = expectedInventory.companions.find(item => item.selected_target === entry.selected_target);
     if (!expected || !isDeepStrictEqual(manifest, expected.manifest) || manifest.name !== entry.name || manifest.version !== version || manifest.private !== false || ["os", "cpu", "libc"].some(field => JSON.stringify(manifest[field]) !== JSON.stringify(entry[field]))) fail("native companion differs from maintained source target mapping");

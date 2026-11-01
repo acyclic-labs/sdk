@@ -23,9 +23,9 @@ proptest! {
             let executor = uncompacted_executor(
                 Model::new("scripted".into(), "scenario".into(), "1".into())?,
                 provider.clone(), ContextPipeline::default(), ToolRegistry::default(),
-            ).with_limits(Limits { file_bytes: (text.len() - usize::from(!at)) as u64, ..Limits::default() });
+            ).with_limits(Limits { file_bytes: Some((text.len() - usize::from(!at)) as u64), ..Limits::default() });
             let journal = Journal::default();
-            let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()), selected_context: None, max_steps: 1 };
+            let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()), selected_context: None, max_steps: Some(1) };
             let result = futures::executor::block_on(executor.execute(input.clone(), &journal));
             if at {
                 let actual = result?;

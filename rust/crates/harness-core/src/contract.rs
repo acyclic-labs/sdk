@@ -552,10 +552,14 @@ mod tests {
             "\"\u{e9}\":[-9223372036854775808,1.5e+300,-0.0,false]}",
         );
         assert_eq!(canonical_json_bytes(&value)?, expected.as_bytes());
-        crate::executor::json::json_byte_length(&value, expected.len() as u64, &mut None)?;
+        crate::executor::json::json_byte_length(&value, Some(expected.len() as u64), &mut None)?;
         assert!(
-            crate::executor::json::json_byte_length(&value, expected.len() as u64 - 1, &mut None)
-                .is_err()
+            crate::executor::json::json_byte_length(
+                &value,
+                Some(expected.len() as u64 - 1),
+                &mut None
+            )
+            .is_err()
         );
         Ok(())
     }
@@ -663,7 +667,7 @@ mod tests {
 
         let visited = Cell::new(0);
         assert!(matches!(
-            crate::executor::json::json_byte_length(&Observed(&visited), 32, &mut None),
+            crate::executor::json::json_byte_length(&Observed(&visited), Some(32), &mut None),
             Err(Error::Invalid(message)) if message.contains("declared byte bound")
         ));
         assert_eq!(visited.get(), 1);

@@ -29,19 +29,23 @@ mod range;
 mod scope;
 mod write_validation;
 pub use capability::{NativeFile, NativeFileMeter};
-#[cfg(windows)]
-pub use operations::device_control_in_place;
 #[cfg(unix)]
 pub use operations::read_declared_source_bytes;
 pub use operations::{
     Durability, OwnedRead, OwnedWrite, read_at, read_batch_async, set_len, sync_data, sync_file,
     sync_filesystem, sync_parent, write_all_at,
 };
+#[cfg(windows)]
+pub use operations::{NativeControlCompletion, device_control_in_place};
 pub use range::AsyncRangeReader;
 
 #[derive(Debug)]
 pub(crate) struct NativeFilePayload {
     pub(crate) file: File,
+    // The sole Windows proactor associates this original handle once. Keeping
+    // the marker with the payload needs neither a global cache nor retirement.
+    #[cfg(windows)]
+    pub(crate) completion_attached: std::sync::atomic::AtomicBool,
     // Fields retire in declaration order: physical File before its claim.
     pub(crate) _allocation: Option<ReadAllocation>,
 }

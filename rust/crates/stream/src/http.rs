@@ -19,7 +19,7 @@ mod shared;
 #[error("invalid Stream HTTP configuration")]
 pub struct ConnectError;
 
-/// Bounded authenticated HTTP provider. Mutations are never automatically retried.
+/// Authenticated HTTP provider with optional caller response policy. Mutations are never automatically retried.
 #[derive(Clone)]
 pub struct HttpStream {
     operation_claims: Arc<crate::OperationClaims>,
@@ -27,7 +27,7 @@ pub struct HttpStream {
     endpoint: Url,
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
-    maximum: usize,
+    maximum: Option<usize>,
     sessions: Arc<crate::query_sync::SyncMutex<Option<crate::grpc::Client>>>,
     session_endpoint: tonic::transport::Endpoint,
     session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
@@ -37,7 +37,7 @@ impl HttpStream {
     pub fn new(
         endpoint: &str,
         token: &str,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: impl Into<Option<usize>>,
     ) -> Result<Self, ConnectError> {
         Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
     }
@@ -45,27 +45,27 @@ impl HttpStream {
     pub fn with_credential_provider(
         endpoint: &str,
         credential: CredentialProvider,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::build(endpoint, None, Some(credential), maximum, ca)
+        Self::build(endpoint, None, Some(credential), maximum.into(), ca)
     }
 
     /// Extends system trust with a caller-supplied PEM CA certificate.
     pub fn with_ca_certificate(
         endpoint: &str,
         token: &str,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::build(endpoint, Some(token), None, maximum, ca)
+        Self::build(endpoint, Some(token), None, maximum.into(), ca)
     }
 
     fn build(
         endpoint: &str,
         token: Option<&str>,
         credential: Option<CredentialProvider>,
-        maximum: usize,
+        maximum: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
@@ -82,7 +82,7 @@ impl HttpStream {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || maximum == 0
+            || maximum == Some(0)
         {
             return Err(ConnectError);
         }
@@ -94,7 +94,7 @@ impl HttpStream {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never());
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError);
             }
             client = client.add_root_certificate(
@@ -207,10 +207,11 @@ impl HttpStream {
         }
         let success = response.status().is_success();
         span.record("http.status", response.status().as_u16());
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
+        if self.maximum.is_some_and(|maximum| {
+            response
+                .content_length()
+                .is_some_and(|length| length > maximum as u64)
+        }) {
             return Err(StreamError::Unavailable);
         }
         let mut body = Vec::new();
@@ -219,9 +220,14 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?
         {
-            if chunk.len() > self.maximum.saturating_sub(body.len()) {
+            if self
+                .maximum
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(body.len()))
+            {
                 return Err(StreamError::Unavailable);
             }
+            body.try_reserve(chunk.len())
+                .map_err(|_| StreamError::Capacity)?;
             body.extend_from_slice(&chunk);
         }
         span.record("bytes", body.len());
@@ -302,9 +308,6 @@ impl HttpStream {
                     }
                 })
                 .collect::<Result<Vec<_>, StreamError>>()?;
-            if conflicts.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
-            }
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
@@ -440,7 +443,7 @@ impl StreamProvider for HttpStream {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?.follow(request).await
+        Ok(Box::pin(self.session_client()?.follow(request).await?))
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -550,8 +553,7 @@ mod tests {
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
-        let long = "t".repeat(crate::MAX_BEARER_TOKEN_BYTES + 1);
-        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+        for token in ["", " ", "a\r\nb", "a\0b"] {
             assert!(HttpStream::new("https://example.test", token, 1).is_err());
         }
         for endpoint in ["http://example.test", "https://u@example.test"] {

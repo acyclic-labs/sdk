@@ -131,11 +131,7 @@ impl GrpcObjects {
     ) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
-                if certificate.is_empty()
-                    || certificate.len() > crate::MAX_PEM_BYTES
-                    || key.is_empty()
-                    || key.len() > crate::MAX_PEM_BYTES
-                {
+                if certificate.is_empty() || key.is_empty() {
                     return Err(ConnectError::InvalidConfiguration);
                 }
                 Ok(Identity::from_pem(certificate, key))
@@ -153,7 +149,7 @@ impl GrpcObjects {
             return Err(ConnectError::InvalidConfiguration);
         }
         let peer = if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError::InvalidConfiguration);
             }
             acyclic_auth::channel::PeerTrust::PrivateCa(ca)
@@ -336,13 +332,9 @@ macro_rules! call {
         let floor: Option<&RevisionCut> = $floor;
         let timeout = $timeout;
         let deadline = crate::operation::deadline($self.context.as_ref(), timeout)?;
-        let budget = match (&$self.context, deadline) {
-            (Some(context), Some(deadline)) => {
-                acyclic_auth::channel::Budget::Operation { context, deadline }
-            }
-            (None, Some(deadline)) => acyclic_auth::channel::Budget::Deadline(deadline),
-            (None, None) => acyclic_auth::channel::Budget::Unbounded,
-            (Some(_), None) => return Err(wire::ErrorCode::InvalidArgument.into()),
+        let budget = match &$self.context {
+            Some(context) => acyclic_auth::channel::Budget::Operation { context, deadline },
+            None => acyclic_auth::channel::Budget::Deadline(deadline),
         };
         let response = acyclic_auth::channel::call(
             $self.channel.clone(),

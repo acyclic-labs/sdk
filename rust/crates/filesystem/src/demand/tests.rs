@@ -783,11 +783,7 @@ async fn native_lookup_preserves_non_utf8_posix_names() -> Result<(), Box<dyn Er
     use std::os::unix::ffi::OsStringExt;
 
     let raw = vec![b'n', 0xff];
-    let name = LogicalName::new(
-        NameEncoding::PosixBytes,
-        raw.clone(),
-        VolumeLimits::default().maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::PosixBytes, raw.clone())?;
     assert_lossless_name(
         FilesystemProfile::Posix,
         std::ffi::OsString::from_vec(raw),
@@ -805,11 +801,7 @@ async fn native_lookup_preserves_utf16_windows_names() -> Result<(), Box<dyn Err
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name = LogicalName::new(
-        NameEncoding::WindowsUtf16Le,
-        raw,
-        VolumeLimits::default().maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, raw)?;
     assert_lossless_name(
         FilesystemProfile::Windows,
         std::ffi::OsString::from("snowman-Ã¢ËœÆ’"),
@@ -830,11 +822,7 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name = LogicalName::new(
-        NameEncoding::WindowsUtf16Le,
-        raw,
-        limits.maximum_component_bytes,
-    )?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, raw)?;
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join(&host_name), b"data")?;
     let source = NativeDemandSource::open(

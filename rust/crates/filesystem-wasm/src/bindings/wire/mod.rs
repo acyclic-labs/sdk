@@ -236,6 +236,14 @@ pub(in crate::bindings) fn fixed_16(bytes: &[u8]) -> Result<[u8; 16], JsValue> {
         .map_err(|_| js_error("identity must be exactly 16 bytes"))
 }
 
+pub(in crate::bindings) fn wasm_optional_u32(value: &JsValue) -> Result<Option<u32>, JsValue> {
+    if value.is_undefined() || value.is_null() {
+        Ok(None)
+    } else {
+        wasm_u32(value).map(Some)
+    }
+}
+
 pub(in crate::bindings) fn wasm_u32(value: &JsValue) -> Result<u32, JsValue> {
     let number = value
         .as_f64()

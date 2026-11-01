@@ -25,10 +25,15 @@ pub(crate) fn canonical_sequence_digests<T: Serialize>(
             framing(&mut digest, b",", 0, bounds, code, &mut written, work)?;
         }
         let item_bounds = JsonBounds {
-            maximum_bytes: written
-                .checked_add(1)
-                .and_then(|framed| bounds.maximum_bytes.checked_sub(framed))
-                .ok_or_else(|| boundary("JSON exceeds admitted output", code))?,
+            maximum_bytes: bounds
+                .maximum_bytes
+                .map(|maximum| {
+                    written
+                        .checked_add(1)
+                        .and_then(|framed| maximum.checked_sub(framed))
+                        .ok_or_else(|| boundary("JSON exceeds admitted output", code))
+                })
+                .transpose()?,
             maximum_depth: bounds
                 .maximum_depth
                 .checked_sub(1)
@@ -55,7 +60,9 @@ pub(crate) fn canonical_sequence_digests<T: Serialize>(
             let mut output = HashOutput {
                 digest: &mut digest,
                 written: &mut written,
-                maximum: bounds.maximum_bytes.saturating_sub(1),
+                maximum: bounds
+                    .maximum_bytes
+                    .map(|maximum| maximum.saturating_sub(1)),
                 buffer: arrayvec::ArrayVec::new(),
             };
             serde_json::to_writer(&mut output, &value)
@@ -93,7 +100,7 @@ fn framing(
 ) -> Result<()> {
     *written = written
         .checked_add(bytes.len() as u64)
-        .filter(|size| *size <= bounds.maximum_bytes)
+        .filter(|size| bounds.maximum_bytes.is_none_or(|maximum| *size <= maximum))
         .ok_or_else(|| boundary("JSON exceeds admitted output", code))?;
     if let Some(observer) = work.as_deref_mut() {
         observer.codec_charge(JsonCodecCharge::Work {
@@ -109,7 +116,7 @@ fn framing(
 struct HashOutput<'a> {
     digest: &'a mut blake3::Hasher,
     written: &'a mut u64,
-    maximum: u64,
+    maximum: Option<u64>,
     buffer: arrayvec::ArrayVec<u8, 4096>,
 }
 impl HashOutput<'_> {
@@ -127,7 +134,7 @@ impl Write for HashOutput<'_> {
         *self.written = self
             .written
             .checked_add(bytes.len() as u64)
-            .filter(|size| *size <= self.maximum)
+            .filter(|size| self.maximum.is_none_or(|maximum| *size <= maximum))
             .ok_or_else(|| std::io::Error::other("JSON exceeds admitted output"))?;
         if self.buffer.try_extend_from_slice(bytes).is_err() {
             self.finish();

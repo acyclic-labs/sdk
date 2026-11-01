@@ -10,7 +10,6 @@ fn name(value: &str) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 

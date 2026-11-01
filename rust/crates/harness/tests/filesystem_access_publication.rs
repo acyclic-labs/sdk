@@ -53,7 +53,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_path(operation, path, 4096, None)
+            .observe_staged_path(operation, path, Some(4096), None)
             .await?,
         Some(first.clone())
     );
@@ -63,7 +63,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_at(replacement, &first, 4096, None)
+            .observe_staged_at(replacement, &first, Some(4096), None)
             .await?,
         Some(next)
     );
@@ -80,7 +80,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_once(unknown, None, 4096, ContentAccess::default())?
+            .observe_staged_once(unknown, None, Some(4096), ContentAccess::default())?
             .await
             .err()
             .ok_or("metadata discovery unexpectedly succeeded")?
@@ -125,7 +125,7 @@ proptest! {
                 capability.to_scope_label()?,
             ]), fixture.scope.agent(), &mut None)?;
             let grant = ContentGrant::verify(&fixture.issuer.verifier(&mut None)?, &scope,
-                &fixture.volume, VolumeOperation::Write, 4096, &mut None)?;
+                &fixture.volume, VolumeOperation::Write, &mut None)?;
             let result = fixture.host.content_for_operation(&fixture.volume, &grant,
                 &IdempotencyKey::new("file")?, "secrets/key", 4096, acyclic_harness::conversation::ContentAccess::default()).await;
             let allowed = list && path && !expired && !denied;
@@ -164,7 +164,6 @@ async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Bo
             &scope,
             &fixture.volume,
             VolumeOperation::Write,
-            4096,
             &mut None,
         )?;
         let result = fixture
@@ -244,7 +243,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
                 .observe_staged_once(
                     operation,
                     None,
-                    4096,
+                    Some(4096),
                     acyclic_harness::conversation::ContentAccess {
                         ceiling: None,
                         io: Some(&io),
