@@ -99,11 +99,16 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  if(fixture.live) {
   // The caller provisions an exclusive authenticated profile outside guest
   // files. Pass its path to the original host; never read or copy credentials.
-  const profile=await realpath(fixture.live.profile),within=relative(await realpath(root),profile);
-  assert.ok(within==='..'||within.startsWith('..'+sep)||isAbsolute(within),
-   'step=admit live native login location; recovery=provision the native login profile outside the fixture root');
-  assert.ok((await stat(profile)).isDirectory(),'step=admit live native login profile; recovery=supply an existing directory');
-  env[{codex:'CODEX_HOME','claude-code':'CLAUDE_CONFIG_DIR',pi:'PI_CODING_AGENT_DIR'}[host]]=profile;
+  try {
+   const profile=await realpath(fixture.live.profile),within=relative(await realpath(root),profile);
+   assert.ok(within==='..'||within.startsWith('..'+sep)||isAbsolute(within),'native login profile must be outside the fixture root');
+   assert.ok((await stat(profile)).isDirectory(),'native login profile must be an existing directory');
+   env[{codex:'CODEX_HOME','claude-code':'CLAUDE_CONFIG_DIR',pi:'PI_CODING_AGENT_DIR'}[host]]=profile;
+  } catch(cause) {
+   throw Object.assign(new Error('step=admit live native login profile: '+cause.message+
+    '; recovery=provision an existing exclusive native login directory outside the fixture root',{cause}),
+   {code:'NATIVE_LOGIN_PROFILE_REFUSED'});
+  }
  } else {
   let endpoint;
   try {endpoint=new URL(fixture.url);}

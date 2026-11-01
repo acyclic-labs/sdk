@@ -147,8 +147,8 @@ export async function nativeWorkflow({host,binary,plugin,output,source,artifactS
  const helper=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
  const command=phase=>[process.execPath,helper,phase,workspace,host].map(quote).join(' ');
  const answer='NATIVE_PLUGIN_MODEL_DONE',tools=['spawn','wait','resume','archive'];
- const child=`Run exactly this command with your native shell tool: ${command('child')}. After it succeeds reply NATIVE_PLUGIN_CHILD_DONE. Do not inspect credentials.`;
- const resumed=`Run exactly this command with your native shell tool: ${command('resumed')}. After it succeeds reply NATIVE_PLUGIN_CHILD_RESUMED. Do not inspect credentials.`;
+ const child=`Run exactly this command with your native shell tool: ${command('child')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_DONE. Do not inspect credentials.`;
+ const resumed=`Run exactly this command with your native shell tool: ${command('resumed')}\nAfter it succeeds reply NATIVE_PLUGIN_CHILD_RESUMED. Do not inspect credentials.`;
  const prompt=`Use your native shell and installed Acyclic coordination tools to perform these steps sequentially. Do not use built-in subagents, impersonate a child, or inspect credentials.
 1. Run ${command('parent')} in your native shell.
 2. Call the installed Acyclic spawn tool with reference native-child and prompt ${JSON.stringify(child)}.
