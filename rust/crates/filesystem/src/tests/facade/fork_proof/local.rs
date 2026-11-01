@@ -106,18 +106,30 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
                 crate::kernel::allocation::KernelAccounting::native(&original, &cancel);
             retained_source_fork_work(&fs, &native, "native", &mut accounting, &cancel).await?
         };
-        assert_eq!(held, native_work);
+        eprintln!(
+            "registered{files}={held:?} native{files}={native_work:?} forgotten{files}={walked:?} late{files}={late_work:?}"
+        );
+        // Native work also owns the provider's original item charges. Compare
+        // like ledgers across populations; both routes must read the same proof bytes.
+        assert_eq!(held.object_bytes_read, native_work.object_bytes_read);
+        assert_eq!(
+            held.backend_read_operations,
+            native_work.backend_read_operations
+        );
         assert_eq!(walked, late_work);
         assert!(walked.object_bytes_read > held.object_bytes_read);
-        if let Some((few, few_walked)) = previous {
+        if let Some((few, few_native, few_walked)) = previous {
             assert_eq!(
                 few, held,
                 "retained proof work grew with unrelated source files"
             );
+            assert_eq!(
+                few_native, native_work,
+                "native retained proof work grew with unrelated source files"
+            );
             assert!(walked.object_bytes_read > few_walked);
         }
-        previous = Some((held, walked.object_bytes_read));
-        eprintln!("registered{files}={held:?} forgotten{files}={walked:?}");
+        previous = Some((held, native_work, walked.object_bytes_read));
         let child = workspace
             .fork::<_, _, WorkspaceError>(
                 "registered-child",
