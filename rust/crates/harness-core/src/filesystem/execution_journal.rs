@@ -88,7 +88,7 @@ mod summary;
 mod summary_authorization;
 mod summary_cache;
 mod summary_map;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod tests;

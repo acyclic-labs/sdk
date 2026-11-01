@@ -614,36 +614,56 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     create(&a, 1).await?;
     let foreign = b.agents().actor(&root_b)?;
     assert!(a.agents().runtime().track(foreign).is_err());
-    // Both original run futures produce the wakeups observed below and
-    // remain owned here, including their terminal errors.
+    struct ActivationWake(std::sync::atomic::AtomicBool);
+    impl std::task::Wake for ActivationWake {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let activations = [false, false].map(|_| Arc::new(ActivationWake(false.into())));
+    let wakers = activations.clone().map(std::task::Waker::from);
+    // MemoryStream completes these fixed activations inline. Advance each
+    // original producer once and inspect its result, never wait on a count.
     let mut runners = [a.agents(), b.agents()].map(|agents| Box::pin(agents.run(|_, _| {})));
-    let mut advance = |context: &mut std::task::Context<'_>, expected| {
-        for runner in &mut runners {
+    let mut advance = |expected| -> Result {
+        for (runner, waker) in runners.iter_mut().zip(&wakers) {
+            let mut context = std::task::Context::from_waker(waker);
             if let std::task::Poll::Ready(result) =
-                std::future::Future::poll(runner.as_mut(), context)
+                std::future::Future::poll(runner.as_mut(), &mut context)
             {
-                return std::task::Poll::Ready(match result {
+                return match result {
                     Err(error) => Err(Box::<dyn std::error::Error>::from(error)),
                     Ok(never) => match never {},
-                });
+                };
             }
         }
-        if (
-            a.agents().runtime().counts().0,
-            b.agents().runtime().counts().0,
-        ) == expected
-        {
-            std::task::Poll::Ready(Ok(()))
-        } else {
-            std::task::Poll::Pending
-        }
+        assert_eq!(
+            (
+                a.agents().runtime().counts().0,
+                b.agents().runtime().counts().0
+            ),
+            expected,
+            "original activation producers did not discover exactly their own roots"
+        );
+        Ok(())
     };
-    futures::future::poll_fn(|context| advance(context, (1, 1))).await?;
+    advance((1, 1))?;
+    for activation in &activations {
+        activation.0.store(false, Ordering::SeqCst);
+    }
     // These roots are committed by different hosts after discovery starts.
     // Interleaving their activations also exercises foreign-tree exclusion.
     create(&b2, 3).await?;
+    assert!(
+        activations[1].0.swap(false, Ordering::SeqCst),
+        "tree-b activation did not wake its original producer"
+    );
     create(&a2, 4).await?;
+    assert!(
+        activations[0].0.swap(false, Ordering::SeqCst),
+        "tree-a activation did not wake its original producer"
+    );
     create(&b2, 5).await?;
-    futures::future::poll_fn(|context| advance(context, (2, 3))).await?;
+    advance((2, 3))?;
     Ok(())
 }
