@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+mod observation;
+
 #[test]
 fn child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_STREAM_CAPTURE") else {

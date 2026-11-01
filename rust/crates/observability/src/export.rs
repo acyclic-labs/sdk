@@ -116,6 +116,7 @@ impl Export {
             sample.work = None;
             sample.publication = None;
             sample.native_task = None;
+            sample.capture_retirement = None;
             sample.binding = None;
         }
         let record = ExportRecord {
@@ -139,6 +140,7 @@ impl Sink for Export {
             parent_id: sample.parent_id.cloned(),
             durability: sample.durability,
             native_task: self.details.then_some(sample.native_task).flatten(),
+            capture_retirement: self.details.then_some(sample.capture_retirement).flatten(),
             publication: self.details.then_some(sample.publication).flatten(),
             work: self.details.then_some(sample.work).flatten(),
             binding: self.details.then(|| sample.binding.cloned()).flatten(),
@@ -165,6 +167,9 @@ impl Sink for Export {
         self.details
     }
     fn native_task_details(&self) -> bool {
+        self.details
+    }
+    fn capture_retirement_details(&self) -> bool {
         self.details
     }
     fn binding_details(&self) -> bool {
