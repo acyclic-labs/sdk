@@ -1,0 +1,48 @@
+# Pinned public tool contracts
+
+These declarations pin the public tool interfaces each model family was trained
+on. They do not import a host's agent loop or execution implementation. The
+family profile files pin each declaration's capability, name and revision.
+
+| Family | Public source | Selection |
+| --- | --- | --- |
+| Claude Code | [Claude Agent SDK 0.3.316](https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.316.tgz), `sdk-tools.d.ts` | `BashInput`, `FileReadInput`, `FileWriteInput`, `FileEditInput`, `GlobInput`, `GrepInput`, `NotebookEditInput`; field names, types, optionality and field documentation. Tool summaries follow the [public SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript). |
+| Codex shell | [Codex rust-v0.20.0](https://github.com/openai/codex/tree/45aed5edd139c38132de044596fdd55e47236657), `codex-rs/core/src/openai_tools.rs` | The plain `create_shell_tool` command-array contract. |
+| Codex patch | [Codex 67f0994b](https://github.com/openai/codex/tree/67f0994b532b8740f14b5b738af7b7b2a915b1d6), `codex-rs/core/src/tools/handlers/apply_patch_spec.rs`, `codex-rs/core/assets/tools/apply_patch.lark`, and `codex-rs/apply-patch/src/lib.rs` | The freeform declaration and complete patch grammar. |
+| Gemini CLI | [Gemini CLI 6814e00d](https://github.com/google-gemini/gemini-cli/tree/6814e00d6b148c3a1d57244d5d7040f7c541009d), `packages/core/src/tools/definitions/model-family-sets/gemini-3.ts` | `read_file`, `write_file`, `replace`, `glob`, `grep_search`, `run_shell_command`; base declarations and dynamic description helpers at the same revision. |
+
+The Claude SDK package records source commit
+`cd7ceb459c6864567b16a11f60101b24421475c1` in its package manifest. This is
+package provenance, not a claim that the implementation is published at that
+commit in a public repository. Its public type contracts are interoperability
+references; the SDK's proprietary runtime is not included.
+
+Codex and Gemini CLI schema material retains its Apache-2.0 attribution in the
+root NOTICE. The JSON files are extracted declarations, not captured model
+responses. Adversarial protocol tests generate their own data and do not claim
+provider-fixture provenance.
+
+The `golden/` lists are deterministic protocol projections of those extracted
+public declarations, with recursively sorted schema keys. They are declaration
+goldens, not observations of a provider stream or a private harness prompt.
+
+The Claude Grep `head_limit` description adapts the upstream default to the
+harness contract: omission and zero mean unlimited output. Explicit positive
+limits still select the original stdout before tail retention.
+
+The Gemini grep_search description and total_max_matches description likewise
+adapt the upstream 100-match default: omission means unlimited matches. A
+supplied total limit remains refused until the original capture can select
+complete matches before truncation.
+
+The Gemini read_file description replaces upstream fixed truncation thresholds
+with the shared reader's caller-admitted read and render credit. It introduces
+no default line, per-line character or whole-file byte ceiling.
+
+Command descriptions retain the native argument shapes while stating the
+supported lifetime and policy contract: omission is unbounded, background
+handoff is unavailable, and arguments cannot override host process policy.
+The Claude upstream fixed timeout ceilings and background defaults are not
+adopted. Gemini command source uses the selected workspace's native shell;
+its upstream process-group/PID presentation is not advertised by this profile.
+The original command executor still owns launch, cancellation and output.
