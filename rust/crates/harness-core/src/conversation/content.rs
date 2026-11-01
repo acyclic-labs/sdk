@@ -354,18 +354,27 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
 pub enum ContentChange<'a> {
     /// Creates a path only while it remains absent.
     CreateAbsent {
+        /// Destination relative to this publisher's authenticated volume.
         path: &'a str,
+        /// Complete file contents, borrowed until the publication settles.
         bytes: &'a [u8],
+        /// Media type retained in the new immutable descriptor.
         media_type: &'a str,
+        /// Display name retained in the publication receipt.
         display_name: &'a str,
     },
     /// Replaces exactly the source version, refusing a concurrent publication.
     UpdateExpected {
+        /// Exact source identity; any intervening source change refuses.
         source: &'a FileRef,
+        /// Complete replacement, retaining the source media type and name.
         bytes: &'a [u8],
     },
     /// Removes exactly the source version.
-    DeleteExpected { source: &'a FileRef },
+    DeleteExpected {
+        /// Exact source identity authorized for deletion in this commit.
+        source: &'a FileRef,
+    },
 }
 
 impl ContentChange<'_> {

@@ -6,13 +6,24 @@ use crate::{NativeCustody, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileChange<'a> {
     /// Each body line starts with `+`; remove that one byte when publishing.
-    Add { path: &'a str, body: &'a str },
+    Add {
+        /// Destination path relative to the selected volume.
+        path: &'a str,
+        /// Validated `+`-prefixed lines, including their original line endings.
+        body: &'a str,
+    },
     /// Remove the exact selected source generation.
-    Delete { path: &'a str },
+    Delete {
+        /// Source path resolved under the original read and delete grants.
+        path: &'a str,
+    },
     /// Exact update hunks, optionally followed by publication at another path.
     Update {
+        /// Source path whose immutable version supplies the update context.
         path: &'a str,
+        /// Optional absent destination; the source deletion shares its commit.
         move_to: Option<&'a str>,
+        /// Exact borrowed update fragment passed to the shared hunk engine.
         diff: &'a str,
     },
 }
