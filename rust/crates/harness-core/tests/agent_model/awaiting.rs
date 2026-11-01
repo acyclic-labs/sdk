@@ -101,6 +101,7 @@ impl TurnDriver for Waiter {
                     b"spawned",
                     vec![Out::Spawn {
                         profile: None,
+                        history: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),

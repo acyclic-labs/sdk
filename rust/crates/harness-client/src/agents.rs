@@ -27,6 +27,16 @@ pub enum AgentClientError {
     /// A selected filesystem/tool-output stream ended, without ending others.
     #[error("selected resource stream ended: {0}")]
     ResourceClosed(String),
+    /// A terminal provider refusal; retained separately from stream absence.
+    #[error("follow refused for {resource}: {code}: {detail}")]
+    Refused {
+        /// Canonical selected resource whose producer refused the follow.
+        resource: String,
+        /// Provider's stable refusal classification.
+        code: String,
+        /// Provider's original diagnostic.
+        detail: String,
+    },
 }
 
 impl AgentClientError {
@@ -38,6 +48,7 @@ impl AgentClientError {
             Self::Record(cause) => cause.code(),
             Self::Closed(_) => "agent_stream_closed",
             Self::ResourceClosed(_) => "agent_resource_closed",
+            Self::Refused { .. } => "agent_follow_refused",
         }
     }
 }
@@ -100,6 +111,15 @@ pub struct AgentClient {
     resources: Vec<String>,
     next_stream: usize,
     credential: u32,
+    all: bool,
+}
+
+/// One canonical session delivery, before a frontend chooses its projection.
+pub struct AgentDelivery {
+    /// Source resource; record identity is this resource plus its sequence.
+    pub resource: String,
+    /// The unchanged provider frame, including its exclusive replay cursor.
+    pub frame: wire::SessionFrame,
 }
 
 impl AgentClient {
@@ -119,6 +139,42 @@ impl AgentClient {
         status_from: u64,
         credential: u32,
     ) -> Result<Self, AgentClientError> {
+        Self::observing(
+            client,
+            agent,
+            conversation_from,
+            status_from,
+            credential,
+            false,
+        )
+    }
+
+    /// Follow every committed status on the same bounded session owner.
+    pub fn all(
+        client: Client,
+        agent: AgentPath,
+        conversation_from: u64,
+        status_from: u64,
+        credential: u32,
+    ) -> Result<Self, AgentClientError> {
+        Self::observing(
+            client,
+            agent,
+            conversation_from,
+            status_from,
+            credential,
+            true,
+        )
+    }
+
+    fn observing(
+        client: Client,
+        agent: AgentPath,
+        conversation_from: u64,
+        status_from: u64,
+        credential: u32,
+        all: bool,
+    ) -> Result<Self, AgentClientError> {
         let conversation = agent.conversation()?;
         let mut selected = Self {
             session: WireSession::new(client, DemandPolicy::default()),
@@ -128,6 +184,7 @@ impl AgentClient {
             resources: Vec::new(),
             next_stream: 0,
             credential,
+            all,
         };
         selected.set_view(
             AgentSelection {
@@ -210,14 +267,21 @@ impl AgentClient {
                 ),
                 (true, selection.agent.status()?, selection.status_from),
             ] {
-                subscriptions.push((
-                    path.clone(),
-                    subscription(&path, from, self.credential, is_status),
-                ));
+                let mut request =
+                    subscription(&path, from, self.credential, is_status && !self.all);
+                if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
+                    follow.opening_cut = self.all;
+                }
+                subscriptions.push((path.clone(), request));
                 streams.push((selection.agent.clone(), is_status, path));
             }
         }
-        if let Some(resources) = resources {
+        if let Some(mut resources) = resources {
+            for request in &mut resources {
+                if let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind {
+                    follow.opening_cut = self.all;
+                }
+            }
             let names = resources
                 .iter()
                 .map(|subscription| match &subscription.kind {
@@ -326,7 +390,9 @@ impl AgentClient {
             .view(path)
             .expect("selected status owns a view");
         view.latest_value(b"status")
-            .map(|value| StatusRecord::decode(&value.value).map_err(AgentClientError::Record))
+            .map(|value| &value.value)
+            .or_else(|| view.records().last().map(|record| &record.value))
+            .map(|value| StatusRecord::decode(value).map_err(AgentClientError::Record))
             .transpose()
     }
 
@@ -339,14 +405,15 @@ impl AgentClient {
     /// total interest budget as conversation/status. No second read loop.
     pub fn open_resource(
         &mut self,
-        subscription: wire::SessionSubscription,
+        mut subscription: wire::SessionSubscription,
     ) -> Result<(), AgentClientError> {
         if subscription.credential != self.credential {
             return Err(WireSessionError::InvalidSubscription.into());
         }
-        let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &mut subscription.kind else {
             return Err(WireSessionError::InvalidSubscription.into());
         };
+        follow.opening_cut = self.all;
         wire_codec::session::validate_resource(&follow.resource)
             .map_err(WireSessionError::Stream)?;
         let resource = follow.resource.clone();
@@ -377,10 +444,10 @@ impl AgentClient {
 
     /// Fairly poll only the bounded selected streams. There is no population scan
     /// and no per-agent queue, task or unbounded status cache.
-    pub fn poll_next(
+    pub fn poll_delivery(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<Result<AgentEvent, AgentClientError>> {
+    ) -> Poll<Result<AgentDelivery, AgentClientError>> {
         let mut waiting = false;
         let count = self.streams.len() + self.resources.len();
         for offset in 0..count {
@@ -401,29 +468,20 @@ impl AgentClient {
                     }
                     Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
                     Poll::Ready(Ok(None)) => {
-                        return Poll::Ready(Err(AgentClientError::ResourceClosed(
-                            resource.clone(),
-                        )));
+                        return Poll::Ready(Err(WireSessionError::Stream(
+                            acyclic_stream::StreamError::Unavailable,
+                        )
+                        .into()));
                     }
                     Poll::Ready(Ok(Some(frame))) => {
-                        if matches!(frame.body, Some(wire::session_frame::Body::Closed(_))) {
-                            return Poll::Ready(Err(AgentClientError::ResourceClosed(
-                                resource.clone(),
-                            )));
-                        }
-                        let revision = self
-                            .session
-                            .resource_view(resource)
-                            .expect("selected resource owns a view")
-                            .revision();
-                        return Poll::Ready(Ok(AgentEvent::Resource {
+                        return Poll::Ready(Ok(AgentDelivery {
                             resource: resource.clone(),
-                            revision,
+                            frame,
                         }));
                     }
                 }
             }
-            let (agent, status, path) = &self.streams[index];
+            let (_, _, path) = &self.streams[index];
             // WireSession releases terminal follows but retains their final
             // views. Poll only its actual live ownership, so reporting one
             // failed path cannot strand the other selected streams on NotOpen.
@@ -441,48 +499,99 @@ impl AgentClient {
                 }
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                 Poll::Ready(Ok(None)) => {
-                    return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
+                    return Poll::Ready(Err(WireSessionError::Stream(
+                        acyclic_stream::StreamError::Unavailable,
+                    )
+                    .into()));
                 }
                 Poll::Ready(Ok(Some(frame))) => frame,
             };
-            let event = match frame.body {
-                Some(wire::session_frame::Body::Data(data)) => {
-                    if *status {
-                        let Some(wire::session_data::Item::LatestValue(value)) = data.item else {
-                            return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
-                        };
-                        return Poll::Ready(
-                            StatusRecord::decode(&value.value)
-                                .map(|status| AgentEvent::Status {
-                                    agent: agent.clone(),
-                                    status,
-                                })
-                                .map_err(AgentClientError::Record),
-                        );
-                    }
-                    let Some(wire::session_data::Item::Record(record)) = data.item else {
-                        return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
-                    };
-                    ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
-                        agent: agent.clone(),
-                        sequence: record.sequence,
-                        entry,
-                    })
-                }
-                Some(wire::session_frame::Body::Closed(_)) => {
-                    return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
-                }
-                _ => Ok(AgentEvent::Progress),
-            };
-            return Poll::Ready(event.map_err(AgentClientError::Record));
+            return Poll::Ready(Ok(AgentDelivery {
+                resource: wire_codec::session::stream_resource(path.as_str()),
+                frame,
+            }));
         }
         if waiting {
             Poll::Pending
         } else {
-            // No live follow can wake this task. Report exhaustion rather than
-            // leaving the next read permanently pending after the last failure.
             Poll::Ready(Err(AgentClientError::Closed(self.conversation.clone())))
         }
+    }
+
+    /// Decode the same delivery used by JSONL export into interactive events.
+    pub fn poll_next(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<AgentEvent, AgentClientError>> {
+        let delivery = match self.poll_delivery(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(delivery)) => delivery,
+        };
+        Poll::Ready(self.decode_delivery(&delivery))
+    }
+
+    /// Apply a frontend projection to an already folded delivery.
+    pub fn decode_delivery(
+        &self,
+        delivery: &AgentDelivery,
+    ) -> Result<AgentEvent, AgentClientError> {
+        if let Some(wire::session_frame::Body::Closed(closed)) = &delivery.frame.body
+            && closed.code != "not_found"
+        {
+            return Err(AgentClientError::Refused {
+                resource: delivery.resource.clone(),
+                code: closed.code.clone(),
+                detail: closed.message.clone(),
+            });
+        }
+        let Some((agent, status, path)) = self.streams.iter().find(|(_, _, path)| {
+            wire_codec::session::stream_resource(path.as_str()) == delivery.resource
+        }) else {
+            if matches!(
+                delivery.frame.body,
+                Some(wire::session_frame::Body::Closed(_))
+            ) {
+                return Err(AgentClientError::ResourceClosed(delivery.resource.clone()));
+            }
+            let Some(view) = self.session.resource_view(&delivery.resource) else {
+                return Err(WireSessionError::NotOpen.into());
+            };
+            return Ok(AgentEvent::Resource {
+                resource: delivery.resource.clone(),
+                revision: view.revision(),
+            });
+        };
+        let event = match &delivery.frame.body {
+            Some(wire::session_frame::Body::Data(data)) => {
+                if *status {
+                    let value = match &data.item {
+                        Some(wire::session_data::Item::LatestValue(value)) => &value.value,
+                        Some(wire::session_data::Item::Record(record)) => &record.value,
+                        _ => return Err(WireSessionError::InvalidSubscription.into()),
+                    };
+                    return StatusRecord::decode(value)
+                        .map(|status| AgentEvent::Status {
+                            agent: agent.clone(),
+                            status,
+                        })
+                        .map_err(AgentClientError::Record);
+                }
+                let Some(wire::session_data::Item::Record(record)) = &data.item else {
+                    return Err(WireSessionError::InvalidSubscription.into());
+                };
+                ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
+                    agent: agent.clone(),
+                    sequence: record.sequence,
+                    entry,
+                })
+            }
+            Some(wire::session_frame::Body::Closed(_)) => {
+                return Err(AgentClientError::Closed(path.clone()));
+            }
+            _ => Ok(AgentEvent::Progress),
+        };
+        event.map_err(AgentClientError::Record)
     }
 
     /// Wait without adding a task, channel or independent follow loop.

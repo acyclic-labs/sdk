@@ -128,6 +128,10 @@ async fn changes_follow_uses_indexed_grants_and_owner_deny_wins() -> TestResult 
     )
     .await?;
     let mut follow = prepared.open.await?;
+    assert!(matches!(
+        follow.next().await.ok_or("missing opening cut")??,
+        FollowUpdate::Opening { .. }
+    ));
     (prepared.revalidate)()?;
     workspace.write_text("/denied", "must not disclose").await?;
     assert!(matches!(
@@ -144,6 +148,10 @@ async fn changes_follow_uses_indexed_grants_and_owner_deny_wins() -> TestResult 
     // With the full-volume cap, the same stored deny must still remove data.
     let prepared = subscribe(fs, streams, workspace.id().volume_id(), "").await?;
     let mut follow = prepared.open.await?;
+    assert!(matches!(
+        follow.next().await.ok_or("missing opening cut")??,
+        FollowUpdate::Opening { .. }
+    ));
     workspace.write_text("/denied", "still private").await?;
     assert!(matches!(
         follow.next().await.ok_or("missing denied cut")??,
@@ -158,6 +166,10 @@ async fn policy_revocation_and_deletion_close_idle_and_queued_changes_without_cr
         let (fs, streams, workspace) = fixture().await?;
         let prepared = subscribe(fs, streams, workspace.id().volume_id(), "allowed").await?;
         let mut follow = prepared.open.await?;
+        assert!(matches!(
+            follow.next().await.ok_or("missing opening cut")??,
+            FollowUpdate::Opening { .. }
+        ));
         workspace.write_text("/allowed", "queued metadata").await?;
         assert!(matches!(
             follow.next().await.ok_or("missing queued record")??,

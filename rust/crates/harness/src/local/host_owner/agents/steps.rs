@@ -70,6 +70,7 @@ pub(super) fn apply(
                 intent,
                 brief: Some(brief),
                 volumes: Vec::new(),
+                history: None,
             });
             session.spawned.push(reference);
         }

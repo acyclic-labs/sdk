@@ -150,7 +150,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     terminal = Some(resources::terminal(prepared.terminal, identity));
                     (
                         false,
-                        resources::source(prepared.open, identity, preceding),
+                        resources::source(prepared.open, identity, preceding, follow.opening_cut),
                         Some(prepared.revalidate),
                     )
                 } else {
@@ -189,6 +189,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             read_limit: follow.read_limit,
                             key_records: None,
                             opened: false,
+                            opening_cut: follow.opening_cut,
                         },
                         identity,
                     );
@@ -424,6 +425,7 @@ struct Follow<P: ?Sized> {
     bootstrap_head: bool,
     bootstrap: Option<crate::Record>,
     opened: bool,
+    opening_cut: bool,
 }
 
 /// One ALL/LATEST follow. A bounded follow (`until`) is the session read: it
@@ -513,7 +515,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         if self.end.is_some_and(|end| self.next >= end) {
             return Ok(Event::End);
         }
-        if let Some(update) = self
+        while let Some(update) = self
             .records
             .as_mut()
             .ok_or(StreamError::Unavailable)?
@@ -522,6 +524,16 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
             .transpose()?
         {
             return match update {
+                crate::FollowUpdate::Opening { tail } => {
+                    if !self.opening_cut {
+                        continue;
+                    }
+                    Ok(Event::Progress(wire::SessionWatermark {
+                        opening_tail: Some(tail),
+                        accepted: self.next,
+                        ..Default::default()
+                    }))
+                }
                 crate::FollowUpdate::Record(record) => {
                     self.next = record
                         .sequence
@@ -537,6 +549,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                     self.next = cut;
                     self.preceding = self.preceding.map(|_| anchor);
                     Ok(Event::Progress(wire::SessionWatermark {
+                        opening_tail: None,
                         accepted: cut,
                         durable: 0,
                         after: Some(cursor(cut)),

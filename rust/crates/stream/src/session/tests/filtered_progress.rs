@@ -22,6 +22,9 @@ async fn idle_skips_need_no_credit_and_never_pass_a_queued_match() -> TestResult
     let (sender, receiver) = mpsc::unbounded();
     sender.unbounded_send(Ok(hello(1_000_000, 0)))?;
     let mut subscription = subscribe(1, "progress", 1, false);
+    if let Some(Kind::Follow(follow)) = &mut subscription.kind {
+        follow.opening_cut = true;
+    }
     subscription.filter = Some(wire::SessionFilter {
         all_of: vec![],
         keys: vec![wire::KeyRange {
@@ -49,6 +52,14 @@ async fn idle_skips_need_no_credit_and_never_pass_a_queued_match() -> TestResult
     assert!(matches!(
         next(&mut output).await?.body,
         Some(Body::Opened(_))
+    ));
+    assert!(matches!(
+        next(&mut output).await?.body,
+        Some(Body::Watermark(wire::SessionWatermark {
+            opening_tail: Some(1),
+            after: None,
+            ..
+        }))
     ));
     keyed(&provider, "private").await?;
     let mark = next(&mut output).await?;

@@ -175,7 +175,17 @@ pub fn spawn(
     parent: &AgentPath,
     intent: &IntentId,
     at_tail: u64,
+    adopted: ForkAdopted,
+) -> Result<Spawn, Error> {
+    spawn_at(parent, intent, at_tail, adopted, None)
+}
+
+pub(super) fn spawn_at(
+    parent: &AgentPath,
+    intent: &IntentId,
+    at_tail: u64,
     mut adopted: ForkAdopted,
+    history: Option<&super::HistorySelection>,
 ) -> Result<Spawn, Error> {
     let child_id = AgentId::derive(&parent.id(), intent.as_str());
     let child = parent.child(&child_id)?;
@@ -188,32 +198,64 @@ pub fn spawn(
     }
     let fresh = context == Some(super::SpawnContext::Fresh);
     if fresh {
+        if history.is_some() {
+            return Err(Error::Record("a fresh-context role selects no history"));
+        }
         adopted.conversation_tail = 0;
         adopted.checkpoint = None;
     }
     let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
+    let mut exclude = layout::not_inherited(fresh)?;
+    let mut selected = Vec::new();
+    let mut conditions = vec![
+        CommitCondition::Absent {
+            path: child.inbox()?,
+        },
+        CommitCondition::Absent {
+            path: child.status()?,
+        },
+    ];
+    if let Some(history) = history {
+        for (source, destination, relative) in [
+            (
+                parent.conversation()?,
+                child.conversation()?,
+                "conversation",
+            ),
+            (parent.history()?, child.history()?, "history"),
+        ] {
+            exclude.push(StreamPath::new(relative).map_err(Error::Stream)?);
+            if history.conversation > 0 {
+                conditions.push(CommitCondition::Absent {
+                    path: destination.clone(),
+                });
+                selected.push(CommitMutation::Fork {
+                    source,
+                    destination,
+                    exclude: Vec::new(),
+                    at_tail: history.conversation,
+                    records: Vec::new(),
+                });
+            }
+        }
+    }
+    let mut mutations = vec![
+        CommitMutation::Fork {
+            exclude,
+            source: parent.inbox()?,
+            destination: child.inbox()?,
+            at_tail,
+            records: vec![record.into()],
+        },
+        first_status(&child, at_tail, conversation)?,
+    ];
+    mutations.extend(selected);
     Ok(Spawn {
         request: CommitRequest {
             deadline_unix_millis: None,
-            conditions: vec![
-                CommitCondition::Absent {
-                    path: child.inbox()?,
-                },
-                CommitCondition::Absent {
-                    path: child.status()?,
-                },
-            ],
-            mutations: vec![
-                CommitMutation::Fork {
-                    exclude: layout::not_inherited(fresh)?,
-                    source: parent.inbox()?,
-                    destination: child.inbox()?,
-                    at_tail,
-                    records: vec![record.into()],
-                },
-                first_status(&child, at_tail, conversation)?,
-            ],
+            conditions,
+            mutations,
             idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
         },
         child,

@@ -22,6 +22,7 @@ fn follow(
         bootstrap_head: false,
         bootstrap: None,
         opened: false,
+        opening_cut: false,
     }
 }
 
@@ -39,14 +40,14 @@ async fn original_follow_eof_is_terminal_without_reopening_the_provider()
     provider.append(append(b"first", 0)).await?;
     let mut original = follow(Arc::clone(&provider), path.clone());
     assert!(matches!(original.event().await?, Event::Opened(_, _)));
-    // End the actual provider's stream after its real retained record. The
+    // End after the original opening cut and its real retained record. The
     // former path silently reopened at the next cursor and never returned.
     original.records = Some(
         original
             .records
             .take()
             .ok_or("missing follow")?
-            .take(1)
+            .take(2)
             .boxed(),
     );
     assert!(

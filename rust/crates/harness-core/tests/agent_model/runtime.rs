@@ -33,6 +33,7 @@ impl TurnDriver for Spawner {
                 outs: if first {
                     vec![Out::Spawn {
                         profile: None,
+                        history: None,
                         intent: intent("c"),
                         brief: None,
                         volumes: Vec::new(),
@@ -593,6 +594,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
             digest: [0; 32],
             context: acyclic_harness_core::agent::SpawnContext::Fork,
         },
+        history: None,
         by: user(),
         id: intent("s"),
         brief: Box::new(super::driver::file("task").expect("file")),
@@ -655,6 +657,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
                 digest: [0; 32],
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
             },
+            history: None,
             by: user(),
             id: intent(&format!("s{n}")),
             brief: Box::new(super::driver::file("task").expect("file")),
@@ -699,6 +702,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
                 digest: [0; 32],
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
             },
+            history: None,
             by: user(),
             id: intent(&format!("s{n}")),
             brief: Box::new(super::driver::file("task").expect("file")),

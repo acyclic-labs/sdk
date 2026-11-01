@@ -388,6 +388,7 @@ mod tests {
                     digest: [u8::MAX; 32],
                     context: crate::agent::SpawnContext::TopLevel,
                 },
+                history: None,
                 by: from.clone(),
                 id: intent(),
                 brief: Box::new(file()),

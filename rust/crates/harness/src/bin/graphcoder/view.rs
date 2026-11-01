@@ -147,6 +147,9 @@ impl View {
                     match action {
                         ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED),
                         ContextAction::Rewind => self.transcript.push(false, REWOUND),
+                        ContextAction::Restore { at, mode, .. } => self
+                            .transcript
+                            .push(false, &format!("Restored {mode:?} at turn {at}")),
                         // A cleared conversation shows nothing before it.
                         ContextAction::Clear => self.transcript = TranscriptRows::default(),
                     }

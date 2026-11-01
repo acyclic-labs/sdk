@@ -110,6 +110,13 @@ pub fn validate_follow(
     resume: &wire::SessionCursor,
 ) -> Result<(), StreamError> {
     validate_resource(&follow.resource)?;
+    if follow.opening_cut
+        && (follow.delivery != wire::SessionDelivery::All as i32
+            || follow.until != 0
+            || follow.key.is_some())
+    {
+        return Err(StreamError::InvalidArgument);
+    }
     if let Some(key) = &follow.key {
         super::read_key_from_wire(Some(key.clone()))?;
         crate::memory::validate_limit(follow.read_limit)?;

@@ -127,3 +127,6 @@ impl Model {
 /// Reusable streaming model provider vectors and dispatch budgets.
 #[cfg(feature = "conformance")]
 pub mod conformance;
+
+mod output_schema;
+pub use output_schema::OutputSchema;

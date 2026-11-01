@@ -3600,6 +3600,7 @@ dependencies = [
  "axum",
  "clap",
  "futures",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

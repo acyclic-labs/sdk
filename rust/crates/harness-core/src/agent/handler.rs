@@ -344,8 +344,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         };
         let participant = match participant {
             _ if !self.closes || !was_open || !prepared.state_and_outs().0.closed => participant,
-            None => Some(super::lifecycle::close_participant(&path)),
-            Some(_) => return Err(Error::Record("a closing step spawns")),
+            participant => Some(super::lifecycle::close_participant(&path, participant)?),
         };
         let step = prepared.step();
         let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;

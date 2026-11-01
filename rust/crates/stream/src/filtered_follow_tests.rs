@@ -25,6 +25,10 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
             at_least: Default::default(),
         })
         .await?;
+    assert!(matches!(
+        updates.next().await.ok_or("missing opening cut")??,
+        FollowUpdate::Opening { tail: 1 }
+    ));
     assert!(futures::poll!(updates.next()).is_pending());
     let skipped = append(provider, record("z", "alice")?).await?;
     let update = updates.next().await.ok_or("missing idle progress")??;
@@ -78,6 +82,13 @@ async fn qualify_resume(
             at_least: Default::default(),
         })
         .await?;
+    assert!(matches!(
+        resumed
+            .next()
+            .await
+            .ok_or("missing resumed opening cut")??,
+        FollowUpdate::Opening { .. }
+    ));
     for source in [updates, &mut resumed] {
         assert!(
             matches!(source.next().await.ok_or("missing resumed match")??,

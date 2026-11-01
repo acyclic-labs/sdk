@@ -36,9 +36,6 @@ pub struct OpenTurn {
     /// The agent's prior conversation and this input, as the one selection the
     /// journal admits; `None` for a turn without history.
     pub selected: Option<crate::projection::SelectedModelContext>,
-    /// The staged output of the latest checkpoint in the agent's context,
-    /// whose summary `selected` begins with; `None` without one.
-    pub checkpoint: Option<FileRef>,
     /// Owner of the turn's approval files; `None` when the host runs no approvals.
     pub approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     /// Effects recorded by the turn's agent tools, lowered when it settles;
@@ -72,6 +69,17 @@ pub fn encode_user_input(content: &ModelContent) -> crate::Result<Vec<u8>> {
     content.validate_user_input(&mut None)?;
     crate::contract::canonical_json_bytes(content)
         .map_err(|error| crate::Error::Invalid(error.to_string()))
+}
+
+/// Resources for a model-free context selection. Opening one must not build
+/// model messages, bind an executor or read the preceding conversation.
+pub struct OpenControl {
+    /// Host-owned immutable output writer.
+    pub outputs: Arc<dyn TurnOutputs>,
+    /// Summary selected by a rewind, read by its direct indexed cut.
+    pub checkpoint: Option<FileRef>,
+    /// Signing custody retained through output staging.
+    pub custody: Option<crate::core::RuntimeAuthority>,
 }
 
 fn is_manifest(part: &ModelContentPart) -> bool {
@@ -185,6 +193,26 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
+    /// Open only the bounded resources a context control needs. Hosts without
+    /// context controls refuse before opening an executor or dispatching a model.
+    fn open_control<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a ContextAction,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, crate::Result<OpenControl>>;
+    /// Check a requested history selection before staging its marker. A
+    /// refusal settles visibly without changing the selected context.
+    fn selection<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        action: &'a ContextAction,
+    ) -> BoxFuture<'a, crate::Result<Option<String>>> {
+        Box::pin(async move {
+            Ok(matches!(action, ContextAction::Restore { .. })
+                .then(|| "this host does not restore generation-linked history".to_owned()))
+        })
+    }
     /// Opens `turn` for `agent`, whose model-visible input is `input`.
     fn open<'a>(
         &'a self,
@@ -196,6 +224,21 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
 }
 
 impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn open_control<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a ContextAction,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, crate::Result<OpenControl>> {
+        (**self).open_control(agent, action, stop)
+    }
+    fn selection<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        action: &'a ContextAction,
+    ) -> BoxFuture<'a, crate::Result<Option<String>>> {
+        (**self).selection(agent, action)
+    }
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -222,6 +265,9 @@ pub enum TurnOutcome {
     /// A cancel or archive stopped the turn; its output holds the answer
     /// streamed so far. A cancelled checkpoint selects nothing.
     Cancelled,
+    /// A history selection's expected project heads no longer held. The
+    /// output explains the refusal; files and selected context did not change.
+    RestoreConflict,
 }
 
 impl TurnOutcome {
@@ -290,8 +336,11 @@ impl ConversationEntry {
     #[must_use]
     pub const fn checkpoint(&self) -> Option<&ContextAction> {
         match self.outcome {
-            TurnOutcome::Completed => self.input.context(),
-            TurnOutcome::Cancelled => None,
+            TurnOutcome::Completed => match self.input.context() {
+                Some(ContextAction::Restore { mode, .. }) if !mode.context() => None,
+                action => action,
+            },
+            TurnOutcome::Cancelled | TurnOutcome::RestoreConflict => None,
         }
     }
 }
@@ -530,7 +579,11 @@ fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> usize {
 }
 
 /// Stages `text` as `turn`'s whole output.
-async fn stage_text(open: &OpenTurn, turn: OperationId, text: String) -> Result<FileRef, Error> {
+async fn stage_text(
+    outputs: &dyn TurnOutputs,
+    turn: OperationId,
+    text: String,
+) -> Result<FileRef, Error> {
     let output = TurnOutput {
         text,
         attachments: Vec::new(),
@@ -540,31 +593,49 @@ async fn stage_text(open: &OpenTurn, turn: OperationId, text: String) -> Result<
     };
     let bytes =
         crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;
-    open.outputs.stage(turn, &bytes).await.map_err(host_error)
+    outputs.stage(turn, &bytes).await.map_err(host_error)
 }
 
 /// Settles a rewind or clear, which runs no model request: its checkpoint
 /// carries the latest checkpoint's summary forward (a rewind) or an empty
 /// one (a clear, or a rewind with no checkpoint to restore).
 async fn settle_selection(
-    open: &OpenTurn,
+    open: &OpenControl,
     turn: OperationId,
     inbox: u64,
     input: TurnInput,
+    refusal: Option<String>,
 ) -> Result<TurnStep, Error> {
+    let outcome = if refusal.is_some() {
+        TurnOutcome::RestoreConflict
+    } else {
+        TurnOutcome::Completed
+    };
     let restored = match input.context() {
-        Some(ContextAction::Rewind) => open.checkpoint.clone(),
+        Some(ContextAction::Rewind) if refusal.is_none() => open.checkpoint.clone(),
         _ => None,
+    };
+    // Revalidation can turn a prepared success into a visible refusal. Its
+    // immutable output must not reuse the success marker's staging identity.
+    let output_turn = if let Some(reason) = &refusal {
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.selection.refusal.v1");
+        hash.update(&turn.into_bytes());
+        hash.update(reason.as_bytes());
+        let mut bytes = [0; 16];
+        hash.finalize_xof().fill(&mut bytes);
+        OperationId::from_bytes(bytes)
+    } else {
+        turn
     };
     let output = match restored {
         Some(output) => output,
-        None => stage_text(open, turn, String::new()).await?,
+        None => stage_text(&*open.outputs, output_turn, refusal.unwrap_or_default()).await?,
     };
     let entry = ConversationEntry {
         inbox,
         input,
         output,
-        outcome: TurnOutcome::Completed,
+        outcome,
         goal: None,
         targets: None,
         tool_results: None,
@@ -573,19 +644,22 @@ async fn settle_selection(
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
-        outs: settled(&entry, open)?,
+        outs: settled(&entry, None)?,
         wait: Wait::Input,
         drops: None,
     })
 }
 
 /// An entry's append, recording the roster it announced.
-fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+fn appended(
+    entry: &ConversationEntry,
+    roster: Option<&(FileRef, [u8; 32])>,
+) -> Result<Vec<Out>, Error> {
     let mut outs = vec![Out::Conversation(entry.encode()?)];
     if let Some(selection) = &entry.notices {
         outs.push(Out::Notices(selection.clone()));
     }
-    if let (Some(_), Some((_, digest))) = (&entry.targets, &open.roster) {
+    if let (Some(_), Some((_, digest))) = (&entry.targets, roster) {
         outs.push(Out::Roster(*digest));
     }
     Ok(outs)
@@ -593,8 +667,11 @@ fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Erro
 
 /// A settled entry's appends: the entry, indexed as the agent's latest
 /// checkpoint when it is one.
-fn settled(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
-    let mut outs = appended(entry, open)?;
+fn settled(
+    entry: &ConversationEntry,
+    roster: Option<&(FileRef, [u8; 32])>,
+) -> Result<Vec<Out>, Error> {
+    let mut outs = appended(entry, roster)?;
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
     }
@@ -661,19 +738,31 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             }
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
-            let content = model_input(&input)?;
             let stop = cancellation;
+            if let Some(
+                action @ (ContextAction::Rewind
+                | ContextAction::Clear
+                | ContextAction::Restore { .. }),
+            ) = input.context()
+            {
+                let refusal = self
+                    .host
+                    .selection(agent, action)
+                    .await
+                    .map_err(host_error)?;
+                let open = self
+                    .host
+                    .open_control(agent, action, stop)
+                    .await
+                    .map_err(host_error)?;
+                return settle_selection(&open, turn, inbox, input, refusal).await;
+            }
+            let content = model_input(&input)?;
             let open = self
                 .host
                 .open(agent, turn, &content, stop.clone())
                 .await
                 .map_err(host_error)?;
-            if matches!(
-                input.context(),
-                Some(ContextAction::Rewind | ContextAction::Clear)
-            ) {
-                return settle_selection(&open, turn, inbox, input).await;
-            }
             let progress = open
                 .executor
                 .execute_progress(
@@ -695,7 +784,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 let entry = ConversationEntry {
                     inbox,
                     input,
-                    output: stage_text(&open, turn, partial).await?,
+                    output: stage_text(&*open.outputs, turn, partial).await?,
                     outcome: TurnOutcome::Cancelled,
                     goal,
                     targets: announced(&open),
@@ -705,7 +794,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
-                    outs: settled(&entry, &open)?,
+                    outs: settled(&entry, open.roster.as_ref())?,
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -783,9 +872,9 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {
-                        appended(&entry, &open)?
+                        appended(&entry, open.roster.as_ref())?
                     } else {
-                        settled(&entry, &open)?
+                        settled(&entry, open.roster.as_ref())?
                     };
                     outs.extend(goal);
                     // Every agent waits for input once its turn settles: a child

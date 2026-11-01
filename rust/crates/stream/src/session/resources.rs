@@ -266,6 +266,7 @@ pub(super) fn source(
     open: crate::BoxProviderFuture<'static, Result<crate::FollowStream, StreamError>>,
     identity: wire::SessionChannel,
     preceding: Option<crate::CommitId>,
+    opening_cut: bool,
 ) -> Source {
     Box::pin(
         stream::try_unfold(
@@ -275,22 +276,36 @@ pub(super) fn source(
                     records = Some(open.await?);
                     return Ok(Some((Event::Opened(preceding, None), (None, records))));
                 }
-                let update = records
-                    .as_mut()
-                    .ok_or(StreamError::Unavailable)?
-                    .next()
-                    .await
-                    .ok_or(StreamError::Unavailable)??;
-                let event = match update {
-                    crate::FollowUpdate::Record(record) => Event::Record(record),
-                    crate::FollowUpdate::Progress { next, preceding } => {
-                        Event::Progress(wire::SessionWatermark {
-                            accepted: next,
-                            durable: 0,
-                            after: Some(cursor(next)),
-                            preceding_commit_id: Bytes::copy_from_slice(preceding.as_bytes()),
-                        })
-                    }
+                let event = loop {
+                    let update = records
+                        .as_mut()
+                        .ok_or(StreamError::Unavailable)?
+                        .next()
+                        .await
+                        .ok_or(StreamError::Unavailable)??;
+                    let event = match update {
+                        crate::FollowUpdate::Opening { tail } => {
+                            if !opening_cut {
+                                continue;
+                            }
+                            Event::Progress(wire::SessionWatermark {
+                                opening_tail: Some(tail),
+                                accepted: tail,
+                                ..Default::default()
+                            })
+                        }
+                        crate::FollowUpdate::Record(record) => Event::Record(record),
+                        crate::FollowUpdate::Progress { next, preceding } => {
+                            Event::Progress(wire::SessionWatermark {
+                                opening_tail: None,
+                                accepted: next,
+                                durable: 0,
+                                after: Some(cursor(next)),
+                                preceding_commit_id: Bytes::copy_from_slice(preceding.as_bytes()),
+                            })
+                        }
+                    };
+                    break event;
                 };
                 Ok(Some((event, (None, records))))
             },

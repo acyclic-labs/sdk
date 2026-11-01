@@ -313,6 +313,7 @@ async fn sequences(
 }
 fn bounded(path: &str, until: u64) -> wire::SessionFollow {
     wire::SessionFollow {
+        opening_cut: false,
         key: None,
         read_limit: 0,
         bootstrap_head: false,

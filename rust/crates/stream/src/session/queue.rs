@@ -32,6 +32,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Ok(());
             }
             Ok(Event::Progress(mark)) => {
+                if mark.opening_tail.is_some() {
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        identity.generation,
+                        Body::Watermark(mark),
+                    ));
+                    return Ok(());
+                }
                 let channel = self
                     .channels
                     .get_mut(&identity.channel_id)
