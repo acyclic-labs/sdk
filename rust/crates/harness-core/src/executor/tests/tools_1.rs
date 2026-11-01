@@ -129,8 +129,24 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
 
 #[tokio::test]
 async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result<()> {
-    struct ApprovalPolicy;
+    #[derive(Default)]
+    struct ApprovalPolicy {
+        #[cfg(not(target_arch = "wasm32"))]
+        selections: AtomicUsize,
+    }
     impl ToolPolicy for ApprovalPolicy {
+        #[cfg(not(target_arch = "wasm32"))]
+        fn execution_grant(
+            &self,
+            _: &crate::tool::Tool,
+            _: &ToolInvocation,
+            _: Option<&crate::runtime::ToolContext>,
+            _: Option<&PreparationIo>,
+        ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
+            self.selections.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
         fn identity(&self) -> ComponentIdentity {
             ComponentIdentity {
                 name: "test.approval".into(),
@@ -180,6 +196,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
     ] {
         let model = Arc::new(scripted_model());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let policy = Arc::new(ApprovalPolicy::default());
         let tools = echo_tools(
             tool_executor.clone(),
             json!({"type": "object"}),
@@ -197,7 +214,7 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
                 Capabilities::new(["tool:call:example.echo", capability::INTERACTION_ROUTE]),
                 Limits::default(),
             )?,
-            Arc::new(ApprovalPolicy),
+            policy.clone(),
         )?;
         let journal = Journal::default();
         let input = TurnInput {
@@ -224,6 +241,8 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
         );
         assert_eq!(model.requests().len(), 1);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(policy.selections.load(Ordering::SeqCst), 0);
         let (id, request) = {
             let interactions = journal.2.lock().unwrap();
             assert_eq!(interactions.len(), 1);
@@ -323,6 +342,8 @@ async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result
         assert_eq!(executor.execute(input, &journal).await?, output);
         assert_eq!(model.requests().len(), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), expected_effects);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(policy.selections.load(Ordering::SeqCst), expected_effects);
     }
     Ok(())
 }

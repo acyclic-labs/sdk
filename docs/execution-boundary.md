@@ -1,9 +1,31 @@
 # Native execution capabilities
 
 The native process launch owner accepts explicit execution capabilities.
-This milestone provides the Linux launch core and typed refusals on unsupported
-platforms. Stock harness tool admission is separate follow-up work; existing
-shell calls do not acquire confinement merely by using this library.
+The shared launch core enforces grants on supported Linux kernels and returns
+typed refusals on unsupported platforms. Existing shell calls acquire physical
+confinement only when their authenticated host selects an execution grant.
+
+`ToolPolicy::execution_grant` selects an optional, already authorized physical
+grant after the exact invocation's policy and approval allow it, before its
+first dispatch. It borrows the registry-selected tool, original task context,
+retained target and original preparation ledger. The pinned policy identity
+must cover the selection. A policy denial, pending approval, completed replay
+or accepted-effect reconciliation cannot issue a replacement grant. A grant
+requires the original task context and an executor that explicitly supports
+its enforcement; other executors refuse before dispatch. The context exposes
+only a borrowed grant, with no public attachment or model-supplied field.
+The stock workspace adapter delegates to its retained target executor.
+
+Checkout shell execution forwards that per-call grant to the original native
+capture. If the executor already has a host grant, the selected grant must
+pass the same object-bound attenuation proof against that ceiling. The proof
+checks existing grants without rebuilding roots or compiling another filter.
+When no grant is selected, the executor retains its existing host boundary. File operations
+continue to use their original filesystem authority; a physical shell grant
+cannot replace it. Existing policies default to no per-call grant. This API
+does not construct a read-only reviewer preset or derive authority from a role.
+Hooks that precede tool policy retain their executor's static host grant;
+per-call shell admission does not retrospectively confine those hooks.
 
 An embedded native host can supply the same grant when binding
 `LocalWorkspace::executor`. That binding retains the grant for its shell and
@@ -14,7 +36,7 @@ unauthorized or unsupported instead of becoming an unknown process outcome.
 The original signed scope, volume access checks and approval path still apply.
 This input neither grants volume authority nor restricts the executor's file
 facade or publication tools. It is not a read-only role preset. Stock root and
-child bindings still explicitly select no grant until their original admission
+child bindings still explicitly select no static grant until their original admission
 issues one; an embedded host must bind each executor under its own approved
 ceiling. No configuration file or tool argument can populate this input.
 
@@ -199,8 +221,8 @@ launch seam; macOS/Windows inherited-handle and root-identity race fencing;
 authenticated approval/role grants at all shell, executable-tool and process
 entry points; complete active-resource accounting; the shared OS-backed
 conformance suite and qualification of all affected targets. The current Windows
-adapter refuses confined execution. The stock shell is not yet wired to this
-API. No cross-platform confinement or runtime performance qualification is
+adapter refuses confined execution. The default stock policy selects no grant.
+No cross-platform confinement or runtime performance qualification is
 claimed by this milestone.
 
 Native capture invocations can carry a host-selected `execution_grant` through
@@ -209,7 +231,8 @@ grant reaches the same consuming native launch; capture never retries a refusal
 without it. Recorded output substitution cannot establish kernel enforcement,
 so granted invocations always reach the native owner. This transport does not
 issue authority: the authenticated host must select the grant after approval.
-Existing stock shell admission still supplies no execution grant.
+Stock policy admission can now supply that grant; existing default policies
+continue to select none.
 
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;

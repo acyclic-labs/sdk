@@ -6,7 +6,11 @@ mod tail;
 impl CheckoutTools {
     pub(super) async fn shell(
         &self,
-        (input, operation): (crate::tools::ShellInput, crate::OperationId),
+        (input, operation, execution_grant): (
+            crate::tools::ShellInput,
+            crate::OperationId,
+            Option<acyclic_native_runtime::execution::ExecutionGrant>,
+        ),
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
         files: output::Output,
@@ -27,7 +31,7 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: self.environment.clone(),
             inherit_environment: false,
-            execution_grant: self.execution_grant.clone(),
+            execution_grant,
             schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             // Presentation is bounded below; streaming output is not a reason to stop a command.

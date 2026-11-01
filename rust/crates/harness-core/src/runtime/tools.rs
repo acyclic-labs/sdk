@@ -64,6 +64,23 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>;
 
+    /// Selects physical authority after this exact invocation's policy and
+    /// approval have allowed it, before its first dispatch. The host must
+    /// authenticate roots, actions and network authority; tool names, roles
+    /// and model arguments cannot confer it. `identity` must cover this choice.
+    /// Returning `None` retains the executor's existing host boundary.
+    /// Accepted effects reconcile without selecting a replacement grant.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execution_grant(
+        &self,
+        _tool: &crate::tool::Tool,
+        _invocation: &ToolInvocation,
+        _context: Option<&ToolContext>,
+        _io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
+        Ok(None)
+    }
+
     /// Returns the owned identity with custody for its inline Self and strings.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn identity_with_native_work(
@@ -335,6 +352,8 @@ pub struct ToolContext {
     #[doc(hidden)]
     pub model_turn: (OperationId, u32),
     pub(crate) execution_target: Option<Arc<Target>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
 }
 
 impl ToolContext {
@@ -351,6 +370,8 @@ impl ToolContext {
             // binds model-issued calls to their enclosing execution and step.
             model_turn: (operation_id, 0),
             execution_target: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            execution_grant: None,
         })
     }
 
@@ -364,6 +385,20 @@ impl ToolContext {
     #[must_use]
     pub fn effective_scope(&self) -> &RuntimeScope {
         self.task().scope()
+    }
+
+    /// The original selected target retained by stock admission.
+    #[must_use]
+    pub fn execution_target(&self) -> Option<&Target> {
+        self.execution_target.as_deref()
+    }
+
+    /// Physical authority selected by the pinned host policy for this exact
+    /// call. Context construction and model input cannot attach a grant.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn execution_grant(&self) -> Option<&acyclic_native_runtime::execution::ExecutionGrant> {
+        self.execution_grant.as_ref()
     }
 
     /// The operation of the model turn this call belongs to; outside a

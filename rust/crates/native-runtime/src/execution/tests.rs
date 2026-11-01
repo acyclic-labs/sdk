@@ -40,6 +40,8 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
             ExecutionNetwork::Off,
         )
         .unwrap();
+    parent.check_attenuation(&readonly).unwrap();
+    assert!(readonly.check_attenuation(&parent).is_err());
     // A rejected authority increase must not bind even one requested root.
     // A missing workspace detects path resolution before the same refusal;
     // a real workspace detects consumption of the supplied read roots.
@@ -401,6 +403,15 @@ fn replaced_grant_root_refuses_before_guest_execution() {
                 ExecutionNetwork::Off,
             )
             .unwrap_err();
+        assert!(error.to_string().contains("root was replaced"), "{error}");
+        let replacement = ExecutionGrant::new(
+            &workspace,
+            ExecutionAccess::ReadOnly,
+            [external.clone()],
+            ExecutionNetwork::Off,
+        )
+        .unwrap();
+        let error = grant.check_attenuation(&replacement).unwrap_err();
         assert!(error.to_string().contains("root was replaced"), "{error}");
         // A lexical prefix alone used to refresh the replaced root's identity
         // and mint another child grant, including for a read-only root.
