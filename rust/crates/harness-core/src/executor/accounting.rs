@@ -87,6 +87,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
 ) -> Result<()> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
+        io.check_cancellation()?;
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
