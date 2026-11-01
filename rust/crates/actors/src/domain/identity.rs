@@ -127,6 +127,19 @@ impl ActorNamespace {
     }
 }
 
+// These source types have already passed the canonical address grammar.
+impl From<&crate::addressing::NamespaceId> for ActorNamespace {
+    fn from(value: &crate::addressing::NamespaceId) -> Self {
+        Self(value.as_str().to_owned())
+    }
+}
+
+impl From<&crate::addressing::ActorReference> for ActorId {
+    fn from(value: &crate::addressing::ActorReference) -> Self {
+        Self(value.id().to_owned())
+    }
+}
+
 impl TryFrom<String> for ActorNamespace {
     type Error = DomainError;
     fn try_from(value: String) -> Result<Self, Self::Error> {
