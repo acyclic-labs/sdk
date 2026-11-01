@@ -97,14 +97,21 @@ pub struct SecretsClient(Client<FetchTransport>);
 
 #[wasm_bindgen]
 impl SecretsClient {
-    /// Credential callbacks run for every operation. Rejections and malformed
-    /// credentials become redacted shared errors, without JavaScript source chains.
+    /// This embedding has no invocation-context ingress yet. Operations return
+    /// `missing_operation_context` before calling credentials or fetch; the host
+    /// must supply its original stop/deadline owner before requests can proceed.
     #[wasm_bindgen(constructor)]
     pub fn new(endpoint: &str, credential: Function) -> Result<Self, JsValue> {
         let endpoint = acyclic_auth::credential::endpoint(endpoint)
             .map_err(|_| error(Error::InvalidRequest))?;
         let credentials = acyclic_auth::credential::javascript::provider(credential);
-        Ok(Self(Client::new(FetchTransport { endpoint }, credentials)))
+        // This embedding has no original invocation ingress yet. The shared
+        // client refuses before its credential callback or physical fetch.
+        Ok(Self(Client::new(
+            FetchTransport { endpoint },
+            credentials,
+            None,
+        )))
     }
 
     /// Generation-fenced put; no retry or reveal route exists.

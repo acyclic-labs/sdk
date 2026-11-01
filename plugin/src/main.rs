@@ -34,7 +34,7 @@ fn run() -> Result<()> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
-            .block_on(acyclic_plugin_identity::run(&args))?;
+            .block_on(acyclic_plugin_identity::run(&args, None))?;
         return Ok(());
     }
     if internal(&args)? {

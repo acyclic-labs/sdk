@@ -233,6 +233,7 @@ impl Transport for Provider {
     }
 }
 fn client(
+    context: &acyclic_auth::operation::Context,
     state: &Arc<Mutex<State>>,
     allowed: bool,
     mutants: Mutants,
@@ -244,6 +245,7 @@ fn client(
             mutants,
         },
         CredentialProvider::new(|| async { Ok("fixture-bearer".into()) }),
+        Some(context.clone()),
     ))
 }
 fn list_request(cursor: Option<SecretListCursor>, page_size: u32) -> SecretListRequest {
@@ -257,6 +259,7 @@ fn list_request(cursor: Option<SecretListCursor>, page_size: u32) -> SecretListR
 #[test]
 fn secrets_provider_conformance_and_cas_authority_visibility_fence_negative_controls() -> TestResult
 {
+    let (context, _stop) = crate::operation_context::invocation();
     block_on(async {
         let none = Mutants::default();
         for (mutants, expected) in [
@@ -288,8 +291,8 @@ fn secrets_provider_conformance_and_cas_authority_visibility_fence_negative_cont
             ),
         ] {
             let state = Arc::new(Mutex::new(State::default()));
-            let allowed = client(&state, true, mutants)?;
-            let denied = client(&state, false, none)?;
+            let allowed = client(&context, &state, true, mutants)?;
+            let denied = client(&context, &state, false, none)?;
             let result = secrets::conformance::verify(&allowed, &denied, "fixture").await;
             assert_eq!(result, expected, "provider mutant escaped conformance");
             if let Err(error) = result {
@@ -299,8 +302,8 @@ fn secrets_provider_conformance_and_cas_authority_visibility_fence_negative_cont
         // Negative control for the grant oracle: a "denied" holder that does
         // carry secrets grants must be detected as widening.
         let state = Arc::new(Mutex::new(State::default()));
-        let allowed = client(&state, true, none)?;
-        let widened = client(&state, true, none)?;
+        let allowed = client(&context, &state, true, none)?;
+        let widened = client(&context, &state, true, none)?;
         assert_eq!(
             secrets::conformance::verify(&allowed, &widened, "fixture").await,
             Err("secrets existing product grants implied secrets authority")
@@ -311,6 +314,7 @@ fn secrets_provider_conformance_and_cas_authority_visibility_fence_negative_cont
 
 #[test]
 fn secrets_listing_pages_every_row_once_and_a_mid_listing_mutation_fails_typed() -> TestResult {
+    let (context, _stop) = crate::operation_context::invocation();
     block_on(async {
         for unfenced in [false, true] {
             let state = Arc::new(Mutex::new(State::default()));
@@ -318,7 +322,7 @@ fn secrets_listing_pages_every_row_once_and_a_mid_listing_mutation_fails_typed()
                 unfenced,
                 ..Mutants::default()
             };
-            let allowed = client(&state, true, mutants)?;
+            let allowed = client(&context, &state, true, mutants)?;
             let mut generation = 0;
             for name in ["a", "b", "c", "d", "e"] {
                 generation = allowed
@@ -375,9 +379,11 @@ fn secrets_listing_pages_every_row_once_and_a_mid_listing_mutation_fails_typed()
 
 #[test]
 fn secrets_conformance_rejects_successful_deletion_receipts_that_retain_rows() -> TestResult {
+    let (context, _stop) = crate::operation_context::invocation();
     block_on(async {
         let state = Arc::new(Mutex::new(State::default()));
         let allowed = client(
+            &context,
             &state,
             true,
             Mutants {
@@ -385,7 +391,7 @@ fn secrets_conformance_rejects_successful_deletion_receipts_that_retain_rows() -
                 ..Mutants::default()
             },
         )?;
-        let denied = client(&state, false, Mutants::default())?;
+        let denied = client(&context, &state, false, Mutants::default())?;
         assert_eq!(
             secrets::conformance::verify(&allowed, &denied, "fixture").await,
             Err("secrets/delete receipts did not match the stored scope")
@@ -525,6 +531,7 @@ impl Transport for Fault {
 }
 #[test]
 fn secrets_redacts_requests_protobuf_and_every_provider_error() -> TestResult {
+    let (context, _stop) = crate::operation_context::invocation();
     let request = SecretPutRequest {
         scope: PLANTED.into(),
         name: PLANTED.into(),
@@ -548,6 +555,7 @@ fn secrets_redacts_requests_protobuf_and_every_provider_error() -> TestResult {
                 body: PLANTED.as_bytes().to_vec(),
             },
             CredentialProvider::new(|| async { Ok("fixture".into()) }),
+            Some(context.clone()),
         );
         let Err(error) = block_on(client.put(&request)) else {
             return Err("malformed provider reply admitted".into());
@@ -568,6 +576,7 @@ fn secrets_redacts_requests_protobuf_and_every_provider_error() -> TestResult {
                 std::io::Error::other(PLANTED).into(),
             ))
         }),
+        Some(context.clone()),
     );
     let result = block_on(client.put(&request));
     assert_eq!(result, Err(Error::Credential));
@@ -913,6 +922,7 @@ mod http {
             .with_state(server.clone());
         let task = tokio::spawn(async move { axum::serve(listener, router).await });
         let resolutions = Arc::new(AtomicUsize::new(0));
+        let (context, _stop) = crate::operation_context::invocation();
         let counter = resolutions.clone();
         let allowed = Client::new(
             secrets::HttpTransport::new(&origin)?,
@@ -920,10 +930,12 @@ mod http {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async { Ok("allowed-fixture".into()) }
             }),
+            Some(context.clone()),
         );
         let denied = Client::new(
             secrets::HttpTransport::new(&origin)?,
             CredentialProvider::new(|| async { Ok("denied-fixture".into()) }),
+            Some(context.clone()),
         );
         let result = secrets::conformance::verify(&allowed, &denied, "fixture").await;
         assert_eq!(result, Ok(()));
@@ -964,6 +976,7 @@ mod http {
 
 #[test]
 fn secrets_published_vectors_match_shared_request_and_reply_admission() -> TestResult {
+    let (context, _stop) = crate::operation_context::invocation();
     let suite: serde_json::Value = serde_json::from_slice(secrets::conformance::SUITE)?;
     let vectors = suite
         .get("vectors")
@@ -981,6 +994,7 @@ fn secrets_published_vectors_match_shared_request_and_reply_admission() -> TestR
                 body: serde_json::to_vec(vector.get("response").ok_or("response missing")?)?,
             },
             CredentialProvider::new(|| async { Ok("fixture".into()) }),
+            Some(context.clone()),
         );
         let result = match vector.get("operation").and_then(serde_json::Value::as_str) {
             Some("put") => block_on(client.put(&serde_json::from_value(request)?)).map(drop),

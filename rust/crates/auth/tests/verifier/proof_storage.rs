@@ -169,9 +169,11 @@ fn json_storage(case: &str) {
     std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
     match case {
         "json-client" => {
+            let (context, _stop) = crate::operation_context::invocation();
             let client = Client::new(
                 Capture(&expected),
                 CredentialProvider::new(|| async { Ok("fixture".into()) }),
+                Some(context),
             );
             let result = futures::executor::block_on(client.put(&request));
             assert!(
