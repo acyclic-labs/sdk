@@ -17,7 +17,7 @@ pub(crate) struct Journal {
     // lock. This is its live producer, never an operation/result registry.
     producer: Mutex<Option<(OperationId, tokio::sync::watch::Receiver<bool>)>>,
     // Followers borrow lifetime, never retain the incarnation's producer.
-    lifetime: tokio::sync::watch::Sender<()>,
+    lifetime: std::sync::OnceLock<tokio::sync::watch::Sender<()>>,
 }
 
 pub(crate) enum Admission {
@@ -42,7 +42,7 @@ impl Journal {
             root,
             machine,
             producer: Mutex::new(None),
-            lifetime: tokio::sync::watch::Sender::new(()),
+            lifetime: std::sync::OnceLock::new(),
         }
     }
 
@@ -367,7 +367,10 @@ impl Journal {
                 "Machine event cursor is already terminal".into(),
             ));
         }
-        let mut lifetime = self.lifetime.subscribe();
+        let mut lifetime = self
+            .lifetime
+            .get_or_init(|| tokio::sync::watch::Sender::new(()))
+            .subscribe();
         let request = acyclic_stream::FollowRequest::new(path, from);
         let records = tokio::select! {
             records = self.streams.follow(request) => records.map_err(storage)?,
