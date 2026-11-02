@@ -462,11 +462,12 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?
                 .value;
-            let mut content = pages
+            let selected = pages
                 .open_conflict_content(row.value(), side)
                 .await
-                .map_err(|failure| failure.error)?
-                .value;
+                .map_err(|failure| failure.error)?;
+            let mut page_work = selected.work;
+            let mut content = selected.value;
             if let Some(record) = record {
                 let content = content.as_mut().ok_or("selected body missing")?;
                 let FilePayload::InlineRegular(expected) = record.payload else {
@@ -481,18 +482,27 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                         .await
                         .map_err(|failure| failure.error)?;
                     assert_eq!(read.value, chunk);
+                    assert_eq!(
+                        read.work.items_examined, page_work.items_examined,
+                        "byte paging repeated the selected namespace lookup"
+                    );
+                    assert_eq!(
+                        read.work.bytes_copied - page_work.bytes_copied,
+                        chunk.len() as u64,
+                        "byte paging copied outside the selected range"
+                    );
+                    page_work = read.work;
                 }
-                assert_eq!(
-                    content
-                        .read_range(crate::ByteRange {
-                            offset: expected.as_bytes().len() as u64,
-                            length: 0
-                        },)
-                        .await
-                        .map_err(|failure| failure.error)?
-                        .value,
-                    b"".as_slice()
-                );
+                let empty = content
+                    .read_range(crate::ByteRange {
+                        offset: expected.as_bytes().len() as u64,
+                        length: 0,
+                    })
+                    .await
+                    .map_err(|failure| failure.error)?;
+                assert_eq!(empty.value, b"".as_slice());
+                assert_eq!(empty.work.items_examined, page_work.items_examined);
+                assert_eq!(empty.work.bytes_copied, page_work.bytes_copied);
             } else {
                 assert!(content.is_none());
             }
@@ -747,12 +757,12 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             .await
             .map_err(|failure| failure.error)?
             .value;
-        let mut content = native_pages
+        let selected = native_pages
             .open_conflict_content(&shared_conflict, crate::ConflictSide::Ours)
             .await
-            .map_err(|failure| failure.error)?
-            .value
-            .ok_or("native body missing")?;
+            .map_err(|failure| failure.error)?;
+        let mut page_work = selected.work;
+        let mut content = selected.value.ok_or("native body missing")?;
         let mut live = None;
         for offset in [0, 2, 0] {
             let read = content
@@ -760,6 +770,9 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?;
             assert_eq!(read.value, &b"main"[offset as usize..offset as usize + 2]);
+            assert_eq!(read.work.items_examined, page_work.items_examined);
+            assert_eq!(read.work.bytes_copied - page_work.bytes_copied, 2);
+            page_work = read.work;
             let current = original.live_allocation_bytes();
             if let Some(previous) = live {
                 assert_eq!(current, previous, "earlier content pages retained credit");
