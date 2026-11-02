@@ -327,14 +327,16 @@ impl CredentialCache {
             .ok_or(CredentialCacheError::Stale)?;
         if let Ok(snapshot) = &result {
             valid(snapshot, &validity)?;
-            rejected = self.0.rejected.load();
-            if rejected
-                .as_ref()
-                .is_some_and(|rejected| rejected.token() == snapshot.token())
-            {
-                return Err(CredentialCacheError::Rejected);
-            }
             if !flight.published {
+                rejected = self.0.rejected.load();
+                if rejected.as_ref().is_some_and(|rejected| {
+                    crate::crypto::authentication_eq(
+                        rejected.token().as_bytes(),
+                        snapshot.token().as_bytes(),
+                    )
+                }) {
+                    return Err(CredentialCacheError::Rejected);
+                }
                 _retired = (
                     self.0.current.swap(Some(snapshot.clone())),
                     self.0.rejected.swap(None),
