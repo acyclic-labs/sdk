@@ -7,6 +7,18 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
+        // A manifest pins canonical revisions; native declarations bind to
+        // what it pins, so they are bound after it and never pinned.
+        if self
+            .data
+            .selected
+            .values()
+            .any(|selection| matches!(selection, ModelSelection::Native(_)))
+        {
+            return Err(Error::Conflict(
+                "native declarations bind after the manifest pins".into(),
+            ));
+        }
         crate::executor::with_history_io(io, |work| -> Result<()> {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut selected =
@@ -96,6 +108,18 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Presents capability `name` to the model as `natives`, declarations
+    /// already registered and selected under their own names. Calls under the
+    /// capability's own name are no longer offered.
+    pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
+        let selection = Arc::make_mut(&mut self.data)
+            .selected
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        *selection = ModelSelection::Native(natives);
+        Ok(())
+    }
+
     /// Hides a logical tool while retaining admitted revisions.
     pub fn remove_from_model(&mut self, name: &str) -> Result<()> {
         let selection = Arc::make_mut(&mut self.data)
@@ -171,7 +195,7 @@ impl ToolRegistry {
         &self,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
-        self.definitions_for_names(|| self.data.selected.keys().map(String::as_str), io)
+        self.definitions_for_names(|| self.data.selected.keys().map(String::as_str), false, io)
     }
 
     pub(crate) fn definitions_for_grants(
@@ -185,13 +209,17 @@ impl ToolRegistry {
                     .iter()
                     .filter_map(|grant| grant.strip_prefix("tool:call:"))
             },
+            true,
             io,
         )
     }
 
+    /// `capabilities` reads each name as a granted capability, offered as its
+    /// native declarations when it has them.
     fn definitions_for_names<'a, I: Iterator<Item = &'a str>>(
-        &self,
+        &'a self,
         names: impl Fn() -> I,
+        capabilities: bool,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
         #[cfg(feature = "filesystem")]
@@ -199,20 +227,31 @@ impl ToolRegistry {
             io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
         }
         let admitted = || {
-            names().filter_map(move |name| {
-                if let Err(error) = crate::model::charge_items(io, 1) {
-                    return Some(Err(error));
-                }
-                match self.data.selected.get(name) {
-                    Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
-                    Some(ModelSelection::Hidden) | None => None,
-                    Some(ModelSelection::Ambiguous) => Some(Err(crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "tool requires an explicit model revision",
-                    ))),
-                }
-            })
+            names()
+                .flat_map(move |name| {
+                    let natives = match self.data.selected.get(name) {
+                        Some(ModelSelection::Native(natives)) if capabilities => Some(natives),
+                        _ => None,
+                    };
+                    let own = natives.is_none().then_some(name);
+                    natives.into_iter().flatten().map(String::as_str).chain(own)
+                })
+                .filter_map(move |name| {
+                    if let Err(error) = crate::model::charge_items(io, 1) {
+                        return Some(Err(error));
+                    }
+                    match self.data.selected.get(name) {
+                        Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
+                        Some(ModelSelection::Hidden | ModelSelection::Native(_)) | None => None,
+                        Some(ModelSelection::Ambiguous) => {
+                            Some(Err(crate::executor::stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Conflict,
+                                "tool requires an explicit model revision",
+                            )))
+                        }
+                    }
+                })
         };
         let count = admitted().try_fold(0usize, |count, selection| selection.map(|_| count + 1))?;
         let mut definitions = crate::model::vec_with_capacity(count, io)?;

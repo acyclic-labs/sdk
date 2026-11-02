@@ -96,6 +96,17 @@ impl StockExecutor {
         self.with_context_stage(stage)
     }
 
+    /// Offers the selected capabilities as `native`'s declarations. Called
+    /// after any context manifest pins the selection, which a bound registry
+    /// refuses, so each declaration runs the revision the manifest pins.
+    pub(crate) fn with_native_tools(
+        mut self,
+        native: &crate::tools::native::NativeTools,
+    ) -> Result<Self> {
+        native.bind(&mut self.tools)?;
+        Ok(self)
+    }
+
     /// Removes fresh tool-call grants while preserving the pinned catalog and admitted versions.
     pub(crate) fn without_tool_authority(mut self) -> Self {
         self.tool_scope
