@@ -1,5 +1,40 @@
 # Polling and timed-wait inventory
 
+Identity timer observer successor:
+
+| Source at preceding census | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall-clock sampling | The same observed production Sleep registers its waker, then its own task advances only that deadline. | Source complete; unqualified |
+| `plugin/identity/src/tests/poll_clock.rs:72` | Continuously runnable yield/recheck clock pump | Delete the pump and registration queue. One scoped test-clock mutex serializes original timer advancement; its guard and time-resume guard retire on cancellation. | Source complete; unqualified |
+
+Time stays unpaused for real HTTP and filesystem work. Only an explicitly
+registered production timer freezes it for its one deadline advancement, crossing
+the same rounded timer-wheel tick. Observation already Ready bypasses advancement;
+a deadline reached while waiting for the clock mutex adds no advancement. The
+scope refuses a multithreaded runtime and cannot move to another thread. A shared
+per-thread mutex remains the same across successive scopes, including surviving
+observer futures. No independent clock producer can disappear behind a wait.
+
+The previous wall-sampling control is replaced by an original timer lifecycle
+control: poll the advancing future once, require its actual deadline already
+advanced, cancel that same future before the scheduler yield finishes, then pause
+and resume time and await a timer whose deadline passed before observation.
+Removing same-path advancement fails the first deadline assertion immediately;
+removing cancellation resume makes the next pause fail immediately. These controls
+and existing real HTTP/slow-down/cancellation controls remain unexecuted here.
+
+Background clock tasks change from one to zero, queued duration storage from one
+queue to zero, and periodic wall samples/readiness yields from unbounded to zero.
+Each observed pending timer takes one existing Tokio mutex, one temporary Arc
+clone and one actual pause/advance/resume cut, then awaits its original Sleep.
+The active cut pays Tokio advance's one scheduler yield; no periodic yield is
+retained. One lazily allocated mutex/Arc per test thread replaces the prior
+queue/Arc/mutex plus spawned-task state. Native allocation bytes, clock/syscall
+counts and event latency are unmeasured. No HTTP request, payload copy, worker,
+channel or durability barrier is added. Coordination is fixed per active timer;
+no whole-owner worst-case Tokio scheduling claim is made. The production OAuth
+retry policy and other test readiness-deadline survivors remain open.
+
 Identity cancellation successor, location on `8f31c227ee`:
 
 | Source | Kind | Replacement and terminal | Status |
@@ -4609,8 +4644,8 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/tests/hosts/shared-mount-scale.py:110` | Implicit workspace command timeout | Original workspace reply/error and command exit. | Actioned; source only |
 | `plugin/tests/hosts/shared-mount-scale.py:187` | Timed MCP exit join | Original stdin EOF and physical bridge exit. | Actioned; source only |
 | `plugin/identity/src/lib.rs:660` | Product device readiness retry | Product owner must expose original approval completion or an honest caller-observed pending result; interval/token reattempt is not transient transport backoff. | Pending; product owner |
-| `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original request/timer registration and explicit deterministic clock advancement after its producer event. | Pending; product owner |
-| `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Same explicit registered-operation event; no continuously runnable sampling task. | Pending; product owner |
+| `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original registered Sleep advances on its own task; real I/O keeps unpaused time. | Source complete; unqualified |
+| `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Pump and queue deleted; original timer path owns its serialized advancement and cancellation resume. | Source complete; unqualified |
 | `plugin/identity/src/mcp.rs:808` | Credential-file yield/recheck | Original operation mutex release, followed by one credential read/assertion. | Source complete; unqualified |
 | `plugin/identity/src/mcp.rs:1156` | Yield/count quiet window | Original HTTP entry and operation mutex release; retained approval and canceled reply remain asserted. | Source complete; unqualified |
 

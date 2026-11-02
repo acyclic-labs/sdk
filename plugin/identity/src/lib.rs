@@ -666,7 +666,7 @@ impl Identity {
             }
             let delay = tokio::time::sleep(sleep);
             #[cfg(test)]
-            let delay = tests::poll_clock::observe(delay, sleep);
+            let delay = tests::poll_clock::observe(delay);
             tokio::select! {
                 biased;
                 () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
