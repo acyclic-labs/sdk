@@ -36,7 +36,7 @@ impl ModelRequest {
     /// their validation schemas here and are announced through tools.changed.
     pub fn model_tools(&self) -> impl Iterator<Item = &crate::tool::ToolDefinition> {
         self.tools.iter().filter(move |tool| {
-            !self.compose_tools || crate::tools::catalog().any(|spec| spec.name == tool.name)
+            !self.compose_tools || crate::tools::catalog::is_native_declaration(&tool.name)
         })
     }
 

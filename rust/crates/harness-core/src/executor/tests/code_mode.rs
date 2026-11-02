@@ -144,8 +144,13 @@ fn tool_notice_table(request: &ModelRequest) -> Value {
             complete = notice.body["complete"].as_bool().unwrap();
         }
     }
-    assert!(complete, "tool table did not finish");
-    serde_json::from_str(&json).unwrap()
+    if json.is_empty() {
+        assert!(!complete);
+        json!([])
+    } else {
+        assert!(complete, "tool table did not finish");
+        serde_json::from_str(&json).unwrap()
+    }
 }
 
 #[tokio::test]
@@ -323,11 +328,53 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
             .collect::<Vec<_>>(),
         ["code"]
     );
-    assert_eq!(tool_notice_table(&before[0]).as_array().unwrap().len(), 1);
+    assert!(tool_notice_table(&before[0]).as_array().unwrap().is_empty());
+    #[cfg(feature = "filesystem")]
+    for native in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(16 * 1024 * 1024, 4 * 1024 * 1024);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let execution = StockExecution {
+            io: Some(&io),
+            ..StockExecution::ordinary(&first)
+        };
+        let mut context = crate::context::Context::default();
+        let initial = io.remaining()?;
+        execution.code_tools_notice(&mut context, &before[0].tools)?;
+        let remaining = io.remaining()?;
+        assert!(context.messages.is_empty());
+        assert_eq!(remaining.bytes_encoded, initial.bytes_encoded);
+        assert_eq!(remaining.bytes_copied, initial.bytes_copied);
+        assert_eq!(
+            remaining.allocation_operations,
+            initial.allocation_operations
+        );
+        assert_eq!(
+            initial.items_examined - remaining.items_examined,
+            before[0].tools.len() as u64
+        );
+        // Restoring even the first full-table encoding violates this oracle.
+        let redundant = io.encode(&before[0].tools, u64::MAX, false)?;
+        assert!(io.remaining()?.bytes_encoded < remaining.bytes_encoded);
+        drop(redundant);
+        cancellation.cancel();
+        assert!(
+            execution
+                .code_tools_notice(&mut context, &before[0].tools)
+                .is_err()
+        );
+        assert!(context.messages.is_empty());
+    }
     let changed = tool_notice_table(&after[0]);
-    assert_eq!(changed.as_array().unwrap().len(), 3);
-    assert_eq!(changed[2]["name"], "late");
-    assert_eq!(changed[2]["input_schema"], json!({"type":"object"}));
+    assert_eq!(changed.as_array().unwrap().len(), 2);
+    assert_eq!(changed[1]["name"], "late");
+    assert_eq!(changed[1]["input_schema"], json!({"type":"object"}));
     assert_eq!(
         after[0].messages,
         after[1].messages[..after[0].messages.len()]
@@ -341,12 +388,11 @@ async fn dynamic_tools_update_notices_and_program_bindings_without_changing_decl
     revoked.tools.remove_from_model("example.echo")?;
     revoked.execute(input(), &Journal::default()).await?;
     assert_eq!(result(&revoked_model), "undefined");
-    assert_eq!(
+    assert!(
         tool_notice_table(&revoked_model.requests()[0])
             .as_array()
             .unwrap()
-            .len(),
-        1
+            .is_empty()
     );
     Ok(())
 }

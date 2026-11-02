@@ -47,6 +47,32 @@ impl StockExecution<'_> {
         context: &mut crate::context::Context,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
+        crate::model::charge_items(self.io, tools.len() as u64)?;
+        // Native declarations already expose these exact call schemas. Only
+        // dynamic tools need a second surface for JavaScript composition.
+        struct DynamicTools<'a>(&'a [crate::tool::ToolDefinition]);
+        impl Serialize for DynamicTools<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut sequence = serializer.serialize_seq(None)?;
+                for tool in self.0 {
+                    if !crate::tools::catalog::is_native_declaration(&tool.name) {
+                        sequence.serialize_element(tool)?;
+                    }
+                }
+                sequence.end()
+            }
+        }
+        if tools
+            .iter()
+            .all(|tool| crate::tools::catalog::is_native_declaration(&tool.name))
+        {
+            return Ok(());
+        }
+        let tools = DynamicTools(tools);
         #[derive(Serialize)]
         struct Body<'a> {
             offset: usize,
