@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdir, mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { seed, expand } from "./fixtures.mjs";
 
 test("fixture expansion reaches nested model arguments without evaluating runtime request templates", () => {
@@ -40,14 +43,31 @@ test("unsafe fixture paths fail before their I/O begins", async () => {
   }
 });
 
-test("large byte fixtures remain compact and bounded", async () => {
-  let actual;
-  await seed("fixture", { large: { repeat: "x", count: 1_048_576 } }, {
-    mkdir: async () => {}, writeFile: async (_, bytes) => { actual = bytes; },
-  });
-  assert.equal(actual.length, 1_048_576);
-  assert.ok(actual.every(byte => byte === 120));
-  await assert.rejects(seed("fixture", { large: { repeat: "x", count: Infinity } }, {
-    mkdir: async () => {}, writeFile: () => assert.fail("unbounded bytes reached I/O"),
-  }), /bounded byte count/);
+test("byte fixtures use requested capacity and reject invalid specifications before I/O", async () => {
+  const root = await mkdtemp(join(tmpdir(), "fixture-capacity-"));
+  const calls = { mkdir: 0, writeFile: 0 };
+  const io = {
+    mkdir: (...args) => { calls.mkdir++; return mkdir(...args); },
+    writeFile: (...args) => { calls.writeFile++; return writeFile(...args); },
+  };
+  try {
+    const count = 4 * 1024 * 1024 + 1;
+    await seed(root, { large: { repeat: "x", count } }, io);
+    assert.deepEqual(calls, { mkdir: 1, writeFile: 1 });
+    const file = await open(join(root, "large"));
+    try {
+      assert.equal((await file.stat()).size, count);
+      const byte = Buffer.alloc(1);
+      for (const position of [0, count - 1]) {
+        assert.equal((await file.read(byte, 0, 1, position)).bytesRead, 1);
+        assert.equal(byte[0], 120);
+      }
+    } finally { await file.close(); }
+    for (const value of [{ repeat: "x", count: Infinity }, { repeat: "x", count: -1 },
+      { repeat: "x", count: 0.5 }, { repeat: "λ", count: 1 }]) {
+      await assert.rejects(seed(root, { "rejected/file": value }, io), /fixture repetition requires/);
+      assert.deepEqual(calls, { mkdir: 1, writeFile: 1 }, "invalid bytes must not enter I/O");
+      await assert.rejects(stat(join(root, "rejected")), { code: "ENOENT" });
+    }
+  } finally { await rm(root, { recursive: true }); }
 });
