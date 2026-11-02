@@ -4,7 +4,8 @@ import {assertNativeCompletion} from './native-model.mjs';
 
 // Seeds are the retained real native output, never an invented provider reply.
 export const seeds=['native-completion.json','native-pair-initialization.json',
- 'native-codex-tool-terminals.json','native-claude-tool-terminals.json'].flatMap(name=> {
+ 'native-codex-tool-terminals.json','native-claude-tool-terminals.json',
+ 'native-claude-workflow-refusal.json'].flatMap(name=> {
  const captured=JSON.parse(readFileSync(new URL('./fixtures/'+name,import.meta.url),'utf8'));
  return (captured.records??[captured]).map(record=>({...record,
   stdout:record.stdout??record.events.map(event=>JSON.stringify(event)).join('\n'),

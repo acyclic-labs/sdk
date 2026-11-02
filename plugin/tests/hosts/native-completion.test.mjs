@@ -3,6 +3,21 @@ import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
 
+test('recorded native workflow tool refusals retain their reason before successful parent completion',async()=> {
+ const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-workflow-refusal.json',import.meta.url),'utf8'));
+ const terminal=record.events.at(-1);
+ const result=events=>({code:record.code,stderr:'',stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
+ assertNativeCompletion(record.host,result([terminal]),record.answer);
+ for(const event of record.events.slice(0,-1)) {
+  const original=event.message.content.find(part=>part.type==='tool_result'&&part.is_error);
+  assert.throws(()=>assertNativeCompletion(record.host,result([event,terminal]),record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
+   assert.deepEqual(error.cause,original,'the original native reason and tool call identity must survive');
+   return true;
+  });
+ }
+});
+
 test('Claude failed tool results survive a later successful parent terminal', async()=> {
  const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-tool-terminals.json',import.meta.url),'utf8'));
  const result=events=>({...record,stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
