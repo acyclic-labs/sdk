@@ -172,8 +172,12 @@ request and publication holds; independent lifecycles can share the provider's
 existing group sync. Root-publication completion is reported before replay.
 All submissions and initial replay settle before serial operation samples begin.
 
+The native floor report uses the shared local provider defaults: memory capacity
+is unbounded, journal compaction retains its normal targets, and durability uses
+the full-flush policy.
+
 The native floor report also retains a timer-only observation control. Ratios
-include sampler cost; rows flag targets below the measured timestamp resolution.
+include sampler cost; rows flag modeled floors below the measured timestamp resolution.
 The control never inflates the semantic floor or subtracts quantiles, and its
 timestamp pair excludes the additional cost of async polling and observers.
 Call and copy calibration use4096-operation batches; hashing uses64-operation
@@ -181,7 +185,7 @@ batches. Their observations and quantiles are normalized batch averages, so
 their calibration p99 does not describe an individual call's tail. Operation
 rows retain individually timed samples without batch averaging.
 Zero-duration samples are retained when both timestamps occupy the same clock
-tick. Resolution flags also use the smallest positive timer-only observation;
+tick. The floor-resolution flag also uses the smallest positive timer-only observation;
 an entirely unresolved timer or a zero-median semantic floor refuses calibration.
 Requested HEAD and LIST results are data. The shared observer excludes exactly
 the original query dispatch from control overhead, retains every provider class,
