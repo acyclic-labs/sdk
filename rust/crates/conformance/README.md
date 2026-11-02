@@ -43,7 +43,9 @@ for model execution.
 
 JSON lines retain executable identity, raw observations in acquisition order,
 nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
-component medians. Encoding contributes its minimum payload transfer; this is
+component medians. Both measurement modes hash the executable with one shared
+8 KiB buffer, released before calibration or population setup. Encoding
+contributes its minimum payload transfer; this is
 an optimistic semantic floor, not a measurement of a particular serializer.
 These model ratios do not determine acceptance: `ratio_qualified` remains false
 until original physical work, provider groups and a matched device guarantee

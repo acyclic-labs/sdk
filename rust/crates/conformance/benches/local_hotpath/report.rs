@@ -4,7 +4,12 @@ use acyclic_test_support::{
     scale::{Idle, Operation, Point, Sample, Work},
 };
 use serde::Serialize;
-use std::{collections::BTreeMap, io::Write, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    io::{Read, Write},
+    sync::Arc,
+    time::Duration,
+};
 
 pub(super) type DurabilityQuery = Option<Arc<acyclic_native_runtime::obs::Query>>;
 
@@ -106,6 +111,25 @@ pub(super) fn emit(value: impl Serialize) -> Result {
     writeln!(output)?;
     output.flush()?;
     Ok(())
+}
+
+pub(super) fn executable_sha256() -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+    let mut executable = std::fs::File::open(std::env::current_exe()?)?;
+    let mut digest = Sha256::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = match executable.read(&mut chunk) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if count == 0 {
+            break;
+        }
+        digest.update(&chunk[..count]);
+    }
+    Ok(hex::encode(digest.finalize()))
 }
 
 /// Coefficients of the semantic floor, independent of implementation overhead.

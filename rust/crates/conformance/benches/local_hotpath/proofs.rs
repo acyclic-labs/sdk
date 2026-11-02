@@ -9,7 +9,6 @@ use acyclic_stream::{
     IdempotencyOutcome, PersistenceCut, StreamError, StreamProvider, StreamProviderExt as _,
 };
 use acyclic_test_support::scale::Operation;
-use sha2::{Digest as _, Sha256};
 use std::{
     path::Path,
     sync::{
@@ -104,7 +103,7 @@ pub(super) fn run(options: &Options) -> Result {
     std::fs::create_dir(&options.root)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "proof_identity", "source": options.source,
-        "executable_sha256": hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),
+        "executable_sha256": super::report::executable_sha256()?,
         "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "operation": "swarm.session_start", "root": options.root,
         "durability": "full", "runtime_threads": 1,
