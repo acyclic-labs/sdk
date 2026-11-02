@@ -1,11 +1,12 @@
-//! The v1 records of attached devices: presence, queued runs and run events.
+//! The v1 records of attached devices: presence, queued runs, and the
+//! executor and output chunks of their call journals.
 use crate::{
     Error, OperationId, Result,
     agent::{AgentPath, TargetRecord},
     core::Scope,
     tools::ShellInput,
 };
-use acyclic_actors::addressing::ActorReference;
+use acyclic_actors::{addressing::ActorReference, call::CallPath};
 use acyclic_stream::StreamPath;
 use serde::{Deserialize, Serialize};
 
@@ -86,23 +87,31 @@ impl TargetPaths {
         self.path(format_args!("{target}/queue"))
     }
 
-    /// One immutable end marker for the original physical connection.
-    pub fn session_end(&self, target: &str, generation: u64) -> Result<StreamPath> {
-        self.path(format_args!("{target}/sessions/{generation}/ended"))
-    }
-
-    /// The [`RunEvent`]s of run `op` on device `target`.
+    /// One immutable end marker for the original physical connection: the
+    /// fence of every call accepted in that session.
     ///
     /// # Errors
     /// When the name cannot be a path segment.
-    pub fn run(&self, target: &str, op: OperationId) -> Result<StreamPath> {
-        let segment: String = op
-            .into_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        self.path(format_args!("{target}/runs/{segment}"))
+    pub fn session_end(&self, target: &str, generation: u64) -> Result<StreamPath> {
+        self.path(format_args!("{target}/sessions/{generation}/ended"))
     }
+}
+
+/// The caller-owned call journal of run `op` dispatched by `agent`
+/// ([`acyclic_actors::call`]): its acceptance, output chunks and terminal.
+///
+/// # Errors
+/// When the agent's subtree cannot be extended.
+pub fn call(agent: &AgentPath, op: OperationId) -> Result<CallPath> {
+    let id: String = op
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let root = agent
+        .inbox()
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    CallPath::new(&root, &id).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// A device's presence: its roster record, online with its current session
@@ -233,55 +242,40 @@ pub(super) fn handover_frame_len(run_bytes: usize) -> Result<usize> {
         .ok_or_else(|| Error::Invalid("device handover encoding length overflow".into()))
 }
 
-/// What happened to a run, as the device's actor records it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum RunEvent {
-    /// The actor handed it to the device's session `session`; the device
-    /// runs it only once this is recorded.
-    Started {
-        /// The session it runs in.
-        session: String,
-        /// The original host socket retained before physical handover.
-        socket: String,
-        /// Original Actor connection generation.
-        generation: u64,
-    },
-    /// An immutable output prefix, visible before command completion.
-    Output {
-        /// Original connection owning the physical command.
-        session: String,
-        /// Original connection generation.
-        generation: u64,
-        /// True for stderr; false for stdout.
-        stderr: bool,
-        /// Exact channel bytes; text decoding belongs to the reader.
-        data: Vec<u8>,
-    },
-    /// It ran to its end; `result` is the `shell` result.
-    Exit {
-        /// `{success, exit_code, stdout, stderr, stop}`.
-        result: serde_json::Value,
-    },
-    /// The device disconnected while it ran: it may have run partly or fully.
-    Lost {
-        /// Why the device went away.
-        reason: String,
-    },
-    /// It did not run: the device declined it, or its session had ended
-    /// before the actor could hand it over.
-    Refused {
-        /// Why.
-        reason: String,
-    },
+/// Where an accepted run executes: the [`acyclic_actors::call::Accepted`]
+/// executor of a device call (v1). Its fence is the session's end marker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Executor {
+    pub(super) v: u32,
+    /// The session it runs in.
+    pub(super) session: String,
+    /// The original host socket retained before physical handover.
+    pub(super) socket: String,
+    /// Original Actor connection generation.
+    pub(super) generation: u64,
 }
 
-/// One [`RunEvent`] on `runs/<op>` (v1).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RunRecord {
-    pub(super) v: u32,
-    pub(super) event: RunEvent,
+/// One output chunk of a device call: the channel byte (`1` stdout, `2`
+/// stderr), then the exact channel bytes.
+pub(super) fn output_chunk(stderr: bool, data: &[u8]) -> acyclic_stream::OwnedBytes {
+    std::iter::once(if stderr { 2 } else { 1 })
+        .chain(data.iter().copied())
+        .collect()
+}
+
+/// The channel and bytes of one output chunk.
+///
+/// # Errors
+/// When the chunk is empty or names no channel.
+pub fn chunk_output(chunk: &[u8]) -> Result<(bool, &[u8])> {
+    match chunk.split_first() {
+        Some((1, data)) if !data.is_empty() => Ok((false, data)),
+        Some((2, data)) if !data.is_empty() => Ok((true, data)),
+        _ => Err(Error::Invalid(
+            "device output chunk names no channel".into(),
+        )),
+    }
 }
 
 /// What a device tells its actor over its socket (v1). The actor sends the
@@ -325,6 +319,8 @@ pub enum DeviceMessage {
 #[serde(deny_unknown_fields)]
 pub(super) struct MessageRecord {
     pub(super) v: u32,
+    /// The agent whose call the report is about: the caller owning its journal.
+    pub(super) agent: AgentPath,
     pub(super) message: DeviceMessage,
 }
 
@@ -378,9 +374,11 @@ mod tests {
         assert!(handover_frame_len(usize::MAX).is_err());
 
         let op = OperationId::from_bytes([255; 16]);
+        let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16]));
         for stderr in [false, true] {
             let text = String::from_utf8(encode(&MessageRecord {
                 v: RECORD_VERSION,
+                agent: agent.clone(),
                 message: DeviceMessage::Output {
                     op,
                     stderr,
@@ -394,19 +392,17 @@ mod tests {
                     .len()
                     <= maximum
             );
-            let event = RunRecord {
-                v: RECORD_VERSION,
-                event: RunEvent::Output {
-                    // Even maximal JSON escaping of the admitted session fits.
-                    session: "\\".repeat(super::super::actor::MAX_SESSION_BYTES),
-                    generation: u64::MAX,
-                    stderr,
-                    data: vec![255; OUTPUT_CHUNK_BYTES],
-                },
-            };
-            assert!(encode(&event)?.len() <= maximum);
+            // The call chunk adds one channel byte; the journal record also
+            // carries its kind and fence attributes, far below the bound.
+            let chunk = output_chunk(stderr, &[255; OUTPUT_CHUNK_BYTES]);
+            assert!(chunk.len() + 256 <= maximum);
+            assert_eq!(
+                chunk_output(&chunk)?,
+                (stderr, &[255; OUTPUT_CHUNK_BYTES][..])
+            );
             let old = encode(&MessageRecord {
                 v: RECORD_VERSION,
+                agent: agent.clone(),
                 message: DeviceMessage::Output {
                     op,
                     stderr,

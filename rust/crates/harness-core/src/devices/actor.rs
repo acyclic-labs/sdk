@@ -3,21 +3,22 @@
 //!
 //! The actor is the one place a run's fate is decided. It reads the queue
 //! and the socket's events in one order: a run for the open session is
-//! recorded `Started` and sent to the device; a run for any other session is
-//! recorded `Refused` and never sent. When the session ends, every unfinished
-//! run is covered by one `Lost` session marker in the same commit as the
-//! offline presence. Every observer joins that one immutable session end with
-//! its own operation stream; disconnect never enumerates active operations.
+//! accepted into its caller's call journal ([`acyclic_actors::call`]) and
+//! sent to the device; a run for any other session is settled as an error
+//! and never sent. Every acceptance is fenced by its session's end marker,
+//! committed with the offline presence, so one marker settles every
+//! unfinished run `indeterminate`; disconnect never enumerates them.
 use super::records::{
-    DeviceMessage, HandoverRecord, MessageRecord, RECORD_VERSION, Run, RunEvent, RunRecord,
-    TargetPaths, TargetStatus, decode, encode,
+    DeviceMessage, Executor, HandoverRecord, MessageRecord, RECORD_VERSION, Run, TargetPaths,
+    TargetStatus, decode, encode,
 };
 use crate::{
     Error, OperationId, Result,
-    agent::{TargetRecord, TargetState},
+    agent::{AgentPath, TargetRecord, TargetState},
 };
 use acyclic_actors::{
     addressing::ActorReference,
+    call::{Accepted, CallPath, Commit, Entry, Outcome, fence},
     domain::{ActorLimits, CodeSha256},
     guest::{
         AlarmChange, Checkpoint, CodecIdentity, Composer, Composition, Delivery, Effect,
@@ -28,8 +29,8 @@ use acyclic_actors::{
     sockets::socket_reply,
 };
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    Record, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, Record,
+    StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -117,33 +118,21 @@ impl State {
         ))
     }
 
-    fn event(&self, op: OperationId, event: RunEvent) -> Result<Effect> {
-        let record = RunRecord {
-            v: RECORD_VERSION,
-            event,
-        };
-        Ok(append(
-            self.paths()?.run(&self.target.name, op)?,
-            AppendRecord::from(encode(&record)?),
-        ))
+    /// The fence of every call accepted in the current session.
+    fn fence(&self) -> Result<StreamPath> {
+        self.paths()?
+            .session_end(&self.target.name, self.generation)
     }
 
-    /// One session end covers every unfinished operation without a registry.
+    /// One session end covers every unfinished call: it is their fence, so
+    /// disconnect never enumerates them.
     fn lose(&self, reason: &str, effects: &mut Vec<Effect>) -> Result<()> {
-        effects.push(append(
-            self.paths()?
-                .session_end(&self.target.name, self.generation)?,
-            AppendRecord::from(encode(&RunRecord {
-                v: RECORD_VERSION,
-                event: RunEvent::Lost {
-                    reason: reason.to_owned(),
-                },
-            })?),
-        ));
+        effects.push(append(self.fence()?, AppendRecord::from(reason)));
         Ok(())
     }
 
-    /// One queued run: handed to the open session it names, else refused.
+    /// One queued run: accepted by the open session it names, else settled
+    /// as an error that never ran.
     async fn queued<P: StreamProvider + ?Sized>(
         &mut self,
         provider: &P,
@@ -154,53 +143,52 @@ impl State {
         let Ok(run) = decode::<Run>(&record.value) else {
             return Ok(());
         };
-        let op = run.command.op;
-        let path = self.paths()?.run(&self.target.name, op)?;
-        match provider.head(path.clone()).await {
+        let call = super::records::call(&run.command.agent, run.command.op)?;
+        // This actor is the call's only writer until its acceptance; a
+        // nonempty journal was already decided by an earlier delivery.
+        match provider.head(call.log().clone()).await {
             Ok(head) if head.tail != 0 => return Ok(()),
             Ok(_) | Err(StreamError::NotFound) => {}
             Err(error) => return Err(error.into()),
         }
-        let before = effects.len();
-        let accepted = self.connection.as_ref().is_some_and(|(_, session)| {
-            *session == run.command.session
+        let ours = run.command.actor
+            == *blake3::hash(&self.paths()?.actor(&self.target.name)?.encode()).as_bytes();
+        let accepted = self.connection.as_ref().filter(|(_, session)| {
+            ours && *session == run.command.session
                 && run.command.target == self.target.name
                 && run.command.generation == self.generation
-        }) && run.command.actor
-            == *blake3::hash(&self.paths()?.actor(&self.target.name)?.encode()).as_bytes();
-        if accepted {
-            self.handover = Some(record.sequence);
-            effects.push(
-                self.event(
-                    op,
-                    RunEvent::Started {
-                        session: run.command.session.clone(),
-                        socket: self
-                            .connection
-                            .as_ref()
-                            .ok_or_else(|| {
-                                Error::Invalid("accepted device has no original socket".into())
-                            })?
-                            .0
-                            .clone(),
-                        generation: self.generation,
+        });
+        let commit = if let Some((socket, session)) = accepted {
+            let executor = Executor {
+                v: RECORD_VERSION,
+                session: session.clone(),
+                socket: socket.clone(),
+                generation: self.generation,
+            };
+            let commit = call
+                .accept(
+                    &Accepted {
+                        executor: encode(&executor)?.into(),
+                        fence: Some(self.fence()?),
                     },
-                )?,
-            );
+                    // The request is the Run on this device's queue,
+                    // committed with the caller's claim.
+                    false,
+                )
+                .map_err(protocol)?;
+            self.handover = Some(record.sequence);
+            commit
         } else {
-            effects.push(self.event(
-                op,
-                RunEvent::Refused {
-                    reason: "the device's session ended before the command reached it; it did not run"
+            call.settle(
+                None,
+                &Outcome::Error(
+                    "the device's session ended before the command reached it; it did not run"
                         .into(),
-                },
-            )?);
-        }
-        if let Some(effect) = effects.get_mut(before) {
-            effect
-                .conditions
-                .push(CommitCondition::Tail { path, expected: 0 });
-        }
+                ),
+            )
+            .map_err(protocol)?
+        };
+        effects.extend(joined(commit));
         Ok(())
     }
 
@@ -208,70 +196,84 @@ impl State {
     async fn report<P: StreamProvider + ?Sized>(
         &self,
         provider: &P,
+        agent: &AgentPath,
         message: DeviceMessage,
         effects: &mut Vec<Effect>,
     ) -> Result<()> {
-        let Some((_, current)) = &self.connection else {
+        if self.connection.is_none() {
             return Ok(());
-        };
-        let (op, event) = match message {
+        }
+        let (op, step) = match message {
             DeviceMessage::Output { op, stderr, data } => {
                 if data.is_empty() || data.len() > super::records::OUTPUT_CHUNK_BYTES {
                     return Err(Error::Invalid(
                         "device output exceeds its protective chunk".into(),
                     ));
                 }
-                (
-                    op,
-                    RunEvent::Output {
-                        session: current.clone(),
-                        generation: self.generation,
-                        stderr,
-                        data,
-                    },
-                )
+                (op, Ok(super::records::output_chunk(stderr, &data)))
             }
-            DeviceMessage::Lost { op, reason } => (op, RunEvent::Lost { reason }),
-            DeviceMessage::Exit { op, result } => (op, RunEvent::Exit { result }),
-            DeviceMessage::Refused { op, reason } => (op, RunEvent::Refused { reason }),
+            DeviceMessage::Lost { op, reason } => (op, Err(Outcome::Indeterminate(reason))),
+            DeviceMessage::Exit { op, result } => (
+                op,
+                Err(Outcome::Ok(
+                    serde_json::to_vec(&result)
+                        .map_err(|error| Error::Invalid(error.to_string()))?
+                        .into(),
+                )),
+            ),
+            DeviceMessage::Refused { op, reason } => (op, Err(Outcome::Error(reason))),
         };
-        let path = self.paths()?.run(&self.target.name, op)?;
-        let head = match provider.head(path.clone()).await {
-            Ok(head) => head,
-            Err(StreamError::NotFound) => return Ok(()),
-            Err(error) => return Err(error.into()),
+        let Some(call) = self.handed(provider, agent, op).await? else {
+            return Ok(());
         };
-        if let Some(last) = head.last
-            && let RunRecord {
-                event:
-                    RunEvent::Started {
-                        session,
-                        generation,
-                        ..
-                    }
-                    | RunEvent::Output {
-                        session,
-                        generation,
-                        ..
-                    },
-                ..
-            } = decode(&last.value)?
-            && generation == self.generation
-            && self
-                .connection
-                .as_ref()
-                .is_some_and(|(_, current)| *current == session)
-        {
-            let mut effect = self.event(op, event)?;
-            effect.conditions.push(CommitCondition::Head {
-                path,
-                expected: head.tail,
-                commit_id: last.commit_id,
-            });
-            effects.push(effect);
+        let fence = self.fence()?;
+        let commit = match step {
+            Ok(chunk) => call.chunk(Some(&fence), chunk),
+            Err(outcome) => call.settle(Some(&fence), &outcome),
         }
+        .map_err(protocol)?;
+        effects.extend(joined(commit));
         Ok(())
     }
+
+    /// The open call `agent` made for `op`, accepted by this session. Its
+    /// last record names the fence it was written under, so a device can
+    /// only report on calls its own session accepted; a terminal or another
+    /// session's record means the report changes nothing.
+    async fn handed<P: StreamProvider + ?Sized>(
+        &self,
+        provider: &P,
+        agent: &AgentPath,
+        op: OperationId,
+    ) -> Result<Option<CallPath>> {
+        let call = super::records::call(agent, op)?;
+        let last = match provider.head(call.log().clone()).await {
+            Ok(head) => head.last,
+            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let Some(last) = last else {
+            return Ok(None);
+        };
+        let open = matches!(
+            Entry::decode(&last).map_err(protocol)?,
+            Entry::Accepted(_) | Entry::Chunk(_)
+        ) && fence(&last).map_err(protocol)? == Some(self.fence()?);
+        Ok(open.then_some(call))
+    }
+}
+
+/// A protocol step as effects; the first carries every condition.
+fn joined(commit: Commit) -> impl Iterator<Item = Effect> {
+    let mut conditions = Some(commit.conditions);
+    commit.mutations.into_iter().map(move |mutation| Effect {
+        conditions: conditions.take().unwrap_or_default(),
+        mutation,
+    })
+}
+
+fn protocol(error: acyclic_actors::call::Error) -> Error {
+    Error::Invalid(error.to_string())
 }
 
 fn append(path: StreamPath, record: AppendRecord) -> Effect {
@@ -292,7 +294,7 @@ pub struct TargetActor<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> TargetActor<P> {
     /// The package. Its store uses [`TargetComposer`] to send handovers only
-    /// after the actor checkpoint and `Started` event have committed.
+    /// after the actor checkpoint and the call's acceptance have committed.
     ///
     /// # Errors
     /// When `limits` or the package digest are refused.
@@ -372,10 +374,11 @@ impl<P: StreamProvider + ?Sized> TargetActor<P> {
                 ..
             } if current => {
                 // A malformed report is the device's error; it changes nothing.
-                if let Ok(MessageRecord { message, .. }) = decode::<MessageRecord>(text.as_bytes())
+                if let Ok(MessageRecord { agent, message, .. }) =
+                    decode::<MessageRecord>(text.as_bytes())
                 {
                     state
-                        .report(self.provider.as_ref(), message, effects)
+                        .report(self.provider.as_ref(), &agent, message, effects)
                         .await?;
                 }
                 Ok(None)
@@ -434,7 +437,7 @@ impl<P: StreamProvider + ?Sized + 'static> Handler for TargetActor<P> {
 }
 
 /// Publishes device handovers through the actor's original composition.
-/// No command can reach the device before its durable `Started` event.
+/// No command can reach the device before its call's durable acceptance.
 pub struct TargetComposer {
     host: Arc<dyn SocketHost>,
 }

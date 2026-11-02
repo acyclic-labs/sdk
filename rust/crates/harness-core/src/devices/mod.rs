@@ -7,19 +7,21 @@
 //! Close (including the Close(Runtime) a restarted host delivers for every
 //! socket it held) commits it offline. There is no heartbeat, lease or poll.
 //!
-//! A `shell` call naming the device is one [`Run`] record on the device's
-//! queue, appended in the same commit as the agent's journal entry that
-//! claims the call ([`crate::tool::ToolExecutor::dispatch`]): a claimed call
-//! was queued exactly once, an unclaimed one never. The actor reads the
-//! queue in order with the socket's events. A run for the open session is
-//! recorded `Started` and handed to the device; a run for any other session
-//! is recorded `Refused` and never handed over. The device
+//! A `shell` call naming the device is one [`acyclic_actors::call`]: its
+//! request is one [`Run`] record on the device's queue, appended in the same
+//! commit as the agent's journal entry that claims the call
+//! ([`crate::tool::ToolExecutor::dispatch`]): a claimed call was queued
+//! exactly once, an unclaimed one never. Everything after lives in the
+//! agent's own call journal ([`call`]). The actor reads the queue in order
+//! with the socket's events. A run for the open session is accepted, fenced
+//! by that session's end marker, and handed to the device; a run for any
+//! other session is settled as an error and never handed over. The device
 //! ([`DeviceRunner`]) verifies each run's grant, evaluates its owner's
-//! execution policy again and runs it after the committed handover, then
-//! reports `Exit` or `Refused`. The session ends with one immutable `Lost`
-//! marker and offline presence. An unfinished run joins that marker with its
-//! own operation stream: it may have run, and it is never run again. This
-//! avoids enumerating commands or growing the Actor checkpoint on disconnect.
+//! execution policy again and runs it after the committed handover; the
+//! actor records its output chunks and its one terminal. The session ends
+//! with its fence and offline presence: an unfinished call may have run, it
+//! settles `indeterminate` and is never run again. This avoids enumerating
+//! commands or growing the Actor checkpoint on disconnect.
 //!
 //! Commands run by the device's own executor ([`DeviceShell`]): the same
 //! native process runner a local `shell` call uses. Credentials never enter
@@ -37,7 +39,7 @@ pub use actor::{TargetActor, TargetComposer, attach, target_actor};
 pub use directory::{DeviceGrant, TargetDirectory};
 pub use lifecycle::DeviceLifecycle;
 pub use records::{
-    DeviceMessage, RECORD_VERSION, Run, RunCommand, RunEvent, TargetPaths, TargetStatus,
+    DeviceMessage, RECORD_VERSION, Run, RunCommand, TargetPaths, TargetStatus, call, chunk_output,
 };
 pub use runner::{
     Attachment, DeviceApprover, DeviceAuthority, DeviceLink, DeviceRunner, DeviceShell,
