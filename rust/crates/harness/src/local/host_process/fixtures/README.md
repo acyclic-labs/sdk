@@ -31,3 +31,21 @@ The refusal controls mutate the captured Claude success flag and Codex terminal
 type in memory. The framing-loss control corrupts the first byte of a copy of
 the captured Codex start line, then replays the original reply. These derived
 negatives are not captured native output.
+
+The tool-refusal controls share
+`plugin/tests/hosts/fixtures/native-claude-workflow-refusal.json` and
+`native-codex-tool-terminals.json`, including their original provenance.
+The Claude projection retains three real tool errors, their call identities
+and reasons, followed by the original successful parent terminal and its
+usage, session and terminal metadata. Original stdout SHA-256:
+`81b56ddc318ef025923163679285c1038cb1f68ca8d22bac8df78473bb5e3ea1`.
+The Codex projection retains failed command items and their original exit
+codes before a successful turn. Original stdout SHA-256:
+`f4747f9fdc481e61d6db161f18b6fdeda2716994d43adc8ad169ac0a7f225688`.
+
+The `claude-tool-refusal` and `codex-tool-refusal` native-reply fuzz seeds
+serialize those same selected event values as JSONL; no wire values are
+invented or replaced. The Claude process control sends those records through
+the original pipe, framing, settlement and event descriptor paths, with an
+external stderr writer and a zero process exit. Its shell replays the capture;
+it does not run the installed model CLI or qualify a process restart.

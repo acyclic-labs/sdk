@@ -19,6 +19,13 @@ fuzz_target!(|input: &[u8]| {
     assert_eq!(fragmented.pending, pages.pending);
     assert_eq!(fragmented.outcome, pages.outcome);
     assert_eq!(fragmented.omitted, pages.omitted);
+    // Original failed-tool traces end in successful parent terminals. They
+    // must remain failures through the same decoder under either read shape.
+    if input == include_bytes!("../corpus/native_reply/claude-tool-refusal")
+        || input == include_bytes!("../corpus/native_reply/codex-tool-refusal")
+    {
+        assert!(matches!(pages.outcome, Some(Outcome::Failed { .. })));
+    }
 });
 
 fn fold(input: &[u8], chunk_size: usize) -> answer::NativeAnswer {
@@ -49,8 +56,11 @@ fn fold(input: &[u8], chunk_size: usize) -> answer::NativeAnswer {
         if let Some(text) = &reply.pending {
             assert!(text.len() <= answer::ANSWER_LIMIT);
         }
-        if let Some(Outcome::Succeeded(text)) = &reply.outcome {
-            assert!(text.len() <= answer::ANSWER_LIMIT);
+        match &reply.outcome {
+            Some(Outcome::Succeeded(text) | Outcome::Failed { message: text }) => {
+                assert!(text.len() <= answer::ANSWER_LIMIT);
+            }
+            _ => {}
         }
     }
     reply
