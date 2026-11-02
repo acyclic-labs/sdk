@@ -168,9 +168,8 @@ pub enum HookRun {
 }
 
 /// A plugin hook's `matcher` for one event: every named field must match.
-#[derive(
-    Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, ts_rs::TS,
-)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "hooks", derive(ts_rs::TS))]
 #[serde(default, deny_unknown_fields)]
 pub struct RequestMatch {
     /// Normalized actions (`exec`, `read`, `write`, `edit`, `search`, `web`,
@@ -178,10 +177,10 @@ pub struct RequestMatch {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action: Vec<String>,
     /// A regular expression over an `exec` request's command.
-    #[ts(optional)]
+    #[cfg_attr(feature = "hooks", ts(optional))]
     pub command: Option<String>,
     /// A regular expression over a `read`, `write` or `edit` request's path.
-    #[ts(optional)]
+    #[cfg_attr(feature = "hooks", ts(optional))]
     pub path: Option<String>,
 }
 

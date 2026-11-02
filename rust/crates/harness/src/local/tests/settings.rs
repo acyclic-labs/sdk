@@ -246,3 +246,44 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     }
     Ok(())
 }
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let harness = open(directory.path()).await?;
+    write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
+    drop(harness);
+    let harness = open(directory.path()).await?;
+    assert!(harness.plugin_hooks.is_empty());
+    Ok(())
+}
+
+#[cfg(feature = "hooks")]
+#[tokio::test]
+async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let harness = open(directory.path()).await?;
+    for (path, source) in [
+        (
+            "plugins/guard/plugin.ts",
+            "export default {name: 'guard', description: 'Guard every tool'};",
+        ),
+        (
+            "plugins/guard/hooks/before-tool.sh/child.ts",
+            "export default {};",
+        ),
+        ("plugins.ts", "export default {guard: {enabled: true}};"),
+    ] {
+        write(&harness, path, source).await?;
+    }
+    drop(harness);
+    match open(directory.path()).await {
+        Err(Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }) => Ok(()),
+        Err(error) => panic!("original guard read refusal required: {error}"),
+        Ok(_) => panic!("an unreadable enabled guard cannot fall back to the empty seed"),
+    }
+}
