@@ -878,15 +878,15 @@ async fn committed_handover(refused_close: bool) -> Result {
             directory.roster().select(Some("desktop"))?.state,
             TargetState::Online
         );
-        assert!(matches!(
-            directory.resolve(Some("desktop")),
-            Err(acyclic_harness_core::Error::Target(
-                acyclic_harness_core::agent::TargetRefusal {
-                    refused: acyclic_harness_core::agent::Refused::Offline,
-                    ..
-                }
-            ))
-        ));
+        let Err(acyclic_harness_core::Error::Target(refusal)) = directory.resolve(Some("desktop"))
+        else {
+            return Err("lost original socket was not refused".into());
+        };
+        assert_eq!(
+            refusal.refused,
+            acyclic_harness_core::agent::Refused::Offline
+        );
+        assert_eq!(refusal.online, ["home"]);
         // Lose the roster producer as well as the original device. Recovery
         // opens the exact saved target without a live connection; fresh calls
         // still refuse it. Never reuse the executor retained while online.

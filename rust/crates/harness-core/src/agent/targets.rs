@@ -317,16 +317,25 @@ impl Roster {
             Some(_) => Refused::Offline,
             None => Refused::Unknown,
         };
-        Err(TargetRefusal {
-            target: named.to_owned(),
-            refused,
+        Err(self.refusal(named, refused))
+    }
+
+    /// Describe a refusal from this same admitted roster. A known-lost target
+    /// cannot be advertised as online while its presence update is in flight.
+    pub(crate) fn refusal(&self, target: &str, refused: Refused) -> TargetRefusal {
+        TargetRefusal {
+            target: target.to_owned(),
             online: self
                 .targets
                 .iter()
-                .filter(|record| record.state == TargetState::Online)
+                .filter(|record| {
+                    record.state == TargetState::Online
+                        && (record.name != target || !matches!(refused, Refused::Offline))
+                })
                 .map(|record| record.name.clone())
                 .collect(),
-        })
+            refused,
+        }
     }
 }
 

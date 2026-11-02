@@ -5,7 +5,7 @@ use super::records::{
 };
 use crate::{
     Capabilities, Error, Result,
-    agent::{Refused, Roster, TargetRefusal, TargetState},
+    agent::{Refused, Roster, TargetState},
     core::{AuthorityIssuer, AuthorityVerifier, Scope},
     runtime::{RuntimeScope, Target, TargetResolver, ToolContext},
     tool::{Dispatch, ToolExecutor, ToolInvocation, ToolResult},
@@ -262,23 +262,39 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
         // can then refuse that original socket, never select a new incarnation.
         let devices = self.devices.borrow();
         let roster = devices.roster();
-        let record = if recovery {
-            roster
-                .targets()
-                .iter()
-                .find(|record| Some(record.name.as_str()) == target)
-                .ok_or_else(|| Error::Invalid("original recovery target is absent".into()))?
-        } else {
-            roster.select(target).map_err(Error::Target)?
+        let name = match (recovery, target) {
+            (true, None) => {
+                return Err(Error::Invalid("original recovery target is absent".into()));
+            }
+            (true, Some(name)) => name,
+            (false, Some(name))
+                if name != self.home.record.name
+                    && !name.starts_with(crate::agent::USER_PREFIX) =>
+            {
+                name
+            }
+            // Home is a retained position. User aliases retain first-attach
+            // order; a named device uses its original connection index below.
+            (false, _) => &roster.select(target).map_err(Error::Target)?.name,
         };
-        if record.name == self.home.record.name {
+        if name == self.home.record.name {
             return Ok(Arc::clone(&self.home));
         }
-        let connection = devices
-            .statuses
-            .get(&record.name)
-            .cloned()
-            .ok_or_else(|| Error::Invalid("listed device has no original connection".into()))?;
+        let connection = match devices.statuses.get(name) {
+            Some(connection) => connection,
+            None if recovery => {
+                return Err(Error::Invalid("original recovery target is absent".into()));
+            }
+            None => return Err(Error::Target(roster.refusal(name, Refused::Unknown))),
+        };
+        if !recovery && (!devices.active || connection.target.state != TargetState::Online) {
+            return Err(Error::Target(roster.refusal(name, Refused::Offline)));
+        }
+        let connection = connection.clone();
+        let mut record = connection.target.clone();
+        if !devices.active {
+            record.state = TargetState::Offline;
+        }
         drop(devices);
         let terminal = if recovery {
             None
@@ -293,38 +309,23 @@ impl<P: StreamProvider + ?Sized + 'static> TargetDirectory<P> {
                     &self.paths.actor(&record.name)?,
                     &acyclic_actors::guest::WebSocketId(socket),
                 )
-                .map_err(|_| {
-                    Error::Target(TargetRefusal {
-                        target: record.name.clone(),
-                        refused: Refused::Offline,
-                        online: roster
-                            .targets()
-                            .iter()
-                            .filter(|target| {
-                                target.state == TargetState::Online && target.name != record.name
-                            })
-                            .map(|target| target.name.clone())
-                            .collect(),
-                    })
-                })?;
+                .map_err(|_| Error::Target(roster.refusal(&record.name, Refused::Offline)))?;
             Some(terminal)
         };
-        Ok(Arc::new(Target {
-            record: record.clone(),
-            executor: Arc::new(DeviceExecutor {
-                provider: Arc::clone(&self.provider),
-                paths: self.paths.clone(),
-                name: record.name.clone(),
-                sockets: Arc::clone(&self.sockets),
-                connection,
-                terminal,
-                wake: self
-                    .store
-                    .activation_record(&self.paths.actor(&record.name)?),
-                grant: Arc::clone(&self.grant),
-                devices: self.devices.subscribe(),
-            }),
-        }))
+        let executor = Arc::new(DeviceExecutor {
+            provider: Arc::clone(&self.provider),
+            paths: self.paths.clone(),
+            name: record.name.clone(),
+            sockets: Arc::clone(&self.sockets),
+            connection,
+            terminal,
+            wake: self
+                .store
+                .activation_record(&self.paths.actor(&record.name)?),
+            grant: Arc::clone(&self.grant),
+            devices: self.devices.subscribe(),
+        });
+        Ok(Arc::new(Target { record, executor }))
     }
 }
 
@@ -344,17 +345,7 @@ struct DeviceExecutor<P: StreamProvider + ?Sized + 'static> {
 
 impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
     fn refusal(&self, refused: Refused) -> Error {
-        let roster = self.devices.borrow().roster();
-        Error::Target(TargetRefusal {
-            target: self.name.clone(),
-            refused,
-            online: roster
-                .targets()
-                .iter()
-                .filter(|record| record.state == TargetState::Online)
-                .map(|record| record.name.clone())
-                .collect(),
-        })
+        Error::Target(self.devices.borrow().roster().refusal(&self.name, refused))
     }
 
     /// Original operation events joined with its immutable session end. A
