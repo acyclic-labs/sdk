@@ -303,6 +303,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
 
     struct ClosingModel {
         counts: Arc<ScriptedModelProvider>,
+        warm_child: std::sync::atomic::AtomicBool,
         gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
     }
     impl ModelProvider for ClosingModel {
@@ -317,9 +318,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         }
         fn generate<'a>(
             &'a self,
-            _: &'a PreparedModelRequest,
-            _: ModelDispatch,
+            request: &'a PreparedModelRequest,
+            dispatch: ModelDispatch,
         ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+            if self
+                .warm_child
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return self.counts.generate(request, dispatch);
+            }
             let gate = self.gate.lock().unwrap().take();
             futures::stream::once(async move {
                 let (entered, result) =
@@ -342,14 +349,48 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let harness = Arc::new(LocalHarness::open(
             volume_config(directory.path(), project, Arc::new(ClosingModel {
                 counts: text(),
+                warm_child: true.into(),
                 gate: Mutex::new(Some((entered, result))),
             }))?.compaction(crate::context::CompactionPolicy::Disabled),
         ).await?);
         let connection = harness.connect().await?;
+        let (agents, root) = harness.agents().await?;
+        let acyclic_harness_client::AgentReply::Spawned { agent: child, .. } = connection.execute(
+            &acyclic_harness_client::AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from("settled-child").map_err(agent)?,
+                brief: crate::model::ModelContent::Text("finish the trial".into()),
+                role: "worker".into(),
+            }
+        ).await? else {
+            return Err(Error::Invalid("trial child was not created".into()));
+        };
+        settled(agents, &child).await?;
+        let selected = agents.state(&child).await.map_err(agent)?.status_tail - 1;
         let client = Conversation::open(connection.clone())?;
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
+        let archive = acyclic_harness_client::AgentCommand::Archive {
+            agent: child.clone(),
+            id: crate::agent::IntentId::try_from("close-settled-trial").map_err(agent)?,
+            status: selected,
+        };
+        let releasing = connection.execute(&archive);
+        tokio::pin!(releasing);
+        assert!(futures::poll!(&mut releasing).is_pending(), "release waits for parent consumption");
+        let mut close = acyclic_stream::FollowRequest::new(child.closed().map_err(agent)?, 0);
+        close.when_absent = acyclic_stream::WhenAbsent::Wait;
+        let mut closed = acyclic_stream::records_only(agents.provider().follow(close).await.map_err(agent)?);
+        tokio::select! {
+            record = closed.try_next() => {
+                record.map_err(agent)?.ok_or_else(|| Error::Storage("archive publication producer closed".into()))?;
+            }
+            result = &mut releasing => {
+                return Err(Error::Conflict(format!("release ended before parent consumption: {result:?}")));
+            }
+        }
+        assert!(futures::poll!(&mut releasing).is_pending(), "archive publication is not parent release");
         let mut usage = client.usage_query();
         while !usage.synchronized() {
             usage.advance().await?;
@@ -389,6 +430,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let observed = waiting.await;
         assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
         assert!(matches!(spawning.await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "spawn outcome lost the runtime cause");
+        assert!(matches!(releasing.await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "release receipt lost the runtime cause");
         let hosted = harness.agents.get().unwrap();
         assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
         assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");

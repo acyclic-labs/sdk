@@ -70,6 +70,13 @@ pub enum AgentReply {
     },
     /// Prompt, cancellation or approval inbox delivery.
     Delivered { delivery: Delivered },
+    /// Parent-owned release receipt, after closing the exact settled child.
+    Released {
+        /// Original settlement, before the subsequent archive status.
+        settlement: acyclic_harness_core::agent::Settlement,
+        /// Original report consumed by the parent to remove membership.
+        release: acyclic_harness_core::agent::ChildRelease,
+    },
     /// Spawn publication, including the canonical child path.
     Spawned {
         /// The newly published direct child.
@@ -391,6 +398,13 @@ fn validate_reply(
             | AgentCommand::Restore { .. }
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
+        (AgentReply::Released { settlement, .. }, AgentCommand::Archive { status, .. }) => {
+            return if settlement.status == *status {
+                Ok(())
+            } else {
+                Err(CommandError::Invalid)
+            };
+        }
         (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
             // An answer is the entry of exactly the requested message.
             return match reply {
@@ -1146,6 +1160,28 @@ mod tests {
         let bytes = encode_agent_reply(&reply, &command)?;
         assert!(matches!(
             decode_agent_reply(&bytes, &AgentCommand::Root {}),
+            Err(CommandError::Invalid)
+        ));
+        let mut archive = AgentCommand::Archive {
+            agent: command.agent().expect("target").clone(),
+            id: IntentId::try_from("close-1")?,
+            status: 4,
+        };
+        assert!(decode_agent_reply(&bytes, &archive).is_err());
+        let receipt = Ok(AgentReply::Released {
+            settlement: acyclic_harness_core::agent::Settlement {
+                status: 4,
+                cursor: 7,
+                conversation: 2,
+            },
+            release: acyclic_harness_core::agent::ChildRelease { inbox: 9 },
+        });
+        let bytes = encode_agent_reply(&receipt, &archive)?;
+        if let AgentCommand::Archive { status, .. } = &mut archive {
+            *status = 5;
+        }
+        assert!(matches!(
+            decode_agent_reply(&bytes, &archive),
             Err(CommandError::Invalid)
         ));
         Ok(())

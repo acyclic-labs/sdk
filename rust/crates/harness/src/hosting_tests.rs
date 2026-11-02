@@ -989,18 +989,26 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     // Outside the admitted tree is a typed refusal.
     let stranger = AgentPath::root(&AgentId::from_bytes([9; 16]));
-    assert!(matches!(
-        call(
-            &client,
-            "agents",
-            &AgentCommand::Cancel {
-                agent: stranger,
-                id: IntentId::try_from("c1")?,
-            }
-        )
-        .await?,
-        Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent"
-    ));
+    for command in [
+        AgentCommand::Cancel {
+            agent: stranger.clone(),
+            id: IntentId::try_from("c1")?,
+        },
+        AgentCommand::Archive {
+            agent: stranger,
+            id: IntentId::try_from("a1")?,
+            status: 0,
+        },
+    ] {
+        assert!(matches!(call(&client, "agents", &command).await?,
+            Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent"));
+    }
+    // This endpoint cannot observe membership in an owner above its root.
+    assert!(matches!(call(&client, "agents", &AgentCommand::Archive {
+        agent: root.clone(),
+        id: IntentId::try_from("release-root")?,
+        status: 0,
+    }).await?, Err(AgentControlFailure::Refused { code, .. }) if code == "agent_conflict"));
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
         call(&client, "elsewhere", &AgentCommand::Root {})
