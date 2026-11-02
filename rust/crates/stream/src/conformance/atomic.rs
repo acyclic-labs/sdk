@@ -2,7 +2,7 @@
 use crate::StreamProviderExt as _;
 use crate::{StreamError, StreamPath, StreamProvider};
 
-pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
+pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), super::Failure> {
     let first = StreamPath::new("conformance/atomic-first")?;
     let second = StreamPath::new("conformance/atomic-second")?;
     let atomic_key = crate::IdempotencyKey::new(crate::OwnedBytes::from_static(b"http-atomic"))?;
@@ -30,29 +30,29 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
     };
     let committed = provider.commit(atomic.clone()).await?;
     let crate::CommitOutcome::Committed(receipt) = &committed else {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     };
     if receipt.appends.len() != 2
         || provider.commit(atomic).await? != committed
         || provider.tail(first).await? != 1
         || provider.tail(second).await? != 1
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     let observed = provider
         .inspect_idempotency(atomic_key)
         .await?
-        .ok_or(StreamError::InvalidResponse)?;
+        .ok_or(violated!())?;
     let crate::IdempotencyOutcome::Commit(envelope) = observed.outcome else {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     };
     if envelope.commit_id != receipt.commit_id || envelope.mutations.len() != 2 {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     Ok(())
 }
 
-pub(super) async fn deadline(provider: &dyn StreamProvider) -> Result<(), StreamError> {
+pub(super) async fn deadline(provider: &dyn StreamProvider) -> Result<(), super::Failure> {
     let deadline_path = StreamPath::new("conformance/deadline")?;
     let request = crate::CommitRequest {
         conditions: vec![crate::CommitCondition::Absent {
@@ -70,7 +70,7 @@ pub(super) async fn deadline(provider: &dyn StreamProvider) -> Result<(), Stream
     if provider.commit(request).await != Err(StreamError::DeadlineElapsed)
         || provider.tail(deadline_path).await != Err(StreamError::NotFound)
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     Ok(())
 }
