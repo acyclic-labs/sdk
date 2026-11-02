@@ -11,6 +11,59 @@ fn fixture() -> AuthorityRoot {
 }
 
 #[test]
+fn exact_model_ceiling_survives_signed_attenuation_and_refuses_widening() -> Result<()> {
+    use crate::contract::capability::{MODEL_GENERATE, model_select};
+
+    let issuer = fixture();
+    let verifier = issuer.verifier(&mut None)?;
+    // These pairs share the ordinary "provider/model" spelling. Authority
+    // must retain the original boundary, not a concatenated display name.
+    let selected = model_select("a/b", "c");
+    let foreign = model_select("a", "b/c");
+    let other = model_select("a/b", "d");
+    let root = issuer.bootstrap_scope(
+        "root",
+        &Capabilities::new([MODEL_GENERATE.to_owned(), selected.clone(), other.clone()]),
+        None,
+        &mut None,
+    )?;
+    verifier.verify(&root, &mut None)?;
+    assert!(root.capabilities().allows_model("a/b", "c"));
+    assert!(root.capabilities().allows_model("a/b", "d"));
+    assert!(!root.capabilities().allows_model("a", "b/c"));
+    let narrowed = Capabilities::new([MODEL_GENERATE.to_owned(), selected.clone()]);
+    let child = issuer.attenuate(&root, "child", &narrowed)?;
+    verifier.verify(&child, &mut None)?;
+    assert!(child.capabilities().allows_model("a/b", "c"));
+    assert!(!child.capabilities().allows_model("a/b", "d"));
+    let descendant = issuer.attenuate(&child, "descendant", &narrowed)?;
+    verifier.verify(&descendant, &mut None)?;
+    for refused in [foreign, other] {
+        assert!(
+            issuer
+                .attenuate(
+                    &descendant,
+                    "widened",
+                    &Capabilities::new([MODEL_GENERATE.to_owned(), refused]),
+                )
+                .is_err()
+        );
+    }
+    let generic = Capabilities::new([MODEL_GENERATE]);
+    let without_action = Capabilities::new([selected]);
+    assert!(!generic.allows_model("a/b", "c"));
+    assert!(!without_action.allows_model("a/b", "c"));
+    let policy = narrowed.intersect(&generic);
+    assert!(!policy.allows_model("a/b", "c"));
+
+    // Replacing a decoded ceiling is not an authenticated child grant.
+    let mut forged = child.clone();
+    forged.capabilities = root.capabilities.clone();
+    assert!(verifier.verify(&forged, &mut None).is_err());
+    Ok(())
+}
+
+#[test]
 fn repeated_revocation_authenticates_exact_target_and_publishes_once() -> Result<()> {
     use futures::FutureExt;
     use std::sync::{

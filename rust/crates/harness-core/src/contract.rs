@@ -39,6 +39,14 @@ pub mod capability {
         format!("tool:call:{tool}")
     }
 
+    /// Exact provider/model ceiling, issued explicitly by the host in the
+    /// original signed scope. This grants no generation action on its own.
+    /// Byte-length framing keeps provider/model pairs distinct even when a
+    /// component contains separators; there are no wildcards or aliases.
+    pub fn model_select(provider: &str, model: &str) -> String {
+        format!("model:select:{}:{provider}{model}", provider.len())
+    }
+
     pub(crate) fn interaction_respond(id: impl Display) -> String {
         format!("interaction:respond:{id}")
     }
@@ -315,6 +323,16 @@ impl Capabilities {
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
         self.0.contains(value)
+    }
+
+    /// Both the model-generation action and this exact model ceiling must be
+    /// present in the authenticated effective grant. Call at selection
+    /// admission, then retain that decision with its original scope/policy cut;
+    /// a catalog entry, role or generic action cannot supply the ceiling.
+    #[must_use]
+    pub fn allows_model(&self, provider: &str, model: &str) -> bool {
+        self.contains(capability::MODEL_GENERATE)
+            && self.contains(&capability::model_select(provider, model))
     }
 
     /// Returns whether this set attenuates an ancestor set.
