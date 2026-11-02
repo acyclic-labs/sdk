@@ -12,6 +12,14 @@ struct Local<P: ?Sized> {
     lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
+    fn termination(&self) -> Option<BoxProviderFuture<'static, StreamError>> {
+        let mut lifetime = self.lifetime.clone()?;
+        Some(Box::pin(async move {
+            let _ = lifetime.changed().await;
+            StreamError::Unavailable
+        }))
+    }
+
     fn session(
         &self,
         source: transport::Requests,
@@ -24,11 +32,7 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
                 "local".into(),
                 Limits::default(),
                 Box::pin(source.map(Ok)),
-                self.lifetime.clone().map(|mut lifetime| {
-                    Box::pin(async move {
-                        let _ = lifetime.changed().await;
-                    }) as BoxProviderFuture<'static, ()>
-                }),
+                None,
             )
         })
     }

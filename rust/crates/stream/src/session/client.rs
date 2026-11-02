@@ -327,6 +327,7 @@ impl Client {
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
+        let termination = channel.termination();
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
@@ -362,7 +363,18 @@ impl Client {
             release_sender,
         };
         executor.spawn(Box::pin(async move {
-            if let Err(error) = pool.run().await {
+            let result = {
+                let running = pool.run();
+                futures::pin_mut!(running);
+                match termination {
+                    Some(termination) => match future::select(termination, running).await {
+                        future::Either::Left((error, _)) => Err(error),
+                        future::Either::Right((result, _)) => result,
+                    },
+                    None => running.await,
+                }
+            };
+            if let Err(error) = result {
                 pool.fail(&error);
             }
         }));

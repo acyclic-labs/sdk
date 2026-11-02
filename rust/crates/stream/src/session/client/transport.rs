@@ -30,6 +30,13 @@ pub(crate) async fn credential_event<T>(
 
 /// An authenticated endpoint. The pool owns all protocol, credit and recovery.
 pub trait Transport: ProviderPlatform {
+    /// The original endpoint owner's terminal event, when the endpoint cannot
+    /// reconnect independently of that owner. The pool waits once for this
+    /// event and ends pending opens and live interests with its original error.
+    /// A missing producer must complete this future too.
+    fn termination(&self) -> Option<BoxProviderFuture<'static, StreamError>> {
+        None
+    }
     /// Opens one bidirectional platform connection from the canonical frame source.
     /// `Unavailable` denotes a transient transport failure and permits backoff;
     /// every other error terminates the opening interests.

@@ -65,6 +65,8 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let mut remote = connection.clone();
     remote._host = None;
     let mut remote_observer = Observer::open(&remote, 0, 0)?;
+    // Leave these subscriptions unpolled until their original host has failed.
+    // Late opening must terminate too, rather than reconnecting a dead owner.
     let mut projected = Observer::replay(
         &connection,
         &acyclic_harness_client::EventProjection::new("provider-failure".into()),
