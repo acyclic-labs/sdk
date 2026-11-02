@@ -357,14 +357,14 @@ impl Store {
 
     fn save(&self, credentials: &Credentials) -> Result<(), Error> {
         private_file::validate_destination(&self.path)?;
-        let bytes = serde_json::to_vec(credentials)
+        let bytes = acyclic_auth::operation::ProtectedBytes::from_json(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
         let temporary = sidecar(&self.path, ".next");
         private_file::publish(
             &self.path,
             &temporary,
             acyclic_native_runtime::RenameMode::Replace,
-            |file| file.write_all(&bytes),
+            |file| file.write_all(bytes.as_ref()),
             |_| Ok(()),
         )?;
         Ok(())
