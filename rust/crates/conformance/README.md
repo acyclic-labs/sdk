@@ -134,7 +134,13 @@ Native worker context is retained by the original persistence job. Unobserved
 leaves, concurrent work and original provider/group attribution remain unknown,
 so these diagnostics do not qualify `durability_calls` or count device drains.
 The same optional projection retains fixed terminal-sample counters for original
-persistence and blocking-I/O tasks. Queue transfer, closure entry and panic each
+persistence and blocking-I/O tasks, plus the first observed original OS error
+code in each task/syscall row. A later error cannot replace that code; absence
+stays unknown. This is a
+diagnostic sample, without authenticated operation identity or error ordering.
+Its fixed error slots add 72 bytes to the enabled projection with no additional allocation;
+each supplied code uses one compare-exchange, without a retry loop.
+Queue transfer, closure entry and panic each
 distinguish unknown, false and true; terminal disposition distinguishes unknown,
 success, I/O error, panic and missing result. Outcome remains independent of the
 panic flag, preserving a stored I/O error alongside a panic. An abandoned
