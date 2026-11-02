@@ -7,6 +7,18 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
+        // A manifest pins canonical revisions; native declarations bind to
+        // what it pins, so they are bound after it and never pinned.
+        if self
+            .data
+            .selected
+            .values()
+            .any(|selection| matches!(selection, ModelSelection::Native(_)))
+        {
+            return Err(Error::Conflict(
+                "native declarations bind after the manifest pins".into(),
+            ));
+        }
         crate::executor::with_history_io(io, |work| -> Result<()> {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut selected =
@@ -37,45 +49,7 @@ impl ToolRegistry {
                     "manifest repeats a tool name",
                 ));
             }
-            // A capability offered natively is pinned as a whole: a manifest
-            // naming the capability or any of its declarations keeps every
-            // declaration offered, and one naming neither hides them all.
-            let listed = |name: &str| {
-                selected
-                    .binary_search_by(|(candidate, _)| candidate.cmp(&name))
-                    .is_ok()
-            };
-            let pinned = |name: &str, natives: &[String]| {
-                listed(name) || natives.iter().any(|native| listed(native))
-            };
-            let kept: Vec<String> = self
-                .data
-                .selected
-                .iter()
-                .filter_map(|(name, selection)| match selection {
-                    ModelSelection::Native(natives) if pinned(name, natives) => Some(natives),
-                    _ => None,
-                })
-                .flatten()
-                .cloned()
-                .collect();
             for (name, selection) in &mut Arc::make_mut(&mut self.data).selected {
-                if kept.contains(name) {
-                    continue;
-                }
-                if let ModelSelection::Native(natives) = selection {
-                    if pinned(name, natives) {
-                        continue;
-                    }
-                    #[cfg(feature = "filesystem")]
-                    let old_bytes = selection.owned_bytes();
-                    *selection = ModelSelection::Hidden;
-                    #[cfg(feature = "filesystem")]
-                    if let Some(io) = io {
-                        io.release(old_bytes)?;
-                    }
-                    continue;
-                }
                 let replacement = match selected
                     .binary_search_by(|(candidate, _)| candidate.cmp(&name.as_str()))
                 {

@@ -252,11 +252,23 @@ async fn openai_stays_on_canonical_tools_until_its_engine_lands() -> Result<()> 
 }
 
 #[test]
-fn a_manifest_of_capabilities_keeps_their_native_declarations() -> Result<()> {
+fn native_declarations_run_the_revisions_a_manifest_pins() -> Result<()> {
     let canonical = Arc::new(Canonical(Mutex::new(Vec::new())));
     let mut tools = capabilities(&canonical)?;
     let manifest = tools.definitions(None)?;
-    crate::tools::native::bind(&mut tools, NativeToolProfile::Anthropic)?;
+    let pinned = manifest
+        .iter()
+        .find(|tool| tool.name == "read")
+        .map(|tool| tool.revision.clone())
+        .ok_or_else(|| Error::NotFound("read".into()))?;
+    // A later revision of the capability is registered after the manifest.
+    let mut later = tools
+        .get("read", None, None)?
+        .ok_or_else(|| Error::NotFound("read".into()))?
+        .clone();
+    later.definition.revision = "later".into();
+    tools.register((later, None), &mut None, None)?;
+    let native = crate::tools::native::NativeTools::new(NativeToolProfile::Anthropic)?;
     let grants = Capabilities::new(
         ["read", "write", "edit", "shell"].map(crate::contract::capability::tool_call),
     );
@@ -267,18 +279,37 @@ fn a_manifest_of_capabilities_keeps_their_native_declarations() -> Result<()> {
             .map(|tool| tool.name)
             .collect())
     };
-    let mut pinned = tools.clone();
-    pinned.pin_model_definitions(&manifest, None)?;
+    let runs = |tools: &ToolRegistry| -> Result<Option<String>> {
+        Ok(tools.get("Read", None, None)?.and_then(|tool| {
+            tool.executor
+                .capability()
+                .map(|capability| capability.definition.revision.clone())
+        }))
+    };
+    let mut whole = tools.clone();
+    whole.pin_model_definitions(&manifest, None)?;
+    native.bind(&mut whole)?;
     assert_eq!(
-        offered(&pinned)?,
+        offered(&whole)?,
         ["Edit", "NotebookEdit", "Read", "Bash", "Write"]
     );
-    // A manifest naming one capability hides the others' declarations.
-    let read: Vec<_> = manifest
-        .into_iter()
-        .filter(|tool| tool.name == "read")
-        .collect();
-    tools.pin_model_definitions(&read, None)?;
-    assert_eq!(offered(&tools)?, ["Read"]);
+    assert_eq!(runs(&whole)?, Some(pinned));
+    // A manifest naming one capability offers only its declarations.
+    let mut read = tools.clone();
+    read.pin_model_definitions(
+        &manifest
+            .iter()
+            .filter(|tool| tool.name == "read")
+            .cloned()
+            .collect::<Vec<_>>(),
+        None,
+    )?;
+    native.bind(&mut read)?;
+    assert_eq!(offered(&read)?, ["Read"]);
+    // A bound registry is never pinned again.
+    assert!(matches!(
+        whole.pin_model_definitions(&manifest, None),
+        Err(Error::Conflict(_))
+    ));
     Ok(())
 }
