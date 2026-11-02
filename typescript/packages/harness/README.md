@@ -39,15 +39,6 @@ the selected endpoint. Browsers pass a credential explicitly or supply the
 environment object. These resolved options are configuration, not a session
 capability or proof that a server is reachable.
 
-Preset data and defaults also have one Rust definition. Native callers use
-`acyclic_harness::client::Preset::graphcoder()` (the original
-`acyclic_harness::preset::Preset` path is the same type). TS callers use
-`initializeClientPreset()` followed by `graphcoderPreset()`. Its generated
-`Preset` and approval-policy types come from those same Rust definitions.
-Instructions are shared across hosts; execution capacity comes from the admitted
-limits. Producing preset data creates no session or agent and does not apply
-configuration to a remote host.
-
 Call `initializeClientQueries()` before constructing client objects. `AgentClient`
 folds the selected conversation, status and filesystem streams through one bounded
 `WireSession`. History and child pages are read through the shared Rust reader;

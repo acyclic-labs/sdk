@@ -287,7 +287,7 @@ impl Providers {
                 admission.clone(),
                 Arc::new(Self::executors(options, registry)?),
                 turn_limits,
-                options.preset.approval_policy.clone(),
+                options.approval_policy.clone(),
             )
             .with_filesystem_tools(),
         );

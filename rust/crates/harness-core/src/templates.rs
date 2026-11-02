@@ -10,7 +10,7 @@ use crate::{
 use serde::Deserialize;
 use std::sync::Arc;
 
-const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
+const ROOT: &str = include_str!("seed/plugins/spawn/templates/orchestrator/AGENT.md");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

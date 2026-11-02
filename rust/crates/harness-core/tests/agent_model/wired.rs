@@ -129,15 +129,6 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
 fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
     use acyclic_harness_core::tools;
 
-    let preset = acyclic_harness_core::preset::Preset::graphcoder();
-    for (field, value) in [
-        ("tools", serde_json::json!(["fs"])),
-        ("web_tools", serde_json::json!(false)),
-    ] {
-        let mut restored = serde_json::to_value(&preset)?;
-        restored[field] = value;
-        assert!(serde_json::from_value::<acyclic_harness_core::preset::Preset>(restored).is_err());
-    }
     let names = tools::default_names();
     let volume = tools::registry(&names, |_| false, Vec::new())?;
     let all = tools::registry(&names, |_| true, Vec::new())?;

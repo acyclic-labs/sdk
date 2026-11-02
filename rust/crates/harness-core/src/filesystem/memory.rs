@@ -304,8 +304,7 @@ impl<
         })
     }
 
-    /// Runs every approval under `policy`, normally the caller's preset
-    /// approval policy (`Preset::approval_policy`). Without it the storage
+    /// Runs every approval under the caller's explicit `policy`. Without it the storage
     /// uses the harness default policy chain. Binds before the journal is
     /// shared, so every approval of this storage sees one policy.
     pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Result<Self> {

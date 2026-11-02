@@ -351,18 +351,6 @@ impl LocalHarnessConfig {
         self.served = Some(verifier);
         self
     }
-    /// Applies the shared approval policy. Tool availability remains with the
-    /// host's registry.
-    #[must_use]
-    pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        self.approval_policy = preset.approval_policy.clone();
-        self
-    }
-    pub(super) fn preset_value(&self) -> crate::preset::Preset {
-        crate::preset::Preset {
-            approval_policy: self.approval_policy.clone(),
-        }
-    }
     /// Disables the default set, retaining every custom tool.
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {

@@ -2,8 +2,6 @@ use super::*;
 
 struct Opening {
     config: LocalHarnessConfig,
-    /// The agents' defaults, from which their tools and turns are built.
-    preset: crate::preset::Preset,
     state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
@@ -88,7 +86,6 @@ impl Opening {
         if let Some((model, _)) = &config.model {
             model.validate()?;
         }
-        let preset = config.preset_value();
         let tools = configure_tools(&mut config)?;
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let installation = match &settings_configuration {
@@ -129,7 +126,6 @@ impl Opening {
         }
         Ok(Self {
             config,
-            preset,
             state_location,
             tools,
             compaction,
@@ -431,7 +427,7 @@ impl Opening {
             seed,
             verifier,
             signed,
-            preset: self.preset,
+            approval_policy: self.config.approval_policy,
             agent_tools: self
                 .config
                 .default_tools

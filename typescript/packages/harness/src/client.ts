@@ -1,6 +1,6 @@
 /** The actor client uses the shared bounded Rust session and platform pool. */
 export * from "./client-query.js";
-export * from "./client-preset.js";
+export { type ApprovalPolicy, type Approver, type ApprovalRule, type ApprovalSelector, type RuleVerdict } from "../generated/wasm/acyclic_harness_wasm.js";
 export { discoverAgentControls, type WasmAgentDiscovery as DiscoveredAgentControls } from "../generated/wasm/acyclic_harness_wasm.js";
 export { AgentExplorer, type ExplorerHealth, type ExplorerOptions, type ExplorerRow, type ExplorerHistoryRow } from "./explorer.js";
 export { prepareAgentInvocation } from "./client-command.js";

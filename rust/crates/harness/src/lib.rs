@@ -38,7 +38,6 @@ pub mod client;
 pub mod conformance;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
-pub mod preset;
 #[cfg(feature = "serve")]
 pub mod server;
 #[cfg(any(test, feature = "test-support"))]

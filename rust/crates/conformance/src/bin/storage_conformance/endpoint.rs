@@ -5,6 +5,7 @@ use acyclic_agent_host_conformance::Result;
 use acyclic_harness::{
     Capabilities,
     agent::{AgentId, AgentPath, IntentId, Reply, VolumeBinding},
+    approvals::ApprovalPolicy,
     context::CompactionPolicy,
     contract::capability::INTERACTION_ROUTE,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -13,7 +14,6 @@ use acyclic_harness::{
     hosting::{Bound, Placement, RootRequest, Runtime, Serving, Turns, VerifiedCaller},
     local::{Connection, Event, agent_conversation::Conversation},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
-    preset::Preset,
     resources::ProviderRef,
     server::{Hosted, ServerConfig},
     tool::ToolRegistry,
@@ -157,7 +157,6 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             None,
             &mut None,
         )?;
-        let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
             executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
@@ -175,7 +174,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             },
             actors: ActorLimits::new(1_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
-            approval_policy: preset.approval_policy,
+            approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         };
         let bound = Bound::admitted(
             issuer,

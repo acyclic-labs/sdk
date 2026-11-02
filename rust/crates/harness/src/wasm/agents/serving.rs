@@ -86,7 +86,7 @@ pub struct WasmAgentServer {
 #[wasm_bindgen]
 impl WasmAgentServer {
     /// Bind the opener's verified admission once. The guest uses the same
-    /// providers, preset and admission; the host retains all publication.
+    /// providers, policy and admission; the host retains all publication.
     pub fn open(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
@@ -138,7 +138,7 @@ impl WasmAgentServer {
                 )
                 .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
                 clock: Arc::new(SystemClock),
-                approval_policy: options.preset.approval_policy.clone(),
+                approval_policy: options.approval_policy.clone(),
             },
         )
         .map_err(agent_error)?;

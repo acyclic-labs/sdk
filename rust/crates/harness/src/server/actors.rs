@@ -4,13 +4,13 @@ pub use crate::hosting::Runtime;
 use crate::{
     Error,
     agent::IntentId,
+    approvals::ApprovalPolicy,
     context::CompactionPolicy,
     conversation::Limits,
     core::AuthorityRoot,
     filesystem::{FilesystemHost, Grants, TurnContext, TurnLimits},
     hosting::{self, Bound, Placement, RootRequest, Serving, Turns, VerifiedCaller},
     model::{Model, ModelProvider},
-    preset::Preset,
     tool::Tool,
 };
 use acyclic_actors::{domain::ActorLimits, local::SystemClock};
@@ -30,7 +30,7 @@ pub struct Execution {
     pub actors: ActorLimits,
     /// Compaction selected for the model's context window.
     pub compaction: CompactionPolicy,
-    /// Host tools in addition to the preset's stock tools.
+    /// Host tools in addition to the shared stock registry.
     pub tools: Vec<Tool>,
     /// Whether this host supplies native workspace tools.
     pub workspace: bool,
@@ -55,8 +55,8 @@ pub struct Actors<P: AuthorityProvider + 'static, O: 'static> {
     pub placement: Placement<P, O>,
     /// Stable root identity, volumes and creation intent.
     pub root: (IntentId, RootRequest),
-    /// GraphCoder defaults, or the host's explicit overrides.
-    pub preset: Preset,
+    /// Approval policy explicitly admitted by the host.
+    pub approval_policy: ApprovalPolicy,
     /// The model and tools running each admitted turn.
     pub execution: Execution,
     /// Current command authorization and durable wake admission.
@@ -79,7 +79,7 @@ impl<P: AuthorityProvider + 'static, O: 'static> Actors<P, O> {
             caller,
             placement,
             root,
-            preset: Preset::graphcoder(),
+            approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
             execution,
             platform,
         }
@@ -191,7 +191,7 @@ where
                     limits: execution.turns,
                     actors: execution.actors,
                     clock: Arc::new(SystemClock),
-                    approval_policy: self.preset.approval_policy.clone(),
+                    approval_policy: self.approval_policy.clone(),
                 },
                 // No lazy checkout keeps fork cuts beside these volumes, so a
                 // spawn forks each source's head.
