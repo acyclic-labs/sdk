@@ -206,7 +206,7 @@ export class Suite extends DurableObject {
     await qualifyJournalDeadline((atAcceptance: () => void) => ({
       configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => journal.configure(configuration, maximum, authority),
       flush: () => journal.flush(),
-      read: (index: number) => journal.read(index),
+      read: (index: number, page: number) => journal.read(index, page),
       changed: (after: number, ready: () => void) => journal.changed(after, ready),
       append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) {
         return journal.append(index, () => { atAcceptance(); return admit(); }, changes);
