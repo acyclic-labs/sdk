@@ -9,6 +9,42 @@ import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { failureReport } from "./report.mjs";
+
+test("terminal action failure survives original native completion and capture rejection", {
+  skip: process.platform === "win32",
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "terminal-failure-"));
+  try {
+    for (const observationFails of [false, true]) {
+      const processes = new Processes({ onProgress(event) {
+        if (observationFails && event.phase === "node-spawn") readFileSync(join(root, "missing-terminal-observer"));
+      } });
+      let captures = 0;
+      try {
+        await assert.rejects(pty(processes, process.execPath, {
+          workspace: root,
+          args: ["-e", "process.stdout.write('has overflowed its stack');process.stdin.resume()"],
+          onRequest() { return () => {}; },
+        }, { actions: [{ when: { contains: ["unreachable"] } }] }, () => {
+          captures++;
+          readFileSync(join(root, "missing-terminal-capture"));
+        }), error => {
+          assert.match(error.message, /shipping executable failed.*has overflowed its stack/);
+          assert.ok(error.cause instanceof AggregateError);
+          const diagnostic = failureReport(error);
+          assert.match(diagnostic.cause, /has overflowed its stack/);
+          assert.match(diagnostic.cause, observationFails ? /missing-terminal-observer/ : /missing-terminal-capture/);
+          return true;
+        });
+        assert.equal(captures, observationFails ? 0 : 1);
+        assert.equal(processes.children.size, 0, "the original terminal owner must be reaped before rejection");
+      } finally { await processes.close().catch(error => {
+        if (!observationFails || error.name !== "ProcessObservationFailed") throw error;
+      }); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
 
 test("terminal setup rejection releases parser and screen resources before returning its original error", async () => {
   const root = mkdtempSync(join(tmpdir(), "terminal-setup-")), processes = new Processes();
