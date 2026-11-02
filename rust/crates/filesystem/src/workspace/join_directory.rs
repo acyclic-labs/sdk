@@ -199,7 +199,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .limits
                 .maximum_component_bytes,
         )?;
-        let view = self.preview.plan().describe_conflict(conflict).await?;
+        let view = self.preview.plan().describe_conflict_file(conflict).await?;
         if &view.key != key {
             return Err(DrivenJoinError::StaleCandidate);
         }
@@ -359,7 +359,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             let view = self
                 .preview
                 .plan()
-                .describe_conflict(row.value().clone())
+                .describe_conflict_file(row.value().clone())
                 .await?;
             let path = view
                 .path
@@ -400,22 +400,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                         _ => MergeConflictFileKind::Type,
                     }
                 };
-                let mut reference = binding_conflict_view(self.preview.plan(), row.value().clone());
-                reference.key = view.key;
-                reference.path = view.path;
-                reference.kind = view.kind;
-                if absent(&view.ours) {
-                    reference.ours = ConflictValue::Absent;
-                }
-                if absent(&view.theirs) {
-                    reference.theirs = ConflictValue::Absent;
-                }
                 (
                     format!("{path}.conflict.json"),
                     json(&MergeConflictFile {
                         version: 1,
                         kind,
-                        conflict: reference,
+                        conflict: view,
                     })?,
                 )
             };

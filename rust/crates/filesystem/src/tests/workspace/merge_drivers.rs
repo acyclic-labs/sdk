@@ -9,6 +9,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ("/text", "base\n"),
         ("/binary", "base\0"),
         ("/deleted", "base"),
+        ("/replaced", "base\0"),
     ] {
         main.write_text(path, content).await?;
     }
@@ -29,6 +30,11 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     agent.write_text("/binary", "theirs\0").await?;
     main.write_text("/deleted", "modified").await?;
     agent.remove("/deleted").await?;
+    main.write_text("/replaced", "ours\0").await?;
+    agent.remove("/replaced").await?;
+    agent.write_text("/replaced", "replacement\0").await?;
+    let replacement = unbounded!(agent, stat("/replaced"))?.file_id;
+    assert_ne!(replacement, unbounded!(main, stat("/replaced"))?.file_id);
     for (workspace, mode) in [(&main, 0o700), (&agent, 0o770)] {
         let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
         unbounded!(
@@ -103,7 +109,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         "negative control: the fixture must require multiple pages"
     );
     assert_eq!(directory.plan().clean, 7);
-    assert!(directory.plan().conflicts >= 4);
+    assert!(directory.plan().conflicts >= 5);
     assert_eq!(
         directory.plan().exposed_conflicts,
         directory.plan().conflicts
@@ -117,7 +123,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     assert!(crate::text_merge::has_conflict_markers(
         std::str::from_utf8(&text)?
     ));
-    for path in ["binary", "deleted", "pkg"] {
+    for path in ["binary", "deleted", "pkg", "replaced"] {
         let bytes = unbounded!(
             staging,
             read(&format!("{root}/conflicts/{path}.conflict.json"), 16384)
@@ -136,6 +142,17 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         if path == "pkg" {
             assert_eq!(document.kind, MergeConflictFileKind::Mode);
             assert!(matches!(document.conflict.key, ConflictKey::Metadata(_)));
+        }
+        if path == "replaced" {
+            assert_eq!(document.kind, MergeConflictFileKind::Binary);
+            assert_eq!(
+                document.conflict.theirs,
+                ConflictValue::Record {
+                    generation: pins.2,
+                    file_id: replacement,
+                },
+                "replacement descriptor substituted the absent original identity"
+            );
         }
     }
     assert_eq!(unbounded!(main, head())?.id(), pins.1);
@@ -266,6 +283,12 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             r#"{"take":"theirs"}"#,
         )
         .await?;
+    staging
+        .write_text(
+            &format!("{root}/conflicts/replaced.resolve.json"),
+            r#"{"take":"theirs"}"#,
+        )
+        .await?;
     let staged = unbounded!(staging, head())?;
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
@@ -305,6 +328,10 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     assert_eq!(
         unbounded!(main, read("/binary", 1024))?.as_ref(),
         b"theirs\0"
+    );
+    assert_eq!(
+        unbounded!(main, read("/replaced", 1024))?.as_ref(),
+        b"replacement\0"
     );
     assert!(matches!(
         unbounded!(main, stat("/deleted")),

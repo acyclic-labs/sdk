@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ConflictContents {
+    Driver,
+    Files,
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A, O> {
     pub(super) async fn stage_regular_resolution(
         &self,
@@ -55,6 +61,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         &self,
         conflict: MergeConflict,
     ) -> Result<crate::ConflictView, WorkspaceError> {
+        self.describe_conflict_contents(conflict, ConflictContents::Driver)
+            .await
+    }
+
+    pub(super) async fn describe_conflict_file(
+        &self,
+        conflict: MergeConflict,
+    ) -> Result<crate::ConflictView, WorkspaceError> {
+        self.describe_conflict_contents(conflict, ConflictContents::Files)
+            .await
+    }
+
+    async fn describe_conflict_contents(
+        &self,
+        conflict: MergeConflict,
+        contents: ConflictContents,
+    ) -> Result<crate::ConflictView, WorkspaceError> {
         let MergeConflict::File(file_id) = conflict else {
             let mut view = binding_conflict_view(self, conflict.clone());
             if let MergeConflict::Binding { directory_id, name } = conflict
@@ -69,13 +92,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             }
             return Ok(view);
         };
-        self.file_conflict_view(file_id).await
+        self.file_conflict_view(file_id, contents).await
     }
 
     /// The driver-ready view of a conflict on one file identity's record.
     async fn file_conflict_view(
         &self,
         file_id: FileId,
+        contents: ConflictContents,
     ) -> Result<crate::ConflictView, WorkspaceError> {
         let path = self.conflict_path(file_id).await?;
         let fs = &self.target_head.workspace.volume.fs;
@@ -111,7 +135,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             if let Some(text) = path.as_deref()
                 && let Some(replaced) = self.replaced_file(file_id, text).await?
                 && let Some(view) = self
-                    .regular_conflict_view(file_id, path.clone(), replaced.records)
+                    .regular_conflict_view(file_id, path.clone(), replaced.records, contents)
                     .await?
             {
                 return Ok(view);
@@ -141,6 +165,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     file_id,
                     path.clone(),
                     [base_record, ours_record, theirs_record],
+                    contents,
                 )
                 .await?
         {
@@ -149,6 +174,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         if base_record.metadata != ours_record.metadata
             || base_record.metadata != theirs_record.metadata
         {
+            if contents == ConflictContents::Files {
+                let mut view = record_conflict_view(self, file_id, path, ConflictKind::Metadata);
+                view.key = ConflictKey::Metadata(file_id);
+                return Ok(view);
+            }
             return self
                 .metadata_conflict_view(file_id, path, [base_record, ours_record, theirs_record])
                 .await;
@@ -158,6 +188,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 file_id,
                 path.clone(),
                 [base_record, ours_record, theirs_record],
+                contents,
             )
             .await?
         {
@@ -238,11 +269,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .map_err(Into::into)
     }
 
-    pub(super) async fn regular_conflict_view(
+    async fn regular_conflict_view(
         &self,
         file_id: FileId,
         path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
+        contents: ConflictContents,
     ) -> Result<Option<crate::ConflictView>, WorkspaceError> {
         if records
             .iter()
@@ -251,28 +283,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Ok(None);
         }
         let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
-        for (record, body) in records.into_iter().zip(&mut bodies) {
-            let Some(bytes) = self
-                .target_head
-                .workspace
-                .volume
-                .fs
-                .workspace_conflict_bytes(&self.target_head.workspace.volume, record)
-                .await?
-            else {
-                return Ok(Some(record_conflict_view(
-                    self,
-                    file_id,
-                    path,
-                    ConflictKind::Binary,
-                )));
-            };
-            *body = Some(bytes);
-        }
-        let [Some(base), Some(ours), Some(theirs)] = bodies else {
-            return Err(WorkspaceError::InvalidMergeResolution);
+        let reference = || {
+            let mut view = record_conflict_view(self, file_id, path.clone(), ConflictKind::Binary);
+            [view.base, view.ours, view.theirs] =
+                std::array::from_fn(|index| ConflictValue::Record {
+                    generation: [self.base.id, self.target_head.id, self.source_head.id][index],
+                    file_id: records[index].file_id,
+                });
+            view
         };
-        let bodies = [base, ours, theirs];
         let limits = crate::text_merge::ByteMergeLimits {
             max_bytes: self
                 .target_head
@@ -282,6 +301,23 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .limits
                 .maximum_read_bytes,
         };
+        for (record, body) in records.into_iter().zip(&mut bodies) {
+            let Some(bytes) = self
+                .target_head
+                .workspace
+                .volume
+                .fs
+                .workspace_conflict_bytes(&self.target_head.workspace.volume, record)
+                .await?
+            else {
+                return Ok(Some(reference()));
+            };
+            *body = Some(bytes);
+        }
+        let [Some(base), Some(ours), Some(theirs)] = bodies else {
+            return Err(WorkspaceError::InvalidMergeResolution);
+        };
+        let bodies = [base, ours, theirs];
         let (kind, [base, ours, theirs]) = match bodies
             .each_ref()
             .map(|bytes| crate::text_merge::text_from_bytes(bytes, limits))
@@ -290,6 +326,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 ConflictKind::Text,
                 [base, ours, theirs].map(|text| ConflictValue::Text(text.to_owned())),
             ),
+            _ if contents == ConflictContents::Files => return Ok(Some(reference())),
             _ => (
                 ConflictKind::Binary,
                 bodies
