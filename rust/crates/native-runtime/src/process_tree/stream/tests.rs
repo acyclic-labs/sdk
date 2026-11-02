@@ -573,7 +573,7 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
         }
         // Await the ORIGINAL cleanup owner while retaining the unread receiver.
         // This catches an implementation that waits for credit before control.
-        let outcome = (&mut output.completion).await??;
+        let outcome = (&mut output.completion).await?;
         let failure = outcome.result.unwrap_err();
         assert_eq!(
             failure.error.kind(),
