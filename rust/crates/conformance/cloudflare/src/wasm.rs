@@ -15,6 +15,7 @@ pub async fn qualify_journal_deadline(
         AppendRecord, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
         IdempotencyKey, StreamError, StreamPath, UnixMillisClock,
     };
+    use futures::FutureExt as _;
     use std::{
         cell::Cell,
         rc::Rc,
@@ -177,11 +178,12 @@ pub async fn qualify_journal_deadline(
                 return Err(StreamError::InvalidResponse);
             }
             let foreign = acyclic_stream::AppliedRevisions::in_process().at(0);
-            if reopened
-                .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
-                .await
-                != Err(StreamError::RevisionForeign)
-            {
+            if !matches!(
+                reopened
+                    .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
+                    .now_or_never(),
+                Some(Err(StreamError::RevisionForeign))
+            ) {
                 return Err(StreamError::InvalidResponse);
             }
             if reopened

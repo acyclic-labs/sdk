@@ -106,8 +106,13 @@ struct Inner {
     journal: HostJournal,
     limits: JournalStreamLimits,
     clock: Option<Arc<dyn UnixMillisClock>>,
-    cache: tokio::sync::OnceCell<crate::query_sync::Mutex<Replicated<HostPort>>>,
+    cache: tokio::sync::OnceCell<Cache>,
     claims: OperationClaims,
+}
+
+struct Cache {
+    revisions: Arc<AppliedRevisions>,
+    replica: crate::query_sync::Mutex<Replicated<HostPort>>,
 }
 
 struct OpenJournals {
@@ -224,9 +229,7 @@ impl JournalStream {
         Ok(stream)
     }
 
-    async fn replica(
-        &self,
-    ) -> Result<&crate::query_sync::Mutex<Replicated<HostPort>>, StreamError> {
+    async fn cache(&self) -> Result<&Cache, StreamError> {
         self.0
             .cache
             .get_or_try_init(|| async {
@@ -264,7 +267,8 @@ impl JournalStream {
                 // All concurrent openers share this initialization. No replay,
                 // provider or revision token is exposed before durable authority.
                 let provider = provider.with_authority(authority.scope, authority.incarnation);
-                Ok(crate::query_sync::Mutex::new(Replicated::new(
+                let revisions = Arc::clone(&provider.revisions);
+                let replica = crate::query_sync::Mutex::new(Replicated::new(
                     HostPort {
                         journal: self.0.journal.clone(),
                         limits: self.0.limits,
@@ -274,7 +278,8 @@ impl JournalStream {
                     provider,
                     clock,
                     0,
-                )))
+                ));
+                Ok(Cache { revisions, replica })
             })
             .await
     }
@@ -282,9 +287,9 @@ impl JournalStream {
         &self,
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
-        let mut cache = self.replica().await?.lock().await;
-        cache.refresh(PAGE).await?;
-        operation(&cache.provider).await
+        let mut replica = self.cache().await?.replica.lock().await;
+        replica.refresh(PAGE).await?;
+        operation(&replica.provider).await
     }
 
     async fn execute(
@@ -292,8 +297,9 @@ impl JournalStream {
         command: WriteRequest,
         deadline: Option<u64>,
     ) -> Result<WriteOutcome, StreamError> {
-        self.replica()
+        self.cache()
             .await?
+            .replica
             .lock()
             .await
             .execute(command, deadline, PAGE)
@@ -388,10 +394,13 @@ impl JournalStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        // Park outside the cache lock so writes and refreshes can advance it.
-        let revisions = self
-            .query(async |p| Ok(std::sync::Arc::clone(&p.revisions)))
-            .await?;
-        revisions.wait(at_least).await
+        let cache = self.cache().await?;
+        let minimum = cache.revisions.floor(at_least)?;
+        if minimum.is_some_and(|minimum| minimum > cache.revisions.current().index) {
+            self.query(async |_| Ok(())).await?;
+        }
+        // A covered cut needs no refresh just to recover its authority. Park
+        // outside the replica lock so writes and refreshes can advance it.
+        cache.revisions.wait(at_least).await
     }
 }
