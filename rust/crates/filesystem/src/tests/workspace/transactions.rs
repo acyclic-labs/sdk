@@ -1,5 +1,12 @@
 use super::*;
 
+fn serialized_config() -> VolumeConfig {
+    VolumeConfig {
+        concurrency: crate::ConcurrencyMode::SerializedAuthority,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    }
+}
+
 #[tokio::test]
 async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -59,14 +66,21 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         OwnedBytes::from_static(b"ready")
     );
 
-    let mut exact_retry = unbounded!(workspace, begin_transaction(key))?;
-    unbounded!(exact_retry, create_dir_all("/output/nested"))?;
-    exact_retry
+    // Retry the original candidate and publication head, rather than rebuilding
+    // the same file bytes against a different authenticated base.
+    assert!(matches!(
+        commit(&mut transaction).await?,
+        TransactionCommit::AlreadyCommitted(retried) if retried.id() == generation.id()
+    ));
+
+    let mut changed_base = unbounded!(workspace, begin_transaction(key))?;
+    unbounded!(changed_base, create_dir_all("/output/nested"))?;
+    changed_base
         .write_text("/output/nested/status", "ready")
         .await?;
     assert!(matches!(
-        commit(&mut exact_retry).await?,
-        TransactionCommit::AlreadyCommitted(retried) if retried.id() == generation.id()
+        commit(&mut changed_base).await?,
+        TransactionCommit::IdempotencyConflict
     ));
 
     let mut conflicting_retry = unbounded!(workspace, begin_transaction(key))?;
@@ -93,6 +107,14 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     assert!(matches!(
         commit(&mut first).await?,
         TransactionCommit::Committed(_)
+    ));
+    assert!(matches!(
+        commit(&mut disjoint).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(disjoint, rebase(16))?,
+        TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
         commit(&mut disjoint).await?,
@@ -338,7 +360,7 @@ proptest::proptest! {
                     };
                     let sibling = format!("{directory}/{name}");
                     let fs = Fs::memory();
-                    let workspace = unbounded!(fs, create_workspace("mkdir-dependencies"))?;
+                    let workspace = unbounded!(fs, create_workspace_with_config("mkdir-dependencies", serialized_config()))?;
                     let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                     unbounded!(seed, create_dir_all("/shared/nested"))?;
                     commit(&mut seed).await?;
@@ -407,7 +429,10 @@ async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
         for observe_directory in [false, true] {
             for replace_prefix in [false, true] {
                 let fs = Fs::memory();
-                let workspace = unbounded!(fs, create_workspace("shared-directory-writers"))?;
+                let workspace = unbounded!(
+                    fs,
+                    create_workspace_with_config("shared-directory-writers", serialized_config())
+                )?;
                 let mut seed = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                 unbounded!(seed, create_dir_all("/.system/harness-uploads"))?;
                 commit(&mut seed).await?;
