@@ -189,6 +189,16 @@ struct Slot {
     sequence: u64,
 }
 
+impl Slot {
+    fn range(self, range: Option<Range<u64>>) -> std::io::Result<Range<u64>> {
+        let range = range.unwrap_or(0..self.length);
+        if range.start > range.end || range.end > self.length {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        Ok(range)
+    }
+}
+
 /// The log and its index, under the one lock that orders every write.
 struct Log {
     file: Arc<std::fs::File>,
@@ -540,10 +550,7 @@ impl LocalMedium {
                 };
                 (Arc::clone(&log.file), slot)
             };
-            let range = range.unwrap_or(0..slot.length);
-            if range.start > range.end || range.end > slot.length {
-                return Err(std::io::ErrorKind::InvalidInput.into());
-            }
+            let range = slot.range(range)?;
             let count = usize::try_from(range.end - range.start)
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
             let mut bytes = vec![0; count];
@@ -733,6 +740,20 @@ impl Medium for LocalMedium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
+        // Presence at the requested end is already certified by the original
+        // index. Never wait here: a writer can hold the lock over physical I/O.
+        // Contention and poison use the same original worker below.
+        if let Some(range) = range.as_ref().filter(|range| range.start == range.end)
+            && let Ok(log) = self.shared.log.try_lock()
+        {
+            let Some(&slot) = log.index.get(key) else {
+                return Ok(None);
+            };
+            return slot
+                .range(Some(range.clone()))
+                .map(|_| Some(OwnedBytes::new()))
+                .map_err(failed);
+        }
         Ok(self
             .read_value(key.to_owned(), range)
             .await?
