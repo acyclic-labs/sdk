@@ -25,11 +25,20 @@ pub(crate) const GOOGLE_PROFILE: &str = include_str!("../profile/native/google.m
 /// Where the seed's skills live in its tree.
 pub const SKILLS: &str = "skills";
 
+macro_rules! seed_file {
+    ($path:expr) => {
+        seed_file!($path, $path)
+    };
+    ($path:expr, $source:expr) => {
+        ($path, include_bytes!($source))
+    };
+}
+
 macro_rules! skill {
     ($name:literal) => {
-        (
+        seed_file!(
             concat!("skills/", $name, "/SKILL.md"),
-            include_bytes!(concat!("../skills/", $name, "/SKILL.md")),
+            concat!("../skills/", $name, "/SKILL.md")
         )
     };
 }
@@ -37,6 +46,14 @@ macro_rules! skill {
 /// Every seed file by its path in the tree, sorted by path.
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
+    seed_file!("plugins/spawn/topologies/blackboard.md"),
+    seed_file!("plugins/spawn/topologies/debate-ring.md"),
+    seed_file!("plugins/spawn/topologies/hierarchy.md"),
+    seed_file!("plugins/spawn/topologies/market.md"),
+    seed_file!("plugins/spawn/topologies/mesh.md"),
+    seed_file!("plugins/spawn/topologies/pipeline.md"),
+    seed_file!("plugins/spawn/topologies/search-derived.md"),
+    seed_file!("plugins/spawn/topologies/service.md"),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
@@ -45,7 +62,7 @@ pub const TREE: &[(&str, &[u8])] = &[
     skill!("swarm-topology"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
-    ("sys/kernel.md", include_bytes!("kernel.md")),
+    seed_file!("sys/kernel.md", "kernel.md"),
     (
         "sys/native/anthropic/profile.md",
         ANTHROPIC_PROFILE.as_bytes(),
