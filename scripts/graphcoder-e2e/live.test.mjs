@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
+const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 import { answer, requireTools, runCase } from "./live.mjs";
 
 test("live oracle uses the shipping text and committed JSONL contracts", () => {
@@ -44,28 +45,29 @@ test("model prose and pre-tool events cannot prove a completed native tool", () 
 });
 
 test("collaboration requires the spawned child's exact settled public result", () => {
-  // Generated SDK hook contract controls, not captured provider output.
-  const child = "agents/project/worker", expected = "child result";
-  const hooks = () => [
-    { hook_event_name: "PostToolUse", tool_name: "spawn", tool_response: { agent: child } },
-    { hook_event_name: "PostToolUse", tool_name: "wait", tool_input: { agents: [child] },
-      tool_response: { settled: [{ agent: child, phase: "idle", answer: expected }], running: [] } },
-  ];
-  requireTools(hooks(), ["spawn", "wait"], expected);
-  for (const mutate of [
-    events => events.pop(),
-    events => { events[1].hook_event_name = "PreToolUse"; },
-    events => { events[1].tool_input.agents = ["agents/project/other"]; },
-    events => { events[1].tool_response.settled[0].agent = "agents/project/other"; },
-    events => { events[1].tool_response.running = [child]; },
-    events => { events[1].tool_response.settled = []; },
-    events => { events[1].tool_response.settled[0].phase = "failed"; },
-    events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
-    events => { events[1].tool_response.error = "wait failed"; },
-  ]) {
-    const events = hooks();
-    mutate(events);
-    assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+  // Original live calls used both supported references: canonical path and
+  // the exact name returned by spawn. Settlement still binds canonical identity.
+  for (const { events: original } of childResults) {
+    const [spawn, wait] = original;
+    const child = spawn.tool_response.agent, expected = wait.tool_response.settled[0].answer;
+    requireTools(original, ["spawn", "wait"], expected);
+    for (const mutate of [
+      events => events.pop(),
+      events => { events[1].hook_event_name = "PreToolUse"; },
+      events => { events[1].tool_input.agents = ["other"]; },
+      events => { events[1].tool_input.agents = ["agents/" + spawn.tool_response.name]; },
+      events => { events[1].tool_input.agents.push(child); },
+      events => { events[1].tool_response.settled[0].agent = "agents/project/other"; },
+      events => { events[1].tool_response.running = [child]; },
+      events => { events[1].tool_response.settled = []; },
+      events => { events[1].tool_response.settled[0].phase = "failed"; },
+      events => { events[1].tool_response.settled[0].answer = "parent's invented result"; },
+      events => { events[1].tool_response.error = "wait failed"; },
+    ]) {
+      const events = structuredClone(original);
+      mutate(events);
+      assert.throws(() => requireTools(events, ["spawn", "wait"], expected));
+    }
   }
 });
 

@@ -32,7 +32,7 @@ export function answer(result, format) {
 
 export function requireTools(hooks, names, expectedChildResult) {
   const remaining = new Set(names);
-  let child, consumed = false;
+  let child, childName, consumed = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
     if (hook.tool_response === undefined || hook.tool_response === null)
@@ -42,8 +42,12 @@ export function requireTools(hooks, names, expectedChildResult) {
     if (expectedChildResult === undefined) continue;
     if (hook.tool_name === "spawn" && typeof hook.tool_response?.agent === "string") {
       child = hook.tool_response.agent;
+      childName = hook.tool_response.name;
     } else if (hook.tool_name === "wait" && child && hook.tool_response?.settled?.length) {
-      assert.deepEqual(hook.tool_input?.agents, [child], "wait used a different child reference");
+      const references = hook.tool_input?.agents;
+      assert.ok(Array.isArray(references) && references.length === 1
+        && (references[0] === child || (typeof childName === "string" && references[0] === childName)),
+      "wait used a different child reference");
       assert.deepEqual(hook.tool_response.running, [], "child remains running");
       assert.equal(hook.tool_response.settled.length, 1, "wait settled a different child set");
       const [settled] = hook.tool_response.settled;
@@ -109,8 +113,9 @@ export async function runCase(binary, login, root, name, signal) {
       } else if (name === "shell") {
         await invoke(`Use the shell tool to create shell.txt containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply DONE.`);
         step = "assert shell effect and completed tool event";
+        const recorded = childHooks = await hooks();
         await fileBytes(join(workspace, "shell.txt"), marker);
-        requireTools(await hooks(), ["shell"]);
+        requireTools(recorded, ["shell"]);
       } else if (name === "child-result") {
         await collaborate(`Spawn a child named worker, asking it to reply with exactly ${marker}. End this turn with exactly SPAWNED so the spawn commits. Retain the exact canonical agent path returned by spawn for the next turn.`,
           "Use wait with the exact canonical agent path from the preceding spawn result. Read that child's settled idle answer, then reply with exactly that answer, without additional text.");
@@ -120,20 +125,20 @@ export async function runCase(binary, login, root, name, signal) {
       } else if (name === "resume") {
         const prompt = `Use the shell tool to append exactly the UTF-8 bytes ${marker} to once.txt, with no newline or other bytes, then reply with exactly ${marker}.`;
         const first = await invoke(prompt, "jsonl");
-        const before = await hooks();
+        const before = childHooks = await hooks();
         requireTools(before, ["shell"]);
         step = "reopen settled operation without repeating work";
         const second = await invoke(prompt, "jsonl");
         assert.deepEqual(second, first, "reopen changed the committed result");
         await fileBytes(join(workspace, "once.txt"), marker);
-        assert.equal((await hooks()).filter(hook => hook.hook_event_name === "PostToolUse").length,
+        assert.equal((childHooks = await hooks()).filter(hook => hook.hook_event_name === "PostToolUse").length,
           before.filter(hook => hook.hook_event_name === "PostToolUse").length, "replay repeated a tool call");
       } else if (name === "fork-merge") {
         await collaborate(`Spawn a child named worker to use shell to write child.txt in its project checkout containing exactly the UTF-8 bytes ${marker}, with no newline or other bytes, then reply with exactly ${marker}. End your spawn turn with exactly SPAWNED so it commits. Retain the exact canonical agent path returned by spawn for the next turn. The spawn result is a canonical agent path, not a branch alias.`,
           "Use wait with the exact canonical agent path from the preceding spawn result and read that child's settled idle answer. Then use fs branch to find the actual published agents/ branch, merge that exact branch into your project, and read child.txt. Reply with exactly those file contents, without additional text.");
         step = "assert child fork and merged parent bytes";
-        await fileBytes(join(workspace, "child.txt"), marker);
         const recorded = childHooks = await hooks();
+        await fileBytes(join(workspace, "child.txt"), marker);
         requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker);
         assert.ok(recorded.some(hook => hook.hook_event_name === "PostToolUse" && hook.tool_name === "fs"
           && /\bmerge\s+['\"]?agents\//.test(hook.tool_input?.command ?? "")), "missing completed child merge");
