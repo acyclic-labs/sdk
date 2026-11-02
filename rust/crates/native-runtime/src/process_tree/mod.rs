@@ -165,6 +165,8 @@ pub struct ProcessTree {
 pub struct ProcessReadiness(events::Wait<'static>);
 
 pub use events::ProcessWaitOutcome;
+#[cfg(unix)]
+pub use events::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 
 impl ProcessReadiness {
     /// Cancels this observation without releasing the original process owner.

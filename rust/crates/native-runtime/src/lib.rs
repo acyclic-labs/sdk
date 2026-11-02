@@ -62,6 +62,8 @@ pub use process_tree::{
     ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessStdio, ProcessTree,
     ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome, ProcessWake,
 };
+#[cfg(unix)]
+pub use process_tree::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::{
     ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostFailure,
