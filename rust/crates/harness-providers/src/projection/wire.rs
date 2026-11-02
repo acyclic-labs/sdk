@@ -51,16 +51,31 @@ pub(super) struct Chat<'a> {
 }
 
 impl acyclic_model_render::Segment for Message<'_> {
+    fn selected(
+        &self,
+        _: &acyclic_model_render::Provenance,
+    ) -> Result<bool, acyclic_model_render::RenderError> {
+        Ok(true)
+    }
     fn write(
         &self,
         _: &acyclic_model_render::Provenance,
+        instruction: Option<&str>,
         writer: &mut impl std::io::Write,
-    ) -> Result<Option<bool>, acyclic_model_render::RenderError> {
+    ) -> Result<bool, acyclic_model_render::RenderError> {
+        if let (
+            Self::Gemini {
+                role: "user",
+                parts,
+            },
+            Some(instruction),
+        ) = (self, instruction)
+        {
+            acyclic_model_render::gemini_summary(parts, instruction, writer)?;
+            return Ok(true);
+        }
         serde_json::to_writer(writer, self).map_err(acyclic_model_render::json_error)?;
-        Ok(match self {
-            Self::Gemini { role, .. } => Some(*role == "model"),
-            _ => None,
-        })
+        Ok(false)
     }
 }
 

@@ -62,15 +62,22 @@ struct Marked<'a, 'body> {
 }
 
 impl Segment for Marked<'_, '_> {
+    fn selected(
+        &self,
+        target: &acyclic_model_render::Provenance,
+    ) -> std::result::Result<bool, acyclic_model_render::RenderError> {
+        self.message.selected(target)
+    }
     fn write(
         &self,
         target: &acyclic_model_render::Provenance,
+        instruction: Option<&str>,
         writer: &mut impl Write,
-    ) -> std::result::Result<Option<bool>, acyclic_model_render::RenderError> {
+    ) -> std::result::Result<bool, acyclic_model_render::RenderError> {
         let parent_digest = self
             .last
             .map(|_| *self.writer.0.borrow().hash.finalize().as_bytes());
-        let turn = self.message.write(target, writer)?;
+        let turn = self.message.write(target, instruction, writer)?;
         if let (Some(parent_digest), Some(messages)) = (parent_digest, self.last) {
             let mut output = self.writer.0.borrow_mut();
             output.breakpoint = Some(ModelCacheBreakpoint {
