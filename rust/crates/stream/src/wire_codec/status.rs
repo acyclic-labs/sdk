@@ -24,7 +24,11 @@ pub(crate) fn status(error: &Status) -> StreamError {
     }
 }
 
-pub(crate) fn error_status(error: &StreamError) -> Status {
+/// Encodes a Stream failure with the canonical gRPC code and semantic message.
+///
+/// Serving adapters use this same encoder after selecting their admitted
+/// provider, so transport errors have the same meaning on every backend.
+pub fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidResponse => Status::data_loss("invalid_response"),
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
