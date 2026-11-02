@@ -4,8 +4,8 @@ Terminal signal child-exit successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `rust/crates/harness-tui/tests/cases/terminal_signals.rs` | Seven child-exit recheck sites routed through a one-millisecond sleep and a 900-millisecond readiness deadline | The original `Child::wait`, followed by the original PTY drain; an OS wait failure returns its I/O error. | Source complete; runtime qualification pending |
-| Same source, suspension control | Repeated nonblocking `waitpid` calls until a stopped child appears | The same child's blocking `waitpid` with `UNTRACED`; an early exit fails the original stopped-status assertion. | Source complete; runtime qualification pending |
+| `rust/crates/harness-tui/tests/cases/terminal_signals.rs` | Seven child-exit recheck sites routed through a one-millisecond sleep and a 900-millisecond readiness deadline | The original `Child::wait`, followed by the original PTY drain; an OS wait failure returns its I/O error. | Existing signal-disposition control passed on Linux x86_64 |
+| Same source, suspension control | Repeated nonblocking `waitpid` calls until a stopped child appears | The same child's blocking `waitpid` with `UNTRACED`; an early exit fails the original stopped-status assertion. | Compiled with the original signal control; suspension execution unqualified |
 
 Area cleanup centralizes child exit and final output collection in one fixture
 method and removes seven duplicate status-check closures. Each exit observation
@@ -19,6 +19,9 @@ still propagate. No channel, worker, timer, allocation or product operation is
 added. Final output collection remains proportional to actual terminal bytes;
 this is not a whole-operation constant-time claim. Existing terminal readiness
 and handoff timing sites remain open for their own producer-event conversion.
+The original dropping/reopening signal-disposition control passed on Linux
+x86_64 (one test, 0.02 s), exercising four real child/signal combinations. Other
+signal controls were compiled but not executed for this change.
 
 Identity cancellation retention successor:
 
