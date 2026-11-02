@@ -20,7 +20,7 @@ use acyclic_harness_core::{
 use acyclic_objects::{LocalMedium, LocalObjects, Store, local::LocalObjectsLimits};
 use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
-    BoxProviderFuture, CommitRequest, IdempotencyKey, LocalStream, LocalStreamLimits, MemoryLimits,
+    BoxProviderFuture, CommitRequest, IdempotencyKey, LocalStream, LocalStreamLimits,
 };
 use futures::{TryStreamExt as _, stream::FuturesUnordered};
 use std::{
@@ -114,22 +114,9 @@ impl Fixture {
     }
 
     pub(super) async fn providers(root: &Path, durability: DurabilityQuery) -> Result<Self> {
-        let limits = LocalStreamLimits {
-            memory: MemoryLimits {
-                paths: usize::MAX,
-                path_bytes: usize::MAX,
-                records: usize::MAX,
-                payload_bytes: usize::MAX,
-                commits: usize::MAX,
-                idempotency_results: usize::MAX,
-            },
-            journal_operations: u64::MAX,
-            journal_bytes: u64::MAX,
-            ..LocalStreamLimits::default()
-        };
         let requests = RequestLedger::new();
         let stream = Arc::new(Counted::with_ledger(
-            LocalStream::open(root.join("stream"), limits).await?,
+            LocalStream::open(root.join("stream"), LocalStreamLimits::default()).await?,
             requests.clone(),
         ));
         let medium =
