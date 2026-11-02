@@ -507,6 +507,7 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
     use crate::wire::ErrorCode;
     use acyclic_machines::ProviderError as Machines;
     match cause {
+        Machines::Caused(failure) => machines_error_code(failure.classification()),
         Machines::NotFound(_) => ErrorCode::NotFound,
         Machines::Conflict(_) | Machines::FailedPrecondition(_) => ErrorCode::Conflict,
         Machines::Unsupported(_) => ErrorCode::Unsupported,
