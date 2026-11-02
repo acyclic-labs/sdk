@@ -15,8 +15,15 @@ function host(seed = {metadata:[],journalTail:'0'}) {
 test('state bytes do not alias the seed, inputs, reads or journal pages', async () => {
   const seed = Uint8Array.of(1), page = Uint8Array.of(2);
   const owner = host({metadata:[{key:'seed',value:seed}],journalTail:'1'});
+  const admitted = owner.seed;
+  let seedReads = 0;
+  Object.defineProperty(owner,'seed',{get() {
+    seedReads++;
+    return seedReads === 1 ? admitted : {metadata:[],journalTail:'2'};
+  }});
   owner.readJournal = async () => [page];
   const binding = materializeActorState(owner);
+  assert.equal(seedReads,1);
   seed[0] = 99;
   const input = Uint8Array.of(3), frame = Uint8Array.of(4);
   const supplied = [frame];
