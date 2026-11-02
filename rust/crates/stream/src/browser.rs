@@ -89,6 +89,9 @@ struct Inner {
 }
 
 /// One account-local durable provider, shared safely across tabs and workers.
+/// Immutable committed-envelope and spent-key hits use the durably replayed
+/// cache. Misses and current head/record observations refresh IndexedDB;
+/// cancelled tentative cache state must be repaired before serving a result.
 #[derive(Clone)]
 pub struct BrowserStream {
     inner: Rc<Inner>,

@@ -19,7 +19,8 @@ async fn append(provider: &BrowserStream, path: &str) -> Result<AppendOutcome, S
 
 #[wasm_bindgen_test]
 async fn immutable_results_reuse_only_a_durable_browser_cache() {
-    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
+    let database = name();
+    let provider = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
         .expect("open");
     let request = AppendRequest {
@@ -58,6 +59,27 @@ async fn immutable_results_reuse_only_a_durable_browser_cache() {
         );
     }
     assert_eq!(provider.inner.transactions.get(), transactions);
+
+    let cold = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("cold opener");
+    assert_eq!(
+        cold.read_commit(receipt.commit_id)
+            .await
+            .expect("cold miss"),
+        envelope
+    );
+    assert!(cold.inner.transactions.get() > 0);
+    let transactions = provider.inner.transactions.get();
+    assert_eq!(
+        provider
+            .tail(request.path.clone())
+            .await
+            .expect("current tail"),
+        1
+    );
+    assert!(provider.inner.transactions.get() > transactions);
+    let transactions = provider.inner.transactions.get();
 
     // No immutable fact certifies absence, even when the local cache is valid.
     let mut missing = Box::pin(provider.read_commit(CommitId::from_bytes([42; 32])));
@@ -504,8 +526,6 @@ async fn browser_wave1_conformance() {
 
 #[wasm_bindgen_test]
 async fn every_opener_of_one_database_proves_the_others_revisions() {
-    use futures::FutureExt as _;
-
     let database = name();
     let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
