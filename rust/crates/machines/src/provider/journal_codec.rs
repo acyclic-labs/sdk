@@ -2,10 +2,14 @@
 use super::*;
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct Operation {
+pub(super) struct Intent {
     pub(super) digest: [u8; 32],
-    pub(super) phase: OperationPhase,
-    pub(super) outcome: Option<MutationOutcome>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct Completed<T = MutationOutcome> {
+    pub(super) digest: [u8; 32],
+    pub(super) outcome: T,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,7 +72,9 @@ pub mod codec_fuzz {
 
     /// An accepted envelope reaches one canonical fixed point for every payload.
     pub fn check(bytes: &[u8]) -> bool {
-        check_type::<Operation>(bytes) && check_type::<MachineObservation>(bytes)
+        check_type::<Intent>(bytes)
+            && check_type::<Completed>(bytes)
+            && check_type::<MachineObservation>(bytes)
     }
 
     /// Capture the production encoder, using stable public contract values.
@@ -108,20 +114,12 @@ pub mod codec_fuzz {
                 "result-observation",
                 crate::results::record(&machine)?.value.to_vec(),
             ),
-            (
-                "pending",
-                encode(&Operation {
-                    digest: [5; 32],
-                    phase: OperationPhase::Pending,
-                    outcome: None,
-                })?,
-            ),
+            ("pending", encode(&Intent { digest: [5; 32] })?),
             (
                 "settled",
-                encode(&Operation {
+                encode(&Completed {
                     digest: [5; 32],
-                    phase: OperationPhase::Succeeded,
-                    outcome: Some(MutationOutcome::Created(machine)),
+                    outcome: MutationOutcome::Created(machine),
                 })?,
             ),
         ])
@@ -139,13 +137,9 @@ mod tests {
     use super::*;
     #[test]
     fn version_refusal_precedes_journal_payload() -> Result<(), Box<dyn std::error::Error>> {
-        let value = Operation {
-            digest: [1; 32],
-            phase: OperationPhase::Pending,
-            outcome: None,
-        };
+        let value = Intent { digest: [1; 32] };
         let encoded = encode(&value)?;
-        let decoded: Operation = decode(&encoded)?;
+        let decoded: Intent = decode(&encoded)?;
         assert_eq!(encode(&decoded)?, encoded);
         let version_offset = b"{\"version\":\"".len();
         for version in [b'0', b'2', u8::MAX] {
@@ -155,14 +149,14 @@ mod tests {
                 .to_vec();
             *rejected.get_mut(version_offset).ok_or("version")? = version;
             assert!(matches!(
-                decode::<Operation>(&rejected),
+                decode::<Intent>(&rejected),
                 Err(ProviderError::Unsupported(_))
             ));
         }
         let mut trailing = encoded;
         trailing.extend_from_slice(b" false");
         assert!(matches!(
-            decode::<Operation>(&trailing),
+            decode::<Intent>(&trailing),
             Err(ProviderError::Rejected(_))
         ));
         Ok(())

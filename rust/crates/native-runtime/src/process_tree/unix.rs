@@ -1,3 +1,4 @@
+use super::events::OwnedSource;
 use std::io;
 use std::io::{Read, Write};
 pub(super) use std::os::fd::AsRawFd as Pipe;
@@ -8,24 +9,24 @@ use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 /// The direct child of a tree, reaped by PID: started by std, or cloned for
 /// this owner by the custody runner.
 pub(super) struct Child {
-    pub(super) stdin: Option<ChildStdin>,
-    pub(super) stdout: Option<ChildStdout>,
-    pub(super) stderr: Option<ChildStderr>,
+    pub(super) stdin: Option<OwnedSource<ChildStdin>>,
+    pub(super) stdout: Option<OwnedSource<ChildStdout>>,
+    pub(super) stderr: Option<OwnedSource<ChildStderr>>,
     pid: libc::pid_t,
     status: Option<ExitStatus>,
 }
 
 impl Child {
-    pub(super) const fn new(
+    pub(super) fn new(
         pid: libc::pid_t,
         stdin: Option<ChildStdin>,
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
     ) -> Self {
         Self {
-            stdin,
-            stdout,
-            stderr,
+            stdin: stdin.map(OwnedSource::new),
+            stdout: stdout.map(OwnedSource::new),
+            stderr: stderr.map(OwnedSource::new),
             pid,
             status: None,
         }
@@ -52,6 +53,8 @@ impl Child {
         if let Some(status) = self.status {
             return Ok(status);
         }
+        #[cfg(target_vendor = "apple")]
+        super::events::retire_process(self.pid);
         let mut raw = 0;
         // SAFETY: this owner's own unreaped child and writable status storage.
         while unsafe { libc::waitpid(self.pid, &raw mut raw, 0) } != self.pid {
@@ -151,6 +154,8 @@ pub(super) fn reap_exited_id(
     pid: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(ExitStatus, io::Result<()>)> {
+    #[cfg(target_vendor = "apple")]
+    super::events::retire_process(pid);
     let mut status = 0;
     let (result, recorded) =
         super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {

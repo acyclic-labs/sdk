@@ -114,7 +114,9 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
         source.clone(),
         NonZeroU64::new(count).unwrap(),
     )?;
-    let terminal = StreamPath::new(format!("{root}/operations/{operation}"))?;
+    let terminal = acyclic_actors::call::CallPath::new(&root, &operation.to_string())?
+        .log()
+        .clone();
     let request = CommitRequest {
         deadline_unix_millis: None,
         conditions: vec![condition],

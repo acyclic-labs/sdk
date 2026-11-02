@@ -4,7 +4,7 @@ use crate::results::{ResultCursor, ResultCut};
 // All positive fork metadata comes from the actual simulator's retained result.
 // Malformed protocol controls mutate only that captured original publication.
 #[tokio::test]
-async fn settled_fork_pages_recover_original_cut_without_aggregate_or_inspections()
+async fn machines_call_remote_pages_keep_original_cut_and_credit_without_inspections()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
     let original = SimulatedMachines::default();
@@ -44,6 +44,7 @@ async fn settled_fork_pages_recover_original_cut_without_aggregate_or_inspection
         results: Some(results.into()),
     };
     let (mut service, script, _) = scripted_operation_service(Vec::new(), Vec::new());
+    script.lock().expect("original script").results = Some(original.clone());
     service.expected_key = key;
     service.expected_operation = results.operation;
     service.recovered = wire::RecoveredAdmission {
@@ -83,13 +84,25 @@ async fn settled_fork_pages_recover_original_cut_without_aggregate_or_inspection
         cut: results,
         from: 0,
     };
-    let page = original.read_results(cursor, NonZeroU32::MIN).await?;
+    let credit = NonZeroU32::new(3).unwrap_or(NonZeroU32::MIN);
+    let page = original.read_results(cursor, credit).await?;
     original
         .destroy_machine(
             page.machines.first().ok_or("original child missing")?.id,
             IdempotencyKey::from_digest([43; 32]),
         )
         .await?;
+    assert_eq!(remote.read_results(cursor, credit).await?, page);
+    let next = page.next.ok_or("original continuation missing")?;
+    assert_eq!(page.machines.len(), 3);
+    assert_eq!(next.from, 3);
+    let successor = original.read_results(next, NonZeroU32::MIN).await?;
+    assert_eq!(remote.read_results(next, NonZeroU32::MIN).await?, successor);
+    assert_eq!(successor.machines.len(), 1);
+    assert_eq!(
+        successor.next.ok_or("successor continuation missing")?.from,
+        4
+    );
     assert_eq!(remote.recover(key).await?, outcome);
     for _ in 1..replies.len() {
         assert_eq!(
@@ -99,7 +112,7 @@ async fn settled_fork_pages_recover_original_cut_without_aggregate_or_inspection
     }
     assert_eq!(
         script.lock().expect("original script").calls,
-        vec!["watch"; replies.len()]
+        [vec!["read_results"; 2], vec!["watch"; replies.len()]].concat()
     );
     let _ = shutdown.send(());
     server.await??;
