@@ -1912,8 +1912,22 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone())?;
+    let runtime = &harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Invalid("agent runtime missing".into()))?
+        .runtime;
+    let settlement = || async {
+        tokio::select! {
+            result = settled(&agents, &root) => result,
+            result = runtime.completion() => {
+                result?;
+                Err(Error::Storage("agent runtime ended before settlement".into()))
+            }
+        }
+    };
     client.send("first", "hello").await?;
-    settled(&agents, &root).await?;
+    settlement().await?;
     let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
     let actor = agents.actor(&root).map_err(agent)?;
     let before = store.load(&actor).await.map_err(agent)?.follow_request();
@@ -1951,7 +1965,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("refuse", 0, RestoreMode::Both, expected)
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settlement().await?;
     let refusal = ConversationEntry::decode(
         entries
             .last()
@@ -2048,7 +2062,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("apply", 0, RestoreMode::Both, expected)
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settlement().await?;
     assert_eq!(entries.len(), 3);
     let restored =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 2).await?;
@@ -2123,7 +2137,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("policy-refusal", 0, RestoreMode::Both, expected.clone())
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = settlement().await?;
     let refusal = ConversationEntry::decode(
         entries
             .last()
@@ -2145,16 +2159,16 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     client
         .restore("context-only", 0, RestoreMode::Context, Vec::new())
         .await?;
-    settled(&agents, &root).await?;
+    settlement().await?;
     let context_only =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 4).await?;
     assert_eq!(context_only.context, saved.context);
     assert_eq!(context_only.volumes, refused.volumes);
     assert_eq!(client.project_heads().await?, expected);
     client.rewind("rewind").await?;
-    settled(&agents, &root).await?;
+    settlement().await?;
     client.clear_all("clear").await?;
-    settled(&agents, &root).await?;
+    settlement().await?;
     assert_eq!(
         agents.state(&root).await.map_err(agent)?.pending_notices,
         Some(notice..notice + 1),
