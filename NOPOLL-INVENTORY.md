@@ -1,5 +1,47 @@
 # Polling and timed-wait inventory
 
+Identity transport fixture event successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1131` | Writer-stalled readiness timeout | Receive the original writer's stalled event on the shared reply/event channel. | Source complete; runtime unqualified |
+| `plugin/identity/src/mcp.rs:1194` | Writer-stalled readiness timeout during consumed exchange | The same ordered channel; output pause is scoped to an unpause guard. | Source complete; runtime unqualified |
+| `plugin/identity/src/mcp.rs:1270` | Input/output-fault readiness timeout | Receive the original input-limit or failed-write event on that channel. | Source complete; runtime unqualified |
+
+Replies, fixture events and writer withdrawal use one ordered channel. The writer
+publishes failure before returning its write error, then publishes withdrawal
+from its destructor. The input publishes its frame-limit event before returning
+the bytes that cause codec rejection. A reply or different event returns
+`InvalidData`; writer withdrawal returns `UnexpectedEof`, even if the input still
+holds a sender. This replaces the racy selection between independent notification
+and reply sources. A paused write publishes once before its Condvar wait, so
+spurious OS wakes cannot duplicate the stalled event.
+
+Existing blocked-output, cancellation, oversized-input and broken-pipe cases keep
+their original producers and result assertions. The real transport control checks
+an unexpected ping and missing event at EOF. It also joins an actually failed
+writer before observing its failure event and then its withdrawal, exercising
+delivery before subscription and failure/terminal ordering. These controls are
+implemented but unexecuted; the separate `Client::reply` closure assertion remains
+proposed.
+
+Pausing output returns one borrowing guard. Normal completion and unwinding
+release that same Condvar gate; the retained writer/drain assertions exercise
+normal release. Unwinding is not independently runtime-qualified. Per pause pair,
+mutex acquisitions stay two and notifications change from two to one, deleting
+the unnecessary notification when entering the paused state. Each fixture wait
+replaces its timer/notification selection with one receive on the existing
+channel: timers one to zero and channels one to one. Two output Notify allocations
+and the optional counted-input Notify allocation are deleted. Input clones the
+existing sender once; each stalled write, frame-limit crossing, failed write and
+writer withdrawal publishes one fixed-size event without copying payload bytes.
+Channel block allocation is library-managed and unmeasured. Per observation,
+dispatch examines one event without scanning history; no whole-channel worst-case
+allocation guarantee is claimed. Added product tasks, workers, syscalls, copies,
+round trips and durability barriers are zero. The guard adds no allocation.
+Native syscall counts and event latency remain unmeasured. The two HTTP-entry
+timeouts, admission retry loop and other census survivors remain open.
+
 Identity drain observation successor:
 
 | Source | Kind | Replacement and terminal | Status |
@@ -26,12 +68,12 @@ Identity reply observation successor:
 
 | Source | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `plugin/identity/src/mcp.rs:894` | Three-second reply readiness timeout | Await the existing reply channel. Its sole sender belongs to the original transport Writer; writer exit closes it and fails a missing-reply assertion. | Source complete; unqualified |
+| `plugin/identity/src/mcp.rs:894` | Three-second reply readiness timeout | Await the existing channel. The transport Writer publishes its withdrawal there, ending a missing-reply assertion. | Source complete; unqualified |
 
 The existing identity transport controls retain their exact initialization,
 tool-list, invalid-argument, ping and cancellation reply assertions. Replies
 published before observation remain queued. The same writer's EOF, error or
-unwind drops the sole sender, so a missing reply fails on channel closure without
+unwind publishes withdrawal, so a missing reply fails on that terminal without
 waiting for an elapsed-time refusal. Existing broken-output and EOF controls
 remain; no new mock or serving path is added. A dedicated `Client::reply`
 negative that suppresses a write and drops its producer is proposed, not
