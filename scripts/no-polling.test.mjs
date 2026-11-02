@@ -4,6 +4,7 @@ import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import test from 'node:test';
+import {checkNoPolling} from './check-no-polling.mjs';
 import {newPollingSites, pollingSites, SourceSyntaxError, validateDispositions} from './source-policy/index.mjs';
 import {sourceInScope} from './no-polling-scope.mjs';
 import {newProjectPollingSites, projectPollingSites} from './source-policy/project.mjs';
@@ -517,19 +518,27 @@ test('shared policy covers consumer paths and configured temporal dependencies',
  assert.ok(newProjectPollingSites(before, after).some(site => site.file === caller));
 });
 
-test('the entry point compares real Git objects and rejects modified and untracked sources', () => {
+test('the entry point compares real Git objects and rejects modified and untracked sources', async () => {
  const root = mkdtempSync(join(tmpdir(), 'sdk-no-polling-'));
  const checker = resolve('scripts/check-no-polling.mjs');
  const absent = process.platform === 'win32' ? 'NUL' : '/dev/null';
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent, GIT_CONFIG_COUNT: '0'};
  const git = args => execFileSync('git', args, {cwd: root, env, maxBuffer: Infinity});
  const write = (file, source) => { mkdirSync(dirname(join(root, file)), {recursive: true}); writeFileSync(join(root, file), source); };
- const check = (...args) => {
+ let nodeStarts = 0;
+ const checkCli = (...args) => {
+  nodeStarts++;
   try {
    return {status: 0, output: execFileSync(process.execPath, [checker, ...args], {cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: Infinity})};
   } catch (error) {
    return {status: error.status, output: String(error.stdout) + String(error.stderr)};
   }
+ };
+ const check = async (...args) => {
+  let output = '';
+  const emit = line => { output += line + '\n'; };
+  const status = await checkNoPolling(args, {cwd: root, env, logger: {log: emit, error: emit}});
+  return {status, output};
  };
  try {
   // The fixture invokes Git itself; no Git response or object header is mocked.
@@ -546,23 +555,23 @@ test('the entry point compares real Git objects and rejects modified and untrack
   write('scripts/no-polling-dispositions.json', '[]\n');
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
-  assert.equal(check('HEAD').status, 0);
+  assert.equal(checkCli('HEAD').status, 0);
   write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n');
-  const pluginTimer = check('HEAD');
+  const pluginTimer = await check('HEAD');
   assert.notEqual(pluginTimer.status, 0);
   assert.match(pluginTimer.output, /file=plugin\/tests\/ready.mjs:1/);
   write(plugin, "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function ready() { await settle(); }\n");
-  const pluginHelper = check('HEAD');
+  const pluginHelper = await check('HEAD');
   assert.notEqual(pluginHelper.status, 0);
   assert.match(pluginHelper.output, /file=plugin\/tests\/ready.mjs:1 kind=polling-helper-reference/);
   write(plugin, beforePlugin);
   const pluginChild = 'plugin/tests/hosts/child.py';
   write(pluginChild, 'import time\nwhile not ready():\n time.sleep(.01)\n');
-  const pluginUntracked = check('HEAD');
+  const pluginUntracked = await check('HEAD');
   assert.notEqual(pluginUntracked.status, 0);
   assert.match(pluginUntracked.output, /file=plugin\/tests\/hosts\/child.py:/);
   const censusPath = join(root, 'census.json');
-  const inventoried = check('--inventory', censusPath);
+  const inventoried = await check('--inventory', 'census.json');
   assert.equal(inventoried.status, 0, inventoried.output);
   const census = JSON.parse(readFileSync(censusPath, 'utf8'));
   assert.equal(census.revision, git(['rev-parse', 'HEAD']).toString().trim());
@@ -577,38 +586,44 @@ test('the entry point compares real Git objects and rejects modified and untrack
   ])).sort(siteOrder));
   assert.ok(census.sites.some(site => site.file === pluginChild && site.kind === 'loop'));
   const preserved = readFileSync(censusPath, 'utf8');
-  assert.notEqual(check('--inventory', censusPath).status, 0);
+  assert.notEqual((await check('--inventory', 'census.json')).status, 0);
   assert.equal(readFileSync(censusPath, 'utf8'), preserved);
   rmSync(join(root, pluginChild));
   const native = 'scripts/control.hpp';
   write(native, 'inline void wait() { std::this_thread::sleep_for(std::chrono::seconds(1)); }\n');
-  const nativeUntracked = check('HEAD');
+  const nativeUntracked = await check('HEAD');
   assert.notEqual(nativeUntracked.status, 0);
   assert.match(nativeUntracked.output, /file=scripts\/control.hpp:1 kind=timer-or-readiness/);
   rmSync(join(root, native));
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
-  const modified = check('HEAD');
+  const modified = checkCli('HEAD');
   assert.notEqual(modified.status, 0);
   assert.match(modified.output, /step=no-polling file=rust\/crates\/example\/src\/lib.rs:1/);
   assert.match(modified.output, /recovery command: node scripts\/check-no-polling.mjs "HEAD"/);
   write(rust, 'fn current() {}\n');
   write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
-  const indirect = check('HEAD');
+  const indirect = await check('HEAD');
   assert.notEqual(indirect.status, 0);
   assert.match(indirect.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=polling-helper-reference/);
   write(caller, beforeCaller);
   git(['rm', '-q', '--', helper]);
-  const missingProducer = check('HEAD');
+  const missingProducer = await check('HEAD');
   assert.notEqual(missingProducer.status, 0);
   assert.match(missingProducer.output, /file=typescript\/packages\/example\/test\/caller.ts:1 kind=unresolved-local-helper/);
   git(['restore', '--staged', '--worktree', '--', helper]);
   write(script, 'setTimeout(probe, 1);\n');
-  const untracked = check('HEAD');
+  const untracked = await check('HEAD');
   assert.notEqual(untracked.status, 0);
   assert.match(untracked.output, /step=no-polling file=typescript\/packages\/example\/test\/control.ts:1/);
-  const missingBase = check('missing-source-baseline');
+  const missingBase = await check('missing-source-baseline');
   assert.notEqual(missingBase.status, 0);
   assert.match(missingBase.output, /step=no-polling.*recovery command:/s);
+  for (const args of [[], ['HEAD', 'extra-argument'], ['--inventory']]) {
+   const invalid = await check(...args);
+   assert.equal(invalid.status, 1);
+   assert.match(invalid.output, /step=no-polling expected one baseline Git revision.*recovery command:/s);
+  }
+  assert.equal(nodeStarts, 2, 'one CLI acceptance and one CLI refusal; remaining cases reuse the same entry point');
  } finally {
   assert.equal(resolve(dirname(root)), resolve(tmpdir()));
   rmSync(root, {recursive: true, force: true});
