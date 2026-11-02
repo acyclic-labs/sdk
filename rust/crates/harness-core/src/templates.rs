@@ -29,13 +29,18 @@ fn parse(bytes: &[u8], template: Option<FileRef>) -> Result<(CreationConfig, usi
             "unsupported template version; use version 1".into(),
         ));
     }
+    for name in &creation.may_spawn {
+        name_component(name)?;
+    }
     for names in [Some(&creation.may_spawn), creation.allowed_tools.as_ref()]
         .into_iter()
         .flatten()
     {
         let mut unique = std::collections::BTreeSet::new();
         for name in names {
-            name_component(name)?;
+            if name.trim().is_empty() {
+                return Err(Error::Invalid("empty template capability".into()));
+            }
             if !unique.insert(name) {
                 return Err(Error::Invalid("duplicate template capability".into()));
             }
