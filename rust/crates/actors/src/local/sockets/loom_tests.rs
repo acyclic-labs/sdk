@@ -65,6 +65,19 @@ fn race(broken: bool) -> Result {
                 vec![Bytes::from_static(b"open").into()],
                 Vec::new()
             ),
+            append(
+                layout.epochs()?,
+                vec![
+                    EpochWire {
+                        version: 1,
+                        segment: 1,
+                        from: 1,
+                    }
+                    .encode_to_vec()
+                    .into()
+                ],
+                Vec::new(),
+            ),
         ],
     ))?);
     let peer = loom::thread::spawn({
@@ -78,7 +91,11 @@ fn race(broken: bool) -> Result {
                 &layout,
                 "1-0",
                 &target,
-                Some(1),
+                Some(Ledger {
+                    segment: 1,
+                    allocated: 1,
+                    epochs: 1,
+                }),
                 &Close::new(1006, "peer went away", SocketCloseInitiator::Peer),
             ))
             .map_err(|error| error.to_string())
@@ -104,7 +121,11 @@ fn race(broken: bool) -> Result {
         &layout,
         "1-0",
         &target,
-        Some(1),
+        Some(Ledger {
+            segment: 1,
+            allocated: 1,
+            epochs: 1,
+        }),
         &Close::new(1000, "actor closed", SocketCloseInitiator::Actor),
     ))?;
     peer.join().map_err(|_| "peer closer panicked")??;

@@ -250,15 +250,15 @@ async fn commit<P: StreamProvider + ?Sized>(
 
 /// Commit the one Close of `connection`: record 1 of its socket stream, the
 /// inbox event and the actor's wake, all under `Tail{socket, 1}`. `false`
-/// means the socket was already closed. `segment` records the close in the
-/// current ledger segment; recovery omits it because it retires the segment.
-pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
+/// means a condition refused it. `segment` fences the close to its original
+/// ledger cut; recovery omits it because it retires that segment.
+async fn commit_close<P: StreamProvider + ?Sized>(
     store: &Store<P>,
     executor: &dyn Executor,
     layout: &Layout,
     connection: &str,
     target: &Target,
-    segment: Option<u64>,
+    segment: Option<Ledger>,
     close: &Close,
 ) -> Result<bool, Error> {
     let socket = layout.socket(connection)?;
@@ -273,21 +273,25 @@ pub(crate) async fn commit_close<P: StreamProvider + ?Sized>(
         )
     })?;
     let key = layout.key(&[connection.as_bytes(), b"close", &input.value])?;
+    let mut conditions = Vec::with_capacity(1 + usize::from(segment.is_some()));
+    conditions.push(CommitCondition::Tail {
+        path: socket.clone(),
+        expected: 1,
+    });
+    if let Some(segment) = segment {
+        conditions.push(CommitCondition::Tail {
+            path: layout.epochs()?,
+            expected: segment.epochs,
+        });
+    }
     let mut effects = vec![
-        append(
-            socket.clone(),
-            vec![input.value.clone().into()],
-            vec![CommitCondition::Tail {
-                path: socket,
-                expected: 1,
-            }],
-        ),
+        append(socket, vec![input.value.clone().into()], conditions),
         append(target.inbox.clone(), vec![input], Vec::new()),
         store.activation(&target.actor),
     ];
     if let Some(segment) = segment {
         effects.push(append(
-            layout.segment(segment)?,
+            layout.segment(segment.segment)?,
             vec![ledger_record(LedgerKind::Closed(connection.into()))],
             Vec::new(),
         ));
@@ -388,7 +392,7 @@ struct Ledger {
     segment: u64,
     /// Highest durably allocated segment; a failed compaction never reuses it.
     allocated: u64,
-    /// Tail of `epochs` that every open is conditioned on.
+    /// Tail of `epochs` that every open and live close is conditioned on.
     epochs: u64,
 }
 
@@ -574,7 +578,7 @@ struct Shared<P: StreamProvider + ?Sized> {
     incarnation: u64,
     next: AtomicU64,
     table: Tables,
-    /// Compaction holds it exclusively; opens copy its fenced cut before I/O.
+    /// Compaction holds it exclusively; operations copy its fenced cut before I/O.
     ledger: RwLock<Ledger>,
     live: AtomicUsize,
     written: AtomicUsize,
@@ -868,23 +872,39 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
             })
         };
         let result = if let Some(target) = target {
-            let ledger = self.ledger.read().await;
-            let result = commit_close(
-                &self.store,
-                &*self.executor,
-                &self.layout,
-                &connection,
-                &target,
-                Some(ledger.segment),
-                &close,
-            )
-            .await;
-            if matches!(result, Ok(true)) {
-                self.live.fetch_sub(1, Ordering::AcqRel);
-                self.written.fetch_add(1, Ordering::AcqRel);
+            let mut ledger = *self.ledger.read().await;
+            loop {
+                let committed = match commit_close(
+                    &self.store,
+                    &*self.executor,
+                    &self.layout,
+                    &connection,
+                    &target,
+                    Some(ledger),
+                    &close,
+                )
+                .await
+                {
+                    Ok(committed) => committed,
+                    Err(error) => break Err(error),
+                };
+                let current = self.ledger.read().await;
+                match committed {
+                    true => {
+                        // Rotation already folded a Close accepted in the old
+                        // segment, including one whose reply was lost.
+                        if current.segment == ledger.segment {
+                            self.live.fetch_sub(1, Ordering::AcqRel);
+                            self.written.fetch_add(1, Ordering::AcqRel);
+                        }
+                        break Ok(());
+                    }
+                    // Only an explicit refusal permits a changed request. The
+                    // original commit retries an unknown outcome identically.
+                    false if current.epochs != ledger.epochs => ledger = *current,
+                    false => break Err(Error::Conflict),
+                }
             }
-            drop(ledger);
-            result.and_then(|committed| committed.then_some(()).ok_or(Error::Conflict))
         } else {
             Err(Error::Invalid("closing socket has no input"))
         };

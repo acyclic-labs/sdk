@@ -480,6 +480,114 @@ async fn compaction_keeps_only_open_sockets_for_recovery() -> TestResult {
         }
     }
 
+    for (committed, lose_reply) in [(false, false), (true, false), (true, true)] {
+        let provider = Arc::new(ControlledStream::default());
+        let executor = Arc::new(HeldCloseExecutor::default());
+        let sockets = Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            executor.clone(),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let shared = &sockets.shared;
+        let (connection, inbox, last, _frames) =
+            admitted_close_fixture(&sockets, "delayed-close").await?;
+        let (unrelated, unrelated_inbox, unrelated_last, _frames) =
+            admitted_close_fixture(&sockets, "unrelated-close").await?;
+        let release = provider.pause_write(committed);
+        let completion = shared
+            .begin_close(
+                &connection,
+                Close::new(1000, "delayed", SocketCloseInitiator::Actor),
+            )
+            .ok_or("missing delayed Close owner")?;
+        let mut closing = executor.take()?;
+        assert!(futures::poll!(&mut closing).is_pending());
+        assert!(provider.pause.lock().unwrap().is_none());
+        let release = if lose_reply {
+            let retry = executor.pause_retry();
+            drop(release);
+            assert!(futures::poll!(&mut closing).is_pending());
+            assert!(executor.retry.lock().unwrap().is_none());
+            retry
+        } else {
+            release
+        };
+        drop(
+            shared
+                .ledger
+                .try_write()
+                .map_err(|_| "delayed Close blocked compaction")?,
+        );
+        let mut compact = Box::pin(shared.compact());
+        match futures::poll!(&mut compact) {
+            std::task::Poll::Ready(result) => result?,
+            std::task::Poll::Pending => return Err("delayed Close blocked compaction I/O".into()),
+        }
+        let copied = 2 - usize::from(committed);
+        assert_eq!(shared.live.load(Ordering::Acquire), copied);
+        assert_eq!(
+            records(&shared.store, &shared.layout.segment(2)?)
+                .await?
+                .len(),
+            copied
+        );
+        let independent = shared
+            .begin_close(
+                &unrelated,
+                Close::new(1000, "independent", SocketCloseInitiator::Actor),
+            )
+            .ok_or("missing unrelated Close owner")?;
+        let mut independent_work = executor.take()?;
+        assert!(
+            futures::poll!(&mut independent_work).is_ready(),
+            "delayed Close blocked another socket's Close"
+        );
+        independent.await?;
+        assert!(matches!(
+            SocketFrame::decode(&unrelated_last.await?)?,
+            SocketFrame::Close { code: 1000, .. }
+        ));
+        release.send(()).map_err(|_| "lost delayed Close request")?;
+        assert!(
+            futures::poll!(&mut closing).is_ready(),
+            "Close did not settle after rotation"
+        );
+        completion.await?;
+        assert!(matches!(
+            SocketFrame::decode(&last.await?)?,
+            SocketFrame::Close { code: 1000, .. }
+        ));
+        assert_eq!(
+            provider.replays.load(Ordering::Acquire),
+            usize::from(lose_reply)
+        );
+        assert_eq!(shared.live.load(Ordering::Acquire), 0);
+        assert_eq!(
+            shared.written.load(Ordering::Acquire),
+            copied + 1 + usize::from(!committed)
+        );
+        assert_eq!(
+            records(&shared.store, &shared.layout.segment(2)?)
+                .await?
+                .len(),
+            copied + 1 + usize::from(!committed)
+        );
+        drop(compact);
+        drop(sockets);
+        let recovered = Sockets::open(
+            Store::new(provider, root()?),
+            executor,
+            Arc::new(SystemClock),
+        )
+        .await?;
+        for input in [inbox, unrelated_inbox] {
+            let delivered = records(&recovered.shared.store, &input).await?;
+            assert_eq!(delivered.len(), 2, "recovery delivered a duplicate Close");
+            assert_eq!(crate::sockets::input_kind(&delivered[1]), Some("close"));
+        }
+    }
+
     let store = || -> Result<Store<MemoryStream>, Error> {
         Ok(Store::new(Arc::new(MemoryStream::default()), root()?))
     };
@@ -628,10 +736,15 @@ impl StreamProvider for ControlledStream {
         let pause = self.pause.lock().unwrap().take();
         let replay = match (&request, self.accepted.lock().unwrap().as_ref()) {
             (
-                acyclic_stream::WriteRequest::CommitAccepted(current),
-                Some((acyclic_stream::WriteRequest::CommitAccepted(original), outcome)),
+                acyclic_stream::WriteRequest::Commit(current)
+                | acyclic_stream::WriteRequest::CommitAccepted(current),
+                Some((
+                    acyclic_stream::WriteRequest::Commit(original)
+                    | acyclic_stream::WriteRequest::CommitAccepted(original),
+                    outcome,
+                )),
             ) if current.idempotency_key == original.idempotency_key => {
-                assert_eq!(current, original, "retry changed the original Open request");
+                assert_eq!(current, original, "retry changed the original request");
                 Some(outcome.clone())
             }
             _ => None,
@@ -654,9 +767,10 @@ impl StreamProvider for ControlledStream {
                     if let Ok(outcome) = &result {
                         assert!(matches!(
                             outcome,
-                            acyclic_stream::WriteOutcome::CommitAccepted(
-                                acyclic_stream::AcceptedCommitOutcome::Committed { .. }
-                            )
+                            acyclic_stream::WriteOutcome::Commit(CommitOutcome::Committed(_))
+                                | acyclic_stream::WriteOutcome::CommitAccepted(
+                                    acyclic_stream::AcceptedCommitOutcome::Committed { .. }
+                                )
                         ));
                         *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
                     }
