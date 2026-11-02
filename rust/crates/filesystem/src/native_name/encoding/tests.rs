@@ -1,4 +1,43 @@
 use super::*;
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn windows_projection_preserves_one_component_and_exact_native_units(
+        text in "[a-zé中𝄞]{1,32}",
+        separator in any::<bool>(),
+        raw in prop::collection::vec(1_u16..=u16::MAX, 1..32),
+    ) {
+        for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes] {
+            let text = if separator { format!("{text}\\sibling") } else { text.clone() };
+            let name = crate::kernel::LogicalName::new(encoding, text.as_bytes().to_vec(), 1_024).unwrap();
+            let result = crate::native_name::windows_name_units(&name);
+            if separator {
+                // Encoding the text directly would silently introduce a sibling path.
+                prop_assert!(result.is_none());
+            } else {
+                let units = result.unwrap();
+                let expected = text.encode_utf16().collect::<Vec<_>>();
+                prop_assert_eq!(units.clone().collect::<Vec<_>>(), expected.clone());
+                prop_assert_eq!(units.collect::<Vec<_>>(), expected);
+            }
+        }
+        // Native UTF-16 permits unpaired surrogates and must retain them exactly.
+        let units = [u16::from(b'x'), 0xd800, u16::from(b'a')].into_iter().chain(raw.into_iter().map(|unit| {
+            if unit == u16::from(b'/') || unit == u16::from(b'\\') { u16::from(b'x') } else { unit }
+        })).collect::<Vec<_>>();
+        let name = crate::kernel::LogicalName::new(
+            NameEncoding::WindowsUtf16Le,
+            units.iter().copied().flat_map(u16::to_le_bytes).collect(),
+            1_024,
+        ).unwrap();
+        prop_assert_eq!(crate::native_name::windows_name_units(&name).unwrap().collect::<Vec<_>>(), units);
+        let opaque = crate::kernel::LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 1_024).unwrap();
+        prop_assert!(crate::native_name::windows_name_units(&opaque).is_none());
+    }
+}
 
 #[test]
 fn encoding_rejects_a_component_before_allocating_beyond_its_bound() {
