@@ -34,9 +34,10 @@ macro_rules! skill {
     };
 }
 
-/// Every seed file by its path in the tree, sorted by path.
-pub const TREE: &[(&str, &[u8])] = &[
+/// Every embedded seed file by its path in the tree, sorted by path.
+const FILES: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
+    ("agent.ts", include_bytes!("agent.ts")),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
@@ -59,13 +60,39 @@ pub const TREE: &[(&str, &[u8])] = &[
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
 ];
 
+/// Every seed file by its path in the tree, sorted by path: the embedded
+/// files and the settings declarations generated from the kernel's types.
+#[must_use]
+pub fn tree() -> &'static [(&'static str, &'static [u8])] {
+    static TREE: std::sync::OnceLock<Vec<(&str, &[u8])>> = std::sync::OnceLock::new();
+    TREE.get_or_init(|| {
+        let mut tree = FILES.to_vec();
+        tree.push((
+            crate::config::TYPES_PATH,
+            crate::config::typescript().as_bytes(),
+        ));
+        tree.sort_unstable_by_key(|(path, _)| *path);
+        tree
+    })
+}
+
+/// The seed's copy of `path`, read without I/O: the seed volume holds
+/// exactly these bytes.
+#[must_use]
+pub fn file(path: &str) -> Option<&'static [u8]> {
+    let tree = tree();
+    tree.binary_search_by_key(&path, |(name, _)| *name)
+        .ok()
+        .map(|index| tree[index].1)
+}
+
 /// This build's seed generation: a hash of every path and its bytes.
 #[must_use]
 pub fn digest() -> &'static [u8; 32] {
     static DIGEST: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
     DIGEST.get_or_init(|| {
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.seed.v1");
-        for (path, bytes) in TREE {
+        for (path, bytes) in tree() {
             hasher.update(&(path.len() as u64).to_be_bytes());
             hasher.update(path.as_bytes());
             hasher.update(&(bytes.len() as u64).to_be_bytes());
@@ -94,14 +121,39 @@ mod tests {
 
     #[test]
     fn tree_is_sorted_and_kernel_lists_every_layer_rule() {
-        assert!(TREE.windows(2).all(|pair| pair[0].0 < pair[1].0));
-        let kernel = TREE
-            .iter()
-            .find(|(path, _)| *path == "sys/kernel.md")
-            .map(|(_, bytes)| std::str::from_utf8(bytes).unwrap())
-            .unwrap();
+        assert!(tree().windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let kernel = std::str::from_utf8(file("sys/kernel.md").unwrap()).unwrap();
         for rule in crate::layers::Rule::ALL {
             assert!(kernel.contains(&format!("| {} |", rule.name())), "{rule:?}");
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    // The shipped default is evaluated by the production evaluator: it
+    // passes the kernel's base through unchanged and decodes.
+    #[tokio::test]
+    async fn seed_agent_settings_evaluate_to_the_base() -> crate::Result<()> {
+        struct Seed;
+        impl crate::config::Tree for Seed {
+            fn read<'a>(
+                &'a self,
+                path: &'a str,
+            ) -> futures::future::BoxFuture<'a, crate::Result<Option<Vec<u8>>>> {
+                Box::pin(async move { Ok(file(path).map(<[u8]>::to_vec)) })
+            }
+        }
+        let base = serde_json::json!({"model": "p/m"});
+        let source = file(crate::config::AGENT).unwrap();
+        let evaluated = crate::config::evaluate(
+            crate::config::AGENT,
+            source,
+            &Seed,
+            &base,
+            crate::config::Surface::Compose,
+        )
+        .await?;
+        assert_eq!(evaluated.value, base);
+        serde_json::from_value::<crate::config::AgentConfig>(evaluated.value).unwrap();
+        Ok(())
     }
 }
