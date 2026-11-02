@@ -19,7 +19,8 @@ async fn an_upload_retry_naming_other_content_is_refused()
         acyclic_native_runtime::initialize_native_io_services()?;
         let root = tempfile::tempdir()?;
         let medium = LocalMedium::open(root.path(), Default::default(), None).await?;
-        let store = Store::new(medium.clone());
+        let store = Store::new(medium);
+        let medium = store.medium().clone();
         let account = Arc::new(store.account(b"original-owner")?);
         let other = BinaryObjects::new(LocalCell {
             account: Arc::new(store.account(b"non-owner")?),
@@ -49,10 +50,17 @@ async fn an_upload_retry_naming_other_content_is_refused()
         drop(other);
         drop(account);
         drop(store);
-        assert_eq!(medium.close().await?, LocalClose::Released);
+        assert_eq!(
+            Arc::try_unwrap(medium)
+                .map_err(|_| "the original root still has an owner")?
+                .close()
+                .await?,
+            LocalClose::Released
+        );
 
         let medium = LocalMedium::open(root.path(), Default::default(), None).await?;
-        let store = Store::new(medium.clone());
+        let store = Store::new(medium);
+        let medium = store.medium().clone();
         let objects = Arc::new(BinaryObjects::new(LocalCell {
             account: Arc::new(store.account(b"original-owner")?),
             lost_retain_reply: Arc::new(AtomicBool::new(false)),
@@ -96,7 +104,13 @@ async fn an_upload_retry_naming_other_content_is_refused()
         drop(binding);
         drop(objects);
         drop(store);
-        assert_eq!(medium.close().await?, LocalClose::Released);
+        assert_eq!(
+            Arc::try_unwrap(medium)
+                .map_err(|_| "the original root still has an owner")?
+                .close()
+                .await?,
+            LocalClose::Released
+        );
     }
     Ok(())
 }
