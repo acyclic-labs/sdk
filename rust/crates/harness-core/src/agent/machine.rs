@@ -697,10 +697,6 @@ fn finalize_step(
         Some(deadline) => Alarm::At(deadline),
         None => Alarm::Clear,
     };
-    let appended = outs
-        .iter()
-        .filter(|out| matches!(out, Out::Conversation(_)))
-        .count() as u64;
     // A settled Idle -> Idle turn still advances observation: publish its
     // consumed inbox cursor atomically with every conversation append, so a
     // client can associate that output with its delivered input. Every inbox
@@ -750,10 +746,10 @@ fn finalize_step(
             | Out::GoalCompleted { .. } => {}
         }
     }
-    state.conversation_tail = state
-        .conversation_tail
-        .checked_add(appended)
-        .ok_or(Error::Record("agent conversation tail overflow"))?;
+    // The effect visit already advances and validates this tail. Reuse it
+    // for status and resource accounting instead of counting the effects again.
+    let appended = sequence - state.conversation_tail;
+    state.conversation_tail = sequence;
     let status = (&phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
         .then_some(StatusRecord {
             phase,
