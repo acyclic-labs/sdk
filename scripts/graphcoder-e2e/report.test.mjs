@@ -3,7 +3,29 @@ import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failureReport, publishReport, verifyReport } from "./report.mjs";
+import { failureReport, publishReport, summarizeCases, verifyReport } from "./report.mjs";
+
+test("case summaries retain every attempted row with one identity visit regardless of population", () => {
+  // Generated internal report rows exercise accounting, not measured intervals.
+  const names = Array.from({ length: 100_000 }, (_, index) => String(index));
+  let visits = 0;
+  const results = names.map((name, index) => ({
+    get case() {
+      assert.ok(++visits <= names.length, "summary scanned original identities again");
+      return name;
+    },
+    status: index % 2 ? "fail" : "pass", seconds: index + 1,
+  }));
+  const cells = summarizeCases([...names, "not-run"], results);
+  assert.equal(visits, results.length);
+  assert.equal(cells.length, names.length + 1);
+  for (const [index, cell] of cells.entries()) {
+    const attempted = index < names.length, passed = attempted && index % 2 === 0;
+    assert.deepEqual(cell, { case: attempted ? names[index] : "not-run", attempts: Number(attempted),
+      n: Number(passed), failures: Number(attempted && !passed),
+      p50_seconds: passed ? index + 1 : null, p99_seconds: passed ? index + 1 : null });
+  }
+});
 
 test("request evidence failure still publishes original case failures and cannot qualify a pass", async () => {
   const root = await mkdtemp(join(tmpdir(), "request-evidence-"));
