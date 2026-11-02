@@ -45,7 +45,7 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 
-/// Waits on the root's status or its runtime-backed Session closing, never
+/// Waits on the root's committed turn or its runtime-backed Session closing, never
 /// on elapsed time as evidence that a turn was refused.
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
     let (agents, root) = harness.agents().await?;
