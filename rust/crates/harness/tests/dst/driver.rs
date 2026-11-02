@@ -25,6 +25,11 @@ impl Driver {
         Self::from_scope(Schedule::seeded(seed), cut).refuse_processes()
     }
 
+    /// Real interleaving on the production schedule, with only the cut injected.
+    pub fn unseeded(cut: Option<(usize, DurableFault)>) -> Self {
+        Self::from_scope(Schedule::new(), cut).refuse_processes()
+    }
+
     pub fn without_entropy(seed: u64) -> Self {
         Self::from_scope(Schedule::without_entropy(seed), None).refuse_processes()
     }
