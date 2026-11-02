@@ -122,6 +122,39 @@ async fn publication_uses_only_required_sql_observations()
     };
     let envelope = provider.read_commit(receipt.commit_id).await?;
     assert!(envelope.committed_at_micros > 0);
+    let retained = HeadsRequest {
+        retained: [crate::RetainedRecord {
+            commit_id: receipt.commit_id,
+            path: original.path.clone(),
+            sequence: receipt.start,
+        }]
+        .into_iter()
+        .collect(),
+        durable_through: None,
+        projection: HeadProjection::History,
+        paths: Default::default(),
+        children: None,
+        limit: 1,
+        at_least: crate::RevisionCut::of(receipt.revision.clone()),
+    };
+    sql_case(&replica, "retained-record-hit").await?;
+    let view = provider
+        .heads(retained.clone())
+        .now_or_never()
+        .ok_or(StreamError::Unavailable)??;
+    view.validate_for(&retained)?;
+    let CommittedMutation::Append(original_append) = &envelope.mutations[0] else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    let observed = view.retained[0]
+        .record
+        .as_ref()
+        .ok_or(StreamError::NotFound)?;
+    assert_eq!(observed, &original_append.records[0]);
+    assert_eq!(
+        observed.value.as_ptr(),
+        original_append.records[0].value.as_ptr()
+    );
     sql_case(&replica, "inspect-retained").await?;
     let observed = provider
         .inspect_idempotency(original.idempotency_key.clone())
@@ -359,15 +392,46 @@ async fn publication_uses_only_required_sql_observations()
             .is_none()
     );
     sql_case(&replica, "inspect-unobserved").await?;
+    let AppendOutcome::Committed(remote_receipt) = &remote else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    let remote_receipt = remote_receipt.clone();
+    let remote_retained = HeadsRequest {
+        retained: [crate::RetainedRecord {
+            commit_id: remote_receipt.commit_id,
+            path: unseen.path.clone(),
+            sequence: remote_receipt.start,
+        }]
+        .into_iter()
+        .collect(),
+        // Keep the original covered cut: a future minimum must not be what
+        // forces this stale replica to observe the remote publication.
+        ..retained
+    };
     {
+        let mut heads = std::pin::pin!(provider.heads(remote_retained.clone()));
+        assert!(
+            futures::poll!(heads.as_mut()).is_pending(),
+            "a stale retained miss escaped without the current journal observation"
+        );
         let inspect = provider.inspect_idempotency(unseen.idempotency_key);
         let mut inspect = std::pin::pin!(inspect);
         assert!(futures::poll!(inspect.as_mut()).is_pending());
         drop(replica);
+        // Both futures are queued on the same real session. Poll them together
+        // so its first granted owner can release it to the next observation.
+        let (view, inspected) = futures::try_join!(heads, inspect)?;
         assert_eq!(
-            inspect.await?.ok_or(StreamError::NotFound)?.outcome,
+            inspected.ok_or(StreamError::NotFound)?.outcome,
             IdempotencyOutcome::Append(remote)
         );
+        view.validate_for(&remote_retained)?;
+        let observed = view.retained[0]
+            .record
+            .as_ref()
+            .ok_or(StreamError::NotFound)?;
+        assert_eq!(observed.commit_id, remote_receipt.commit_id);
+        assert_eq!(observed.value.as_ref(), b"original");
     }
     drop(provider);
     drop(writer);
