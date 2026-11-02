@@ -186,6 +186,28 @@ impl ToolExecutor for WorkspaceExecutor {
             .dispatch(invocation, Some(context))
     }
 
+    fn cancellation(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
+        let Some(context) = context else {
+            return Ok(None);
+        };
+        // A recorded call retains its selected executor. Never cancel through
+        // a newly resolved device or a replacement incarnation.
+        if let Some(target) = &context.execution_target {
+            target.executor.cancellation(invocation, Some(context))
+        } else if invocation.name == "fs" {
+            match &context.task().harness.filesystem {
+                Some(filesystem) => filesystem.cancellation(invocation, Some(context)),
+                None => Ok(None),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     fn execute<'a>(
         &'a self,
         invocation: ToolInvocation,

@@ -13,8 +13,8 @@ use crate::{
 };
 use acyclic_actors::call::{CallPath, Entry, Journal, Outcome};
 use acyclic_stream::{
-    BoxProviderFuture, FollowRequest, FollowUpdate, StreamProvider, StreamProviderExt as _,
-    WhenAbsent,
+    BoxProviderFuture, FollowRequest, FollowUpdate, IdempotencyKey, StreamProvider,
+    StreamProviderExt as _, WhenAbsent,
 };
 use futures::StreamExt as _;
 use std::collections::BTreeMap;
@@ -354,6 +354,25 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         Error::Target(self.devices.borrow().roster().refusal(&self.name, refused))
     }
 
+    /// Dispatch, cancellation and observation use the same admitted agent root.
+    fn agent<'a>(
+        &self,
+        context: Option<&'a ToolContext>,
+    ) -> Result<(
+        &'a crate::agent::AgentPath,
+        &'a [crate::agent::VolumeBinding],
+    )> {
+        let (agent, volumes) = context.and_then(|context| context.agent()).ok_or_else(|| {
+            Error::Unauthorized("device call has no original agent binding".into())
+        })?;
+        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id_bytes()) {
+            return Err(Error::Unauthorized(
+                "device grant belongs to another agent".into(),
+            ));
+        }
+        Ok((agent, volumes))
+    }
+
     /// Original operation events joined with its immutable session end. A
     /// disconnect needs one end marker regardless of the number of commands.
     async fn outcome(
@@ -367,9 +386,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         let input: ShellInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("shell input decode failed: {error}")))?;
         input.validate()?;
-        let (agent, _) = context.agent().ok_or_else(|| {
-            Error::Unauthorized("device call has no original agent binding".into())
-        })?;
+        let (agent, _) = self.agent(Some(context))?;
         let call = super::records::call(agent, invocation.operation_id)?;
         let mut request = FollowRequest::new(call.log().clone(), 0);
         if !reconcile {
@@ -535,6 +552,42 @@ fn protocol(error: acyclic_actors::call::Error) -> Error {
 }
 
 impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
+    fn cancellation(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
+        self.authorize(None, context, invocation, None)?;
+        let (agent, _) = self.agent(context)?;
+        let call = super::records::call(agent, invocation.operation_id)?;
+        let provider = Arc::clone(&self.provider);
+        let operation = invocation.operation_id;
+        Ok(Some(Box::pin(async move {
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"acyclic.harness.device.cancel.v1\0");
+            identity.update(call.log().as_str().as_bytes());
+            let key = IdempotencyKey::new(identity.finalize().as_bytes().to_vec())?;
+            let request = call
+                .cancel("caller cancelled")
+                .map_err(protocol)?
+                .request(key);
+            // Conflict means the original terminal already won. In either
+            // case the same journal reader determines the outcome; a lost
+            // publication reply leaves the original call indeterminate.
+            crate::executor::phase::claim(async {
+                provider.commit(request).await.map_err(|error| {
+                    if error.uncertain() {
+                        Error::Indeterminate(operation)
+                    } else {
+                        error.into()
+                    }
+                })
+            })
+            .await?;
+            Ok(())
+        })))
+    }
+
     fn authorize(
         &self,
         _scope: Option<&RuntimeScope>,
@@ -609,9 +662,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         let Some((session, generation)) = connection else {
             return Err(self.refusal(Refused::Offline));
         };
-        let (agent, volumes) = context.agent().ok_or_else(|| {
-            Error::Unauthorized("device dispatch has no original agent binding".into())
-        })?;
+        let (agent, volumes) = self.agent(Some(context))?;
         let volume = volumes
             .iter()
             .find(|binding| binding.name == "project")
@@ -620,11 +671,6 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
             })?
             .volume
             .clone();
-        if self.grant.scope.agent().map(|id| id.into_bytes()) != Some(agent.id_bytes()) {
-            return Err(Error::Unauthorized(
-                "device grant belongs to another agent".into(),
-            ));
-        }
         let command = RunCommand {
             op: invocation.operation_id,
             call_id: invocation.call_id.clone(),

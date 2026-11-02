@@ -134,11 +134,13 @@ impl<'io> StockExecution<'io> {
         } else if let Some(result) = composed {
             result
         } else {
+            let cancellation = tool.executor.cancellation(invocation, context.as_ref())?;
             self.observe_tool_cancellation(
                 journal,
                 identity,
                 &invocation.call_id,
                 tool.executor.cancellable_on_drop(),
+                cancellation,
                 self.call_tool_executor(tool, context, invocation, claimed),
             )
             .await?
@@ -153,6 +155,18 @@ impl<'io> StockExecution<'io> {
         );
         let result = match execution {
             Ok(Some(result)) => result,
+            Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                self.reject_tool_call(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    ToolFailureKind::Interrupted,
+                    error,
+                )
+                .await?;
+                return Ok(ToolInvocationOutcome::Interrupted);
+            }
             // A resumed driver settles an unreconcilable effect as a typed
             // failure instead of running it again; reconciliation records nothing.
             Ok(None) | Err(Error::Indeterminate(_))
@@ -304,12 +318,15 @@ impl<'io> StockExecution<'io> {
         identity: (OperationId, u32),
         call_id: &str,
         cancellable: bool,
+        cancellation: Option<BoxFuture<'static, Result<()>>>,
         execution: impl std::future::Future<Output = T>,
     ) -> Result<T> {
-        if !cancellable {
+        if !cancellable && cancellation.is_none() {
             return Ok(execution.await);
         }
-        if let Some(result) = cancel_safe_call(execution, journal.model_cancellation()).await? {
+        if let Some(result) =
+            cancel_call(execution, journal.model_cancellation(), cancellation).await?
+        {
             return Ok(result);
         }
         self.reject_tool_call(
