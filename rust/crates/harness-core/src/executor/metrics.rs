@@ -853,7 +853,8 @@ mod tests {
     fn adoption_preserves_the_original_template_reference() -> Result<()> {
         use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
 
-        let agent = crate::AgentId::from_bytes([5; 16]);
+        let owner = crate::AgentId::from_bytes([5; 16]);
+        let agent = agent::AgentId::from_bytes([5; 16]);
         let path = agent::AgentPath::root(&agent);
         for version in [None, Some("first-cut"), Some("later-cut")] {
             let template = version
@@ -868,7 +869,7 @@ mod tests {
                             )?,
                             "templates".into(),
                             VolumeClass::AgentPrivate,
-                            VolumeOwner::Agent(agent),
+                            VolumeOwner::Agent(owner),
                             &mut None,
                         )?,
                         "worker.md".into(),
@@ -883,8 +884,8 @@ mod tests {
                     )
                 })
                 .transpose()?;
-            let record = agent::InboxRecord::ForkAdopted(agent::ForkAdopted {
-                agent,
+            let record = agent::InboxRecord::ForkAdopted(Box::new(agent::ForkAdopted {
+                agent: agent.clone(),
                 parent: None,
                 profile: Some(agent::CreationConfig {
                     context: agent::SpawnContext::TopLevel,
@@ -896,7 +897,7 @@ mod tests {
                 volumes: Vec::new(),
                 brief: None,
                 policy: None,
-            });
+            }));
             let projected = inbox(path.as_str(), 0, &record)?;
             let column = projected[0]
                 .data
