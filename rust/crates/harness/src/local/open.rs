@@ -459,19 +459,11 @@ impl Opening {
                     owner.agent,
                     started.clone(),
                     resolve,
+                    (&self.compaction, &self.compaction_choice),
                     self.config.clock.as_ref(),
                 )
                 .await?;
-                let compaction = if settings.model.0 == started.0 {
-                    self.compaction
-                } else {
-                    compaction::select(
-                        self.compaction_choice,
-                        &settings.model.0,
-                        settings.model.1.as_ref(),
-                    )?
-                };
-                (Some(settings.model), settings.sampling, compaction)
+                (Some(settings.model), settings.sampling, settings.compaction)
             }
             None => (None, None, self.compaction),
         };

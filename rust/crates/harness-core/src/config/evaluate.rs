@@ -4,7 +4,7 @@ use super::{Form, Link};
 use crate::{Error, Result, layers::Layer};
 use futures::future::BoxFuture;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -76,16 +76,16 @@ pub async fn evaluate(
     let cached = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&key)
-        .cloned();
+        .as_ref()
+        .filter(|(cached_key, _)| cached_key == &key)
+        .map(|(_, outcome)| outcome.clone());
     let outcome = match cached {
         Some(outcome) => outcome,
         None => {
             let outcome = run(&modules, &base, surface).map(Arc::new);
-            cache
+            *cache
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key, outcome.clone());
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, outcome.clone()));
             outcome
         }
     };
@@ -123,12 +123,12 @@ pub async fn compose(
     Ok((value, chain))
 }
 
-/// A result or a failure, by key. Keys are content digests, so every agent
-/// on a process sharing a stack shares its entry.
+/// The most recently evaluated result or failure. Replacing the entry drops
+/// its ownership instead of retaining every historical agent/revision.
 type Outcome = std::result::Result<Arc<(Value, Form)>, String>;
 
-fn cache() -> &'static Mutex<HashMap<[u8; 32], Outcome>> {
-    static CACHE: OnceLock<Mutex<HashMap<[u8; 32], Outcome>>> = OnceLock::new();
+fn cache() -> &'static Mutex<Option<([u8; 32], Outcome)>> {
+    static CACHE: OnceLock<Mutex<Option<([u8; 32], Outcome)>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
@@ -196,7 +196,10 @@ fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
         serde_json::from_str::<serde::de::IgnoredAny>(text)
             .map_err(|error| format!("{path}: {error}"))?;
         return Ok(Module {
-            script: format!("export default {text}\n;"),
+            script: format!(
+                "export default JSON.parse({})\n;",
+                serde_json::to_string(text).map_err(|error| error.to_string())?
+            ),
             imports: Vec::new(),
             digest,
         });
