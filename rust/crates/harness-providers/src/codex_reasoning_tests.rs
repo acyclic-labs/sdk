@@ -87,7 +87,10 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                     } else {
                         provider.count_tokens(&prepared, 0).await?
                     };
-                    assert_eq!(count.input_tokens, provider.usage.codex_estimate(&prepared)?);
+                    assert_eq!(
+                        count.input_tokens,
+                        provider.usage.codex_estimate(&prepared)?
+                    );
                     assert!(count.input_tokens >= 8);
                 }
                 let mut events = Vec::new();

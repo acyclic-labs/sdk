@@ -84,7 +84,8 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
     {
         self.record(RequestClass::Token);
-        self.inner().count_tokens_with_native_work(request, ceiling, work)
+        self.inner()
+            .count_tokens_with_native_work(request, ceiling, work)
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn generate_with_native_work<'a>(

@@ -553,7 +553,8 @@ impl ModelProvider for RecordedModel {
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (crate::context::ModelTokenCount, NativeAllocation)>>
     {
-        self.live.count_tokens_with_native_work(request, ceiling, work)
+        self.live
+            .count_tokens_with_native_work(request, ceiling, work)
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn generate_with_native_work<'a>(
