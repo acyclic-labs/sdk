@@ -4,6 +4,25 @@ use std::path::PathBuf;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+fn measured_child_arguments(
+    host: &str,
+    flags: &[String],
+    cwd: &Path,
+    session: Option<&str>,
+) -> Result<Vec<OsString>> {
+    let mut command = None;
+    let allocations = acyclic_test_support::measure(|| {
+        command = Some(child_arguments(host, flags, cwd, session));
+    });
+    let command = command.ok_or("native argument result absent")??;
+    assert_eq!(
+        allocations.count_total,
+        command.len() as u64 + 1,
+        "native arguments must allocate only their nonempty strings and one result vector"
+    );
+    Ok(command)
+}
+
 #[test]
 fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
     let fixture = tempfile::tempdir()?;
@@ -177,7 +196,7 @@ fn native_launch_preserves_policy_cwd_and_resume_without_bypass() -> Result {
         .ok_or("inherited policy absent")?;
     assert_eq!(policy, supplied);
     assert_eq!(roots, ["--add-dir", "workspace"]);
-    let command = child_arguments("codex", &flags, Path::new("view"), Some("resume-id"))?;
+    let command = measured_child_arguments("codex", &flags, Path::new("view"), Some("resume-id"))?;
     assert!(
         child_arguments("codex", &flags, Path::new("view"), Some("--unsafe")).is_err(),
         "resume references cannot change native options"
@@ -282,7 +301,7 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
                 ["--add-dir", "workspace"]
             );
         }
-        let command = child_arguments(
+        let command = measured_child_arguments(
             host,
             &flags,
             Path::new("admitted-view"),
@@ -303,6 +322,8 @@ fn claude_and_pi_children_preserve_native_options_and_resume_references() -> Res
                 .any(|pair| pair == [resume_option, "native-reference"])
         );
     }
+    let fresh = measured_child_arguments("pi", &[], Path::new("view"), None)?;
+    assert_eq!(fresh, ["--mode", "json", "-p"]);
     assert!(
         validate(
             "claude-code",

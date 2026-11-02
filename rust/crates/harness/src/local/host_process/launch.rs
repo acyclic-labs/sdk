@@ -178,31 +178,40 @@ pub fn child_arguments(
     if session.is_some_and(|reference| reference.starts_with('-')) {
         return Err(invalid("native resume reference cannot be an option"));
     }
+    let native_arguments = match host {
+        "codex" => 5,
+        "claude-code" => 4,
+        _ => 3,
+    };
     let policy = args.iter().map(Into::into);
-    let mut arguments: Vec<OsString> = Vec::new();
+    let mut arguments =
+        Vec::with_capacity(args.len() + native_arguments + 2 * usize::from(session.is_some()));
     match host {
         "codex" => {
             arguments.extend(policy);
-            arguments.extend(["exec", "--json", "--cd"].map(OsString::from));
+            arguments.extend(["exec", "--json", "--cd"].into_iter().map(OsString::from));
             arguments.push(cwd.into());
             if let Some(id) = session {
-                arguments.extend(["resume", id].map(OsString::from));
+                arguments.extend(["resume", id].into_iter().map(OsString::from));
             }
             arguments.push("-".into());
         }
         "claude-code" => {
-            arguments
-                .extend(["-p", "--output-format", "stream-json", "--verbose"].map(OsString::from));
+            arguments.extend(
+                ["-p", "--output-format", "stream-json", "--verbose"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
             arguments.extend(policy);
             if let Some(id) = session {
-                arguments.extend(["--resume", id].map(OsString::from));
+                arguments.extend(["--resume", id].into_iter().map(OsString::from));
             }
         }
         _ => {
-            arguments.extend(["--mode", "json", "-p"].map(OsString::from));
+            arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
             arguments.extend(policy);
             if let Some(file) = session {
-                arguments.extend(["--session", file].map(OsString::from));
+                arguments.extend(["--session", file].into_iter().map(OsString::from));
             }
         }
     }
