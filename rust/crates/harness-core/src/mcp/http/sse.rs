@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 pub(super) async fn response(
     body: BoxProviderStream<'static, Result<Bytes>>,
     operation: OperationId,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
 ) -> Result<Value> {
     let mut spelling = [0; 36];
@@ -28,13 +28,13 @@ pub(super) async fn response(
         let chunk = chunk?;
         received = received
             .checked_add(chunk.len())
-            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
+            .filter(|total| maximum_bytes.is_none_or(|maximum| *total as u64 <= u64::from(maximum)))
             .ok_or(Error::Indeterminate(operation))?;
         Ok(chunk)
     });
     let events = crate::sse::frames(
         bounded,
-        maximum_bytes as usize,
+        maximum_bytes.map(|maximum| maximum as usize),
         crate::sse::Decoder::default(),
     );
     futures::pin_mut!(events);

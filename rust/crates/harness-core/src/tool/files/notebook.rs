@@ -48,8 +48,8 @@ where
             seed,
             source.as_bytes(),
             crate::executor::json::JsonBounds {
-                maximum_bytes: source.len() as u64,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(source.len() as u64),
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             None,
@@ -232,7 +232,7 @@ fn encoded<T: Serialize>(
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let hold;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), false)?;
         hold = io.guard_bytes(&bytes)?;
         let mut allocation = edit::allocation(Some(work), std::mem::size_of::<String>())?;
         let mut text = String::new();
@@ -362,8 +362,8 @@ fn convert_cell(
         cursor.feed(
             raw.get().as_bytes(),
             JsonBounds {
-                maximum_bytes: raw.get().len() as u64,
-                maximum_items: u64::MAX,
+                maximum_bytes: Some(raw.get().len() as u64),
+                maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),

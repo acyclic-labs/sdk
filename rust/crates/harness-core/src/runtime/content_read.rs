@@ -364,7 +364,7 @@ impl TaskContext {
         let (bytes, hold) = verified_content_bytes(
             reader,
             file,
-            file.descriptor().byte_length(),
+            Some(file.descriptor().byte_length()),
             Some(grants.grants),
             io,
         )

@@ -63,8 +63,6 @@ fn filesystem_code(error: &FsError) -> Code {
         | E::PendingMutationAllocationFailed
         | E::DiffAllocationFailed
         | E::MergeChangeLimit
-        | E::TooManyPendingMutations
-        | E::ExcessiveMutationCapacity
         | E::Work(_) => Code::ResourceExhausted,
         E::Config(_)
         | E::CheckoutMode(_)
@@ -99,12 +97,10 @@ fn filesystem_code(error: &FsError) -> Code {
         E::FileRead(error) => file_read_code(error),
         E::DetachedMutation(error) => regular_code(error),
         E::Dependency(error) => match error {
-            crate::kernel::DependencyError::ZeroLimit
-            | crate::kernel::DependencyError::EmptyContentRange
+            crate::kernel::DependencyError::EmptyContentRange
             | crate::kernel::DependencyError::RangeOverflow
             | crate::kernel::DependencyError::ZeroDirectoryPageLimit => Code::InvalidArgument,
             crate::kernel::DependencyError::ContradictoryState => Code::FailedPrecondition,
-            crate::kernel::DependencyError::TooManyDependencies { .. } => Code::ResourceExhausted,
         },
         E::Decode(error) => kernel_code(error),
         E::VolumeCreated(error) => kernel_code(error),
@@ -242,8 +238,8 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
 fn namespace_code(error: &crate::kernel::NamespacePathError) -> Code {
     use crate::kernel::NamespacePathError as E;
     match error {
-        E::TooDeep
-        | E::ComponentTooLong
+        E::PrefixOutOfRange
+        | E::ComponentLengthOverflow
         | E::PathTooLong
         | E::Name(_)
         | E::Path(_)
@@ -256,8 +252,8 @@ fn namespace_code(error: &crate::kernel::NamespacePathError) -> Code {
 fn path_code(error: &crate::kernel::PathLookupError) -> Code {
     use crate::kernel::PathLookupError as E;
     match error {
-        E::Config(_) | E::EmptyBatch | E::PathBounds | E::NotDirectory => Code::InvalidArgument,
-        E::TooManyPaths | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+        E::Config(_) | E::EmptyBatch | E::NotDirectory => Code::InvalidArgument,
+        E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
         E::UnsupportedNameEncoding => Code::FailedPrecondition,
         E::MissingRootRecord | E::KindMismatch => Code::DataLoss,
         E::NamespacePath(error) => namespace_code(error),
@@ -279,8 +275,7 @@ fn mutation_code(error: &crate::kernel::GenerationMutationError) -> Code {
             | crate::kernel::MutationPlanError::RangeOverflow
             | crate::kernel::MutationPlanError::WrongContentKind
             | crate::kernel::MutationPlanError::WrongMetadataKind => Code::InvalidArgument,
-            crate::kernel::MutationPlanError::TooManyMutations
-            | crate::kernel::MutationPlanError::IndexOverflow
+            crate::kernel::MutationPlanError::IndexOverflow
             | crate::kernel::MutationPlanError::AllocationFailed
             | crate::kernel::MutationPlanError::Work(_) => Code::ResourceExhausted,
         },
@@ -290,7 +285,7 @@ fn mutation_code(error: &crate::kernel::GenerationMutationError) -> Code {
         | E::DirectoryCycle
         | E::NotDirectory
         | E::IsDirectory => Code::InvalidArgument,
-        E::TooManyPaths | E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
+        E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
         E::UnsupportedSymbolicLink
         | E::UnsupportedFileKind
         | E::UnsupportedSparseMutation

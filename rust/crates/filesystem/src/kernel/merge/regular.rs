@@ -18,11 +18,11 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
     base: FileRecord,
     ours: FileRecord,
     theirs: FileRecord,
-    (maximum_changes, content): (u32, ContentMerge),
+    (maximum_changes, content): (Option<u32>, ContentMerge),
     limits: DecodeLimits,
     accounting: &'a mut KernelAccounting<'accounting>,
     cancellation: &'a CancellationToken,
-) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(FileRecord, u32)>, FsError>> {
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(FileRecord, usize)>, FsError>> {
     Box::pin(async move {
         let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else {
             return Ok(None);
@@ -140,7 +140,6 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
                                         store,
                                         (ours_root, ours_bytes),
                                         &mutations.value,
-                                        maximum_changes,
                                         limits,
                                         accounting,
                                         cancellation,
@@ -148,11 +147,7 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
                                     .await?
                                     .root
                                 };
-                                Ok(Some((
-                                    root,
-                                    u32::try_from(mutations.value.len())
-                                        .map_err(|_| FsError::MergeChangeLimit)?,
-                                )))
+                                Ok(Some((root, mutations.value.len())))
                             }
                         }
                         .await;
@@ -215,7 +210,7 @@ fn sliced_extent_kind(span: &ExtentSlice, offset: u64) -> Result<ExtentKind, FsE
 struct MergeWalk {
     lengths: [u64; 3],
     merged_bytes: u64,
-    maximum_changes: u32,
+    maximum_changes: Option<u32>,
     content: ContentMerge,
 }
 
@@ -358,13 +353,18 @@ impl MergeWalk {
 fn push_extent_mutation(
     mutations: &mut Owned<Vec<ExtentMutation>>,
     mutation: ExtentMutation,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    if mutations.value.len() >= maximum_changes as usize {
+    let maximum_changes = maximum_changes.into();
+
+    if mutations.value.len() >= maximum_changes.map_or(usize::MAX, |maximum| maximum as usize) {
         return Err(FsError::MergeChangeLimit);
     }
-    mutations.ensure_for_push(maximum_changes as usize, accounting)?;
+    mutations.ensure_for_push(
+        maximum_changes.map_or(usize::MAX, |maximum| maximum as usize),
+        accounting,
+    )?;
     mutations.value.push(mutation);
     Ok(())
 }
@@ -409,9 +409,11 @@ impl ContentSpan {
         &self,
         mutations: &mut Owned<Vec<ExtentMutation>>,
         (offset, length, kind): (u64, u64, ExtentKind),
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
+        let maximum_changes = maximum_changes.into();
+
         let replace = ExtentMutation::Replace {
             offset,
             length,
@@ -517,11 +519,13 @@ async fn merge_span_bytes<S: AsyncObjectStore>(
     store: &S,
     span: &ContentSpan,
     mutations: &mut Owned<Vec<ExtentMutation>>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
+    let maximum_changes = maximum_changes.into();
+
     if (0..3).any(|side| span.present(side) && span.source(side, span.offset).is_none()) {
         return Ok(false);
     }

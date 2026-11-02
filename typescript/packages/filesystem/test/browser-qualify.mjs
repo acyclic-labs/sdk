@@ -144,7 +144,9 @@ async function launchFirefox(profile) {
     const observer = { events: [] };
     browser.listen(message => {
       if (message.method !== "log.entryAdded" || message.params.level !== "error") return;
-      observer.events.push(`${message.params.type === "javascript" ? "uncaught" : "console.error"}: ${message.params.text}`);
+      const uncaught = message.params.type === "javascript";
+      observer.events.push(`${uncaught ? "uncaught" : "console.error"}: ${message.params.text}`);
+      if (uncaught) observer.fail?.({ status: "failed", text: message.params.text });
     });
     return {
       chrome: driver, exited, browser, observer,
@@ -218,8 +220,6 @@ async function runPage(browser, observer, origin, page) {
     observed = await navigateChrome(browser, sessionId, `${origin}/test/${page}`);
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
-  } finally {
-    await browser.send("Target.closeTarget", { targetId }).catch(() => {});
   }
   return { page, passed: observed.status === "passed", text: observed.text, events };
 }

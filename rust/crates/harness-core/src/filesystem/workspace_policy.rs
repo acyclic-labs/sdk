@@ -45,7 +45,7 @@ pub(crate) async fn merge_drivers_for<
 ) -> Result<Arc<MergeDriverRegistry>> {
     let bytes = workspace
         .into()
-        .optional("/.gitattributes", 1024 * 1024)
+        .optional("/.gitattributes")
         .await?
         .unwrap_or_default();
     let attributes = std::str::from_utf8(&bytes)
@@ -73,7 +73,7 @@ pub(crate) async fn ignore_for<
 ) -> Result<GitIgnorePolicy> {
     let bytes = workspace
         .into()
-        .optional("/.gitignore", 1024 * 1024)
+        .optional("/.gitignore")
         .await?
         .unwrap_or_default();
     Ok(git_view_policy(&String::from_utf8_lossy(&bytes)))

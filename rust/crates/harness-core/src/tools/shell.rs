@@ -70,7 +70,7 @@ pub const DESCRIPTION: &str = "Run a command on an execution target, in that tar
 /// spill even when the wire encoding, rather than the raw tail, needs truncation.
 pub fn bounded_result(
     result: crate::tool::ToolResult,
-    maximum: u64,
+    maximum: Option<u64>,
 ) -> Result<crate::tool::ToolResult> {
     super::bounds::result(PLATFORM.name, result, maximum)
 }

@@ -224,12 +224,10 @@ pub(crate) fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
 pub(super) fn logical_host_name(
     name: &std::ffi::OsStr,
     profile: FilesystemProfile,
-    limits: crate::model::VolumeLimits,
 ) -> Result<LogicalName, CaptureError> {
-    let (encoding, bytes) =
-        crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
-            .map_err(|_| CaptureError::UnrepresentablePath)?;
-    LogicalName::new(encoding, bytes, limits.maximum_component_bytes).map_err(CaptureError::from)
+    let (encoding, bytes) = crate::native_name::host_name_bytes(name, profile)
+        .map_err(|_| CaptureError::UnrepresentablePath)?;
+    LogicalName::new(encoding, bytes).map_err(CaptureError::from)
 }
 
 /// Converts one host-relative path to an exact bounded namespace path.
@@ -243,7 +241,7 @@ pub fn host_path_to_namespace(
     let mut components = Vec::new();
     for component in path.components() {
         match component {
-            Component::Normal(name) => components.push(logical_host_name(name, profile, limits)?),
+            Component::Normal(name) => components.push(logical_host_name(name, profile)?),
             Component::CurDir => {}
             Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
                 return Err(CaptureError::UnrepresentablePath);

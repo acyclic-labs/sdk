@@ -166,9 +166,9 @@ impl NativeWorkspaceTransaction {
     #[napi]
     pub async fn rebase(
         &self,
-        maximum_conflicts: NapiU32,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeTransactionRebaseResult> {
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
         sdk_value!(unbounded_future!(
             self.inner.lock().await,
             rebase(maximum_conflicts)
