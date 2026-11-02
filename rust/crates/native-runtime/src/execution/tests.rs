@@ -613,14 +613,18 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let destination = listener.local_addr().unwrap();
+    let destination_value = destination.to_string();
     let other = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let other_port = other.local_addr().unwrap().port();
     let executable = std::env::current_exe().unwrap();
     let mut read = system_read_roots();
     read.push(executable.clone());
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let mut admitted = 0;
+    let mut unsupported = 0;
     for (network, allowed, custody) in [
         (ExecutionNetwork::Off, false),
+        (ExecutionNetwork::TcpPorts(BTreeSet::new()), false),
         (ExecutionNetwork::On, true),
         (
             ExecutionNetwork::TcpPorts(BTreeSet::from([destination.port()])),
@@ -647,10 +651,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             .args(["--exact", "execution::tests::network_probe", "--nocapture"])
             .current_dir(root.path())
             .env_clear()
-            .env(
-                "ACYCLIC_BOUNDARY_PROBE_DESTINATION",
-                destination.to_string(),
-            )
+            .env("ACYCLIC_BOUNDARY_PROBE_DESTINATION", &destination_value)
             .env(
                 "ACYCLIC_BOUNDARY_PROBE_ALLOWED",
                 if allowed { "yes" } else { "no" },
@@ -666,10 +667,12 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
                     listener.accept().unwrap_err().kind(),
                     std::io::ErrorKind::WouldBlock
                 );
+                unsupported += 1;
                 continue;
             }
             Err(error) => panic!("confined launch failed: {error}"),
         };
+        admitted += 1;
         let output = tree
             .wait_with_output(
                 std::time::Duration::from_secs(5),
@@ -696,6 +699,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
             );
         }
     }
+    eprintln!("network boundary cases: admitted={admitted}, unsupported={unsupported}");
 }
 
 #[cfg(target_os = "linux")]
@@ -795,9 +799,16 @@ fn network_probe() {
     let Some(destination) = std::env::var_os("ACYCLIC_BOUNDARY_PROBE_DESTINATION") else {
         return;
     };
-    let connected = std::net::TcpStream::connect(destination.to_str().unwrap()).is_ok();
-    assert_eq!(
-        connected,
-        std::env::var("ACYCLIC_BOUNDARY_PROBE_ALLOWED").unwrap() == "yes"
-    );
+    let connected = std::net::TcpStream::connect(destination.to_str().unwrap());
+    if std::env::var("ACYCLIC_BOUNDARY_PROBE_ALLOWED").unwrap() == "yes" {
+        connected.expect("admitted connection reaches the original listener");
+    } else {
+        assert_eq!(
+            connected
+                .expect_err("denied connection reached the original listener")
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+            "an unrelated transport failure does not prove network denial"
+        );
+    }
 }
