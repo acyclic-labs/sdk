@@ -37,6 +37,15 @@ const {records}=JSON.parse(await readFile(new URL('./fixtures/native-completion.
 for(const record of records)test(`${record.host} requires its original successful native terminal`,()=>{
  assertNativeCompletion(record.host,record,record.answer);
  const events=record.stdout.trim().split('\n').map(line=>({line,event:JSON.parse(line)}));
+ // Corrupt a retained original event before its successful terminal. Malformed
+ // JSON and non-record values must keep the same typed failure/recovery path.
+ for(const line of [events[0].line.slice(0,-1),'null','[]',JSON.stringify({...events[0].event,type:null})]) {
+  assert.throws(()=>assertNativeCompletion(record.host,{...record,stdout:line+'\n'+record.stdout},record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_EVENT_INVALID');
+   assert.match(error.message,/step=validate native .* completion:.*recovery=node --test/);
+   return true;
+  });
+ }
  const terminal=record.host==='codex'?'turn.completed':'result';
  const missing={...record,stdout:events.filter(({event})=>event.type!==terminal).map(({line})=>line).join('\n')+'\n'};
  assert.ok(missing.stdout.includes(record.answer),'original assistant output still contains the answer');

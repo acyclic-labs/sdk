@@ -23,7 +23,11 @@ export function assertNativeCompletion(host,result,answer,selection) {
  let terminal,text,builtinPlugins,session,turn,initialized=false;
  for(const line of result.stdout.split('\n')) {
   if(!line)continue;
-  const event=JSON.parse(line);
+  let event;
+  try {event=JSON.parse(line);}
+  catch(cause) {nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','malformed native JSON event',cause);}
+  if(!event||typeof event!=='object'||Array.isArray(event)||typeof event.type!=='string'||!event.type)
+   nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native event is not a typed record',event);
   if(host==='codex') {
    if(event.type==='turn.started') {
     if(turn==='active')nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex turn restarted before completion',event);
