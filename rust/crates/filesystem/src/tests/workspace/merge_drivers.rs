@@ -268,6 +268,13 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             assert_eq!(record.kind, FileKind::Regular);
         }
         let record_output = calibration.work().output_bytes;
+        let before_body = calibration.work();
+        let view = calibration.describe_conflict_file(conflict.clone()).await?;
+        assert_eq!(view.kind, ConflictKind::Binary);
+        assert!(
+            calibration.work().output_bytes > before_body.output_bytes,
+            "the selected body was absent from the original work receipt"
+        );
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut bounded = value!(

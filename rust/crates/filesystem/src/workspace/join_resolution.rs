@@ -147,6 +147,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                         path.clone(),
                         replaced.records,
                         contents,
+                        accounting,
                         cancellation,
                     )
                     .await?
@@ -179,6 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     path.clone(),
                     [base_record, ours_record, theirs_record],
                     contents,
+                    accounting,
                     cancellation,
                 )
                 .await?
@@ -208,6 +210,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 path.clone(),
                 [base_record, ours_record, theirs_record],
                 contents,
+                accounting,
                 cancellation,
             )
             .await?
@@ -330,6 +333,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         path: Option<String>,
         records: [crate::kernel::FileRecord; 3],
         contents: ConflictContents,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<crate::ConflictView>, WorkspaceError> {
         if records
@@ -338,6 +342,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         {
             return Ok(None);
         }
+        // Body backing never escapes this renderer: outputs are copies or
+        // immutable references. Destroy the physical reads before retiring
+        // their scratch; the original cumulative work survives every exit.
+        let mut scope = accounting.allocation_scope()?;
+        let accounting = &mut *scope;
         let mut bodies: [Option<acyclic_stream::OwnedBytes>; 3] = std::array::from_fn(|_| None);
         let mut text_values: [Option<ConflictValue>; 3] = std::array::from_fn(|_| None);
         let reference = || {
@@ -364,7 +373,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 .workspace
                 .volume
                 .fs
-                .workspace_conflict_bytes(&self.target_head.workspace.volume, record, cancellation)
+                .workspace_conflict_bytes(
+                    &self.target_head.workspace.volume,
+                    record,
+                    accounting,
+                    cancellation,
+                )
                 .await?
             else {
                 return Ok(Some(reference()));

@@ -89,6 +89,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         workspace: &Volume<A, O>,
         record: FileRecord,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
         let logical_bytes = match record.payload {
@@ -102,7 +103,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if logical_bytes > workspace.config.limits.maximum_read_bytes {
             return Ok(None);
         }
-        let mut accounting = WorkBudget::UNBOUNDED.accounting(cancellation);
         self.workspace_merge_range_with_accounting(
             workspace,
             record,
@@ -110,7 +110,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 offset: 0,
                 length: logical_bytes,
             },
-            &mut accounting,
+            accounting,
             cancellation,
         )
         .await
