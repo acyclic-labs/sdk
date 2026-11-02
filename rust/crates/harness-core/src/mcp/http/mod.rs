@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
 mod body;
+pub use body::ResponseByteFrontier;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;

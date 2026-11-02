@@ -34,8 +34,25 @@ pub fn snapshot<R>(
     view: &Uint8Array,
     reserve: impl FnOnce(u64) -> Result<R, JsValue>,
 ) -> Result<(Vec<u8>, R), JsValue> {
-    let count = length(view)?;
-    let reservation = reserve(u64::from(count))?;
+    snapshot_prefix(view, |count| {
+        reserve(u64::from(count)).map(|reservation| (count, reservation))
+    })
+}
+
+/// Admit a prefix of the intrinsic length before allocating or copying it.
+///
+/// The callback returns the exact admitted byte count and reservation; it must
+/// not call untrusted JavaScript. The count cannot exceed the original length.
+/// This shares the whole-snapshot intrinsic copy and its error guarantees.
+pub fn snapshot_prefix<R>(
+    view: &Uint8Array,
+    admit: impl FnOnce(u32) -> Result<(u32, R), JsValue>,
+) -> Result<(Vec<u8>, R), JsValue> {
+    let available = length(view)?;
+    let (count, reservation) = admit(available)?;
+    if count > available {
+        return Err(JsValue::from_str("byte snapshot prefix exceeds source"));
+    }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(count as usize)

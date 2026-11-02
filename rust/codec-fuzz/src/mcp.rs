@@ -89,26 +89,45 @@ mod tests {
 
     #[test]
     fn captured_mcp_refusals_keep_diagnostics_and_uncertainty() {
-        // Original server stdout and its extracted discovery response; capture
-        // provenance and byte digests are retained in corpus/EXTERNAL.tsv.
-        for (codec, bytes) in [
+        // Original stdio and HTTP captures; provenance and byte digests are
+        // retained in corpus/EXTERNAL.tsv. Browser replay uses the same SSE bytes.
+        for (codec, method, bytes) in [
             (
                 "stdio",
+                "tools/list",
                 include_bytes!("../corpus/harness_codecs/mcp-filesystem-2.1.0-stdio").as_slice(),
             ),
             (
                 "json",
+                "tools/list",
                 include_bytes!("../corpus/harness_codecs/mcp-filesystem-2.1.0-result").as_slice(),
             ),
+            (
+                "sse",
+                "initialize",
+                include_bytes!("../corpus/harness_codecs/mcp-everything-2.1.0-http-initialize")
+                    .as_slice(),
+            ),
+            (
+                "sse",
+                "tools/list",
+                include_bytes!("../corpus/harness_codecs/mcp-everything-2.1.0-http-tools-list")
+                    .as_slice(),
+            ),
         ] {
-            crate::admit_external(codec, "tools/list", bytes)
-                .expect("original captured discovery must be admitted");
+            crate::admit_external(codec, method, bytes)
+                .expect("original captured response must be admitted");
             let operation = OperationId::from_bytes([7; 16]);
             let missing = &bytes[..0];
             let interrupted = if codec == "stdio" {
                 stdio::codec_fuzz::admit(missing)
             } else {
-                http::codec_fuzz::admit(missing, "application/json", operation, false)
+                let media = if codec == "sse" {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                };
+                http::codec_fuzz::admit(missing, media, operation, false)
             }
             .expect_err("missing response cannot publish a result");
             assert!(

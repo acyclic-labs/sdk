@@ -7,12 +7,46 @@ use std::{
     task::{Context, Poll},
 };
 
+/// Admits the same response prefix regardless of a provider's chunk sizes.
+/// Foreign adapters use this before copying bytes into Rust storage.
+pub struct ResponseByteFrontier {
+    remaining: u32,
+    overflow: bool,
+}
+
+impl ResponseByteFrontier {
+    /// Starts one response's byte allowance, without allocation or I/O.
+    pub fn new(maximum: u32) -> Self {
+        Self {
+            remaining: maximum,
+            overflow: false,
+        }
+    }
+
+    /// Admits a prefix, retaining overflow for the next demand after that prefix.
+    /// None means overflow has no remaining prefix; the original operation must
+    /// return its typed error without another read or copy.
+    pub fn admit(&mut self, length: u64) -> Option<u32> {
+        if self.overflow {
+            return None;
+        }
+        let allowed = length.min(u64::from(self.remaining)) as u32;
+        self.remaining -= allowed;
+        self.overflow = length > u64::from(allowed);
+        (!self.overflow || allowed != 0).then_some(allowed)
+    }
+
+    /// Whether the next demand must settle overflow without reading its source.
+    pub fn overflowed(&self) -> bool {
+        self.overflow
+    }
+}
+
 pin_project_lite::pin_project! {
     pub(super) struct Bounded<S> {
         #[pin]
         body: S,
-        remaining: usize,
-        overflow: bool,
+        frontier: ResponseByteFrontier,
         ended: bool,
         operation: OperationId,
     }
@@ -21,8 +55,7 @@ pin_project_lite::pin_project! {
 pub(super) fn bounded<S>(body: S, maximum: u32, operation: OperationId) -> Bounded<S> {
     Bounded {
         body,
-        remaining: maximum as usize,
-        overflow: false,
+        frontier: ResponseByteFrontier::new(maximum),
         ended: false,
         operation,
     }
@@ -36,23 +69,18 @@ impl<S: Stream<Item = Result<Bytes>>> Stream for Bounded<S> {
         if *this.ended {
             return Poll::Ready(None);
         }
-        if *this.overflow {
+        if this.frontier.overflowed() {
             *this.ended = true;
             return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
         }
         match this.body.poll_next(cx) {
             Poll::Ready(Some(Ok(mut chunk))) => {
-                if chunk.len() > *this.remaining {
-                    *this.overflow = true;
-                    if *this.remaining == 0 {
-                        *this.ended = true;
-                        return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
-                    }
-                    // Expose the same permitted prefix for every partition.
-                    // Bytes::truncate only changes its view; no payload copy.
-                    chunk.truncate(*this.remaining);
-                }
-                *this.remaining -= chunk.len();
+                let Some(allowed) = this.frontier.admit(chunk.len() as u64) else {
+                    *this.ended = true;
+                    return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
+                };
+                // Bytes::truncate only changes its view; no payload copy.
+                chunk.truncate(allowed as usize);
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(other) => {
