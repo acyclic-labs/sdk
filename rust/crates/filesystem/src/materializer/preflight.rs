@@ -143,17 +143,14 @@ pub(super) async fn host_directory_holds_unknown_entries<
             .await?;
         let mut allocation = allocation.ok_or(NativeTreeMaterializationError::MissingCustody)?;
         for entry in &page.entries {
-            let Some(logical) = entry
-                .name
-                .unicode_text(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .ok()
-                .map(|receipt| receipt.value)
-            else {
-                continue;
-            };
+            let (logical, _logical_allocation) =
+                match entry.name.unicode_text(work, work.cancellation()) {
+                    Ok(projected) => projected,
+                    Err(crate::FsError::Path(crate::kernel::PathLookupError::NamespacePath(
+                        crate::kernel::NamespacePathError::NonUnicodeProjection,
+                    ))) => continue,
+                    Err(error) => return Err(crate::WorkspaceError::from(error).into()),
+                };
             let mut found = None;
             for (index, (name, _)) in names.iter().enumerate() {
                 #[cfg(unix)]
@@ -190,4 +187,85 @@ pub(super) async fn host_directory_holds_unknown_entries<
     }
     Ok(!names.is_empty()
         || crate::native_host::directory_identity(&directory, &mut &*work)? != identity)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn directory_preflight_keeps_name_projection_on_original_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = crate::CancellationToken::new();
+        let budget = crate::WorkBudget::UNBOUNDED;
+        let fs = crate::Fs::memory();
+        let config = crate::VolumeConfig {
+            profile: crate::FilesystemProfile::Windows,
+            ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
+        };
+        let workspace = fs
+            .create_workspace_with_config("preflight", config, budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        workspace.write_text("/known", "authored").await?;
+        let generation = workspace
+            .head(budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("known"), "physical")?;
+
+        // Reading the root requires no path encoding. Its UTF-16 child must
+        // spend the original invocation's encoding credit when projected.
+        let original = NativeMaterializationWork::new(
+            crate::WorkBudget {
+                bytes_encoded: 0,
+                ..budget
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let (page, allocation) = generation
+            .list_directory("/", None, 1024, &original, &cancellation)
+            .await?;
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(
+            page.entries[0].name.encoding(),
+            crate::kernel::NameEncoding::WindowsUtf16Le
+        );
+        drop(page);
+        drop(allocation);
+        let root = HostRoot::open(directory.path(), &mut &original)?;
+        let result = host_directory_holds_unknown_entries(&root, "", &generation, &original).await;
+        assert!(
+            matches!(
+                result,
+                Err(NativeWorkspacePublicationError::Workspace(
+                    crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                        counter: "bytes_encoded",
+                        maximum: 0,
+                        ..
+                    })
+                ))
+            ),
+            "{result:?}"
+        );
+        assert_eq!(original.receipt().bytes_encoded, 0);
+        assert_eq!(std::fs::read(directory.path().join("known"))?, b"physical");
+
+        let original =
+            NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        let root = HostRoot::open(directory.path(), &mut &original)?;
+        assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
+        assert!(original.receipt().bytes_encoded > 0);
+        std::fs::write(directory.path().join("foreign"), "must survive")?;
+        assert!(host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
+        assert_eq!(
+            std::fs::read(directory.path().join("foreign"))?,
+            b"must survive"
+        );
+        Ok(())
+    }
 }
