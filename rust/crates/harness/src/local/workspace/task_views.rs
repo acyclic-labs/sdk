@@ -1,8 +1,7 @@
-//! Task forks and mounts shared by `GraphCoder` and native-host coordination.
+//! Task view bindings shared by `GraphCoder` and native-host coordination.
 use super::super::checkout_tools::{State, reconciliation};
 use super::*;
-use acyclic_fs::PublicationPermit;
-use acyclic_fs::{CancellationToken, IdempotencyKey, MountOptions, WorkBudget};
+use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 
 pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
@@ -56,69 +55,6 @@ impl LocalWorkspace {
             .await
             .map(Arc::new)
             .map_err(storage)
-    }
-    pub(in crate::local) async fn fork_task(
-        &self,
-        task: TaskId,
-        view: &workspace::View,
-        owner: &dyn super::owner::ViewOwner,
-    ) -> Result<workspace::View> {
-        let cancellation = CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
-        owner.verify().await?;
-        let name = format!("task-{task}");
-        // Reopening a task retains its original fork even if the
-        // parent's selected branch changed after child admission.
-        let id = self.filesystem.workspace_id(&name).map_err(storage)?;
-        let saved = self
-            .store
-            .load_lazy_workspace(id, &mut accounting)
-            .await
-            .map_err(storage)?;
-        let original = if let Some(saved) = saved {
-            let source = saved
-                .parent_workspace_id
-                .ok_or_else(|| Error::Conflict("task fork has no parent".into()))?;
-            if source == view.workspace().id() {
-                None
-            } else {
-                let source = acyclic_fs::WorkspaceResolver::resolve(
-                    &(
-                        self.filesystem.clone(),
-                        acyclic_fs::WorkspaceGraph::new(self.store.clone()),
-                    ),
-                    source,
-                )
-                .await
-                .map_err(storage)?;
-                Some(
-                    view.open_related(source, &mut accounting)
-                        .await
-                        .map_err(storage)?,
-                )
-            }
-        } else {
-            None
-        };
-        let view = original.as_ref().unwrap_or(view);
-        let (view, _) = view
-            .fork(
-                &name,
-                IdempotencyKey::from_bytes(task.into_bytes()),
-                // This lazy fork has no mount-operation lease. The
-                // authority still rejects an active reservation.
-                PublicationPermit::Unrestricted,
-                &mut accounting,
-            )
-            .await
-            .map_err(storage)?;
-        owner.verify().await?;
-        Ok(view)
     }
 
     pub(in crate::local) async fn mount_task_view(
