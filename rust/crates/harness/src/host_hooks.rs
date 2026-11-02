@@ -31,12 +31,12 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
 }
 
 /// Claude lifecycle boundaries used for workspace coordination, and the
-/// permission prompt the harness approval chain answers for its own tools.
+/// spawn permission prompt the harness approval chain answers.
 pub const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"];
 
-/// The only tools whose Claude permission prompts reach the harness: those
-/// of the plugin's coordination server. Every other prompt stays Claude's.
-pub const CLAUDE_PERMISSION_MATCHER: &str = "mcp__plugin_acyclic_acyclic-sessions__.*";
+/// Only the plugin's registered spawn prompt reaches the harness.
+/// Native tools and other coordination prompts retain Claude's permissions.
+const CLAUDE_PERMISSION_MATCHER: &str = "^mcp__plugin_acyclic_acyclic-sessions__spawn$";
 
 /// Command hooks for an installed executable, quoted as one shell argument.
 ///
@@ -69,20 +69,6 @@ fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
             (event, vec![Value::Object(group)])
         })
         .collect()
-}
-
-/// Claude plugin manifest sharing the installed hook vocabulary.
-#[must_use]
-pub fn claude_manifest(version: &str) -> Value {
-    json!({
-        "name": "acyclic",
-        "version": version,
-        "description": "Coordinate separate native sessions with the shared harness.",
-        "author": {"name": "Acyclic Labs"},
-        "license": "Apache-2.0",
-        "hooks": command_hooks("\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\""),
-        "mcpServers": {"acyclic-sessions": {"command":"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic", "args":["__mcp","claude-code"]}}
-    })
 }
 
 /// Executable of an exactly matching installed hook, for ownership and diagnostics.

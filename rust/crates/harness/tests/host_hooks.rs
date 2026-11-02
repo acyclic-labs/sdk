@@ -1,7 +1,6 @@
 //! Native manifest and installer contracts, without a provider or agent runtime.
 use acyclic_harness::host_hooks::{
-    CLAUDE_EVENTS, MINIMUM_CODEX_VERSION, check_codex_version, claude_hook_executable,
-    claude_hooks, claude_manifest,
+    CLAUDE_EVENTS, MINIMUM_CODEX_VERSION, check_codex_version, claude_hook_executable, claude_hooks,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -30,35 +29,71 @@ fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
     }
 }
 
+fn packaged_manifest() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../../plugin/claude/.claude-plugin/plugin.json"
+    ))
+    .unwrap()
+}
+
 #[test]
-fn manifest_contains_only_native_lifecycle_commands() {
-    let manifest = claude_manifest("fixture");
+fn installed_permission_selector_matches_only_the_registered_spawn() {
+    // Original native init output and its source/digest are retained in this capture.
+    let capture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../plugin/tests/hosts/fixtures/native-pair-initialization.json"
+    ))
+    .unwrap();
+    let installed = capture["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["host"] == "claude-code" && record["mode"] == "installed")
+        .unwrap();
+    let init: serde_json::Value = serde_json::from_str(
+        installed["stdout"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let tools = init["tools"].as_array().unwrap();
+    let server = init["mcp_servers"][0]["name"].as_str().unwrap();
+    let spawn = format!("mcp__{}__spawn", server.replace(':', "_"));
+    assert!(tools.iter().any(|tool| tool == &spawn));
+
+    let hooks = claude_hooks("/owned/acyclic");
+    let selector = hooks["PermissionRequest"][0]["matcher"].as_str().unwrap();
     assert_eq!(
-        manifest.pointer("/mcpServers/acyclic-sessions/args"),
-        Some(&json!(["__mcp", "claude-code"]))
+        packaged_manifest()["hooks"]["PermissionRequest"][0]["matcher"],
+        selector
     );
-    assert_eq!(
-        manifest.get("version").expect("manifest version"),
-        "fixture"
-    );
-    let events = manifest
-        .get("hooks")
-        .and_then(serde_json::Value::as_object)
-        .expect("manifest hooks");
-    assert_eq!(events.len(), CLAUDE_EVENTS.len());
-    for event in CLAUDE_EVENTS {
-        let hook = events
-            .get(event)
-            .and_then(|groups| groups.pointer("/0/hooks/0"))
-            .expect("manifest hook");
-        assert!(hook.get("args").is_none());
-        assert_eq!(
-            hook.get("command"),
-            Some(&json!(format!(
-                "\"${{CLAUDE_PLUGIN_ROOT}}/../bin/acyclic\" __hook claude-code {event}"
-            )))
-        );
+    let pattern = regex_lite::Regex::new(selector).unwrap();
+    let selected: Vec<_> = tools
+        .iter()
+        .map(|tool| tool.as_str().unwrap())
+        .filter(|tool| pattern.is_match(tool))
+        .collect();
+    assert_eq!(selected, vec![spawn.as_str()]);
+
+    // Deliberate corruptions of the captured identity, not native output fixtures.
+    for foreign in [
+        spawn.replace("plugin_acyclic_", ""),
+        spawn.replace("plugin_acyclic_", "plugin_parent_"),
+        format!("{spawn}_suffix"),
+        format!("prefix_{spawn}"),
+    ] {
+        assert!(!pattern.is_match(&foreign), "{foreign}");
     }
+    let broad = regex_lite::Regex::new(&format!("mcp__{}__.*", server.replace(':', "_"))).unwrap();
+    assert!(
+        tools
+            .iter()
+            .filter(|tool| broad.is_match(tool.as_str().unwrap()))
+            .count()
+            > selected.len()
+    );
 }
 
 proptest! {
@@ -138,7 +173,7 @@ fn native_shell_receives_arguments_from_both_manifest_and_installer() {
     let executable = bin.join("acyclic");
     std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let manifest = claude_manifest("fixture");
+    let manifest = packaged_manifest();
     let installed = claude_hooks(executable.to_str().unwrap());
     for event in CLAUDE_EVENTS {
         for hook in [
