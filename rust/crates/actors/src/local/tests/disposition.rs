@@ -181,7 +181,6 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     );
     let replay_request = replay.request().clone();
     store.submit(replay).await?;
-    PreparedPublish::settle(&provider.commit(replay_request).await?)?;
     assert!(matches!(store.submit(purge).await, Err(Error::Conflict)));
     let replayed = selected(provider.as_ref(), &source, 2).await?;
     assert_eq!(replayed.value, input.value);
@@ -259,6 +258,15 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             &selected(provider.as_ref(), &second_entry.origin, 1).await?
         )?,
         FailureEntry::Resolved(FailureResolution::Purge)
+    );
+    // Reconcile the original replay only after a later input and disposition
+    // have committed. Its retained identity must not dispatch the input twice.
+    PreparedPublish::settle(&provider.commit(replay_request).await?)?;
+    assert_eq!(provider.head(source.clone()).await?.tail, 3);
+    assert_eq!(
+        selected(provider.as_ref(), &entry.origin, 1).await?,
+        terminal,
+        "late reconciliation retains the original replay terminal"
     );
     let child_owner = actor("disposition-branch")?;
     let parent = store.load(&owner).await?;
