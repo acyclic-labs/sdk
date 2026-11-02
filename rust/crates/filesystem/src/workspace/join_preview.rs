@@ -40,6 +40,8 @@ pub struct JoinPreview<A: 'static, O: 'static> {
 }
 
 struct State<A: 'static, O: 'static> {
+    // One borrowed body page retires before its pins and original read frame.
+    content: Option<crate::kernel::FileRangeRead>,
     changes: super::changed_paths::State<A, O>,
     conflicts: Option<Retained<std::vec::IntoIter<MergeConflict>>>,
     excluded: FixedIndex<()>,
@@ -55,6 +57,7 @@ struct State<A: 'static, O: 'static> {
 impl<A, O> State<A, O> {
     fn new(plan: JoinPlan<A, O>) -> Self {
         Self {
+            content: None,
             changes: Default::default(),
             conflicts: None,
             excluded: Default::default(),
@@ -274,6 +277,68 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         let work = accounting.spent();
         result
             .map(|value| OperationReceipt { value, work })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+
+    /// Borrows one exact regular-file range from a selected pinned side.
+    /// An absent file or binding returns `None`; an empty range returns an
+    /// empty slice. The next range replaces this single page after its borrow
+    /// ends, without retaining earlier pages or advancing the row cursors.
+    /// Uses the same cumulative credit and cancellation as the preview.
+    pub async fn conflict_range(
+        &mut self,
+        conflict: &MergeConflict,
+        side: ConflictSide,
+        range: crate::ByteRange,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<&[u8]>>, WorkspaceError> {
+        let (state, mut accounting) = self.owner.borrow();
+        let result = async {
+            if state.failed {
+                return Err(FsError::InvalidDiff.into());
+            }
+            state.failed = true;
+            if let Some(previous) = state.content.take() {
+                previous.retire(&mut accounting)?;
+            }
+            accounting.check()?;
+            let (workspace, generation) = state.plan.side_workspace(side);
+            let cancellation = accounting.cancellation();
+            let record = workspace
+                .volume
+                .fs
+                .workspace_merge_record_with_accounting(
+                    &workspace.volume,
+                    generation,
+                    conflict,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            if let Some(record) = record {
+                state.content = Some(
+                    workspace
+                        .volume
+                        .fs
+                        .workspace_merge_range_with_accounting(
+                            &workspace.volume,
+                            record,
+                            range,
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?,
+                );
+            }
+            state.failed = false;
+            Ok::<_, WorkspaceError>(())
+        }
+        .await;
+        let work = accounting.spent();
+        result
+            .map(|()| OperationReceipt {
+                value: state.content.as_ref().map(|read| read.bytes.as_slice()),
+                work,
+            })
             .map_err(|error| OperationFailure::new(error, work))
     }
 

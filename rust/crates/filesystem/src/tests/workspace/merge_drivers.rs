@@ -246,6 +246,70 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         return Err("merge preview did not retain its read projection".into());
     };
     assert_eq!(conflicts.value.len(), 3);
+    let shared_id = unbounded!(main, stat("/shared"))?.file_id;
+    let shared_conflict = crate::MergeConflict::File(shared_id);
+    // Range output retires on the same original ledger, preserving the
+    // earlier caller buffer rather than releasing or copying its credit.
+    let record = fs
+        .workspace_merge_record_with_accounting(
+            &main.volume,
+            plan.target_head(),
+            &shared_conflict,
+            &mut accounting,
+            &cancellation,
+        )
+        .await?
+        .ok_or("selected range record missing")?;
+    for offset in [0, 2, 0] {
+        let read = fs
+            .workspace_merge_range_with_accounting(
+                &main.volume,
+                record,
+                crate::ByteRange { offset, length: 2 },
+                &mut accounting,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(
+            read.bytes.as_ref(),
+            &b"main"[offset as usize..offset as usize + 2]
+        );
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.scratch_bytes(),
+            prior.bytes + read.logical_owned_bytes
+        );
+        read.retire(&mut accounting)?;
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.scratch_bytes(),
+            prior.bytes
+        );
+    }
+    for range in [
+        crate::ByteRange {
+            offset: 4,
+            length: 1,
+        },
+        crate::ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+    ] {
+        assert!(
+            fs.workspace_merge_range_with_accounting(
+                &main.volume,
+                record,
+                range,
+                &mut accounting,
+                &cancellation,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.scratch_bytes(),
+            prior.bytes
+        );
+    }
     assert!(
         conflicts
             .value
@@ -398,6 +462,56 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
                 .await
                 .map_err(|failure| failure.error)?
                 .value;
+            if let Some(record) = record {
+                let FilePayload::InlineRegular(expected) = record.payload else {
+                    return Err("selected conflict body changed representation".into());
+                };
+                for (index, chunk) in expected.as_bytes().chunks(2).enumerate() {
+                    let read = pages
+                        .conflict_range(
+                            row.value(),
+                            side,
+                            crate::ByteRange {
+                                offset: (index * 2) as u64,
+                                length: chunk.len() as u64,
+                            },
+                        )
+                        .await
+                        .map_err(|failure| failure.error)?;
+                    assert_eq!(read.value, Some(chunk));
+                }
+                assert_eq!(
+                    pages
+                        .conflict_range(
+                            row.value(),
+                            side,
+                            crate::ByteRange {
+                                offset: expected.as_bytes().len() as u64,
+                                length: 0
+                            },
+                        )
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value,
+                    Some(b"".as_slice())
+                );
+            } else {
+                assert!(
+                    pages
+                        .conflict_range(
+                            row.value(),
+                            side,
+                            crate::ByteRange {
+                                offset: 0,
+                                length: 2
+                            },
+                        )
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value
+                        .is_none()
+                );
+            }
             let conflict_path = pages
                 .conflict_path(row.value(), side)
                 .await
@@ -614,6 +728,84 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
         .map_err(|failure| failure.error)?;
     let preparation_items = calibration.work.items_examined;
     drop(calibration);
+    let range_plan = unbounded!(agent.join_into(&main), plan())?;
+    let mut range_pages = range_plan
+        .preview_pages(
+            options,
+            WorkBudget {
+                items_examined: preparation_items,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    assert!(
+        range_pages
+            .conflict_range(
+                &shared_conflict,
+                crate::ConflictSide::Ours,
+                crate::ByteRange {
+                    offset: 0,
+                    length: 2
+                },
+            )
+            .await
+            .is_err(),
+        "selected content minted another item allowance"
+    );
+    assert!(range_pages.next_clean().await.is_err());
+    drop(range_pages);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let range_cancel = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &range_cancel)
+            .map_err(|(error, _)| FsError::from(error))?;
+        let native_plan = unbounded!(agent.join_into(&main), plan())?;
+        let mut native_pages = native_plan
+            .preview_pages(options, &original, &range_cancel)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        let mut live = None;
+        for offset in [0, 2, 0] {
+            let read = native_pages
+                .conflict_range(
+                    &shared_conflict,
+                    crate::ConflictSide::Ours,
+                    crate::ByteRange { offset, length: 2 },
+                )
+                .await
+                .map_err(|failure| failure.error)?;
+            assert_eq!(
+                read.value,
+                Some(&b"main"[offset as usize..offset as usize + 2])
+            );
+            let current = original.live_allocation_bytes();
+            if let Some(previous) = live {
+                assert_eq!(current, previous, "earlier content pages retained credit");
+            }
+            live = Some(current);
+        }
+        range_cancel.cancel();
+        assert!(
+            native_pages
+                .conflict_range(
+                    &shared_conflict,
+                    crate::ConflictSide::Ours,
+                    crate::ByteRange {
+                        offset: 0,
+                        length: 2
+                    },
+                )
+                .await
+                .is_err()
+        );
+        assert!(native_pages.next_clean().await.is_err());
+        assert!(original.live_allocation_bytes() < live.unwrap());
+    }
     let bounded_plan = unbounded!(agent.join_into(&main), plan())?;
     let mut bounded_pages = bounded_plan
         .preview_pages(
@@ -707,10 +899,31 @@ async fn merge_preview_keeps_clean_paths_and_conflicts_without_publication()
             .scratch_bytes(),
         0
     );
+    let pinned_range_plan = unbounded!(agent.join_into(&main), plan())?;
+    let mut pinned_range_pages = pinned_range_plan
+        .preview_pages(options, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
     assert!(matches!(
         plan.apply_sides(options, selections).await?,
         JoinOutcome::Applied(_)
     ));
+    assert_eq!(
+        pinned_range_pages
+            .conflict_range(
+                &shared_conflict,
+                crate::ConflictSide::Ours,
+                crate::ByteRange {
+                    offset: 0,
+                    length: 4
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?
+            .value,
+        Some(b"main".as_slice())
+    );
     for (path, expected) in [
         ("/clean", b"clean".as_slice()),
         ("/shared", b"agent".as_slice()),
