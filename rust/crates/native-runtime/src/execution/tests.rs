@@ -764,10 +764,11 @@ async fn physical_grant_admission_yields_and_release_loss_refuses() -> io::Resul
             meter.write_attempts.load(Ordering::Acquire),
             if compile && release_producer { 4 } else { 0 }
         );
+        let allocations = meter.used_allocations.load(Ordering::Acquire);
+        assert_eq!(allocations, 3);
         println!(
-            "deferred grant: compilation={compile}, native reads={}, task allocation reservations={}",
+            "deferred grant: compilation={compile}, native reads={}, task allocation reservations={allocations}",
             meter.read_attempts.load(Ordering::Acquire),
-            meter.used_allocations.load(Ordering::Acquire)
         );
     }
     // Refused task storage and cancelled requests never reach a native root

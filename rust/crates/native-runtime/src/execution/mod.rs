@@ -362,18 +362,7 @@ impl ExecutionGrant {
         return self.compile_native();
         #[cfg(target_os = "linux")]
         {
-            let compile_meter = meter.clone();
-            crate::run_blocking_io(
-                move || {
-                    self.compile_native_controlled(compile_meter.as_deref())
-                        .map_err(failure)
-                },
-                meter.map(|meter| (meter, false)),
-            )
-            .map_err(failure)?
-            .offloaded()
-            .await
-            .map_err(failure)?
+            admit_native(meter, move |meter| self.compile_native_controlled(meter)).await
         }
     }
 
@@ -470,19 +459,7 @@ impl ExecutionGrant {
         self.check_authority(requested.access, &requested.policy.network)?;
         let ceiling = self.clone();
         let requested = requested.clone();
-        let proof_meter = meter.clone();
-        crate::run_blocking_io(
-            move || {
-                ceiling
-                    .check_roots(&requested, proof_meter.as_deref())
-                    .map_err(failure)
-            },
-            meter.map(|meter| (meter, false)),
-        )
-        .map_err(failure)?
-        .offloaded()
-        .await
-        .map_err(failure)?
+        admit_native(meter, move |meter| ceiling.check_roots(&requested, meter)).await
     }
 
     fn check_authority(
@@ -642,6 +619,24 @@ impl PreparedExecution {
     pub(crate) fn encode_linux(&self, body: &mut Vec<u8>) -> io::Result<std::os::fd::RawFd> {
         self.platform.encode(self.grant.policy.filter, body)
     }
+}
+
+// One task boundary owns offloading and refusal conversion for asynchronous
+// grant admission. Allocation, submission and operation failures all retain
+// the same classification, including cancellation as Interrupted.
+async fn admit_native<T: Send + 'static>(
+    meter: Option<Arc<dyn crate::NativeReadMeter>>,
+    operation: impl FnOnce(Option<&dyn crate::NativeReadMeter>) -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    let operation_meter = meter.clone();
+    crate::run_blocking_io(
+        move || operation(operation_meter.as_deref()).map_err(failure),
+        meter.map(|meter| (meter, false)),
+    )
+    .map_err(failure)?
+    .offloaded()
+    .await
+    .map_err(failure)?
 }
 
 pub(crate) fn failure(error: io::Error) -> io::Error {
