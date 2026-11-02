@@ -78,33 +78,15 @@ async fn write_agent(
     Ok(())
 }
 
-pub(super) fn write_tree<'a, 'p: 'a>(
-    connection: &'a Connection,
-    agent: &'a AgentPath,
-    output: &'a mut dyn std::io::Write,
-    prices: &'a PriceLookup<'p>,
-) -> futures::future::LocalBoxFuture<'a, Result<()>> {
-    Box::pin(async move {
-        write_agent(connection, agent, output, prices).await?;
-        let mut cursor = None;
-        loop {
-            let page = AgentPageRequest::new(32, 32 * 1024, cursor).map_err(failed)?;
-            let AgentReply::Children { items, next } = connection
-                .execute(&AgentCommand::Children {
-                    agent: agent.clone(),
-                    page,
-                })
-                .await?
-            else {
-                return Err(unexpected());
-            };
-            for child in items {
-                write_tree(connection, &child.agent, output, prices).await?;
-            }
-            let Some(next) = next else {
-                return Ok(());
-            };
-            cursor = Some(next);
-        }
-    })
+pub(super) async fn write_tree(
+    connection: &Connection,
+    agent: &AgentPath,
+    output: &mut dyn std::io::Write,
+    prices: &PriceLookup<'_>,
+) -> Result<()> {
+    let mut tree = super::tree::TreeWalk::new(agent);
+    while let Some(agent) = tree.next(connection).await? {
+        write_agent(connection, &agent, output, prices).await?;
+    }
+    Ok(())
 }

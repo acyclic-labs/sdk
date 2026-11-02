@@ -17,8 +17,13 @@ pub enum ExecutionPayloadField {
     Projection,
     /// Proof of the compacted context.
     Compaction,
-    /// Exact admitted model request.
+    /// Stored model request: its exact bytes, or for a later step the
+    /// segments it shares with the steps before it.
     Request,
+    /// Exact canonical bytes of the admitted model request, reconstructed
+    /// from [`Self::Request`] and verified against its digest. Derived, so
+    /// [`Self::fields`] never lists it.
+    AdmittedRequest,
     /// Original model stream observation stored outside its journal frame.
     Event,
     /// Original terminal model-call accounting.
@@ -61,7 +66,10 @@ impl ExecutionPayloadField {
             (Self::Compaction, ExecutionEvent::ContextCompacted { compaction, .. }) => {
                 Some(compaction)
             }
-            (Self::Request, ExecutionEvent::ModelStarted { request, .. }) => Some(request),
+            (
+                Self::Request | Self::AdmittedRequest,
+                ExecutionEvent::ModelStarted { request, .. },
+            ) => Some(request),
             (Self::Event, ExecutionEvent::Model { event, .. }) => Some(event),
             (
                 Self::Usage,
