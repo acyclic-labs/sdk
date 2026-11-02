@@ -95,17 +95,20 @@ if (JSON.stringify(assets[join(plugin, ".mcp.json")]) !== JSON.stringify(expecte
 if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.json") {
   fail("the Codex plugin manifest must declare ./.mcp.json");
 }
-const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
-  .flat()
-  .flatMap(group => group.hooks ?? []);
-// The one permission hook reaches the harness only for its own coordination
-// tools; every other Codex prompt stays the host's.
-const codexHooks = assets[join(plugin, "hooks", "hooks.json")].hooks;
-if (hookHandlers.length !== 4 || hookHandlers.some(hook => hook.type !== "command")
-  || JSON.stringify(Object.keys(codexHooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd", "PermissionRequest"])
-  || Object.entries(codexHooks).some(([event, groups]) => groups.some(group =>
-    group.matcher !== (event === "PermissionRequest" ? "^mcp__acyclic[-_]sessions__" : undefined)))) {
-  fail("Codex hooks must capture only native session boundaries and coordination-tool permission prompts");
+// Both hosts enter harness approval only for the exact registered spawn tool.
+// Other tools retain the host's permission handling without launching a hook.
+for (const [path, matcher] of [
+  [join(plugin, "hooks", "hooks.json"), "^mcp__acyclic[-_]sessions__spawn$"],
+  [join(plugin, "claude", ".claude-plugin", "plugin.json"), "^mcp__plugin_acyclic_acyclic-sessions__spawn$"],
+]) {
+  const hooks = assets[path].hooks ?? {};
+  const handlers = Object.values(hooks).flat().flatMap(group => group.hooks ?? []);
+  if (handlers.length !== 4 || handlers.some(hook => hook.type !== "command")
+    || JSON.stringify(Object.keys(hooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd", "PermissionRequest"])
+    || Object.entries(hooks).some(([event, groups]) => groups.some(group =>
+      group.matcher !== (event === "PermissionRequest" ? matcher : undefined)))) {
+    fail(`step=validate host hooks: ${path} must capture only native session boundaries and exact spawn permission prompts; recovery=restore the packaged hook manifests, then run node plugin/scripts/validate-package.mjs "${root}"`);
+  }
 }
 
 // The `acyclic-plugin` command must link to an interpreter-less placeholder that the
