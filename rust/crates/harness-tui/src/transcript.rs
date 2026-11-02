@@ -183,11 +183,12 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     let columns = if marked { width - 2 } else { width };
     let (text, styles) = if prompt {
         (
-            text.to_owned(),
+            Cow::Borrowed(text),
             vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
         )
     } else {
-        crate::markdown::render(text, columns)
+        let (text, styles) = crate::markdown::render(text, columns);
+        (Cow::Owned(text), styles)
     };
     let mut style_at = crate::styled_cells::ordered_styles(styles);
     let layout = Layout::from_text(&text, columns);

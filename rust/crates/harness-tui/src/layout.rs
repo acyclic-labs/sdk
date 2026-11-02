@@ -97,13 +97,13 @@ impl Layout {
             let (end, symbol) = if let Some(range) = fold {
                 (
                     range.end,
-                    format!(
+                    Cow::Owned(format!(
                         "[Pasted {} lines]",
                         slice(text, range.clone()).split('\n').count()
-                    ),
+                    )),
                 )
             } else if let Some(grapheme) = slice(text, offset..).graphemes(true).next() {
-                (offset + grapheme.len(), grapheme.to_owned())
+                (offset + grapheme.len(), Cow::Borrowed(grapheme))
             } else {
                 break;
             };
@@ -125,20 +125,20 @@ impl Layout {
                 column = 0;
             } else {
                 let symbol = if symbol == "\t" {
-                    " ".repeat((tab_width - column % tab_width).min(width))
+                    Cow::Owned(" ".repeat((tab_width - column % tab_width).min(width)))
                 } else if symbol.chars().any(char::is_control) {
-                    "�".to_owned()
+                    Cow::Borrowed("�")
                 } else {
                     symbol
                 };
-                let mut cell_width = UnicodeWidthStr::width(symbol.as_str());
+                let mut cell_width = UnicodeWidthStr::width(symbol.as_ref());
                 let symbol = if cell_width > width {
                     cell_width = 1;
-                    "�".to_owned()
+                    Cow::Borrowed("�")
                 } else if cell_width == 0 {
                     cell_width = 1;
                     // A leading combining mark needs a printable base.
-                    format!("◌{symbol}")
+                    Cow::Owned(format!("◌{symbol}"))
                 } else {
                     symbol
                 };
@@ -154,7 +154,7 @@ impl Layout {
                 }
                 row.cells.push(Cell {
                     source: offset..end,
-                    symbol,
+                    symbol: symbol.into_owned(),
                     column,
                     width: cell_width,
                 });
@@ -223,6 +223,34 @@ impl Layout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_substitutions_allocate_only_the_final_cell_text() {
+        for (source, displayed) in [
+            ("\t", " "),
+            ("\x07", "�"),
+            ("界", "�"),
+            ("\u{301}", "◌\u{301}"),
+        ] {
+            let (mut original, mut substituted) = (None, None);
+            let expected = acyclic_test_support::measure(|| {
+                original = Some(Layout::from_text(displayed, 1));
+            });
+            let actual = acyclic_test_support::measure(|| {
+                substituted = Some(Layout::from_text(source, 1));
+            });
+            let original = original.unwrap();
+            let substituted = substituted.unwrap();
+            assert_eq!(original.rows.len(), substituted.rows.len());
+            assert_eq!(
+                original.rows[0].cells[0].symbol,
+                substituted.rows[0].cells[0].symbol
+            );
+            assert_eq!(substituted.rows[0].cells[0].source, 0..source.len());
+            // Reinstating a source String before substitution adds an allocation.
+            assert_eq!(actual.count_total, expected.count_total, "{source:?}");
+        }
+    }
 
     #[test]
     fn read_only_layout_preserves_editor_projection_without_editor_allocations() {
