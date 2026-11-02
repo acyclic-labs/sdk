@@ -13,6 +13,17 @@ export interface OpenedSource<Value> {
   close(): void | Promise<void>;
 }
 
+/** Close the original cursor without replacing its initiating failure. */
+export async function closeAfterFailure(failure: unknown, close: () => void | Promise<void>): Promise<void> {
+  try { await close(); }
+  catch (cleanup) {
+    // Shared object identity proves repetition; equal primitive rejections
+    // can come from independent record and cleanup failures.
+    if (cleanup === failure && (typeof failure === "object" && failure !== null || typeof failure === "function")) throw failure;
+    throw new AggregateError([failure, cleanup], "stream failed while closing its original cursor");
+  }
+}
+
 /** One selected cursor. Closing also cancels an opening that is still pending. */
 export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<Value>>, AsyncDisposable {
   readonly opened: Promise<StreamOpening>;
@@ -66,11 +77,7 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
       return result;
     } catch (error) {
       const cancelled = this.#abort.signal.aborted;
-      try { await this.close(); }
-      catch (cleanup) {
-        if (cleanup === error) throw error;
-        throw new AggregateError([error, cleanup], "stream failed while closing its original cursor");
-      }
+      await closeAfterFailure(error, () => this.close());
       if (cancelled) return { done: true, value: undefined };
       throw error;
     }
@@ -119,8 +126,7 @@ async function forwardOpening<Value, Next>(
     signal.throwIfAborted();
     return { opening: await source.opened, records: records(source), close };
   } catch (error) {
-    try { await close(); }
-    catch (cleanup) { throw new AggregateError([error, cleanup], "stream facade failed while closing its original cursor"); }
+    await closeAfterFailure(error, close);
     throw error;
   }
 }

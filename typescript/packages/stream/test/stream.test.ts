@@ -66,6 +66,21 @@ const worker = (value: import("../src/index.js").JsonValue): { readonly worker: 
 };
 
 describe("website Stream contract", () => {
+  test("record and cleanup failures with equal primitive values remain distinct", async () => {
+    const provider = new MemoryStreamProvider();
+    await provider.append("close/causes", [new Uint8Array([1])]);
+    const source = provider.follow("close/causes", { from: 0n });
+    await source.opened;
+    const close = source.close.bind(source);
+    source.close = async () => { await close(); throw undefined; };
+    const facade = source.map(() => { throw undefined; });
+    const failed = await facade.next().catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(AggregateError);
+    expect((failed as AggregateError).errors).toEqual([undefined, undefined]);
+    await expect(facade[Symbol.asyncDispose]()).rejects.toBeUndefined();
+    expect(await source.next()).toEqual({ done: true, value: undefined });
+  });
+
   test("close preserves an undefined original cursor cleanup failure", async () => {
     const provider = new MemoryStreamProvider();
     await provider.append("close/undefined", [new Uint8Array([1])]);

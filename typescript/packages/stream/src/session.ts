@@ -7,7 +7,7 @@ import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { StreamError, type EncodedRecord, type FollowOptions, type ReadOptions, type Revision } from "./types.js";
 import { checkedRecord } from "./record.js";
-import { Opened, streamOpening } from "./opened.js";
+import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { openWasmCursor, wasmRecords } from "./wasm-records.js";
 
 export interface SessionTransport {
@@ -119,7 +119,7 @@ export class StreamSessions {
         };
         return { opening, records: records(), close: owned.close };
       } catch (error) {
-        await owned?.close();
+        await closeAfterFailure(error, () => owned?.close());
         if (signal.aborted) throw error;
         throw streamError(error, "session");
       }

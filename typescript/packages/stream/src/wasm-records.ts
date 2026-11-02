@@ -1,7 +1,7 @@
 import { fromBinary } from "@bufbuild/protobuf";
 import { WasmOpened, type WasmProviderRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { Opened, streamOpening } from "./opened.js";
+import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { streamError } from "./wasm-error.js";
 import { StreamError, type ReadOptions } from "./types.js";
@@ -49,7 +49,7 @@ export async function openWasmCursor(
       },
       close,
     };
-  } catch (error) { await close(); throw error; }
+  } catch (error) { await closeAfterFailure(error, close); throw error; }
 }
 
 /** Owns the same Rust request through registration, receipt and cursor disposal. */
@@ -83,7 +83,7 @@ export function wasmRecords(
       };
       return { opening, records: recordsFromFrames(frames(), path, opening.selection.from, read, signal), close: owned.close };
     } catch (error) {
-      await owned?.close();
+      await closeAfterFailure(error, () => owned?.close());
       if (signal.aborted) throw error;
       throw streamError(error, operation);
     }

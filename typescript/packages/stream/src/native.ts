@@ -1,5 +1,5 @@
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { Opened, streamOpening } from "./opened.js";
+import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
@@ -238,8 +238,7 @@ export class NativeStreamProvider implements StreamProvider {
         return { opening, records: recordsFromFrames(frames(), path, opening.selection.from,
           operation === "read" ? options as ReadOptions : undefined, signal), close };
       } catch (error) {
-        try { await close(); }
-        catch (cleanup) { throw new AggregateError([error, cleanup], "native stream open failed during cleanup"); }
+        await closeAfterFailure(error, close);
         if (error instanceof StreamError || signal.aborted) throw error;
         throw nativeError(error, operation);
       }
