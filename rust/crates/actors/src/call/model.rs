@@ -496,10 +496,97 @@ async fn terminal_sessions() -> Result<(), String> {
     Ok(())
 }
 
+/// Invalid reason bytes must fail before acquiring an owned string. Other
+/// calls on the same provider still progress, and successful output is opaque.
+#[cfg(test)]
+async fn terminal_reasons() -> Result<(), String> {
+    let root = StreamPath::new("caller").map_err(|error| error.to_string())?;
+    let mut long = vec![b'a'; 16_384];
+    long.push(0xff);
+    for bytes in [vec![0xff], vec![0xc0, 0x80], vec![0xe2, 0x82], long] {
+        for accepted in [false, true] {
+            for terminal in [
+                Outcome::Error("failure".into()),
+                Outcome::Cancelled("stop".into()),
+                Outcome::Indeterminate("lost".into()),
+            ] {
+                let mut model =
+                    Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
+                model.requested = false;
+                let mut journal = Journal::default();
+                if accepted {
+                    model.step(Hop::Executor).await?;
+                    for record in model.records(model.call.log(), 0).await? {
+                        journal.apply(&record).map_err(|error| error.to_string())?;
+                    }
+                }
+                let original = journal.clone();
+                let mut publication = model
+                    .call
+                    .settle(None, &terminal)
+                    .map_err(|error| error.to_string())?;
+                // Keep the original terminal's guards, attributes and marker;
+                // only its externally supplied reason bytes are malformed.
+                let CommitMutation::Append { records, .. } = &mut publication.mutations[0] else {
+                    return Err("terminal has no original journal append".into());
+                };
+                records[0].value = OwnedBytes::from(bytes.clone());
+                assert!(model.publish(publication).await?);
+                let records = model.records(model.call.log(), 0).await?;
+                let record = records.last().ok_or("missing malformed terminal")?;
+                let work = acyclic_test_support::measure(|| {
+                    assert!(matches!(
+                        Entry::decode(record),
+                        Err(Error::Malformed("call reason is not UTF-8"))
+                    ));
+                    assert!(matches!(
+                        journal.apply(record),
+                        Err(Error::Malformed("call reason is not UTF-8"))
+                    ));
+                });
+                assert_eq!(work.count_total, 0, "rejected reasons must stay borrowed");
+                assert_eq!(work.bytes_total, 0);
+                assert_eq!(journal, original, "refusal changed the original reader");
+                let copied = acyclic_test_support::measure(|| {
+                    assert!(String::from_utf8(record.value.to_vec()).is_err());
+                });
+                assert_eq!(copied.count_total, 1, "the former decoder copies first");
+                assert_eq!(copied.bytes_total, bytes.len() as u64);
+
+                for (id, outcome) in [
+                    ("valid", Outcome::Error("failed: \u{03bb}".into())),
+                    ("opaque", Outcome::Ok(record.value.clone())),
+                ] {
+                    let sibling = CallPath::new(&root, id).map_err(|error| error.to_string())?;
+                    assert!(
+                        model
+                            .publish(
+                                sibling
+                                    .settle(None, &outcome)
+                                    .map_err(|error| error.to_string())?
+                            )
+                            .await?
+                    );
+                    let mut reader = Journal::default();
+                    for record in model.records(sibling.log(), 0).await? {
+                        assert_eq!(
+                            reader.apply(&record).map_err(|error| error.to_string())?,
+                            Entry::Terminal(outcome.clone())
+                        );
+                    }
+                    assert_eq!(reader.outcome(), Some(&outcome));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(Fault::None).await?, 0);
     terminal_sessions().await?;
+    terminal_reasons().await?;
     // Preserve the owning acceptance control: only its settled guard is
     // removed from the original requestless, already cancelled call.
     let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));

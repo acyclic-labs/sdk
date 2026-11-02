@@ -352,7 +352,9 @@ fn session_matches(accepted: &Accepted, fence: Option<&OwnedBytes>) -> bool {
 }
 
 fn reason(value: &OwnedBytes) -> Result<String, Error> {
-    String::from_utf8(value.to_vec()).map_err(|_| Error::Malformed("call reason is not UTF-8"))
+    std::str::from_utf8(value)
+        .map(str::to_owned)
+        .map_err(|_| Error::Malformed("call reason is not UTF-8"))
 }
 
 impl Entry {
