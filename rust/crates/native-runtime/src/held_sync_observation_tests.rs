@@ -24,6 +24,7 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("durable-record");
     let file = std::fs::File::create(&path)?;
+    subscriber_unwind_preserves_attempt(&file, &path)?;
     let credit = Arc::new(tokio::sync::Semaphore::new(64));
     let (export, mut receiver) = Export::channel(Arc::clone(&credit), false);
     let capture = Capture::default();
@@ -288,5 +289,134 @@ fn physical_attempts_preserve_errors_and_original_worker_context() -> io::Result
     assert_eq!(credit.available_permits() + records.len(), 64);
     drop(records);
     assert_eq!(credit.available_permits(), 64);
+    Ok(())
+}
+
+fn subscriber_unwind_preserves_attempt(
+    file: &std::fs::File,
+    path: &std::path::Path,
+) -> io::Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing::{
+        Subscriber,
+        field::Visit,
+        span::{Attributes, Record},
+    };
+    use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Cut {
+        Create,
+        Error,
+        Outcome,
+        Close,
+        OutcomeAndClose,
+    }
+    struct Failure {
+        cut: Cut,
+        panics: AtomicUsize,
+    }
+    impl Failure {
+        fn trip(&self, cut: Cut) {
+            if (self.cut == cut
+                || self.cut == Cut::OutcomeAndClose && matches!(cut, Cut::Outcome | Cut::Close))
+                && self.panics.fetch_add(1, Ordering::SeqCst)
+                    < if self.cut == Cut::OutcomeAndClose {
+                        2
+                    } else {
+                        1
+                    }
+            {
+                panic!("original durability subscriber control");
+            }
+        }
+    }
+    #[derive(Clone)]
+    struct Probe(Arc<Failure>);
+    impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Probe {
+        fn on_new_span(&self, attributes: &Attributes<'_>, _: &tracing::Id, _: Context<'_, S>) {
+            if attributes.metadata().name() == "acyclic.runtime.durability" {
+                self.0.trip(Cut::Create);
+            }
+        }
+        fn on_record(&self, _: &tracing::Id, record: &Record<'_>, _: Context<'_, S>) {
+            // The original layer shares its failure state with the caller.
+            struct Fields<'a>(&'a Failure);
+            impl Visit for Fields<'_> {
+                fn record_debug(&mut self, field: &tracing::field::Field, _: &dyn std::fmt::Debug) {
+                    match field.name() {
+                        "error.os" => self.0.trip(Cut::Error),
+                        "outcome" => self.0.trip(Cut::Outcome),
+                        _ => {}
+                    }
+                }
+            }
+            record.record(&mut Fields(&self.0));
+        }
+        fn on_close(&self, id: tracing::Id, context: Context<'_, S>) {
+            if context
+                .metadata(&id)
+                .is_some_and(|metadata| metadata.name() == "acyclic.runtime.durability")
+            {
+                self.0.trip(Cut::Close);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    let invalid = std::fs::File::open("/dev/null")?;
+    #[cfg(windows)]
+    let invalid = std::fs::File::open(path)?;
+    #[cfg(unix)]
+    let _ = path;
+    let native_error = invalid
+        .sync_all()
+        .expect_err("original descriptor cannot flush")
+        .raw_os_error();
+    assert!(native_error.is_some());
+    for succeeds in [false, true] {
+        for cut in [
+            Cut::Create,
+            Cut::Error,
+            Cut::Outcome,
+            Cut::Close,
+            Cut::OutcomeAndClose,
+        ] {
+            if succeeds && cut == Cut::Error {
+                continue;
+            }
+            let failure = Arc::new(Failure {
+                cut,
+                panics: AtomicUsize::new(0),
+            });
+            let dispatch = tracing::Dispatch::new(
+                tracing_subscriber::registry().with(Probe(Arc::clone(&failure))),
+            );
+            let attempts = std::cell::Cell::new(0);
+            let result = tracing::dispatcher::with_default(&dispatch, || {
+                observe_sync(Durability::Full, "native-control", 0, || {
+                    attempts.set(attempts.get() + 1);
+                    if succeeds {
+                        file.sync_all()
+                    } else {
+                        invalid.sync_all()
+                    }
+                })
+            });
+            assert_eq!(attempts.get(), 1, "subscriber changed native attempt count");
+            assert_eq!(
+                failure.panics.load(Ordering::SeqCst),
+                if cut == Cut::OutcomeAndClose { 2 } else { 1 }
+            );
+            if succeeds {
+                result?;
+            } else {
+                assert_eq!(
+                    result.expect_err("original native refusal").raw_os_error(),
+                    native_error
+                );
+            }
+        }
+    }
     Ok(())
 }

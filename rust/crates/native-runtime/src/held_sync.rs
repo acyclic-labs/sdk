@@ -14,31 +14,49 @@ pub(crate) fn observe_sync(
     descriptor: u64,
     call: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    crate::task::with_persistence_context(|| {
-        let span = tracing::info_span!(
-            "acyclic.runtime.durability",
-            syscall,
-            requested = match requested {
-                crate::Durability::Full => "full",
-                crate::Durability::Barrier => "barrier",
-            },
-            descriptor,
-            outcome = tracing::field::Empty,
-            error.kind = tracing::field::Empty,
-            error.os = tracing::field::Empty,
-        );
-        let completion = acyclic_observability::Completion::new(&span);
-        span.in_scope(|| {
-            // Capture last_os_error in `call` before recording or closing spans.
-            let result = call();
+    struct AttemptSpan(Option<tracing::Span>);
+    impl Drop for AttemptSpan {
+        fn drop(&mut self) {
+            // Close separately from recording, including during native unwind:
+            // a failing close must never join another panic already in flight.
+            crate::obs::project(|| drop(self.0.take()));
+        }
+    }
+    let mut observation = AttemptSpan(None);
+    crate::obs::project(|| {
+        crate::task::with_persistence_context(|| {
+            observation.0 = Some(tracing::info_span!(
+                "acyclic.runtime.durability",
+                syscall,
+                requested = match requested {
+                    crate::Durability::Full => "full",
+                    crate::Durability::Barrier => "barrier",
+                },
+                descriptor,
+                outcome = tracing::field::Empty,
+                error.kind = tracing::field::Empty,
+                error.os = tracing::field::Empty,
+            ));
+        });
+    });
+    // The native attempt and its original result stay outside diagnostic
+    // callbacks. Neither a failed admission observation nor terminal projection
+    // can skip the syscall, repeat it, or consume its result during unwinding.
+    let result = call();
+    crate::obs::project(|| {
+        if let Some(span) = &observation.0 {
             if let Err(error) = &result
                 && let Some(code) = error.raw_os_error()
             {
                 span.record("error.os", code);
             }
-            completion.finish(result, crate::obs::kind)
-        })
-    })
+            acyclic_observability::record_outcome(
+                span,
+                result.as_ref().err().map(crate::obs::kind),
+            );
+        }
+    });
+    result
 }
 
 /// Makes `descriptor` durable with one native full flush attempt: `fsync` on
