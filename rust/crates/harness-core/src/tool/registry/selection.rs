@@ -214,6 +214,7 @@ impl ToolRegistry {
                     .take_while(|(name, _)| name.starts_with(prefix))
                     .map(|(name, _)| name.as_str())
             },
+            false,
             io,
         )
     }
