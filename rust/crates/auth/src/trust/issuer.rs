@@ -502,7 +502,11 @@ impl AccountRoot {
             parent_key_id: None,
             parent_revocation_ids: certification.parent_revocation_ids,
         };
-        self.sign_certificate(birth, key)
+        let signature = self.sign_certificate(birth, &CertifiedKeyProto::from(key.clone()))?;
+        Ok(CertificateChain {
+            birth: birth.clone(),
+            keys: vec![KeyCertificate { key, signature }],
+        })
     }
 
     /// Sign the exact public request under the original account custody. This
@@ -516,7 +520,7 @@ impl AccountRoot {
         &self,
         birth: &BirthCertificate,
         request: &super::issuance::Request,
-    ) -> Result<CertificateChain, VerifyError> {
+    ) -> Result<CertificateChainProto, VerifyError> {
         if request.issuer() != &self.root.verifying_key().to_bytes()
             || request.environment() != birth.birth.environment
             || request.claims().account_id != self.id()
@@ -524,31 +528,29 @@ impl AccountRoot {
         {
             return Err(VerifyError::Trust);
         }
-        self.sign_certificate(birth, request.claims().clone().try_into()?)
+        let key = request.claims().clone();
+        let signature = self.sign_certificate(birth, &key)?;
+        Ok(CertificateChainProto {
+            birth: Some(birth.clone().into()),
+            keys: vec![KeyCertificateProto {
+                key: Some(key),
+                signature,
+            }],
+        })
     }
 
     fn sign_certificate(
         &self,
         birth: &BirthCertificate,
-        key: CertifiedKey,
-    ) -> Result<CertificateChain, VerifyError> {
+        key: &CertifiedKeyProto,
+    ) -> Result<Vec<u8>, VerifyError> {
         if birth.birth.account_id != self.id()
             || key.account_id != self.id()
             || birth.birth.genesis_public_key != self.root.verifying_key().to_bytes()
         {
             return Err(VerifyError::Trust);
         }
-        Ok(CertificateChain {
-            birth: birth.clone(),
-            keys: vec![KeyCertificate {
-                signature: sign(
-                    &self.root,
-                    KEY_DOMAIN,
-                    &CertifiedKeyProto::from(key.clone()),
-                )?,
-                key,
-            }],
-        })
+        sign(&self.root, KEY_DOMAIN, key)
     }
 
     /// Revokes exactly these blocks (each with its retention deadline) and

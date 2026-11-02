@@ -123,7 +123,7 @@ impl IssuerModel {
             self.record = Some(Stored {
                 key: *request.operation_key(),
                 digest: *request.digest(),
-                certificate: certificates.into(),
+                certificate: certificates,
             });
         }
         if std::mem::take(&mut self.lose_reply) {
@@ -263,7 +263,7 @@ fn same_key_recovery_preserves_original_issuance_and_current_authority() {
             let mut owner = client.provider.lock().unwrap();
             let changed = request(8, epoch, |claims| claims.grants.grants.clear());
             let certificate = owner.root.certify_request(&owner.birth, &changed).unwrap();
-            owner.record.as_mut().unwrap().certificate = certificate.into();
+            owner.record.as_mut().unwrap().certificate = certificate;
         }
         assert!(matches!(
             client.recover(&trust).await.unwrap(),
@@ -317,16 +317,21 @@ struct Source {
     reply: Mutex<Option<oneshot::Receiver<Reply>>>,
     entered: Mutex<Option<oneshot::Sender<()>>>,
 }
-impl Provider for Source {
-    fn issue<'a>(&'a self, _: &'a Context, _: &'a Request) -> Pending<'a> {
+impl Source {
+    fn response(&self) -> Pending<'_> {
         Box::pin(async move {
             let _ = self.entered.lock().unwrap().take().unwrap().send(());
             let receive = self.reply.lock().unwrap().take().unwrap();
             receive.await.map_err(|_| Unknown::Unavailable)
         })
     }
-    fn recover<'a>(&'a self, context: &'a Context, request: &'a Request) -> Pending<'a> {
-        self.issue(context, request)
+}
+impl Provider for Source {
+    fn issue<'a>(&'a self, _: &'a Context, _: &'a Request) -> Pending<'a> {
+        self.response()
+    }
+    fn recover<'a>(&'a self, _: &'a Context, _: &'a Request) -> Pending<'a> {
+        self.response()
     }
 }
 
@@ -367,17 +372,31 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
             );
             assert!(client.provider.entered.lock().unwrap().is_some());
         }
-        for stop in [false, true] {
+        for cause in ["source", "caller", "expiry", "ready-caller"] {
             let (send, receive) = oneshot::channel();
             let (entered, ready) = oneshot::channel();
-            let (cancel, cancelled) = oneshot::channel();
+            let (cancel, cancelled) = oneshot::channel::<()>();
+            let clock = Arc::new(OriginalClock(AtomicU64::new(100_000)));
+            let original = request(8, 0, |_| {});
+            let (model, trust) = IssuerModel::new(true);
+            let certificate = model.root.certify_request(&model.birth, &original).unwrap();
+            // Negative control: this exact certificate is valid at dispatch.
+            assert!(
+                CertificateVerifier::default()
+                    .verify_certificates(certificate.clone(), original.issuer(), &trust, 100)
+                    .is_ok()
+            );
+            let reply = Reply {
+                request_digest: *original.digest(),
+                decision: Decision::Accepted(certificate),
+            };
             let context = Context::from_clock(
-                1_000_000,
+                2_000_000,
                 async move {
                     let _ = cancelled.await;
                     Stopped::Cancelled
                 },
-                Arc::new(OriginalClock(AtomicU64::new(100_000))),
+                clock.clone(),
             );
             let mut client = Client::new(
                 Source {
@@ -385,38 +404,45 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                     entered: Mutex::new(Some(entered)),
                 },
                 context,
-                request(8, 0, |_| {}),
+                original,
             );
-            let trust = crate::testing::Snapshot::default();
             let operation = client.issue(&trust);
             let terminal = async move {
                 ready.await.unwrap();
-                if stop {
-                    drop(cancel);
-                    // Keep the remote response open: only the original caller
-                    // producer loss can end this wait.
-                    let _held_reply = send;
-                    pending::<()>().await;
-                } else {
-                    drop(send);
-                    let _held_caller = cancel;
-                    pending::<()>().await;
+                let mut caller = Some(cancel);
+                let mut response = Some(send);
+                match cause {
+                    "source" => drop(response.take()),
+                    "caller" => drop(caller.take()),
+                    "expiry" => {
+                        clock.0.store(1_000_000, Ordering::SeqCst);
+                        assert!(response.take().unwrap().send(reply).is_ok());
+                    }
+                    _ => {
+                        drop(caller.take());
+                        assert!(response.take().unwrap().send(reply).is_ok());
+                    }
                 }
+                // Keep the opposite original producer open. Only the chosen
+                // event can settle the wait; completion drops these owners.
+                let _held = (caller, response);
+                pending::<()>().await;
             };
             futures::pin_mut!(operation, terminal);
             match futures::future::select(operation, terminal).await {
-                futures::future::Either::Left((Ok(outcome), _)) => {
-                    if stop {
-                        assert!(matches!(
-                            outcome,
-                            Outcome::Unknown(Unknown::Stopped(BudgetError::Stopped(
-                                Stopped::Cancelled
-                            )))
-                        ));
-                    } else {
-                        assert!(matches!(outcome, Outcome::Unknown(Unknown::Unavailable)));
-                    }
-                }
+                futures::future::Either::Left((Ok(outcome), _)) => match cause {
+                    "caller" | "ready-caller" => assert!(matches!(
+                        outcome,
+                        Outcome::Unknown(Unknown::Stopped(BudgetError::Stopped(
+                            Stopped::Cancelled
+                        )))
+                    )),
+                    "expiry" => assert!(matches!(
+                        outcome,
+                        Outcome::Unknown(Unknown::Authority(VerifyError::Time))
+                    )),
+                    _ => assert!(matches!(outcome, Outcome::Unknown(Unknown::Unavailable))),
+                },
                 _ => panic!("original primitive terminal must settle the operation"),
             }
         }
