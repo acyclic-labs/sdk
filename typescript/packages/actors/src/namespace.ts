@@ -35,18 +35,21 @@ export class NamespaceActorId {
 }
 /** Host-authorized namespace binding. get performs no network access or creation. */
 export class ActorNamespaceBinding {
-  readonly #scope: ActorReference;
+  readonly #account: Uint8Array;
+  readonly #namespace: Uint8Array;
   readonly #transport: ActorInvocationTransport;
   readonly #binding: string;
   constructor(account: Uint8Array, namespace: string, transport: ActorInvocationTransport, bindingName: string) {
     if (typeof namespace !== "string") throw new TypeError("namespace must be text");
-    this.#scope = new ActorReference(account, encoder.encode(namespace), encoder.encode("_"));
+    const scope = new ActorReference(account, encoder.encode(namespace), encoder.encode("_"));
+    this.#account = scope.account;
+    this.#namespace = scope.namespace;
     if (typeof bindingName !== "string" || bindingName.length === 0) throw new TypeError("binding name is required");
     this.#transport = transport; this.#binding = bindingName;
   }
   #id(id: string, named: boolean): NamespaceActorId {
     if (typeof id !== "string") throw new TypeError("actor id must be text");
-    return new NamespaceActorId(new ActorReference(this.#scope.account, this.#scope.namespace, encoder.encode(id)), named ? id : undefined);
+    return new NamespaceActorId(new ActorReference(this.#account, this.#namespace, encoder.encode(id)), named ? id : undefined);
   }
   idFromName(name: string): NamespaceActorId { return this.#id(name, true); }
   idFromString(id: string): NamespaceActorId { return this.#id(id, false); }
@@ -54,7 +57,7 @@ export class ActorNamespaceBinding {
     return this.#id(randomId(), false);
   }
   #assertScope(reference: ActorReference): void {
-    const expected = new ActorReference(this.#scope.account, this.#scope.namespace, reference.id);
+    const expected = new ActorReference(this.#account, this.#namespace, reference.id);
     if (!reference.equals(expected)) throw new TypeError("actor reference is outside namespace binding");
   }
   idFromReference(reference: ActorReference): NamespaceActorId {
@@ -63,7 +66,6 @@ export class ActorNamespaceBinding {
   }
   get(id: NamespaceActorId, options: ActorGetOptions = {}): ActorStub {
     this.#assertScope(id.reference);
-    if (options.locationHint !== undefined) actorLocationHint(options.locationHint);
     return new ActorStub(id, this.#transport, this.#binding, options.locationHint);
   }
   getByName(name: string, options: ActorGetOptions = {}): ActorStub { return this.get(this.idFromName(name), options); }
