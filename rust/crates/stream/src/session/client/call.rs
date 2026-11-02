@@ -92,13 +92,7 @@ impl Client {
                 credential,
             )
             .await?;
-        let sender = CallInputSender {
-            client: self.clone(),
-            id: cursor.id,
-            state: cursor.input.clone().ok_or(StreamError::Unavailable)?,
-            next: 0,
-            finished: false,
-        };
+        let sender = input::State::sender(cursor.input.as_ref().ok_or(StreamError::Unavailable)?)?;
         Ok((sender, Self::reply_cursor(cursor, maximum_reply_bytes)))
     }
 
@@ -231,6 +225,12 @@ impl Client {
                     .filter(|received| *received <= length)
                     .ok_or(StreamError::InvalidResponse)?;
                 let chunk = crate::body::BodyChunk::new(bytes, credit);
+                if received == length && cursor.input.is_some() {
+                    // A complete reply retires only its half. The same input
+                    // owner retains the admitted call until EOF or cancellation.
+                    cursor.progress.end();
+                    cursor.observation.finish(None);
+                }
                 Ok(Some((
                     (length, chunk),
                     (cursor, Some(length), received, received == length),

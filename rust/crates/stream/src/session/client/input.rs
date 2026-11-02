@@ -126,16 +126,31 @@ impl Credit {
 pub(super) struct State {
     pub window: Arc<Window>,
     connection: Mutex<Option<Arc<Window>>>,
-    terminal: Mutex<Option<StreamError>>,
+    terminal: Mutex<Terminal>,
     changed: gate::Gate,
+    pool: PoolHandle,
+    id: u64,
+    progress: Arc<Progress>,
+}
+struct Terminal {
+    cause: Option<StreamError>,
+    // Exactly the reply cursor and, after successful open, its input sender.
+    // Route ownership observes their terminal without keeping either alive.
+    clients: u8,
 }
 impl State {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(pool: PoolHandle, id: u64, progress: Arc<Progress>) -> Self {
         Self {
             window: Arc::new(Window::new()),
             connection: Mutex::new(None),
-            terminal: Mutex::new(None),
+            terminal: Mutex::new(Terminal {
+                cause: None,
+                clients: 1,
+            }),
             changed: gate::Gate::new(),
+            pool,
+            id,
+            progress,
         }
     }
     pub(super) fn bind(&self, connection: Arc<Window>) -> Result<(), StreamError> {
@@ -147,8 +162,8 @@ impl State {
     }
     pub(super) fn close(&self, cause: StreamError) {
         if let Ok(mut terminal) = self.terminal.lock() {
-            if terminal.is_none() {
-                *terminal = Some(cause);
+            if terminal.cause.is_none() {
+                terminal.cause = Some(cause);
             }
         }
         self.window.close();
@@ -158,7 +173,7 @@ impl State {
         self.terminal
             .lock()
             .ok()
-            .and_then(|terminal| terminal.clone())
+            .and_then(|terminal| terminal.cause.clone())
             .unwrap_or(StreamError::Unavailable)
     }
     async fn until_closed<T>(
@@ -183,6 +198,40 @@ impl State {
         let aggregate = connection.reserve(length).await?;
         Ok(Credit { channel, aggregate })
     }
+    pub(super) fn sender(state: &Arc<Self>) -> Result<CallInputSender, StreamError> {
+        let mut terminal = state
+            .terminal
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        terminal.clients = terminal
+            .clients
+            .checked_add(1)
+            .filter(|clients| *clients == 2)
+            .ok_or(StreamError::Unavailable)?;
+        Ok(CallInputSender {
+            state: state.clone(),
+            next: 0,
+            finished: false,
+        })
+    }
+    pub(super) fn cancel(&self) {
+        self.close(StreamError::Unavailable);
+        self.pool.cancel_interest(self.id, &self.progress);
+    }
+    pub(super) fn release(&self) {
+        let last = {
+            // Cleanup must still retire original interest after lock poisoning.
+            let mut terminal = self
+                .terminal
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            terminal.clients -= 1;
+            terminal.clients == 0
+        };
+        if last {
+            self.pool.retire_interest(self.id, &self.progress);
+        }
+    }
 }
 
 pub(super) struct Owner(pub Arc<State>);
@@ -196,8 +245,6 @@ impl Drop for Owner {
 /// connection and cancellation as its reply. It cannot clone, reconnect or
 /// replay an upload. Dropping it before `finish` withdraws the original call.
 pub struct CallInputSender {
-    pub(super) client: Client,
-    pub(super) id: u64,
     pub(super) state: Arc<State>,
     pub(super) next: u64,
     pub(super) finished: bool,
@@ -212,7 +259,7 @@ impl CallInputSender {
         }
         let next = self.next.checked_add(1).ok_or(StreamError::OutOfRange)?;
         let value = frame(
-            self.id,
+            self.state.id,
             1,
             Body::Data(wire::SessionData {
                 after: Some(cursor(next)),
@@ -223,8 +270,7 @@ impl CallInputSender {
         );
         let length = u32::try_from(value.encoded_len()).map_err(|_| StreamError::LimitExceeded)?;
         let mut attempt = Attempt {
-            client: self.client.clone(),
-            id: self.id,
+            state: self.state.clone(),
             accepted: false,
         };
         // Sequence is claimed before awaiting. Cancellation cannot reuse the
@@ -243,7 +289,7 @@ impl CallInputSender {
     /// Send the original ordered EOF/trailers without requiring data credit.
     pub async fn finish(mut self, trailers: Vec<wire::SessionHeader>) -> Result<(), StreamError> {
         let value = frame(
-            self.id,
+            self.state.id,
             1,
             Body::InputEnd(wire::SessionInputEnd { trailers }),
         );
@@ -260,11 +306,11 @@ impl CallInputSender {
         credit: Option<Credit>,
     ) -> Result<(), StreamError> {
         let (sent, result) = oneshot::channel();
-        self.client
+        self.state
             .pool
             .commands
             .send(Command::Input {
-                id: self.id,
+                id: self.state.id,
                 frame,
                 credit,
                 sent,
@@ -277,20 +323,20 @@ impl CallInputSender {
 impl Drop for CallInputSender {
     fn drop(&mut self) {
         if !self.finished {
-            let _ = self.client.pool.removed.send(self.id);
+            self.state.cancel();
         }
+        self.state.release();
     }
 }
 
 struct Attempt {
-    client: Client,
-    id: u64,
+    state: Arc<State>,
     accepted: bool,
 }
 impl Drop for Attempt {
     fn drop(&mut self) {
         if !self.accepted {
-            let _ = self.client.pool.removed.send(self.id);
+            self.state.cancel();
         }
     }
 }

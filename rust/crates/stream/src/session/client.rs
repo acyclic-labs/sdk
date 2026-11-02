@@ -87,6 +87,14 @@ pub(crate) struct PoolHandle {
 }
 
 impl PoolHandle {
+    fn cancel_interest(&self, id: u64, progress: &Progress) {
+        self.admissions.cancel(id, progress);
+        let _ = self.removed.send(id);
+    }
+    fn retire_interest(&self, id: u64, progress: &Progress) {
+        self.cancel_interest(id, progress);
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
     pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
         Client {
             pool: self,
@@ -287,7 +295,8 @@ struct Pool {
 }
 impl Route {
     fn live(&self) -> bool {
-        !self.progress.cancelled() && !self.records.is_closed()
+        !self.progress.cancelled()
+            && (!self.records.is_closed() || (self.input.is_some() && self.progress.ended()))
     }
     /// Live follows resume from their cursor. An opened finite read cannot
     /// reopen against a different snapshot; a children page is reissued only
@@ -776,7 +785,7 @@ impl Client {
         // must remove its interest even when no record is ever appended.
         let mut cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
         let input = matches!(&kind, Kind::ActorCall(call) if call.input)
-            .then(|| Arc::new(input::State::new()));
+            .then(|| Arc::new(input::State::new(self.pool.clone(), id, progress.clone())));
         cursor.input = input.clone();
         if !matches!(&kind, Kind::Follow(_)) {
             cursor.primitive = "session-reply";
@@ -903,10 +912,15 @@ impl Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
-        self.client.pool.admissions.cancel(self.id, &self.progress);
         self.receiver.close();
-        self.client.pool.active.fetch_sub(1, Ordering::AcqRel);
-        let _ = self.client.pool.removed.send(self.id);
+        if let Some(input) = &self.input {
+            if !self.progress.ended() {
+                input.cancel();
+            }
+            input.release();
+        } else {
+            self.client.pool.retire_interest(self.id, &self.progress);
+        }
     }
 }
 

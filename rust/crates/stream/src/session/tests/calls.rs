@@ -124,6 +124,22 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         replies.next().await.ok_or("no early reply")??.1.as_ref(),
         b"before EOF"
     );
+    assert!(
+        replies.next().await.is_none(),
+        "complete reply must retire only the reply half"
+    );
+    // The old cursor-only lifetime cancelled the original input here. Keep
+    // sending after the complete reply and its cursor have both retired.
+    let fourth_original = Bytes::from_static(b"after reply EOF");
+    let mut blocked = Box::pin(upload.send(fourth_original.clone()));
+    assert!(futures::poll!(blocked.as_mut()).is_pending());
+    drop(second);
+    blocked.await?;
+    let fourth = input
+        .next_chunk()
+        .await?
+        .ok_or("complete reply cancelled the input half")?;
+    assert_eq!(fourth.as_ref().as_ptr(), fourth_original.as_ptr());
     let trailers = vec![wire::SessionHeader {
         name: Bytes::from_static(b"digest"),
         value: Bytes::from_static(b"original terminal"),
@@ -134,9 +150,34 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         "EOF must not need a returned data credit"
     );
     assert_eq!(input.trailers(), Some(trailers.as_slice()));
-    assert_eq!(second.as_ref(), second_original.as_ref());
     assert_eq!(third.as_ref(), third_original.as_ref());
-    assert!(replies.next().await.is_none());
+    assert_eq!(fourth.as_ref(), fourth_original.as_ref());
+
+    // Incomplete reply retirement is cancellation, even when the original
+    // upload producer and two escaped data owners remain alive.
+    let (mut cancelled, cancelled_reply) = client.actor_call_input(&invocation, 0, 128).await?;
+    let (mut input, _answer) = dispatches.recv().await.ok_or("no cancellable handler")?;
+    cancelled.send(original.clone()).await?;
+    cancelled.send(second_original.clone()).await?;
+    let cancelled_first = input
+        .next_chunk()
+        .await?
+        .ok_or("no first cancelled input")?;
+    let cancelled_second = input
+        .next_chunk()
+        .await?
+        .ok_or("no second cancelled input")?;
+    let mut pending = Box::pin(cancelled.send(Bytes::from_static(b"blocked")));
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    drop(cancelled_reply);
+    assert_eq!(pending.await, Err(StreamError::Unavailable));
+    assert!(matches!(
+        input.next_chunk().await,
+        Err(StreamError::Unavailable)
+    ));
+    assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
+    assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
+    drop(cancelled);
 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
