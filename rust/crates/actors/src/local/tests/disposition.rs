@@ -177,6 +177,28 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     };
     let captured = selected(provider.as_ref(), &failed.input_path()?, 0).await?;
     assert_eq!(failed.input(&captured)?, input);
+    // Ordinary read/follow producers elide their selected origin, unlike the
+    // child-tail projection above. Both retain the same failure/body identity.
+    let projected = acyclic_stream::wire_codec::record_wire(entry.clone(), Some(&entry.origin));
+    assert!(projected.origin.is_empty());
+    assert!(acyclic_stream::wire_codec::record(projected.clone(), None).is_err());
+    assert_eq!(
+        FailureEntry::decode(
+            &child.path,
+            &acyclic_stream::wire_codec::record(projected, Some(&entry.origin))?,
+        )?,
+        FailureEntry::Failed(failed.clone()),
+    );
+    let projected =
+        acyclic_stream::wire_codec::record_wire(captured.clone(), Some(&failed.input_path()?));
+    assert!(projected.origin.is_empty());
+    assert_eq!(
+        failed.input(&acyclic_stream::wire_codec::record(
+            projected,
+            Some(&failed.input_path()?),
+        )?)?,
+        input,
+    );
     assert!(
         failed.input(&input).is_err(),
         "a live source record cannot replace retained custody"
@@ -465,6 +487,58 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     bytes[4] = 2;
     invalid.value = bytes.into();
     assert!(FailureEntry::decode(&child.path, &invalid).is_err());
+    // The public failure boundary must retire addressed invocation callers too;
+    // it cannot depend on a private runtime wrapper adding missing terminals.
+    let invoked = actor("public-failure-invocation")?;
+    place(&store, &invoked).await?;
+    let invocation = crate::invocation::Invocation::new(
+        StreamPath::new("failure-control/caller")?,
+        invoked.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"public-failure"),
+        Bytes::from_static(b"original-invocation"),
+    )?;
+    let ticket = store.enqueue_invoke(&invocation).await?;
+    let current = store.load(&invoked).await?;
+    let before = provider.requests();
+    let publication = store.prepare_failed_input(
+        &current,
+        current.state().ok_or("missing invocation state")?.epoch(),
+        &record(ticket.record().sequence),
+        ticket.record(),
+        &cause,
+        key("failure/public-invocation")?,
+    )?;
+    let work = provider.requests().since(before);
+    assert_eq!((work.data(), work.control()), (0, 0));
+    let call = ticket.call()?;
+    // Finite negative: restoring the old public preparation fails here before
+    // waiting for a terminal that the mutation would never publish.
+    for path in [call.log(), call.settled()] {
+        assert!(publication.request().mutations.iter().any(|mutation| {
+            matches!(mutation, CommitMutation::Append { path: selected, .. } if selected == path)
+        }), "missing original invocation terminal/settlement");
+    }
+    let published = store
+        .submit(publication)
+        .await?
+        .ok_or("missing failed invocation state")?;
+    let Err(Error::InvocationFailed { source, receipt }) = store.wait_invocation(ticket).await
+    else {
+        return Err("public failure left invocation unsettled".into());
+    };
+    assert_eq!(source, cause);
+    assert_eq!(
+        receipt.state().commit_id,
+        published.anchor.ok_or("missing failure cut")?
+    );
+    assert_eq!(receipt.terminal().commit_id, receipt.state().commit_id);
+    assert_eq!(
+        selected(provider.as_ref(), call.settled(), 0)
+            .await?
+            .commit_id,
+        receipt.state().commit_id
+    );
     Ok(())
 }
 

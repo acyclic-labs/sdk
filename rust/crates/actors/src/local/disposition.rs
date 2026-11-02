@@ -242,7 +242,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// Explicitly skip one original failed record, recording its exact bytes and
-    /// cause in the SAME conditional commit as the cursor advance. This does no
+    /// cause in the SAME conditional commit as the cursor advance. Addressed
+    /// invocations include their original call terminal and settlement. This does no
     /// provider IO. The caller retains failure policy and must not pass an
     /// indeterminate external operation, cancellation or producer-loss error.
     /// Submit through `submit` to retain the original unknown-acknowledgement custody.
@@ -275,6 +276,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .ok_or(Error::Invalid("undeclared failed-input subscription"))?;
         // Validate the selected Store before constructing any recovery bytes.
         self.actor(&previous.path)?;
+        let completion =
+            self.invocation_completion(previous, trigger, Some(input), Some(Err(cause)), &[])?;
         let mut state = original.clone();
         super::consume(&mut state, &original.alarm, trigger)?;
         let path = location(&previous.path, previous.tail)?;
@@ -327,6 +330,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             },
         ] {
             prepared.join_host(effect)?;
+        }
+        if let Some((call, effects)) = completion {
+            for effect in effects {
+                prepared.join_host(effect)?;
+            }
+            prepared.call = Some((call, trigger.clone()));
         }
         Ok(prepared)
     }
