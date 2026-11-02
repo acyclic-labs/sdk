@@ -21,6 +21,30 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
     let external_nested = external.join("nested");
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::create_dir_all(&external_nested).unwrap();
+    // Reject invalid authority before resolving a workspace or consuming read
+    // roots. A missing workspace detects filesystem work before the refusal;
+    // the real workspace detects consumption of the supplied read roots.
+    let missing = root.path().join("missing");
+    for workspace in [&workspace, &missing] {
+        let visited = std::cell::Cell::new(0);
+        let error = ExecutionGrant::new(
+            workspace,
+            ExecutionAccess::ReadOnly,
+            std::iter::once(external.clone()).inspect(|_| visited.set(visited.get() + 1)),
+            ExecutionNetwork::TcpPorts(BTreeSet::from([0, 443])),
+        )
+        .unwrap_err();
+        assert_eq!(visited.get(), 0);
+        assert_eq!(
+            error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<ExecutionRefusal>()
+                .unwrap()
+                .reason(),
+            "TCP port zero is not a destination grant"
+        );
+    }
     let ports = BTreeSet::from([443, 8443]);
     let parent = ExecutionGrant::new(
         &workspace,
@@ -45,7 +69,6 @@ fn child_grants_cannot_reacquire_revoked_capabilities() {
     // A rejected authority increase must not bind even one requested root.
     // A missing workspace detects path resolution before the same refusal;
     // a real workspace detects consumption of the supplied read roots.
-    let missing = root.path().join("missing");
     for (access, network) in [
         (ExecutionAccess::WorkspaceWrite, ExecutionNetwork::Off),
         (ExecutionAccess::ReadOnly, ExecutionNetwork::On),
