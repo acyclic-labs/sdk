@@ -9,6 +9,7 @@
 use crate::executor::{ModelPriceError, ModelPriceRecord, ModelUsageRecord};
 use crate::model::ModelDispatch;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// A projection cannot supply the requested original fact.
@@ -196,7 +197,7 @@ impl ContextAdmission {
 /// `context.json`; each cache count stays paired with its own request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct ContextInfo {
+pub struct ContextInfo<'a> {
     /// Original replacement revision.
     pub revision: u64,
     /// Selected model capacity.
@@ -209,8 +210,8 @@ pub struct ContextInfo {
     pub current: ContextRequest,
     /// Counts for the original last completed request, possibly an older revision.
     pub last_call: ContextCall,
-    /// Paged context part files.
-    pub parts: String,
+    /// Paged context part files, borrowed while projecting and owned on decode.
+    pub parts: Cow<'a, str>,
 }
 
 /// A verified request and its own count.
@@ -237,11 +238,11 @@ pub struct ContextCall {
     pub cache_write_tokens: Option<u64>,
 }
 
-impl ContextInfo {
+impl<'a> ContextInfo<'a> {
     /// Join the current admission with an independently retained last call.
     /// There is no provider call, historical lookup or revision derivation.
     pub fn project(
-        current: &ContextAdmission,
+        current: &'a ContextAdmission,
         last: &ContextAdmission,
         usage: &ModelUsageRecord,
     ) -> Result<Self, Error> {
@@ -265,7 +266,7 @@ impl ContextInfo {
                 cached_read_tokens: usage.tokens.cached,
                 cache_write_tokens: usage.tokens.cache_write,
             },
-            parts: current.parts.clone(),
+            parts: Cow::Borrowed(&current.parts),
         })
     }
 }
@@ -308,11 +309,11 @@ pub enum ContextPartKind {
 /// matching admission. Missing required counters/cost produce a typed error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct Usage {
+pub struct Usage<'a> {
     /// Revision at this call, even if the current context has since changed.
     pub revision: u64,
-    /// Original admitted model.
-    pub model: String,
+    /// Original admitted model, borrowed while projecting and owned on decode.
+    pub model: Cow<'a, str>,
     /// Provider's original input counter, including its reported cache hits.
     pub input_tokens: u64,
     /// Provider's original cache-read counter.
@@ -339,12 +340,12 @@ pub struct CompactionCost {
     pub auto_trim_at_tokens: u64,
 }
 
-impl Usage {
+impl<'a> Usage<'a> {
     /// Reuse the shared provider-price interpretation. This projection does not
     /// publish a second usage event or turn unknown cache/cost into zero.
     pub fn project(
         admission: &ContextAdmission,
-        usage: &ModelUsageRecord,
+        usage: &'a ModelUsageRecord,
         price: Option<&ModelPriceRecord>,
     ) -> Result<Self, Error> {
         admission.completed(usage)?;
@@ -363,7 +364,7 @@ impl Usage {
         let cost = estimate.token_nano_units.ok_or(Error::IncompleteCost)?;
         Ok(Self {
             revision: admission.revision,
-            model: usage.model.clone(),
+            model: Cow::Borrowed(&usage.model),
             input_tokens,
             cached_tokens,
             output_tokens,
