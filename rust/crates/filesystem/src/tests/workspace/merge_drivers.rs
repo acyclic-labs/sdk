@@ -303,6 +303,40 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ));
     }
 
+    // Replacement classification must keep its path parsing and lookup on the
+    // same original allowance, rather than opening independent stat reads.
+    {
+        let conflict = MergeConflict::File(unbounded!(main, stat("/replaced"))?.file_id);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut calibration = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let prepared_components = calibration.work().source_path_components;
+        drop(calibration);
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut bounded = value!(
+            join.preview_pages(
+                options,
+                WorkBudget {
+                    source_path_components: prepared_components,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .await
+        )?;
+        assert!(
+            matches!(
+                bounded.describe_conflict_file(conflict).await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "replacement lookup minted another path allowance"
+        );
+    }
+
     // A foreign edit to plan.json cannot be silently overwritten by a later
     // page. Failure terminates the advanced cursor; no partial page appears.
     {
