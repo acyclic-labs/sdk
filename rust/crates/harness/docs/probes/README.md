@@ -8,9 +8,10 @@ before admission. Keep scoring files outside model-readable volumes.
 
 Load the three role files in `roles/` as one immutable profile snapshot. The
 coordinator and all descendants use the same cheap model. Bind that same
-snapshot on the execution host; the remote snapshot fence and population
-lifecycle release described in [paired populations](../experiments.md) are
-still prerequisites. Merely naming the role does not install its file.
+snapshot on the execution host. Each population fork requires that exact
+snapshot, and adopted pins also bind descendant policy after a restart.
+Population lifecycle release described in [paired populations](../experiments.md)
+remains a prerequisite. Merely naming the role does not install its file.
 
 Measured workers use fresh model context so their coordinator's condition label,
 payload selection and scorer do not leak through inherited history. Grant them
