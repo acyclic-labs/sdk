@@ -375,7 +375,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         .await?;
     assert_eq!(page.entries.len(), 1);
     let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
-    let portable_page = erased
+    let (portable_page, _portable_page_hold) = erased
         .list_private_directory(
             &volume,
             "messages",
