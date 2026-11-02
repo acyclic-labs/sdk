@@ -9,6 +9,8 @@ struct Calls {
 
 struct InputCalls {
     admitted: tokio::sync::mpsc::UnboundedSender<(CallInput, oneshot::Sender<Bytes>)>,
+    resource: &'static str,
+    action: &'static str,
 }
 
 // Hold the actual request stream at EOF while the original server and client
@@ -55,7 +57,7 @@ impl transport::Transport for HeldInputTerminal {
 }
 impl CallProvider for InputCalls {
     fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
-        CallTarget::new("actors:/fixture".into(), "actors/invoke")
+        CallTarget::new(self.resource.into(), self.action)
     }
     fn call(
         &self,
@@ -71,11 +73,12 @@ impl CallProvider for InputCalls {
         input: CallInput,
     ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
         let admitted = self.admitted.clone();
+        let resource = self.resource;
         Box::pin(async move {
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
                 .map_err(|_| StreamError::InvalidArgument)?;
             authorization.authorize(
-                "actors:/fixture",
+                resource,
                 &[],
                 &attributes,
                 acyclic_auth::authority::PolicyDecision::Allow,
@@ -91,6 +94,17 @@ impl CallProvider for InputCalls {
 
 #[tokio::test]
 async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestResult {
+    for (resource, action) in [
+        ("actors:/fixture", "actors/invoke"),
+        ("objects:/bucket/key", "objects/put"),
+        ("workers:/fixture", "workers/invoke"),
+    ] {
+        product_input_control(resource, action).await?;
+    }
+    Ok(())
+}
+
+async fn product_input_control(resource: &'static str, action: &'static str) -> TestResult {
     use acyclic_auth::contract::*;
     let credential = acyclic_auth::testing::root(|block| {
         block
@@ -105,10 +119,10 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
             grants: vec![Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {
-                        name: "actors:/fixture".into(),
+                        name: resource.into(),
                         prefix: false,
                     },
-                    actions: vec!["actors/invoke".into()],
+                    actions: vec![action.into()],
                 }),
             }],
         };
@@ -117,7 +131,11 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     let (host, lifetime) = tokio::sync::watch::channel(());
     let (held, mut terminals) = tokio::sync::mpsc::unbounded_channel();
     let endpoint: transport::Endpoint = Arc::new(HeldInputTerminal {
-        calls: Arc::new(InputCalls { admitted }),
+        calls: Arc::new(InputCalls {
+            admitted,
+            resource,
+            action,
+        }),
         lifetime,
         held,
     });
