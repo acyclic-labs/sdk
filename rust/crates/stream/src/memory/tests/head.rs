@@ -376,8 +376,8 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                         idempotency_key: IdempotencyKey::new(b"chain-seed".as_slice())?,
                     })
                     .await?;
-                for index in 1..4096 {
-                    let destination = StreamPath::new(format!("c{index:05}/a"))?;
+                for index in 1..20_000 {
+                    let destination = StreamPath::new(format!("c{index:05}"))?;
                     provider
                         .fork(ForkRequest {
                             exclude: Vec::new(),
@@ -389,12 +389,24 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                             )?,
                         })
                         .await?;
-                    source = StreamPath::new(format!("c{index:05}"))?;
+                    source = destination;
+                }
+                for index in 0..4096 {
+                    provider
+                        .fork(ForkRequest {
+                            exclude: Vec::new(),
+                            source,
+                            destination: StreamPath::new(format!("d{index:05}/a"))?,
+                            at_tail: None,
+                            idempotency_key: IdempotencyKey::unique(),
+                        })
+                        .await?;
+                    source = StreamPath::new(format!("d{index:05}"))?;
                 }
                 // Each real fork adds a nested segment by sharing its source.
                 // Mutating the deepest inherited leaf exercises the same
                 // publication path as an ordinary append, on this small stack.
-                let deepest = StreamPath::new(format!("{}{}", source.as_str(), "/a".repeat(4095)))?;
+                let deepest = StreamPath::new(format!("{}{}", source.as_str(), "/a".repeat(4096)))?;
                 provider
                     .append(AppendRequest {
                         path: deepest.clone(),
@@ -404,6 +416,28 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                     })
                     .await?;
                 assert_eq!(provider.tail(deepest.clone()).await?, 2);
+                let excluded = StreamPath::new("excluded")?;
+                provider
+                    .fork(ForkRequest {
+                        source: source.clone(),
+                        destination: excluded.clone(),
+                        at_tail: None,
+                        exclude: vec![crate::RelativePath::new(
+                            std::iter::repeat_n("a", 4096).collect::<Vec<_>>().join("/"),
+                        )?],
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                assert_eq!(
+                    provider
+                        .tail(StreamPath::new(format!(
+                            "{}{}",
+                            excluded.as_str(),
+                            "/a".repeat(4096)
+                        ))?)
+                        .await,
+                    Err(StreamError::NotFound)
+                );
                 let (latest, previous) = {
                     let state = provider.state.read().await;
                     (
@@ -414,7 +448,7 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                             .ok_or(StreamError::Unavailable)?,
                         state
                             .paths
-                            .node("c04094")
+                            .node("c19998")
                             .cloned()
                             .ok_or(StreamError::Unavailable)?,
                     )

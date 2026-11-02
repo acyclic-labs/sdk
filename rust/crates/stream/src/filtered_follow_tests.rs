@@ -34,6 +34,8 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     ));
     let mut records_only = provider
         .follow(crate::FollowRequest {
+            bootstrap_head: false,
+            until: None,
             when_absent: Default::default(),
             path: path.clone(),
             from: 1,
