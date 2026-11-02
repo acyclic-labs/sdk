@@ -482,9 +482,19 @@ impl Conversation {
             TurnInput::Message { body, .. } => Some(self.text(body).await?),
             _ => None,
         };
+        Ok((prompt, self.output_text(entry).await?))
+    }
+
+    /// The retained output text of a settled turn, including partial output
+    /// from a cancelled turn. This reads only the output; its outcome remains
+    /// in `entry` and its prompt is not fetched.
+    ///
+    /// # Errors
+    /// Session, host or output decoding failures.
+    pub async fn output_text(&self, entry: &ConversationEntry) -> Result<String> {
         let output = self.text(&entry.output).await?;
         let output: TurnOutput = serde_json::from_str(&output).map_err(failed)?;
-        Ok((prompt, output.text))
+        Ok(output.text)
     }
 
     async fn settlement(&self) -> Result<(u64, u64, Phase)> {

@@ -26,7 +26,7 @@ async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str)
     let mut status: Option<acyclic_harness::agent::StatusRecord> = None;
     loop {
         match conversation.reply(operation, inbox).await? {
-            Reply::Answered { entry, .. } => return Ok(conversation.turn(&entry).await?.1),
+            Reply::Answered { entry, .. } => return conversation.output_text(&entry).await,
             Reply::Dropped => return Err(Error::Conflict(conversation.dropped().await?)),
             Reply::Pending => {}
         }

@@ -270,6 +270,32 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.request_count(), 1);
+    assert_eq!(
+        client.turn(&entry).await?,
+        (Some("hello".into()), "done".into())
+    );
+    // An output-only projection must not depend on the prompt's source. The
+    // full turn still reads both, and the output keeps its original read fence.
+    let absent = |file: &crate::conversation::FileRef| {
+        crate::conversation::FileRef::new(
+            file.volume().clone(),
+            "/missing-turn-text".into(),
+            file.version().into(),
+            file.descriptor().clone(),
+            file.display_name().into(),
+            &mut None,
+        )
+        .map_err(agent)
+    };
+    let mut output_only = entry.clone();
+    let TurnInput::Message { body, .. } = &mut output_only.input else {
+        return Err(Error::Invalid("the settled input is not a prompt".into()));
+    };
+    **body = absent(body)?;
+    assert!(client.turn(&output_only).await.is_err());
+    assert_eq!(client.output_text(&output_only).await?, "done");
+    output_only.output = absent(&entry.output)?;
+    assert!(client.output_text(&output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while usage.totals().completed == 0 {
