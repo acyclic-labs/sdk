@@ -381,37 +381,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         )
     }
 
-    /// A deterministic guest failure consumes only its original input and
-    /// retains committed guest values. Host precondition changes stay queued.
-    pub(super) fn prepare_invocation_failure(
-        &self,
-        previous: &Snapshot,
-        epoch: u64,
-        trigger: &Trigger,
-        delivered: Option<&Record>,
-        failure: &GuestError,
-        key: IdempotencyKey,
-    ) -> Result<Option<super::PreparedPublish>, Error> {
-        let Some((call, effects)) =
-            self.invocation_completion(previous, trigger, delivered, Some(Err(failure)), &[])?
-        else {
-            return Ok(None);
-        };
-        let mut prepared = self.prepare_failed_input(
-            previous,
-            epoch,
-            trigger,
-            delivered.ok_or(Error::Invalid("missing failed input"))?,
-            failure,
-            key,
-        )?;
-        for effect in effects {
-            prepared.join_host(effect)?;
-        }
-        prepared.call = Some((call, trigger.clone()));
-        Ok(Some(prepared))
-    }
-
     pub(super) fn invocation_completion(
         &self,
         previous: &Snapshot,

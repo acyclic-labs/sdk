@@ -14,8 +14,11 @@ pub enum ActorFailureResolution {
     Purge,
 }
 
-fn record(bytes: &[u8]) -> Result<Record, JsValue> {
-    wire_codec::record(wire::Record::decode(bytes).map_err(failed)?, None).map_err(failed)
+fn record(bytes: &[u8], path: &StreamPath) -> Result<Record, JsValue> {
+    let record = wire::Record::decode(bytes).map_err(failed)?;
+    // Reads/follows elide their selected path; child-tail projections spell it.
+    let followed = record.origin.is_empty().then_some(path);
+    wire_codec::record(record, followed).map_err(failed)
 }
 
 /// One selected failure tail decoded by Rust's sole versioned implementation.
@@ -32,8 +35,9 @@ impl WasmActorFailure {
     /// tail encoded with the canonical Streams Record protobuf.
     pub fn decode(path: &str, record_bytes: &[u8]) -> Result<Self, JsValue> {
         let path = StreamPath::new(path).map_err(failed)?;
+        let status = StreamPath::new(format!("{path}/status")).map_err(failed)?;
         Ok(Self {
-            entry: FailureEntry::decode(&path, &record(record_bytes)?).map_err(failed)?,
+            entry: FailureEntry::decode(&path, &record(record_bytes, &status)?).map_err(failed)?,
         })
     }
 
@@ -101,7 +105,10 @@ impl WasmActorHost {
         if matches!(resolution, ActorFailureResolution::Replay) != captured.is_some() {
             return Err(failed("only replay requires the original captured input"));
         }
-        let captured = captured.as_deref().map(record).transpose()?;
+        let captured = captured
+            .as_deref()
+            .map(|bytes| record(bytes, &input.input_path().map_err(failed)?))
+            .transpose()?;
         let disposition = match (resolution, captured.as_ref()) {
             (ActorFailureResolution::Replay, Some(captured)) => {
                 FailureDisposition::Replay(captured)

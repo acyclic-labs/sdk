@@ -89,27 +89,26 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         subscription: "inbox".into(),
         sequence: ticket.record().sequence + 1,
     };
-    assert!(
-        store
-            .prepare_invocation_failure(
-                &snapshot,
-                epoch,
-                &wrong,
-                Some(ticket.record()),
-                &cause(),
-                key("terminal-failure/wrong")?
-            )?
-            .is_none()
-    );
     assert!(matches!(
-        store.prepare_invocation_failure(
+        store.prepare_failed_input(
+            &snapshot,
+            epoch,
+            &wrong,
+            ticket.record(),
+            &cause(),
+            key("terminal-failure/wrong")?
+        ),
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        store.prepare_failed_input(
             &snapshot,
             epoch + 1,
             &Trigger::Record {
                 subscription: "inbox".into(),
                 sequence: ticket.record().sequence
             },
-            Some(ticket.record()),
+            ticket.record(),
             &cause(),
             key("terminal-failure/epoch")?
         ),

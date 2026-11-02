@@ -217,11 +217,11 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     let before_refusal = provider.requests();
     let refusal = acyclic_test_support::measure(|| {
         assert!(matches!(
-            store.prepare_invocation_failure(
+            store.prepare_failed_input(
                 &before,
                 1,
                 &trigger,
-                Some(ticket.record()),
+                ticket.record(),
                 &crate::guest::GuestError::PreconditionChanged,
                 failure_key,
             ),
@@ -273,11 +273,11 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
             Err(Error::Handler(crate::guest::GuestError::UnsupportedFormat))
         ));
         assert!(matches!(
-            store.prepare_invocation_failure(
+            store.prepare_failed_input(
                 &before,
                 1,
                 &record(0),
-                Some(&obsolete),
+                &obsolete,
                 &crate::guest::GuestError::Decode("failed".into()),
                 key("invoked/unsupported-failure")?
             ),
