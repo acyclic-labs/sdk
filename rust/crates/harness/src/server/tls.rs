@@ -13,9 +13,19 @@ use rustls::{
         danger::{ClientCertVerified, ClientCertVerifier},
     },
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
+
+/// Bounds unauthenticated socket custody while a peer supplies its handshake.
+const HANDSHAKE: Duration = Duration::from_secs(30);
+
+fn handshake(
+    acceptor: &TlsAcceptor,
+    socket: TcpStream,
+) -> tokio::time::Timeout<tokio_rustls::Accept<TcpStream>> {
+    tokio::time::timeout(HANDSHAKE, acceptor.accept(socket))
+}
 
 fn invalid(what: &str) -> impl FnOnce(String) -> Error + '_ {
     move |error| Error::Invalid(format!("TLS {what}: {error}"))
@@ -63,6 +73,7 @@ pub(super) fn config(tls: &TlsIdentity) -> Result<rustls::ServerConfig> {
 /// under `config` completes. A failed handshake drops only its connection;
 /// handshakes run concurrently, so a slow peer delays no other. Dropping
 /// the listener stream closes every incomplete handshake on the same owner.
+/// The protective deadline retires stalled unauthenticated sockets.
 pub(super) fn incoming(
     listener: TcpListener,
     config: rustls::ServerConfig,
@@ -74,11 +85,11 @@ pub(super) fn incoming(
             loop {
                 tokio::select! {
                     accepted = listener.accept() => match accepted {
-                        Ok((socket, _)) => handshakes.push(acceptor.accept(socket)),
+                        Ok((socket, _)) => handshakes.push(handshake(&acceptor, socket)),
                         Err(error) => return Some((Err(error), (listener, acceptor, handshakes))),
                     },
                     completed = handshakes.next(), if !handshakes.is_empty() => {
-                        if let Some(Ok(tls)) = completed {
+                        if let Some(Ok(Ok(tls))) = completed {
                             return Some((Ok(tls), (listener, acceptor, handshakes)));
                         }
                     }
