@@ -39,6 +39,33 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
     assert!(tree.read("absent.ts").await?.is_none());
     assert!(tree.read("settings.ts/child.ts").await?.is_none());
 
+    assert!(
+        io.sdk_if_present(
+            generation
+                .read("/absent.ts", u64::MAX, &io, &cancellation)
+                .await,
+        )?
+        .is_none()
+    );
+    // The same original authority store reports a missing workspace source.
+    // Its public NotFound code must never authorize optional-path fallback.
+    let missing_authority = io
+        .sdk_if_present(
+            fs.open_workspace("absent-authority", &io, &cancellation)
+                .await,
+        )
+        .err()
+        .ok_or("missing authority became optional path absence")?;
+    assert_eq!(missing_authority.code(), ErrorCode::NotFound);
+    assert!(matches!(
+        &missing_authority,
+        crate::Error::NativeWorkspace { source, .. }
+            if matches!(source.as_ref(), WorkspaceError::Filesystem(
+                acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::Missing)
+            ))
+    ));
+    drop(missing_authority);
+
     let bounded = manifest.tree(&io, 0);
     let refused = bounded
         .read("settings.ts")
@@ -93,6 +120,15 @@ async fn native_configuration_reads_preserve_the_original_refusal_class()
     drop(refused);
 
     cancellation.cancel();
+    assert!(
+        io.sdk_if_present(
+            generation
+                .read("/absent.ts", u64::MAX, &io, &cancellation)
+                .await,
+        )
+        .is_err(),
+        "cancelled lookup became optional absence"
+    );
     let original = io
         .sdk(
             generation
