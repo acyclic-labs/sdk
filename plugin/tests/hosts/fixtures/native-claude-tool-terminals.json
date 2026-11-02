@@ -1,0 +1,119 @@
+{
+  "provenance": "Original installed Claude tool-result and final-result field projection. Tool payloads and unrelated events omitted; all selected values unchanged.",
+  "host": "claude-code",
+  "host_version": "2.1.278",
+  "source": "0610981c4cdb69ff10d4a17d563ff13c2ef7bb68",
+  "artifact_source": "943c9d40e41c6a022a241ab19dab5431d7639aa8",
+  "capture_sha256": "543a9c7c38546b559ce3f66d2dad6549d90cd43cb862acaef93defc54b790f66",
+  "stdout_sha256": "9b65ec002b4779c0268051c6a57285f5a6d8016773eb89819f159859c59d533e",
+  "code": 0,
+  "stderr": "",
+  "answer": "NATIVE_PLUGIN_MODEL_DONE",
+  "events": [
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_parent",
+            "is_error": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_spawn_1"
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_wait_2"
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_merge",
+            "is_error": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_resume_4"
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_wait_5"
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_finish",
+            "is_error": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "native_archive_7"
+          }
+        ]
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "result": "NATIVE_PLUGIN_MODEL_DONE"
+    }
+  ]
+}

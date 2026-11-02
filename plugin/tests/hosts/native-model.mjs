@@ -59,6 +59,11 @@ export function assertNativeCompletion(host,result,answer,selection) {
      assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
     }
    }
+   if(event.type==='user'&&Array.isArray(event.message?.content)) {
+    for(const part of event.message.content)if(part.type==='tool_result'&&part.is_error===true) {
+     nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
+    }
+   }
    if(event.type==='result')terminal=event;
   } else if(host==='pi') {
    const message=event.type==='message_end'?event.message:undefined;
@@ -89,8 +94,8 @@ export function assertNativeCompletion(host,result,answer,selection) {
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
-// permission hook, which the owner's approval policy answers; Claude Code
-// approves the same coordination tools by its native allow list.
+// spawn permission hook, which the owner's approval policy answers; other
+// prompts stay native. Claude Code uses its native coordination allow list.
 export const nativeModel=(host,live)=>live?.model??(host==='claude-code'?'claude-haiku-5-5':'tiny');
 
 // Query the host's installed state through the shipping native exchange.
