@@ -147,9 +147,7 @@ fn lifecycle_detects_scan_thread_timer_and_lost_producer() {
     let flat = simulate(Inject::None).expect("event-driven lifecycle");
     assert!(flat.findings(&LIFECYCLE_OPERATIONS, RECOVERY).is_empty());
     assert_eq!(
-        flat.qualify(&LIFECYCLE_OPERATIONS, RECOVERY)
-            .unwrap_err()
-            .step,
+        flat.qualification_findings(&LIFECYCLE_OPERATIONS, RECOVERY)[0].step,
         "population coverage"
     );
     for (inject, expected) in [
@@ -160,7 +158,7 @@ fn lifecycle_detects_scan_thread_timer_and_lost_producer() {
         let report = simulate(inject).expect("injected lifecycle completes before checking cost");
         assert!(
             report
-                .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
+                .qualification_findings(&LIFECYCLE_OPERATIONS, RECOVERY)
                 .iter()
                 .any(|finding| finding.step == expected),
             "{report:?}"
@@ -260,6 +258,25 @@ fn fixed_sample_counts_use_observations_instead_of_population_as_denominator() {
             .iter()
             .any(|finding| finding.step == "constant work")
     );
+    // Retain all original refusals once. The former reporting/admission pair
+    // is an independent allocation negative on this same counted report.
+    let mut reused = None;
+    let single = crate::measure(|| {
+        reused = Some(report.qualification_findings(&operations, RECOVERY));
+    });
+    let mut repeated = None;
+    let duplicate = crate::measure(|| {
+        repeated = Some((
+            report.findings(&operations, RECOVERY),
+            report.qualify(&operations, RECOVERY),
+        ));
+    });
+    let reused = reused.unwrap();
+    let (original, qualified) = repeated.unwrap();
+    assert_eq!(reused, original);
+    assert_eq!(qualified.unwrap_err(), reused[0]);
+    assert!(single.count_total < duplicate.count_total);
+    assert!(single.bytes_total < duplicate.bytes_total);
     report.points[1].samples[0].observations = 0;
     assert!(
         report

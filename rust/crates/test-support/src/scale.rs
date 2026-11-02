@@ -392,20 +392,41 @@ impl Report {
         failures
     }
 
+    /// Retain every qualification refusal, including missing populations.
+    /// Reporting and admission can reuse this same result without checking
+    /// every observation or constructing its diagnostics a second time.
+    pub fn qualification_findings(&self, operations: &[Operation], recovery: &str) -> Vec<Failure> {
+        let mut findings = self.findings(operations, recovery);
+        if let Some(failure) = self.population_failure(recovery) {
+            findings.insert(0, failure);
+        }
+        findings
+    }
+
     /// Qualify only the full population vector with complete flat observations.
     /// Exploratory smaller runs can call [`Self::findings`] directly.
     pub fn qualify(&self, operations: &[Operation], recovery: &str) -> Result<(), Failure> {
-        if self.points.iter().map(|point| point.agents).ne(POPULATIONS) {
-            return Err(failure(
-                "population coverage",
-                format!("required={POPULATIONS:?}"),
-                recovery,
-            ));
+        if let Some(failure) = self.population_failure(recovery) {
+            return Err(failure);
         }
         if let Some(failure) = self.findings(operations, recovery).into_iter().next() {
             return Err(failure);
         }
         Ok(())
+    }
+
+    fn population_failure(&self, recovery: &str) -> Option<Failure> {
+        self.points
+            .iter()
+            .map(|point| point.agents)
+            .ne(POPULATIONS)
+            .then(|| {
+                failure(
+                    "population coverage",
+                    format!("required={POPULATIONS:?}"),
+                    recovery,
+                )
+            })
     }
 }
 
