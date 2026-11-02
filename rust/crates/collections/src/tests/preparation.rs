@@ -40,6 +40,63 @@ impl IndexWork for Bounded<'_> {
 #[test]
 fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_population()
 -> Result<(), &'static str> {
+    for first in [[0; 8], [255; 8]] {
+        let mut original = Work {
+            maximum_items: Some(1),
+            ..Work::default()
+        };
+        let mut index = FixedIndex::<usize, _, 8>::default();
+        // An empty root returns the one leaf it just constructed.
+        *index.get_or_try_insert_with(first, &mut original, |_| Ok(7))? = 8;
+        assert_eq!(original.items, 1);
+        let claims = original.claims;
+        let before = original.items;
+        original.maximum_items = Some(before + 10);
+        // One complete-key comparison, then the already selected root leaf.
+        assert_eq!(
+            *index
+                .get_or_try_insert_with(first, &mut original, |_| panic!("existing constructor"))?,
+            8,
+        );
+        assert_eq!(original.items - before, 10);
+        assert_eq!(original.claims, claims);
+
+        let next = first.map(|byte| !byte);
+        let live = original.live.get();
+        // Each possible item refusal must leave the original root unchanged.
+        // Restoring the old root relookup requires 20 items and fails this
+        // exact 12-item admission, for either new-branch direction.
+        for credit in 0..=12 {
+            let called = Cell::new(false);
+            original.maximum_items = Some(original.items + credit);
+            let result = index.get_or_try_insert_with(next, &mut original, |_| {
+                called.set(true);
+                Ok(11)
+            });
+            if credit == 12 {
+                *result? = 13;
+                assert!(called.get());
+                // Negative control: a fresh root lookup cannot fit the same
+                // admission that just returned the original inserted value.
+                assert_eq!(index.get(next, &mut original).err(), Some("items refused"));
+            } else {
+                assert_eq!(result.err(), Some("items refused"));
+                assert!(!called.get());
+                assert_eq!(original.live.get(), live);
+            }
+            original.maximum_items = None;
+            assert_eq!(index.get(first, &mut original)?, Some(&8));
+            assert_eq!(
+                index.get(next, &mut original)?,
+                (credit == 12).then_some(&13)
+            );
+            audit(&index);
+        }
+        original.cancelled = true;
+        drop(index);
+        assert_eq!(original.live.get(), 0);
+    }
+
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 128,
@@ -194,11 +251,13 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
         assert_eq!(index.get(key, &mut original)?, None);
         assert_eq!(original.claims, claims + 1);
         let before = original.items;
+        let mut exact = bound;
+        exact.examined_items = 15;
         index.get_or_try_insert_with(
             key,
             &mut Bounded {
                 original: &mut original,
-                remaining: bound,
+                remaining: exact,
             },
             |_| Ok(11),
         )?;
@@ -237,6 +296,7 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
         assert_eq!(original.live.get(), 0);
     }
     assert_eq!(observations[0], observations[1]);
+    assert_eq!(observations, [15, 15]);
     assert!(ordered_comparisons[1] > ordered_comparisons[0]);
     eprintln!(
         "mutable insertion items={observations:?}; ordered negative comparisons={ordered_comparisons:?}"

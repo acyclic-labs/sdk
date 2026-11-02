@@ -194,8 +194,12 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     ///
     /// This allocation-free bound is independent of the current root, so it
     /// remains valid when other serialized mutations precede the insertions.
-    /// Each insertion claims at most one leaf and one branch. Three paths
-    /// examine at most 8N branches each, plus complete key comparisons.
+    /// Each insertion claims at most one leaf and one branch. Two paths
+    /// examine at most 8N branches each, plus one complete key comparison.
+    /// Publication returns through its selected link, examining at most two
+    /// newly constructed nodes without another key comparison. An absent key
+    /// leaves at least one branch bit unused on each original path, so this
+    /// local return fits the same bound as returning an existing key.
     /// The value constructor's own work and backing are excluded. Actual node
     /// claims and examinations still use the original `IndexWork`; this bound
     /// neither issues admission nor replaces its cancellation check.
@@ -205,8 +209,8 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         Some(IndexInsertionBound {
             allocation_bytes: node_bytes.checked_mul(2)?.checked_mul(insertions)?,
             examined_items: width
-                .checked_mul(26)?
-                .checked_add(3)?
+                .checked_mul(17)?
+                .checked_add(2)?
                 .checked_mul(insertions)?,
         })
     }
@@ -386,18 +390,15 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         let (differing, depth) = self.differing_bit(key, accounting)?;
         if differing == Some(None) {
             accounting.charge_items(depth)?;
-            return Ok(self.value_mut(key));
+            return Ok(Self::selected_value_mut(&mut self.root, key));
         }
-        let (link, return_depth) = match differing.flatten() {
-            Some(bit) => {
-                let (link, depth) = self.insertion_link(key, bit, accounting)?;
-                (link, depth + 1)
-            }
-            None => (&mut self.root, 1),
+        let link = match differing.flatten() {
+            Some(bit) => self.insertion_link(key, bit, accounting)?,
+            None => &mut self.root,
         };
-        // Pay the final lookup before publishing the new link, so no budget
-        // failure can turn a successful insertion into a rejected operation.
-        accounting.charge_items(return_depth + N as u64)?;
+        // Pay the local return before publication. The selected link contains
+        // only the new leaf, or its new branch and leaf; no root search remains.
+        accounting.charge_items(if differing.flatten().is_some() { 2 } else { 1 })?;
         let funding = Funding::admit::<V, W, N>(differing.flatten().is_some(), accounting)?;
         let value = match create(accounting) {
             Ok(value) => value,
@@ -443,7 +444,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             _ => unreachable!("nonempty table funds exactly one branch"),
         };
         *link = Some(replacement);
-        Ok(self.value_mut(key))
+        Ok(Self::selected_value_mut(link, key))
     }
 
     fn differing_bit<W: IndexWork<Allocation = A>>(
@@ -461,7 +462,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 Kind::Leaf { key: observed, .. } => {
                     let bytes = N as u64;
                     accounting.charge_items(bytes)?;
-                    return Ok((Some(difference(&key, observed)), depth + bytes));
+                    return Ok((Some(difference(&key, observed)), depth));
                 }
                 Kind::Branch {
                     bit,
@@ -480,16 +481,14 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         before: Bit,
         accounting: &mut W,
-    ) -> Result<(&mut Link<V, A, N>, u64), W::Error> {
+    ) -> Result<&mut Link<V, A, N>, W::Error> {
         let mut cursor = &mut self.root;
-        let mut depth = 0;
         loop {
             accounting.charge_items(1)?;
-            depth += 1;
             let descend = matches!(cursor.as_ref().map(|node| node.kind.as_ref()),
                 Some(Kind::Branch { bit, .. }) if *bit < before);
             if !descend {
-                return Ok((cursor, depth));
+                return Ok(cursor);
             }
             match cursor.as_mut().map(|node| node.kind.as_mut()) {
                 Some(Kind::Branch {
@@ -504,14 +503,13 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         }
     }
 
-    fn value_mut(&mut self, key: [u8; N]) -> &mut V {
-        let mut cursor = self.root.as_mut();
+    // The original search already matched the full key, or this link was just
+    // constructed for it. No mutation intervenes before this private borrow.
+    fn selected_value_mut(root: &mut Link<V, A, N>, key: [u8; N]) -> &mut V {
+        let mut cursor = root.as_mut();
         while let Some(node) = cursor {
             match node.kind.as_mut() {
-                Kind::Leaf {
-                    key: observed,
-                    value,
-                } if *observed == key => return value,
+                Kind::Leaf { value, .. } => return value,
                 Kind::Branch {
                     bit,
                     low,
@@ -519,7 +517,6 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 } => {
                     cursor = if high(&key, *bit) { upper } else { low }.as_mut();
                 }
-                Kind::Leaf { .. } => break,
             }
         }
         unreachable!("lookup follows a leaf already found or inserted")

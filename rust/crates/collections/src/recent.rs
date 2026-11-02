@@ -68,7 +68,7 @@ impl<V, A, const N: usize, const WINDOW: usize> RecentIndex<V, A, N, WINDOW> {
         }
         // Stage admission and construction before discarding any facts. The
         // final lookup after rotation visits this single funded leaf.
-        accounting.charge_items(N as u64 + 1)?;
+        accounting.charge_items(1)?;
         let mut next = FixedIndex::default();
         next.get_or_try_insert_with(key, accounting, create)?;
         self.complete &= self.previous.root.is_none();
@@ -77,6 +77,6 @@ impl<V, A, const N: usize, const WINDOW: usize> RecentIndex<V, A, N, WINDOW> {
         self.current_len = 1;
         // The original index retires values before their own node funding.
         drop(retired);
-        Ok(self.current.value_mut(key))
+        Ok(FixedIndex::selected_value_mut(&mut self.current.root, key))
     }
 }
