@@ -461,7 +461,7 @@ mod tests {
         let old_request = requested.clone();
         let mut original = None;
         let mut transferred = None;
-        let before = acyclic_test_support::measure(|| {
+        let build_original = || {
             // Original ownership boundary, with independently specified authority clauses.
             let mut clauses = FollowFilter::new(old_request).unwrap().clauses().to_vec();
             clauses.push(make(true, b"a", b"m"));
@@ -479,19 +479,30 @@ mod tests {
                 .unwrap(),
             });
             original = Some(FollowFilter(Some(Arc::new(clauses))));
-        });
-        let after = acyclic_test_support::measure(|| {
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = acyclic_test_support::measure(build_original);
+        #[cfg(target_arch = "wasm32")]
+        build_original();
+        let authorize = || {
             transferred = Some(FollowFilter::authorized(requested, &capability).unwrap());
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let after = acyclic_test_support::measure(authorize);
+        #[cfg(target_arch = "wasm32")]
+        authorize();
         let original = original.unwrap();
         let transferred = transferred.unwrap();
         assert_eq!(original, transferred);
-        assert!(after.count_total < before.count_total);
-        assert!(after.bytes_total < before.bytes_total);
-        eprintln!(
-            "authorized clauses: {} -> {} allocations, {} -> {} bytes",
-            before.count_total, after.count_total, before.bytes_total, after.bytes_total
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            assert!(after.count_total < before.count_total);
+            assert!(after.bytes_total < before.bytes_total);
+            eprintln!(
+                "authorized clauses: {} -> {} allocations, {} -> {} bytes",
+                before.count_total, after.count_total, before.bytes_total, after.bytes_total
+            );
+        }
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
@@ -591,10 +602,15 @@ mod tests {
             acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
                 .unwrap();
         let mut empty = None;
-        let work = acyclic_test_support::measure(|| {
+        let mut authorize = || {
             empty = Some(FollowFilter::authorized(Default::default(), &unrestricted).unwrap());
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = acyclic_test_support::measure(&mut authorize);
+        #[cfg(target_arch = "wasm32")]
+        authorize();
         assert!(empty.unwrap().matches(&headers(&["z"], "bob")));
+        #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
             work.count_total, 0,
             "unrestricted filters must stay allocation-free"
