@@ -343,18 +343,20 @@ pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
 }
 
 fn decode(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
-    let value: serde_json::Value = serde_json::from_slice(input).map_err(ManifestError::json)?;
-    if value
-        .get("schemaVersion")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-    {
+    // Ignore declarations during version selection; only strict v1 decoding
+    // materializes them. Unknown versions still precede contract decoding.
+    #[derive(Deserialize)]
+    struct Version {
+        #[serde(rename = "schemaVersion", default)]
+        version: serde_json::Value,
+    }
+    let version: Version = serde_json::from_slice(input).map_err(ManifestError::json)?;
+    if version.version.as_u64() != Some(1) {
         return Err(ManifestError::invalid(
             "$.schemaVersion",
             "unsupported-version",
         ));
     }
-    validation::bound_json(&value)?;
     let manifest = serde_json::from_slice(input).map_err(ManifestError::json)?;
     Ok(manifest)
 }

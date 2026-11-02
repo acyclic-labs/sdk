@@ -30,27 +30,6 @@ fn require(condition: bool, path: &str, rule: &str) -> Result<(), ManifestError>
         Err(ManifestError::invalid(path, rule))
     }
 }
-pub(crate) fn bound_json(value: &serde_json::Value) -> Result<usize, ManifestError> {
-    // Iterate instead of recursively walking caller-owned JSON. Work scales
-    // with the submitted document, without declaration or whole-value caps.
-    let mut pending = vec![value];
-    let mut work = 0usize;
-    while let Some(value) = pending.pop() {
-        work = work.saturating_add(1);
-        match value {
-            serde_json::Value::Array(items) => pending.extend(items),
-            serde_json::Value::Object(fields) => {
-                for (key, value) in fields {
-                    work = work.saturating_add(key.len());
-                    pending.push(value);
-                }
-            }
-            serde_json::Value::String(text) => work = work.saturating_add(text.len()),
-            _ => {}
-        }
-    }
-    Ok(work)
-}
 fn identifier(value: &str) -> bool {
     acyclic_actors::domain::valid_environment_name(value)
 }
@@ -154,8 +133,9 @@ pub fn validate(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
     validate_work(manifest).map(|_| ())
 }
 
-/// Runs the actual validator and counts visited JSON bytes/nodes and indexed edges.
-/// Every lookup is hash-based; count depends linearly on document size and selections.
+/// Runs the actual validator and counts indexed declarations and selection edges.
+/// String validation also examines the supplied bytes; the count excludes that work.
+/// Admission does not serialize or materialize a second copy of the document.
 pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestError> {
     require(
         manifest.schema_version == 1,
@@ -167,7 +147,7 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
         "$.environments",
         "environments-empty",
     )?;
-    let mut work = bound_json(&serde_json::to_value(manifest).map_err(ManifestError::json)?)?;
+    let mut work = 0;
     let mut environments = HashSet::new();
     let mut routes = HashSet::new();
     let mut patterns = HashSet::new();
