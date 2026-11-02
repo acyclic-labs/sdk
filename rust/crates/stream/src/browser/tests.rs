@@ -1,5 +1,5 @@
 use super::*;
-use futures::TryFutureExt as _;
+use futures::{FutureExt as _, TryFutureExt as _};
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -16,6 +16,126 @@ async fn append(provider: &BrowserStream, path: &str) -> Result<AppendOutcome, S
         })
         .await
 }
+
+#[wasm_bindgen_test]
+async fn immutable_results_reuse_only_a_durable_browser_cache() {
+    let database = name();
+    let provider = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("open");
+    let request = AppendRequest {
+        path: StreamPath::new("events").expect("path"),
+        records: vec!["durable".into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let AppendOutcome::Committed(receipt) = provider.append(request.clone()).await.expect("append")
+    else {
+        panic!("append conflict");
+    };
+    let envelope = provider
+        .read_commit(receipt.commit_id)
+        .await
+        .expect("envelope");
+    let transactions = provider.inner.transactions.get();
+    for _ in 0..2 {
+        assert_eq!(
+            provider
+                .read_commit(receipt.commit_id)
+                .now_or_never()
+                .expect("retained commit opened a transaction")
+                .expect("commit"),
+            envelope
+        );
+        let observed = provider
+            .inspect_idempotency(request.idempotency_key.clone())
+            .now_or_never()
+            .expect("retained key opened a transaction")
+            .expect("inspect")
+            .expect("retained key");
+        assert_eq!(
+            observed.outcome,
+            IdempotencyOutcome::Append(AppendOutcome::Committed(receipt.clone()))
+        );
+    }
+    assert_eq!(provider.inner.transactions.get(), transactions);
+
+    let cold = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("cold opener");
+    assert_eq!(
+        cold.read_commit(receipt.commit_id)
+            .await
+            .expect("cold miss"),
+        envelope
+    );
+    assert!(cold.inner.transactions.get() > 0);
+    let transactions = provider.inner.transactions.get();
+    assert_eq!(
+        provider
+            .tail(request.path.clone())
+            .await
+            .expect("current tail"),
+        1
+    );
+    assert!(provider.inner.transactions.get() > transactions);
+    let transactions = provider.inner.transactions.get();
+
+    // No immutable fact certifies absence, even when the local cache is valid.
+    let mut missing = Box::pin(provider.read_commit(CommitId::from_bytes([42; 32])));
+    assert!(futures::poll!(missing.as_mut()).is_pending());
+    assert!(provider.inner.transactions.get() > transactions);
+    assert_eq!(missing.await, Err(StreamError::NotFound));
+
+    for inspect in [false, true] {
+        let tentative = AppendRequest {
+            path: StreamPath::new("tentative").expect("path"),
+            records: vec!["not committed to IndexedDB".into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        // Reproduce the original cancellation boundary: the real canonical core
+        // has applied a command whose surrounding transaction never committed.
+        let receipt = {
+            let mut cache = provider.inner.cache.lock().await;
+            cache.valid = false;
+            let AppendOutcome::Committed(receipt) = cache
+                .provider
+                .append(tentative.clone())
+                .await
+                .expect("stage")
+            else {
+                panic!("staged append conflict");
+            };
+            receipt
+        };
+        let transactions = provider.inner.transactions.get();
+        if inspect {
+            assert_eq!(
+                provider
+                    .inspect_idempotency(tentative.idempotency_key)
+                    .await
+                    .expect("repair key"),
+                None
+            );
+        } else {
+            assert_eq!(
+                provider.read_commit(receipt.commit_id).await,
+                Err(StreamError::NotFound)
+            );
+        }
+        assert!(provider.inner.transactions.get() > transactions);
+        assert_eq!(
+            provider
+                .read_commit(envelope.commit_id)
+                .now_or_never()
+                .expect("repaired durable hit opened a transaction")
+                .expect("repaired envelope"),
+            envelope
+        );
+    }
+}
+
 #[wasm_bindgen_test]
 async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across_cache_rebuild() {
     let database = name();
@@ -406,8 +526,6 @@ async fn browser_wave1_conformance() {
 
 #[wasm_bindgen_test]
 async fn every_opener_of_one_database_proves_the_others_revisions() {
-    use futures::FutureExt as _;
-
     let database = name();
     let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
         .await
