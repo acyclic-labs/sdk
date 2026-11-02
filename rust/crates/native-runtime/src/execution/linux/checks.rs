@@ -255,11 +255,13 @@ proptest! {
             ExecutionNetwork::TcpPorts(std::collections::BTreeSet::from([443]))] {
             let code = filter(&network).unwrap();
             let mut socket = [0; 6];
-            socket[0] = u64::from(family);
             socket[1] = (libc::SOCK_STREAM | socket_flags) as u64;
             socket[2] = libc::IPPROTO_TCP as u64;
-            prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_socket as u32, socket),
-                if family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32 { ALLOW } else { DENY });
+            for family in [family, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_UNIX as u32] {
+                socket[0] = u64::from(family);
+                prop_assert_eq!(evaluate(&code, ARCH, libc::SYS_socket as u32, socket),
+                    if family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32 { ALLOW } else { DENY });
+            }
             let mut clone = [0; 6];
             clone[0] = (libc::CLONE_VM | libc::CLONE_FS | libc::CLONE_FILES
                 | libc::CLONE_SIGHAND | libc::CLONE_THREAD | libc::CLONE_SYSVSEM) as u64;
