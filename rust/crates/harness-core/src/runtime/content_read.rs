@@ -104,15 +104,15 @@ impl TaskContext {
     }
 
     pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
-        let writes = |binding: &&ContentBindings| {
-            binding
-                .writer
-                .as_ref()
-                .is_some_and(|writer| volume.is_none_or(|volume| writer.volume() == volume))
+        // Selecting an exact volume selects its reader independently of write
+        // authority. Only an unselected publication requires a writer.
+        let selected = |binding: &&ContentBindings| match volume {
+            Some(volume) => &binding.volume == volume,
+            None => binding.writer.is_some(),
         };
         Some(&self.output_content)
-            .filter(writes)
-            .or_else(|| volume.and(self.harness.artifacts.as_ref()).filter(writes))
+            .filter(selected)
+            .or_else(|| volume.and(self.harness.artifacts.as_ref()).filter(selected))
             .or(self.harness.content.as_ref())
     }
 
