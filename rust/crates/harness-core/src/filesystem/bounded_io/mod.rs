@@ -120,7 +120,9 @@ impl PreparationIo {
             } => Ok(Self::Owned {
                 budget: *budget,
                 work: Arc::clone(work),
-                custody: custody.split_off(bytes)?,
+                custody: custody
+                    .split_off(bytes)
+                    .map_err(acyclic_fs::FsError::from)?,
                 cancellation: cancellation.clone(),
             }),
             #[cfg(not(target_arch = "wasm32"))]
