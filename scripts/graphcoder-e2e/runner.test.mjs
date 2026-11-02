@@ -196,8 +196,14 @@ test("a spool ends with the exact typed cause", async t => {
   await t.test("source EOF carries the source result", async () => {
     const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
-    const error = await ended(new Spool(stream, closed), () => { stream.end(); close({ code: 3, signal: null }); });
+    const events = new Spool(stream, closed), results = [];
+    const waits = [events.next(() => false), events.next(() => false),
+      events.keyed("same"), events.keyed("same"), events.keyed("other")];
+    for (const wait of waits) wait.catch(error => { results.push(error); });
+    const error = await ended(events, () => { stream.end(); close({ code: 3, signal: null }); });
     assert.equal(error.kind, "eof"); assert.equal(error.detail.code, 3);
+    assert.equal(results.length, waits.length, "the original EOF settles every ordinary wait, repeated key and distinct key");
+    assert.ok(results.every(result => result === error), "all consumers retain the same terminal cause");
   });
   await t.test("duplicate unique key", async () => {
     const stream = new PassThrough();
