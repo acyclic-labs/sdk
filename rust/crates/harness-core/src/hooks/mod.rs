@@ -19,6 +19,9 @@ mod spec;
 pub(crate) use spec::HookSite;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, RequestMatch};
 mod chain;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use chain::model as chain_model;
 mod input;
 mod request;
 pub use input::HookInput;

@@ -44,9 +44,7 @@ mod input;
 use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
-    if bytes.len() > 4096 {
-        return;
-    }
+    futures::executor::block_on(acyclic_harness::hooks::chain_model::check(bytes)).unwrap();
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {
             operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
@@ -77,8 +75,11 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(decoded["hook_event_name"], event.name());
             assert_eq!(decoded["cwd"], "workspace");
         }
-        let encoded = HookInput::Fields(&fields)
-            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"), None);
+        let encoded = HookInput::Fields(&fields).encode(
+            HookEvent::PreToolUse,
+            std::path::Path::new("workspace"),
+            None,
+        );
         if fields.is_object() {
             let decoded: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
             assert_eq!(decoded["cwd"], "workspace");
