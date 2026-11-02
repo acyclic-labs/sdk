@@ -107,7 +107,7 @@ fn interrupted_flush_returns_after_one_admitted_attempt() -> io::Result<()> {
     ] {
         let mut admissions = 0;
         let (result, calls) = observe(&[libc::EINTR], false, || {
-            sync_once(&file, durability, || {
+            sync_once(&file, durability, None, || {
                 admissions += 1;
                 Ok(())
             })
@@ -115,7 +115,7 @@ fn interrupted_flush_returns_after_one_admitted_attempt() -> io::Result<()> {
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
         assert_eq!(calls, [first]);
         assert_eq!(admissions, 1);
-        let (result, calls) = observe(&[], false, || sync_once(&file, durability, || Ok(())));
+        let (result, calls) = observe(&[], false, || sync_once(&file, durability, None, || Ok(())));
         result?;
         assert_eq!(calls, expected);
     }
@@ -157,7 +157,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
 
     let mut admissions = 0;
     let (result, calls) = observe(&[0, libc::ENOTSUP], false, || {
-        sync_once(&file, Durability::Full, || {
+        sync_once(&file, Durability::Full, None, || {
             admissions += 1;
             Ok(())
         })
@@ -174,7 +174,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
     }
     let mut admissions = 0;
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {
-        sync_once(&file, Durability::Barrier, || {
+        sync_once(&file, Durability::Barrier, None, || {
             admissions += 1;
             Ok(())
         })
@@ -184,7 +184,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
     assert_eq!(admissions, 2);
     let mut admissions = 0;
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {
-        sync_once(&file, Durability::Barrier, || {
+        sync_once(&file, Durability::Barrier, None, || {
             admissions += 1;
             if admissions == 2 {
                 return Err(io::ErrorKind::PermissionDenied.into());

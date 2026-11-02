@@ -25,23 +25,52 @@ pub fn sync_file(
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
-    #[cfg(feature = "test-support")]
-    return testing::durable_operation(trace_name("file:sync", durability), || {
-        sync_file_impl(file, durability, meter)
-    });
-    #[cfg(not(feature = "test-support"))]
-    sync_file_impl(file, durability, meter)
+    sync_file_target(SyncTarget::Borrowed(file), durability, meter)
 }
 
-fn sync_file_impl(
-    file: &File,
+pub(super) fn sync_owned_file(
+    file: &NativeFilePayload,
     durability: Durability,
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
+    sync_file_target(SyncTarget::Owned(file), durability, meter)
+}
+
+enum SyncTarget<'a> {
+    Borrowed(&'a File),
+    Owned(&'a NativeFilePayload),
+}
+
+fn sync_file_target(
+    target: SyncTarget<'_>,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let run = || sync_file_impl(target, durability, meter);
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation(trace_name("file:sync", durability), run);
+    #[cfg(not(feature = "test-support"))]
+    run()
+}
+
+fn sync_file_impl(
+    target: SyncTarget<'_>,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
+    let file = match target {
+        SyncTarget::Borrowed(file) => file,
+        SyncTarget::Owned(file) => &file.file,
+    };
+    #[cfg(target_vendor = "apple")]
+    let held = match target {
+        SyncTarget::Borrowed(_) => None,
+        SyncTarget::Owned(file) => Some(&file.device),
+    };
     if let Some(meter) = meter {
         #[cfg(target_vendor = "apple")]
         return crate::persistence_syscall(|| {
-            apple::sync_once(file, durability, || {
+            apple::sync_once(file, durability, held, || {
                 meter.check()?;
                 meter.admit_durability()
             })
@@ -65,7 +94,12 @@ fn sync_file_impl(
     );
     operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
-            crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
+            crate::persistence_syscall(|| {
+                #[cfg(target_vendor = "apple")]
+                return apple::sync_once(file, durability, held, || Ok(()));
+                #[cfg(not(target_vendor = "apple"))]
+                sync_file_unsequenced(file, durability)
+            })
         }))
     })
 }
@@ -100,19 +134,15 @@ fn sync_full(
     })
 }
 
-pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
-    #[cfg(target_vendor = "apple")]
-    return apple::sync_once(file, durability, || Ok(()));
-    #[cfg(not(target_vendor = "apple"))]
+#[cfg(not(target_vendor = "apple"))]
+fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
+    // Every durability is the full flush here; see `Durability::Barrier`.
+    #[cfg(any(windows, target_os = "linux"))]
+    return sync_full(file, durability, None);
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
-        // Every durability is the full flush here; see `Durability::Barrier`.
-        #[cfg(any(windows, target_os = "linux"))]
-        return sync_full(file, durability, None);
-        #[cfg(not(any(windows, target_os = "linux")))]
-        {
-            let _ = durability;
-            file.sync_all()
-        }
+        let _ = durability;
+        file.sync_all()
     }
 }
 
@@ -148,7 +178,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
         operation.finish(with_file_admission(file, || {
             crate::persistence_syscall(|| {
                 #[cfg(target_vendor = "apple")]
-                return apple::sync_once(file, durability, || Ok(()));
+                return apple::sync_once(file, durability, None, || Ok(()));
                 #[cfg(windows)]
                 return sync_file_unsequenced(file, durability);
                 #[cfg(target_os = "linux")]
@@ -546,7 +576,7 @@ pub(crate) fn read_at_impl(
 #[cfg(unix)]
 pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Result<()> {
     // sync_parent owns the fault boundary; never wrap the flush a second time.
-    sync_file_impl(&File::open(path)?, durability, None)
+    sync_file_impl(SyncTarget::Borrowed(&File::open(path)?), durability, None)
 }
 
 #[cfg(windows)]
@@ -562,5 +592,5 @@ pub(crate) fn sync_parent_impl(path: &Path, durability: Durability) -> io::Resul
         .share_mode(FILE_SHARE_READ_WRITE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    sync_file_impl(&directory, durability, None)
+    sync_file_impl(SyncTarget::Borrowed(&directory), durability, None)
 }

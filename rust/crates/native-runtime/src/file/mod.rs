@@ -24,6 +24,8 @@ pub use durable::{
 };
 mod destination;
 pub(crate) use destination::ReadDestination;
+#[cfg(all(test, target_vendor = "apple", not(loom)))]
+mod device_tests;
 mod operations;
 mod range;
 mod scope;
@@ -42,6 +44,8 @@ pub use range::AsyncRangeReader;
 #[derive(Debug)]
 pub(crate) struct NativeFilePayload {
     pub(crate) file: File,
+    #[cfg(target_vendor = "apple")]
+    pub(crate) device: crate::device_flush::HeldDevice,
     // Fields retire in declaration order: physical File before its claim.
     pub(crate) _allocation: Option<ReadAllocation>,
 }
