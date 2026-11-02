@@ -56,14 +56,15 @@ async function command(action: string, hex?: string, path?: string,
   work?: { warm: number; samples: number; reverse: boolean; shared: boolean }, count?: number): Promise<unknown> {
   switch (action) {
     case "refusal": {
-      const { refusalBytes } = await import("@acyclic-labs/auth/refusal");
+      const { refusalBytes, refusalText } = await import("@acyclic-labs/auth/refusal");
       const { streamError } = await import("../src/error.js");
       const { ObjectsV1Error, objectsV1Error, ErrorCode } = await import("../../objects/src/v1.js");
       const { StreamError } = await import("../src/types.js");
       const bytes = Buffer.from(hex ?? "", "hex");
       const body = bytes.subarray(1);
-      const variant = (bytes[0] ?? 0) % 10;
+      const variant = (bytes[0] ?? 0) % 12;
       let reads = 0;
+      let reasonReads = 0;
       const changing = [1, ...body];
       Object.defineProperty(changing, "0", { get() { return ++reads === 1 ? 1 : 2; } });
       const raw: { reason?: string; reasonBytes?: unknown } = variant === 0 ? { reasonBytes: new Uint8Array(body) }
@@ -72,21 +73,33 @@ async function command(action: string, hex?: string, path?: string,
         : variant === 3 ? {} : variant === 4 ? { get reasonBytes(): never { throw new Error("foreign property refused"); } }
         : variant === 5 ? { reasonBytes: [256, ...body] } : variant === 6 ? { reasonBytes: [-1, ...body] }
         : variant === 7 ? { reasonBytes: body.toString("hex") }
-        : variant === 8 ? { reasonBytes: new Array(1) } : { reasonBytes: changing };
+        : variant === 8 ? { reasonBytes: new Array(1) } : variant === 9 ? { reasonBytes: changing }
+        : variant === 10 ? { get reason(): never { ++reasonReads; throw new Error("foreign reason refused"); } }
+        : { get reason(): string { return ++reasonReads === 1 ? "original" : "changed"; } };
       const expected = variant < 2 ? body : variant === 9 ? Buffer.from([1, ...body]) : undefined;
+      const expectedReason = variant === 2 ? body.toString("utf8") : variant === 11 ? "original" : undefined;
+      if (refusalText(raw) !== expectedReason || variant >= 10 && reasonReads !== 1) throw new Error("foreign reason was not read once");
+      reasonReads = 0;
       const retained = refusalBytes(raw);
       if ((retained === undefined) !== (expected === undefined) || retained !== undefined && !Buffer.from(retained).equals(expected!)) throw new Error("raw refusal changed");
       if (variant === 9 && reads !== 1) throw new Error("foreign byte read more than once");
       reads = 0;
       const stream = streamError(Object.defineProperties({ code: "unavailable", message: "original" }, Object.getOwnPropertyDescriptors(raw)), "tail");
       if (variant === 9 && reads !== 1) throw new Error("Stream foreign byte read more than once");
+      if (variant >= 10 && reasonReads !== 1) throw new Error("Stream foreign reason read more than once");
       reads = 0;
+      reasonReads = 0;
       const objects = objectsV1Error(Object.defineProperties({ code: ErrorCode.UNAVAILABLE }, Object.getOwnPropertyDescriptors(raw)));
       if (variant === 9 && reads !== 1) throw new Error("Objects foreign byte read more than once");
+      if (variant >= 10 && reasonReads !== 1) throw new Error("Objects foreign reason read more than once");
       if (!(stream instanceof StreamError) || !(objects instanceof ObjectsV1Error)) throw new Error("typed original cause lost");
       for (const error of [stream, objects]) {
-        if (error.reason !== raw.reason || (error.reasonBytes === undefined) !== (expected === undefined)
+        if (error.reason !== expectedReason || (error.reasonBytes === undefined) !== (expected === undefined)
           || error.reasonBytes !== undefined && !Buffer.from(error.reasonBytes).equals(expected!)) throw new Error("product projector lost refusal");
+      }
+      for (const code of ["configuration", "transport"] as const) {
+        const error = streamError({ code, message: "original" }, "connect");
+        if (!(error instanceof StreamError) || error.code !== code) throw new Error("native-only failure became unavailable");
       }
       return { valid: true, outcome: variant, length: expected?.length ?? 0 };
     }

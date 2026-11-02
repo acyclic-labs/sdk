@@ -232,7 +232,7 @@ async fn completed_unread_failure() -> TestResult {
     drop(completion);
     let Err(Error::Unknown {
         publication,
-        source: StreamError::unavailable(),
+        source: StreamError::Unavailable { .. },
     }) = runtime.pause(&address, false).await
     else {
         return Err("unread completed pause lost its original Unknown".into());
@@ -448,7 +448,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
         (false, false) => {
             let Err(Error::Unknown {
                 publication,
-                source: StreamError::unavailable(),
+                source: StreamError::Unavailable { .. },
             }) = outcome
             else {
                 return Err("lost original Unknown publication".into());

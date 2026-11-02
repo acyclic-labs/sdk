@@ -7,6 +7,15 @@ export function refusalReason(metadata: { get(name: string): string | null }): s
   return metadata.get(REASON_HEADER) ?? undefined;
 }
 
+/** Read an optional foreign diagnostic once, preserving the original failure. */
+export function refusalText(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  try {
+    const reason = (value as { readonly reason?: unknown }).reason;
+    return typeof reason === "string" ? reason : undefined;
+  } catch { return undefined; }
+}
+
 /** The original foreign binding's raw value, never interpreted as replay permission. */
 export function refusalBytes(value: unknown): Uint8Array | undefined {
   if (typeof value !== "object" || value === null) return undefined;

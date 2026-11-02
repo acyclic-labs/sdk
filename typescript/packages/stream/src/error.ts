@@ -1,4 +1,4 @@
-import { refusalBytes } from "@acyclic-labs/auth/refusal";
+import { refusalBytes, refusalText } from "@acyclic-labs/auth/refusal";
 import { publicGrpcErrorCode, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 
@@ -21,7 +21,6 @@ export function streamError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   let message: string;
   let rawCode: unknown;
-  let reason: string | undefined;
   try {
     const detail = typeof error === "object" && error !== null ? (error as { readonly message?: unknown }).message : undefined;
     message = typeof detail === "string" ? detail : String(error);
@@ -33,10 +32,10 @@ export function streamError(error: unknown, operation: string): Error {
   } catch {
     rawCode = undefined;
   }
-  try {
-    const value = typeof error === "object" && error !== null ? (error as { readonly reason?: unknown }).reason : undefined;
-    reason = typeof value === "string" ? value : undefined;
-  } catch { reason = undefined; }
+  const reason = refusalText(error);
+  if (rawCode === "configuration" || rawCode === "transport") {
+    return new StreamError(rawCode, message, undefined, reason, refusalBytes(error));
+  }
   const failure = typeof rawCode === "string"
     ? streamFailure(rawCode, message, operation, undefined, reason, refusalBytes(error))
     : undefined;

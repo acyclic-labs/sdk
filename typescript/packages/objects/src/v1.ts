@@ -7,7 +7,7 @@ export type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_was
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { awaitSignal } from "@acyclic-labs/auth/credential";
-import { refusalBytes } from "@acyclic-labs/auth/refusal";
+import { refusalBytes, refusalText } from "@acyclic-labs/auth/refusal";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 
 export class ObjectsV1Error extends Error {
@@ -16,7 +16,7 @@ export class ObjectsV1Error extends Error {
 export function objectsV1Error(value: unknown): ObjectsV1Error {
   if (value instanceof ObjectsV1Error) return value;
   const code = typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-  const reason = typeof value === "object" && value !== null && "reason" in value && typeof value.reason === "string" ? value.reason : undefined;
+  const reason = refusalText(value);
   return new ObjectsV1Error(typeof code === "number" && code in wire.ErrorCode && code !== wire.ErrorCode.UNSPECIFIED ? code : wire.ErrorCode.UNAVAILABLE, reason, refusalBytes(value));
 }
 

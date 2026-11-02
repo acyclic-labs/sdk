@@ -23,9 +23,10 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::ConnectionResponses, transport::ConnectionFailure>>
+    {
         Box::pin(async move {
-            super::serve_on_with_products(
+            let responses = super::serve_on_with_products(
                 self.provider.clone(),
                 self.authority.clone(),
                 self.products.clone(),
@@ -34,6 +35,10 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
                 Box::pin(source.map(Ok)),
                 None,
             )
+            .map_err(transport::ConnectionFailure::terminal)?;
+            Ok(Box::pin(
+                responses.map(|result| result.map_err(transport::ConnectionFailure::terminal)),
+            ) as transport::ConnectionResponses)
         })
     }
 }

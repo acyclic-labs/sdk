@@ -60,7 +60,9 @@ impl Connection {
         let result = exchanged(&self.controls, command).await.map_err(exchange)?;
         match result {
             Err(
-                error @ AgentExchangeError::Session(acyclic_stream::StreamError::unavailable()),
+                error @ AgentExchangeError::Session(acyclic_stream::StreamError::Unavailable {
+                    ..
+                }),
             ) => Err(self.stream_failure(error)),
             result => result
                 .map_err(|error| exchange(format_args!("{} command: {error}", command.kind()))),
