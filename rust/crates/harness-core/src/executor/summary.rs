@@ -11,17 +11,14 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<(crate::context::ContextSummary, String)> {
         let (source, instruction) = material;
-        // A summary session disables recursive compaction. Resolve its writer
-        // before admission, independently of that session's compaction policy.
-        let destination = self
-            .original_context()
-            .map(|context| match self.compaction()?.destination {
-                Some(destination) => destination.require(self.io).map(|writer| (context, writer)),
-                None => context
-                    .private_summaries(self.io)
-                    .map(|writer| (context, writer)),
-            })
-            .transpose()?;
+        // Validate the original task's summary authority before model admission,
+        // even though the summary session disables recursive compaction.
+        if let Some(context) = self.original_context() {
+            match self.compaction()?.destination {
+                Some(destination) => destination.require(self.io)?,
+                None => context.private_summaries(self.io)?,
+            };
+        }
         crate::context::validate_projected_context(&source, self.stock.limits, self.io)?;
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
@@ -68,8 +65,20 @@ impl StockExecution<'_> {
         } else {
             executor.ensure_started(journal, &input).await?;
         }
-        self.stage_summary_source(journal, operation_id, step, source_bytes.as_deref())
-            .await?;
+        let source_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
+        })?;
+        stage_bytes(
+            journal,
+            operation_id,
+            &source_key,
+            &source_bytes,
+            true,
+            self.io,
+        )
+        .await?;
+        drop(source_bytes);
+        drop(source_key);
         let events = executor
             .run_model_step(
                 journal,
@@ -81,44 +90,24 @@ impl StockExecution<'_> {
             )?
             .await?;
         let text = self.collect_summary_text(events)?;
-        self.publish_summary(
-            destination,
-            journal,
-            operation_id,
-            step,
-            (source_messages, source_digest),
-            text,
-        )
-        .await
-    }
-
-    async fn stage_summary_source(
-        &self,
-        journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
-        source: Option<&[u8]>,
-    ) -> Result<()> {
-        if let Some(source) = source {
-            let source_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
-            })?;
-            stage_bytes(journal, operation_id, &source_key, source, true, self.io).await?;
-        }
-        Ok(())
+        let output_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
+        })?;
+        let summary = self
+            .publish_summary(
+                journal,
+                (operation_id, step),
+                (source_messages, source_digest),
+                (&output_key, text.as_bytes()),
+            )
+            .await?;
+        Ok((summary, text))
     }
 
     fn summary_source_identity(
         &self,
         source: &crate::context::Context,
-    ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
-        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-            _ => crate::contract::canonical_json_bytes(&source)?.into(),
-        };
-        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
-        let source_bytes = Some(source_bytes);
+    ) -> Result<(acyclic_stream::OwnedBytes, [u8; 32], u32)> {
         let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
             stock_boundary(
                 self.io,
@@ -133,6 +122,12 @@ impl StockExecution<'_> {
                 "summary source is empty",
             ));
         }
+        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+        };
+        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
         Ok((source_bytes, source_digest, source_messages))
     }
 
@@ -184,54 +179,23 @@ impl StockExecution<'_> {
         Ok(text)
     }
 
-    async fn publish_summary(
+    /// Publish both authored summaries and kernel markers with the same exact
+    /// output provenance. Their original keys remain distinct for replay.
+    pub(super) async fn publish_summary(
         &self,
-        destination: Option<(
-            &crate::runtime::TaskContext,
-            crate::runtime::PrivateContent<'_>,
-        )>,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
+        identity: (OperationId, u32),
         source: (u32, [u8; 32]),
-        text: String,
-    ) -> Result<(crate::context::ContextSummary, String)> {
+        output: (&str, &[u8]),
+    ) -> Result<crate::context::ContextSummary> {
+        let (operation_id, step) = identity;
         let (source_messages, source_digest) = source;
-        let output = if let Some((context, summaries)) = destination {
-            let path = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(
-                    format_args!("summaries/{operation_id}/{step}.txt"),
-                    work,
-                )
-            })?;
-            // A turn may compact more than once. Its file receipt must not alias
-            // another step or any of the task's tool publications.
-            let publication = summary_publication(operation_id, step, self.io)?;
-            let (output, _) = context
-                .stage_private_file_once(
-                    summaries,
-                    publication,
-                    &path,
-                    text.as_bytes(),
-                    ("text/plain", "summary.txt"),
-                    self.io,
-                )
-                .await?;
-            output
-        } else {
-            let output_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
-            })?;
-            journal
-                .stage(
-                    operation_id,
-                    &output_key,
-                    text.as_bytes(),
-                    "text/plain",
-                    self.io,
-                )?
-                .await?
-        };
+        let (output_key, bytes) = output;
+        // Every producer uses the immutable publication authenticated by the
+        // response commit; task-local mutable paths cannot carry that receipt.
+        let output = journal
+            .stage(operation_id, output_key, bytes, "text/plain", self.io)?
+            .await?;
         let summary = crate::context::ContextSummary {
             operation_id,
             step,
@@ -240,37 +204,8 @@ impl StockExecution<'_> {
             output,
         };
         stage_summary_provenance(journal, &summary, self.io).await?;
-        Ok((summary, text))
+        Ok(summary)
     }
-}
-
-fn summary_publication(
-    operation: OperationId,
-    step: u32,
-    io: Option<&PreparationIo>,
-) -> Result<OperationId> {
-    const DOMAIN: &[u8] = b"harness/v2/summary-content\0";
-    #[cfg(feature = "filesystem")]
-    let charge = acyclic_fs::WorkCounters {
-        bytes_hashed: DOMAIN.len() as u64 + 16 + 4,
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.preflight(charge)?;
-    }
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(DOMAIN);
-    hasher.update(&operation.into_bytes());
-    hasher.update(&step.to_le_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.charge(charge)?;
-    }
-    let _ = io;
-    Ok(OperationId::from_bytes(bytes))
 }
 
 #[cfg(test)]
