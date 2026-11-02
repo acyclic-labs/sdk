@@ -1129,11 +1129,12 @@ mod handoff_tests {
 
     #[test]
     fn handover_refuses_failed_readiness_or_owner_termination() -> io::Result<()> {
-        use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, JOB_OBJECT_QUERY, JOB_OBJECT_SET_ATTRIBUTES,
-        };
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         use windows_sys::Win32::System::Threading::SYNCHRONIZATION_SYNCHRONIZE;
 
+        // JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES, without TERMINATE.
+        // These access bits are absent from the windows-sys JobObjects module.
+        const JOB_QUERY_AND_SET_ATTRIBUTES: u32 = 0x0004 | 0x0002;
         for (deny_ready, deny_termination) in [(false, false), (true, false), (false, true)] {
             // SAFETY: new native objects, each owned below on success.
             let port =
@@ -1181,7 +1182,7 @@ mod handoff_tests {
                     job: duplicate(
                         job.as_raw_handle(),
                         GetCurrentProcess(),
-                        JOB_OBJECT_QUERY | JOB_OBJECT_SET_ATTRIBUTES,
+                        JOB_QUERY_AND_SET_ATTRIBUTES,
                         if deny_termination {
                             0
                         } else {
