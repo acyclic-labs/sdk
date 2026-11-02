@@ -9,15 +9,30 @@ const service: semantic.Binding = {name:"SERVICE",capability:"grant",resource:"w
 test("deployment declarations become scoped namespace and private service handles after Rust admission", async () => {
   let factories = 0;
   const requests: unknown[] = [];
+  let actorReads = 0, workerReads = 0;
+  const actorTransport = {get invokeActor() {
+    actorReads++;
+    return async function(this: unknown, request: semantic.InvokeActorRequest) {
+      expect(this).toBe(actorTransport);
+      requests.push(request); return {status:200,headers:[],body:request.body};
+    };
+  }};
+  const workerTransport = {get invokeWorker() {
+    workerReads++;
+    return async function(this: unknown, request: semantic.InvokeWorkerRequest) {
+      expect(this).toBe(workerTransport);
+      requests.push(request); return {status:200,headers:[],body:request.body};
+    };
+  }};
   const authority = {
     namespace() {
       expect(this).toBe(authority);
       // Earlier effects cannot substitute a later producer after preflight.
       authority.service = () => { throw new Error("substituted service producer"); };
       factories++;
-      return {async invokeActor(request: semantic.InvokeActorRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}};
+      return actorTransport;
     },
-    service() { expect(this).toBe(authority); factories++; return {async invokeWorker(request: semantic.InvokeWorkerRequest) {requests.push(request); return {status:200,headers:[],body:request.body};}}; },
+    service() { expect(this).toBe(authority); factories++; return workerTransport; },
     get objects(): never { throw new Error("unselected Objects producer"); },
   };
   const env = await materializeBindings([namespace,service], authority);
@@ -25,9 +40,19 @@ test("deployment declarations become scoped namespace and private service handle
   expect(env.OBJECTS).toBeInstanceOf(ActorNamespaceBinding); expect(env.SERVICE).toBeInstanceOf(WorkerServiceBinding);
   const objects = env.OBJECTS as ActorNamespaceBinding;
   const worker = env.SERVICE as WorkerServiceBinding;
-  await objects.get(objects.idFromName("same")).rpc("actorCall", new Uint8Array([1]));
+  const actor = objects.get(objects.idFromName("same"));
+  expect([actorReads,workerReads]).toEqual([1,1]);
+  // Existing handles retain the original callable and receiver across a wait.
+  for (const [transport, method] of [[actorTransport,"invokeActor"],[workerTransport,"invokeWorker"]] as const) {
+    Object.defineProperty(transport, method, {get() { throw new Error("substituted invocation producer"); }});
+  }
+  await actor.rpc("actorCall", new Uint8Array([1]));
   await worker.rpc("workerCall", new Uint8Array([2]));
-  expect(requests).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
+  await actor.rpc("actorWarm", new Uint8Array([3]));
+  await worker.rpc("workerWarm", new Uint8Array([4]));
+  expect([actorReads,workerReads]).toEqual([1,1]);
+  expect(requests).toHaveLength(4);
+  expect(requests.slice(0,2)).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
   factories = 0;
   for (const invalid of [
     {...namespace,resource:"actors:/Other"}, {...namespace,targetAccount:new Uint8Array()},

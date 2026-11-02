@@ -74,12 +74,13 @@ type PendingCall = {
   release: (() => void) | undefined;
   linked: boolean;
 };
-/** Ordered calls on one stub; a failed call permanently breaks that stub. */
+/** Ordered calls retain the original invocation; a failed call permanently breaks that stub. */
 export class ActorStub {
   readonly #id: NamespaceActorId;
   readonly #account: Uint8Array;
   readonly #namespace: Semantic.ActorNamespace;
   readonly #transport: ActorInvocationTransport;
+  readonly #invoke: ActorsClient["invokeActor"];
   readonly #binding: string;
   readonly #hint: LocationHint | undefined;
   #tail: Promise<void> = Promise.resolve();
@@ -95,6 +96,7 @@ export class ActorStub {
     if (typeof binding !== "string" || binding.length === 0) throw new TypeError("binding name is required");
     if (hint !== undefined) actorLocationHint(hint);
     this.#id = id; this.#transport = transport; this.#binding = binding; this.#hint = hint;
+    this.#invoke = transport.invokeActor.bind(transport);
     const reference = id.reference;
     this.#account = reference.account;
     this.#namespace = decoder.decode(reference.namespace) as Semantic.ActorNamespace;
@@ -153,7 +155,7 @@ export class ActorStub {
       if (this.#sequence > 0xffff_ffff_ffff_ffffn) throw new RangeError("stub sequence exhausted");
       signal.throwIfAborted();
       // Queue body preparation and sequence assignment, then release admission before the response.
-      const response = this.#transport.invokeActor({...input,invocationOrder:{session:this.#session,sequence:this.#sequence++}}, {signal});
+      const response = this.#invoke({...input,invocationOrder:{session:this.#session,sequence:this.#sequence++}}, {signal});
       return {response};
     });
     this.#tail = admitted.then(() => undefined, error => { this.#break(error); });
