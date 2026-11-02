@@ -1,7 +1,5 @@
 use super::*;
 
-pub(super) use sdk_file_identity::is_linked as is_reparse_or_symlink;
-
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result<(), Error> {
     reject_reparse_ancestors(path)?;
     if let Ok(existing) = fs::read(path) {
