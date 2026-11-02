@@ -232,7 +232,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             None => None,
         };
         let source = if let Some(parent) = parent {
-            ensure_provider(target, parent.machine.provider())?;
+            ensure_provider(target, parent.machine.as_resource().provider())?;
             let observed = target.host.inspect(&parent.machine).await?;
             (observed.contract.fork_fidelity().is_some()
                 && matches!(
@@ -287,7 +287,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         agent: &AgentPath,
         parent: &MachineBinding,
     ) -> Result<MachineBinding> {
-        ensure_provider(target, parent.machine.provider())?;
+        ensure_provider(target, parent.machine.as_resource().provider())?;
         let (operation, key) = intent("fork", agent, &target.name)?;
         let (_, children) = target
             .host
@@ -500,7 +500,9 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
                     _ => break,
                 };
                 match self.binding(&parent, &target.name).await? {
-                    Some(held) if held.machine.key() == source.as_bytes() => binding = held,
+                    Some(held) if held.machine.as_resource().key() == source.as_bytes() => {
+                        binding = held
+                    }
                     _ => break,
                 }
                 holder = parent;
@@ -517,7 +519,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         holder: &AgentPath,
         binding: &MachineBinding,
     ) -> Result<bool> {
-        ensure_provider(target, binding.machine.provider())?;
+        ensure_provider(target, binding.machine.as_resource().provider())?;
         let (operation, key) = intent("destroy", holder, &target.name)?;
         match target.host.destroy(operation, &key, &binding.machine).await {
             Ok(()) => Ok(true),
@@ -696,7 +698,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
 }
 
 fn sandbox(target: &ProvisionedTarget, binding: MachineBinding) -> Result<SandboxRef> {
-    ensure_provider(target, binding.machine.provider())?;
+    ensure_provider(target, binding.machine.as_resource().provider())?;
     Ok(binding.machine)
 }
 

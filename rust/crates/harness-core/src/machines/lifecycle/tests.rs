@@ -73,7 +73,10 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
             .binding(&parent, TARGET)
             .await?
             .ok_or("binding lost")?;
-        assert_eq!(binding.machine.provider(), &target.host.provider_ref);
+        assert_eq!(
+            binding.machine.as_resource().provider(),
+            &target.host.provider_ref
+        );
         let owned = binding.clone();
         let moved = acyclic_test_support::measure(|| {
             assert!(std::hint::black_box(super::sandbox(target, owned)).is_ok());
@@ -83,7 +86,7 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
             assert!(
                 std::hint::black_box(SandboxRef::new(
                     target.host.provider_ref.clone(),
-                    binding.machine.key().to_vec(),
+                    binding.machine.as_resource().key().to_vec(),
                     None,
                 ))
                 .is_ok()
@@ -129,7 +132,10 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
         assert_eq!(machines.machine(&parent, TARGET).await?, sandbox);
         machines.machine(&child, TARGET).await?;
         let fork = machines.binding(&child, TARGET).await?.ok_or("fork lost")?;
-        assert_eq!(fork.machine.provider(), binding.machine.provider());
+        assert_eq!(
+            fork.machine.as_resource().provider(),
+            binding.machine.as_resource().provider()
+        );
         assert_eq!(
             fork.forked_from,
             Some(target.host.machine_id(&binding.machine)?)
@@ -318,7 +324,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
         machines.machine(&child, TARGET),
     )?;
     assert_eq!(one, two);
-    assert_eq!(one, allocated.machine.clone());
+    assert_eq!(one, allocated.machine);
     assert_eq!(reopened.binding(&child, TARGET).await?, Some(allocated));
 
     // A chosen fork also survives parent state changes and waiter loss.
@@ -327,10 +333,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     let source = plan.source.ok_or("parent was not selected")?;
     let allocated = machines.fork(target, &fork, &source).await?;
     machines.suspend(&parent).await?;
-    assert_eq!(
-        reopened.machine(&fork, TARGET).await?,
-        allocated.machine.clone()
-    );
+    assert_eq!(reopened.machine(&fork, TARGET).await?, allocated.machine);
     assert_eq!(reopened.binding(&fork, TARGET).await?, Some(allocated));
 
     // Control parking must reconcile an allocation with no binding too.
@@ -339,7 +342,7 @@ async fn original_machine_ownership_survives_missing_binding_and_changed_parent(
     let allocated = machines.create(target, &pending).await?;
     reopened.suspend(&pending).await?;
     assert_eq!(
-        target.host.inspect(&allocated.machine.clone()).await?.state,
+        target.host.inspect(&allocated.machine).await?.state,
         MachineState::Suspended
     );
     assert_eq!(reopened.binding(&pending, TARGET).await?, Some(allocated));
