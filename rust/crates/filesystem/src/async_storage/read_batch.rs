@@ -54,16 +54,13 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
 ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError> {
-    let mut batch = AuthorityWork::new(
-        context.work.remaining(context.budget)?,
-        context.cancellation,
-    );
+    let budget = context.accounting().remaining().map_err(object_error)?;
+    let mut batch = AuthorityWork::new(budget, context.cancellation);
     #[cfg(not(target_arch = "wasm32"))]
     {
         batch.original = context.original;
     }
     let result = async {
-        batch.check().map_err(crate::ObjectStoreError::from)?;
         if requests.is_empty() {
             return Err(crate::ObjectStoreError::EmptyReadBatch);
         }
@@ -119,7 +116,9 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
     }
     .await;
     if !context.is_native() {
-        context.work.try_add_assign(&batch.spent())?;
+        context.work = context
+            .work
+            .with_backend(batch.spent(), context.allocations.live_bytes())?;
     }
     result.map(authority_parts)
 }

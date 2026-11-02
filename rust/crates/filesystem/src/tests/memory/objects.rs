@@ -48,6 +48,18 @@ async fn object_store_verifies_identity_bounds_and_original_work()
         store.read(object_id, 6, &mut context).await,
         Err(ObjectStoreError::AccountingHandoffActive)
     ));
+    assert!(matches!(
+        crate::async_storage::read_many_sequential(
+            &store,
+            &[crate::storage::ObjectReadRequest {
+                object_id,
+                maximum_bytes: 6,
+            }],
+            &mut context,
+        )
+        .await,
+        Err(ObjectStoreError::AccountingHandoffActive)
+    ));
     assert_eq!(context.spent(), suspended);
 
     continuation.restore(&mut context.accounting())?;
@@ -107,24 +119,21 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
         put(second, OwnedBytes::from_static(b"second")),
         WorkBudget::UNBOUNDED
     )?;
-    let receipt = provider_receipt!(
-        store,
-        read_many(&[
-            crate::storage::ObjectReadRequest {
-                object_id: second,
-                maximum_bytes: 6,
-            },
-            crate::storage::ObjectReadRequest {
-                object_id: first,
-                maximum_bytes: 5,
-            },
-            crate::storage::ObjectReadRequest {
-                object_id: second,
-                maximum_bytes: 6,
-            },
-        ]),
-        WorkBudget::UNBOUNDED
-    )?;
+    let requests = [
+        crate::storage::ObjectReadRequest {
+            object_id: second,
+            maximum_bytes: 6,
+        },
+        crate::storage::ObjectReadRequest {
+            object_id: first,
+            maximum_bytes: 5,
+        },
+        crate::storage::ObjectReadRequest {
+            object_id: second,
+            maximum_bytes: 6,
+        },
+    ];
+    let receipt = provider_receipt!(store, read_many(&requests), WorkBudget::UNBOUNDED)?;
     assert_eq!(
         receipt
             .value
@@ -137,6 +146,52 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
             OwnedBytes::from_static(b"second"),
         ]
     );
+
+    let cancellation = CancellationToken::new();
+    let earlier_bytes = 31;
+    let result_bytes = (requests.len() * size_of::<ObjectRead>()) as u64;
+    for shortfall in [0, 1] {
+        let budget = WorkBudget {
+            peak_allocation_bytes: earlier_bytes + result_bytes - shortfall,
+            ..crate::performance::work_budget(10_000, 65_536)
+        };
+        let mut context = AuthorityWork::new(budget, &cancellation);
+        let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(
+            earlier_bytes as usize,
+            &mut context.accounting(),
+        )?;
+        earlier.value.extend([7; 31]);
+        let result =
+            crate::async_storage::read_many_sequential(&store, &requests, &mut context).await;
+        if shortfall == 0 {
+            let (values, allocation) = result?;
+            assert_eq!(values.len(), 3);
+            assert_eq!(values[0].bytes.as_ref(), b"second");
+            assert_eq!(values[1].bytes.as_ref(), b"first");
+            assert_eq!(values[2].bytes.as_ref(), b"second");
+            assert_eq!(
+                context.spent().peak_allocation_bytes,
+                earlier_bytes + result_bytes
+            );
+            assert_eq!(context.spent().backend_read_operations, 3);
+            drop(values);
+            drop(allocation);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }))
+            ));
+            assert_eq!(context.spent().backend_read_operations, 0);
+            assert_eq!(context.spent().peak_allocation_bytes, earlier_bytes);
+        }
+        assert_eq!(earlier.value, [7; 31]);
+        assert_eq!(context.allocations.live_bytes(), earlier_bytes);
+        earlier.retire(&mut context.accounting())?;
+        assert_eq!(context.allocations.live_bytes(), 0);
+    }
 
     assert!(matches!(
         provider_receipt!(store, read_many(&[]), WorkBudget::UNBOUNDED),
