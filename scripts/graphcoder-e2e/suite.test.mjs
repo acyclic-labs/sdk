@@ -9,6 +9,34 @@ import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failureReport, finishCase, retainCapture } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 
+test("conversation cannot consume a future turn's reply before submitting its prompt", async () => {
+  const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures["jsonl-reopen"];
+  const reply = JSON.parse(captured.stdout), later = { ...reply, id: reply.id + "-later" };
+  for (const early of [false, true]) {
+    const processes = new Processes(), captures = [];
+    try {
+      // The adversarial child projects a second id from the original captured
+      // reply. Both variants produce the same two exact frames and exit zero
+      // without the admission guard; only their prompt/reply order differs.
+      const running = conversation(processes, process.execPath, {
+        workspace: tmpdir(), args: ["-e",
+          "const [first,second,early]=process.argv.slice(1);require('node:readline').createInterface({input:process.stdin}).on('line',line=>{if(JSON.parse(line).id===JSON.parse(first).id)process.stdout.write(first+(early==='true'?second:''));else if(early==='false')process.stdout.write(second)})",
+          captured.stdout, JSON.stringify(later) + "\n", String(early), "--"],
+      }, { operation: "prompt-order", turns: [reply, later].map(value => ({ id: value.id, text: "unused", answer: value.text })) },
+      result => captures.push(result));
+      if (early) await assert.rejects(running, error => {
+        assert.ok(error instanceof assert.AssertionError);
+        assert.equal(error.message, "committed reply preceded its prompt");
+        return true;
+      });
+      else await running;
+      assert.equal(captures.length, 1);
+      assert.equal(captures[0].stdout, captured.stdout + JSON.stringify(later) + "\n");
+      assert.equal(processes.children.size, 0);
+    } finally { await processes.close(); }
+  }
+});
+
 test("conversation completion rejects a malformed tail after its final committed reply", async () => {
   const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures["jsonl-reopen"];
   const reply = JSON.parse(captured.stdout);
