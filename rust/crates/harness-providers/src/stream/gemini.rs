@@ -107,11 +107,6 @@ pub(super) fn parse(state: &mut State, value: &Value, data: &str) -> Result<Vec<
         if !matches!(reason, "STOP" | "MAX_TOKENS") {
             return Err(invalid("Gemini generation was blocked"));
         }
-        if reason == "MAX_TOKENS" && !state.calls.is_empty() {
-            return Err(invalid(
-                "Gemini generation ended before completing its tool batch",
-            ));
-        }
         state.finish_reason(if reason == "MAX_TOKENS" {
             "length"
         } else {
