@@ -36,11 +36,14 @@ export const temporalModule = name => /^(?:node:)?timers(?:\/promises)?$/.test(n
 // Unicode, shell or PowerShell escapes. Decode across wrapper quoting: a
 // wrapper must not turn a readiness timer into an approved ordinary identifier.
 function escapedSpelling(source) {
- return source.replace(/`(.)|\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2}))|\\(\r?\n|.)/g,
+ // Consume a backslash run once even when no Unicode escape follows it.
+ return source.replace(/`(.)|\\+(?:u\{([0-9a-fA-F_]+)\}|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(\r?\n|.))?/g,
   (escape, powershell, braced, short, long, byte, shell) => {
    if (powershell !== undefined) return powershell;
    if (shell !== undefined) return shell === '\n' || shell === '\r\n' ? '' : shell;
-   const point = Number.parseInt((braced ?? short ?? long ?? byte).replaceAll('_', ''), 16);
+   const digits = braced ?? short ?? long ?? byte;
+   if (digits === undefined) return escape;
+   const point = Number.parseInt(digits.replaceAll('_', ''), 16);
    return point <= 0x10ffff ? String.fromCodePoint(point) : escape;
   });
 }

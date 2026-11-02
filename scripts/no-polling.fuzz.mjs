@@ -5,7 +5,8 @@ import {pollingSites} from './no-polling.mjs';
 // tokenizer: decoding must preserve raw candidates and expose escaped ones.
 export function fuzz(data) {
  const text = new TextDecoder().decode(new Uint8Array(data));
- for (const command of ['sleep`' + text + '` 1', 'Start-S`leep ' + text, 'Thread.\\u0053leep(' + text + ')']) {
+ for (const command of ['sleep`' + text + '` 1', 'Start-S`leep ' + text,
+  'Thread.' + '\\'.repeat(data.length + 1) + 'u0053leep(' + text + ')']) {
   const source = 'runHost(' + JSON.stringify(command) + ');';
   assert.ok(pollingSites('scripts/control.mjs', source).some(site => site.kind === 'embedded-timer-or-retry'), source);
  }
