@@ -63,3 +63,10 @@ path = "fuzz_targets/trust_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "refusal_reason"
+path = "fuzz_targets/refusal_reason.rs"
+test = false
+doc = false
+bench = false
