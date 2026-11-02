@@ -375,6 +375,15 @@ pub(super) fn check_observations() -> Result {
     )?;
     // Capture a real operation failure. Neither a failed terminal nor a
     // sampler refusal may enter the successful cohort or replace its cause.
+    // Retire the independent count-exhaustion control before testing admission:
+    // a full cohort or mismatched floor would mask an incorrectly stored error.
+    let row = cohort
+        .rows
+        .get_mut(&Operation::ObjectGet)
+        .ok_or("missing failure cohort")?;
+    row.work.observations = 2;
+    let full = row.work.clone();
+    let floor = row.terms;
     let directory = tempfile::tempdir()?;
     let missing_path = directory.path().join("missing");
     let failed_identity = serde_json::json!({"path": missing_path});
@@ -384,7 +393,7 @@ pub(super) fn check_observations() -> Result {
     let returned = cohort
         .record_terminal(
             Operation::ObjectGet,
-            Terms::default(),
+            floor,
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(missing),
@@ -393,11 +402,15 @@ pub(super) fn check_observations() -> Result {
     if returned.raw_os_error() != original_code {
         return Err("failed observation replaced the original OS cause".into());
     }
+    let row = &cohort.rows[&Operation::ObjectGet];
+    if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
+        return Err("failed terminal changed the successful observation inventory".into());
+    }
     let before = cohort.start(Some(RequestClass::Head));
     let returned = cohort
         .record_terminal(
             Operation::ObjectGet,
-            Terms::default(),
+            floor,
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(returned),
@@ -410,7 +423,7 @@ pub(super) fn check_observations() -> Result {
     if cohort
         .record_terminal(
             Operation::ObjectGet,
-            Terms::default(),
+            floor,
             (Duration::ZERO, before),
             failed_identity,
             Ok::<_, std::io::Error>(()),
