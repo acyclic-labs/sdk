@@ -157,7 +157,7 @@ impl S3Medium {
     }
 
     async fn multipart_create(&self, path: &Path, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        let bytes = bytes.try_into_bytes().map_err(failed)?;
+        let bytes = bytes.try_into_bytes().map_err(MediumError::Failed)?;
         let id = self.store.create_multipart(path).await.map_err(failed)?;
         let result = async {
             let mut xml = String::from("<CompleteMultipartUpload>");
@@ -265,7 +265,8 @@ impl Medium for S3Medium {
         if self.multipart && bytes.len() > 5 * 1024 * 1024 {
             return self.multipart_create(&self.path(key), bytes).await;
         }
-        let payload = object_store::PutPayload::from(bytes.try_into_bytes().map_err(failed)?);
+        let payload =
+            object_store::PutPayload::from(bytes.try_into_bytes().map_err(MediumError::Failed)?);
         match self
             .store
             .put_opts(&self.path(key), payload, PutMode::Create.into())
@@ -325,7 +326,8 @@ impl Medium for S3Medium {
             ));
         };
         let path = self.path(&key);
-        let payload = object_store::PutPayload::from(bytes.try_into_bytes().map_err(failed)?);
+        let payload =
+            object_store::PutPayload::from(bytes.try_into_bytes().map_err(MediumError::Failed)?);
         let mode = PutMode::Update(UpdateVersion {
             e_tag: Some(e_tag),
             version: None,
