@@ -124,17 +124,25 @@ fn reserve_coordinated(
 ) -> Result<(), StreamError> {
     reserve_commit(state, limits)?;
     let applied = crate::preparation::applied(request, skipped);
-    let (new_paths, path_bytes) =
-        missing_paths(state, applied.clone().map(crate::CommitMutation::path), |prefix| {
-                request.mutations.binary_search_by(|mutation| {
+    let (new_paths, path_bytes) = missing_paths(
+        state,
+        applied.clone().map(crate::CommitMutation::path),
+        |prefix| {
+            request
+                .mutations
+                .binary_search_by(|mutation| {
                     crate::CommitMutation::path(mutation).as_str().cmp(prefix)
-                }).is_ok_and(|index| {
-                    skipped.binary_search(crate::CommitMutation::path(&request.mutations[index])).is_err()
                 })
-            })
-            .fold((0usize, 0usize), |(count, bytes), (_, end)| {
-                (count + 1, bytes.saturating_add(end))
-            });
+                .is_ok_and(|index| {
+                    skipped
+                        .binary_search(crate::CommitMutation::path(&request.mutations[index]))
+                        .is_err()
+                })
+        },
+    )
+    .fold((0usize, 0usize), |(count, bytes), (_, end)| {
+        (count + 1, bytes.saturating_add(end))
+    });
     let mut records = 0_usize;
     let mut bytes = 0_usize;
     for mutation in applied.clone() {
