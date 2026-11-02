@@ -12,8 +12,8 @@ export async function* recordsFromFrames(
     let response: ReadResponse;
     try { response = fromBinary(ReadResponseSchema, bytes); }
     catch { throw new StreamError("invalid_response", "stream response contains a malformed record frame"); }
-    for (const decoded of readResponseRecords(response)) {
-      if (signal?.aborted) return;
+    // Admit a whole bounded frame before exposing its first record.
+    const records = readResponseRecords(response).map(decoded => {
       if (read !== undefined) {
         if (++count > read.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
         next = checkedReadSequence(decoded, next, read.key);
@@ -22,6 +22,10 @@ export async function* recordsFromFrames(
       }
       const record = checkedRecord(decoded, decoded.sequence, path);
       next = record.sequence + 1n;
+      return record;
+    });
+    for (const record of records) {
+      if (signal?.aborted) return;
       yield record;
     }
   }

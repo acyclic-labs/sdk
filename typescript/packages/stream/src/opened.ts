@@ -75,7 +75,7 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
     }
   }
 
-  async return(): Promise<IteratorResult<Record<Value>>> {
+  async return(_value?: unknown): Promise<IteratorResult<Record<Value>>> {
     await this.close();
     return { done: true, value: undefined };
   }

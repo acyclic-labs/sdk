@@ -17,10 +17,11 @@ const packageUrl = new URL("../", grpcUrl);
 if (installed && grpcUrl.href === new URL("../dist/grpc.js", import.meta.url).href) throw new Error("--installed requires a freshly packed consumer, not the workspace package");
 const { createStreamGrpcClient, GrpcStreamProvider } = await import(grpcUrl.href);
 const { idempotencyKey, commitId, StreamError } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream")).href : new URL("../dist/types.js", import.meta.url).href);
-const { ensureStreamWasm } = await import(new URL("dist/contract.js", packageUrl).href);
+const { ensureStreamWasm, streamResourcePath } = await import(new URL("dist/contract.js", packageUrl).href);
 const { openWasmCursor } = await import(new URL("dist/wasm-records.js", packageUrl).href);
+const { recordsFromFrames } = await import(new URL("dist/record.js", packageUrl).href);
 const { WasmStream } = await import(new URL("generated/wasm/acyclic_stream_wasm.js", packageUrl).href);
-const { Codec, ReadResponseSchema, RecordBatchSchema, FollowRequestSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
+const { Codec, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, FollowRequestSchema, StreamService } = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/proto")).href : new URL("../generated/proto/stream/v1/stream_pb.js", import.meta.url).href);
 const sessionWire = await import(installed ? pathToFileURL(installedRequire.resolve("@acyclic-labs/stream/session/proto")).href : new URL("../generated/proto/stream/v1/session_pb.js", import.meta.url).href);
 
 const file = fileURLToPath(import.meta.url);
@@ -30,6 +31,12 @@ const body = text => new TextEncoder().encode(text);
 
 async function validateFrames(options, prefix) {
   const provider = new GrpcStreamProvider(options);
+  const rpc = createStreamGrpcClient(options);
+  // Compressed unary-stream frames exercise the public raw RPC and the same
+  // decoder used by provider bridges. Provider finite reads use Session.
+  const read = (path, options) => recordsFromFrames((async function* () {
+    for await (const frame of rpc.read({ path, ...options })) yield toBinary(ReadResponseSchema, frame);
+  })(), path, options.from, options);
   const waitFor = async (mode, field, minimum = 1n) => {
     const controller = new AbortController();
     try {
@@ -41,10 +48,10 @@ async function validateFrames(options, prefix) {
   };
   const open = (mode, client = provider, follow = false, signal) => (follow
     ? client.follow(`frame-test/${prefix}/${mode}`, { from: 0n, ...(signal === undefined ? {} : { signal }) })
-    : client.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: mode === "pressure" ? 64 : 2 }))[Symbol.asyncIterator]();
+    : read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: mode === "pressure" ? 64 : 2 }))[Symbol.asyncIterator]();
   for (const mode of ["cursor", "identity", "count", "codec"]) {
     const iterator = mode === "count"
-      ? provider.read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 1 })[Symbol.asyncIterator]()
+      ? read(`frame-test/${prefix}/${mode}`, { from: 0n, limit: 1 })[Symbol.asyncIterator]()
       : open(mode);
     await assert.rejects(iterator.next(), error => error.code === "invalid_response");
     if (mode !== "count") {
@@ -60,6 +67,13 @@ async function validateFrames(options, prefix) {
   assert.equal((await ordinary.next()).value.sequence, 0n);
   assert.equal((await ordinary.next()).value.sequence, 1n);
   assert.equal((await ordinary.next()).done, true);
+  for (const path of ["malformed", "invalid-codec-0", "invalid-codec-3"]) {
+    await assert.rejects(read(path, { from: 0n, limit: 1 }).next(), error => error.code === "invalid_response");
+  }
+  const bounded = createStreamGrpcClient({ ...options, maximumMessageBytes: 64 });
+  await assert.rejects(async () => {
+    for await (const _ of bounded.read({ path: "oversize", from: 0n, limit: 1 })) {}
+  }, error => error instanceof ConnectError && error.code === Code.ResourceExhausted);
   for (const [mode, follow] of [["dropRead", false], ["dropFollow", true]]) {
     const iterator = open(mode, provider, follow);
     await iterator.next();
@@ -149,12 +163,6 @@ if (process.argv.includes("--client")) {
   await assert.rejects(denied.tail(path), error => error instanceof StreamError && error.code === "access_denied");
   await assert.rejects(provider.tail("invalid//path"), error => error instanceof StreamError && error.code === "invalid_path");
   await assert.rejects(provider.readCommit(commitId(new Uint8Array(32))), error => error instanceof StreamError && error.code === "commit_not_found");
-  await assert.rejects(async () => { for await (const _ of provider.read("malformed", { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "invalid_response");
-  for (const codec of [0, 3]) {
-    await assert.rejects(async () => { for await (const _ of provider.read(`invalid-codec-${codec}`, { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "invalid_response");
-  }
-  const bounded = new GrpcStreamProvider({ ...options, maximumMessageBytes: 64 });
-  await assert.rejects(async () => { for await (const _ of bounded.read("oversize", { from: 0n, limit: 1 })) {} }, error => error instanceof StreamError && error.code === "capacity_exhausted");
   await validateFrames(options, prefix);
   console.log(`${prefix}: Stream provider replay, follow cancellation, forks, Commit, frame validation and cleanup passed (${installed ? "installed archive" : "workspace"}${process.argv.includes("--native") ? ", N-API bridge" : ""})`);
   process.exit(0);
@@ -197,8 +205,42 @@ function aborted(signal) {
   if (signal.aborted) return Promise.resolve();
   return new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
 }
-async function* sessionRecords(subscription, signal) {
-  const { path } = subscription.kind.value;
+async function sessionOpen(subscription, signal) {
+  const follow = subscription.kind.value;
+  const path = streamResourcePath(follow.resource);
+  if (path.startsWith("frame-state/") || path.startsWith("frame-test/")) {
+    // Deliberately synthetic protocol inputs, separate from provider evidence.
+    const from = subscription.resume.next;
+    return {
+      opened: create(sessionWire.SessionOpenedSchema, {
+        resume: subscription.resume,
+        applied: { scope: body("frame-fixture"), incarnation: new Uint8Array(16), index: 0n },
+        selection: { from, ...(follow.until === undefined ? {} : { end: follow.until }) },
+      }),
+      records: syntheticRecords(subscription, path, signal),
+      close() {},
+    };
+  }
+  const handle = await openWasmCursor(async () => follow.until === undefined
+    ? memory.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, {
+      path, from: subscription.resume.next, atLeast: follow.atLeast, whenAbsent: follow.whenAbsent,
+      filter: subscription.filter, bootstrapHead: follow.bootstrapHead,
+    })))
+    : memory.read(toBinary(ReadRequestSchema, create(ReadRequestSchema, {
+      path, from: subscription.resume.next, limit: follow.readLimit || Number(follow.until - subscription.resume.next),
+      key: follow.key, atLeast: follow.atLeast,
+    }))), signal);
+  const records = async function* () {
+    for (;;) {
+      const bytes = await handle.next();
+      if (bytes === null) return;
+      const response = fromBinary(ReadResponseSchema, bytes);
+      for (const record of fromBinary(RecordBatchSchema, response.data).records) yield { record };
+    }
+  };
+  return { opened: handle.opened, records: records(), close: handle.close };
+}
+async function* syntheticRecords(subscription, path, signal) {
   const record = (sequence, value = body("frame")) => ({ sequence, value, commitId: new Uint8Array(32).fill(7), committedAtMicros: 1n });
   if (path.startsWith("frame-state/")) {
     const [, prefix, mode, field] = path.split("/");
@@ -230,24 +272,15 @@ async function* sessionRecords(subscription, signal) {
         if (mode === "identity" && index === 1) item.commitId = new Uint8Array(31);
         yield { record: item, invalid: mode === "codec" };
       }
-      await aborted(signal);
+      if (subscription.kind.value.until === undefined || mode !== "ordinary") await aborted(signal);
     } finally { if (signal.aborted) state.cancelled++; }
     return;
   }
-  const handle = await openWasmCursor(async () => memory.open_follow(toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from: subscription.resume.next }))), signal);
-  try {
-    while (!signal.aborted) {
-      const bytes = await handle.next();
-      if (bytes === null) return;
-      const response = fromBinary(ReadResponseSchema, bytes);
-      for (const record of fromBinary(RecordBatchSchema, response.data).records) yield { record };
-    }
-  } finally { await handle.close(); }
 }
 function createAdapter() { return connectNodeAdapter({ routes(router) {
   router.service(sessionWire.StreamSessionService, { session(requests, context) {
     authenticate(context);
-    return sessionService(sessionWire, sessionRecords)(requests, context);
+    return sessionService(sessionWire, sessionOpen)(requests, context);
   } });
   const implementation = {};
   for (const method of StreamService.methods) {

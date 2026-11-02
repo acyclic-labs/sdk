@@ -11,7 +11,6 @@ pub struct WasmOpened {
     cursor: WasmFollow,
 }
 
-#[wasm_bindgen]
 impl WasmOpened {
     async fn subscription(
         client: crate::session::Client,
@@ -33,7 +32,10 @@ impl WasmOpened {
             },
         })
     }
+}
 
+#[wasm_bindgen]
+impl WasmOpened {
     /// Encoded canonical SessionOpened, available before pulling any records.
     pub fn opened(&self) -> Vec<u8> {
         self.opened.clone()

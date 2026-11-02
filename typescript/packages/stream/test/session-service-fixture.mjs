@@ -2,7 +2,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 
 // Test-only platform peer. Each source has at most one outstanding record;
 // credits wake only the sources that can progress, without a timer.
-export function sessionService(wire, follow) {
+export function sessionService(wire, open) {
   return async function* (requests, context) {
     const routes = new Map();
     const output = [];
@@ -23,8 +23,12 @@ export function sessionService(wire, follow) {
     };
     context.signal.addEventListener("abort", stop, { once: true });
     const source = async route => {
+      let selected;
       try {
-        for await (const item of follow(route.subscription, route.controller.signal)) {
+        selected = await open(route.subscription, route.controller.signal);
+        if (route.controller.signal.aborted) return;
+        emit(frame(route.id, route.generation, { case: "opened", value: selected.opened }));
+        for await (const item of selected.records) {
           const data = frame(route.id, route.generation, { case: "data", value: create(wire.SessionDataSchema, {
             after: { next: item.record.sequence + 1n }, accepted: item.record.sequence + 1n,
             item: item.invalid ? undefined : { case: "record", value: item.record },
@@ -38,9 +42,10 @@ export function sessionService(wire, follow) {
           route.credit.bytes -= bytes; route.credit.frames--;
           emit(data);
         }
+        if (!route.controller.signal.aborted) emit(frame(route.id, route.generation, { case: "closed", value: create(wire.SessionClosedSchema, { code: "end" }) }));
       } catch (error) {
         if (!route.controller.signal.aborted) emit(frame(route.id, route.generation, { case: "closed", value: create(wire.SessionClosedSchema, { code: "unavailable", message: String(error) }) }));
-      }
+      } finally { await selected?.close(); }
     };
     const interest = value => {
       for (const removed of value.remove) {
@@ -54,8 +59,7 @@ export function sessionService(wire, follow) {
         const route = { id, generation, subscription, controller: new AbortController(), credit: { bytes: 0n, frames: 0 } };
         routes.set(id, route);
         route.controller.signal.addEventListener("abort", wake, { once: true });
-        emit(frame(id, generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume }) }));
-        void source(route);
+        void source(route).catch(error => { failure = error; stop(); });
       }
       emit(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: value.revision }) }));
       wake();
