@@ -20,6 +20,7 @@ async fn cached_read_withdrawal_retains_original_admission_before_provider_compl
                     gate: futures::FutureExt::shared(receiver),
                     reads: Arc::clone(&reads),
                     reads_before_gate: 0,
+                    complete_before_gate: false,
                 },
                 options(4, 1024),
             )?;
@@ -196,14 +197,21 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         object_id,
         maximum_bytes: bytes.len() as u64,
     });
-    let mut first = AuthorityWork::new(B, &setup);
-    drop(
-        inner
-            .read(requests[0].object_id, requests[0].maximum_bytes, &mut first)
-            .await?,
-    );
-    let first = first.spent();
-    for exit in 0..6 {
+    let mut prefixes = [WorkCounters::UNCHARGED; 2];
+    for (request, prefix) in requests.iter().zip(&mut prefixes) {
+        let mut work = AuthorityWork::new(B, &setup);
+        drop(
+            inner
+                .read(request.object_id, request.maximum_bytes, &mut work)
+                .await?,
+        );
+        *prefix = work.spent();
+    }
+    for (complete_before_gate, exit, stored) in [false, true]
+        .into_iter()
+        .flat_map(|timing| (0..6).map(move |exit| (timing, exit)))
+        .flat_map(|(timing, exit)| [false, true].map(|stored| (timing, exit, stored)))
+    {
         let completed_reads = u64::from(exit >= 4);
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(
@@ -226,13 +234,19 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         let reads = Arc::new(AtomicUsize::new(0));
         let store = GatedStore {
             reads_before_gate: completed_reads as usize,
+            complete_before_gate,
             inner: Arc::clone(&inner),
             gate: futures::FutureExt::shared(receiver),
             reads: Arc::clone(&reads),
         };
-        let mut batch = Box::pin(crate::async_storage::read_many_sequential(
-            &store, &requests, &mut work,
-        ));
+        let mut batch = Box::pin(async {
+            if stored {
+                crate::async_storage::read_many_stored_sequential(&store, &requests, &mut work)
+                    .await
+            } else {
+                crate::async_storage::read_many_sequential(&store, &requests, &mut work).await
+            }
+        });
         assert!(futures::poll!(batch.as_mut()).is_pending());
         assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
         let mut sibling = AuthorityWork::new(B, &setup);
@@ -277,16 +291,28 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
             assert_eq!(completed.items_returned, 2);
         } else {
             assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
+            // The current read has performed real provider work before its
+            // delivery gate. Withdrawal must preserve that work too.
+            let performed = (completed_reads + u64::from(complete_before_gate)) as usize;
+            let prefix = &prefixes[..performed];
             assert_eq!(
                 completed.items_examined,
-                before.items_examined + 2 + completed_reads * first.items_examined
+                before.items_examined
+                    + 2
+                    + prefix.iter().map(|work| work.items_examined).sum::<u64>()
             );
-            assert_eq!(completed.backend_read_operations, completed_reads);
+            assert_eq!(completed.backend_read_operations, performed as u64);
             assert_eq!(
                 completed.object_bytes_read,
-                completed_reads * first.object_bytes_read
+                prefix
+                    .iter()
+                    .map(|work| work.object_bytes_read)
+                    .sum::<u64>()
             );
-            assert_eq!(completed.bytes_hashed, completed_reads * first.bytes_hashed);
+            assert_eq!(
+                completed.bytes_hashed,
+                prefix.iter().map(|work| work.bytes_hashed).sum::<u64>()
+            );
             assert_eq!(completed.items_returned, 0);
         }
         assert_eq!(earlier.value, [7; 31]);

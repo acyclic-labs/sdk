@@ -63,8 +63,17 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
         earlier.value.extend_from_slice(&[7; 31]);
         let result = store.read(object.object_id(), 4, &mut work).await;
         if available == 4 {
-            assert_eq!(result?.bytes, *object.bytes());
+            let read = result?;
+            assert_eq!(read.bytes, *object.bytes());
+            assert_eq!(
+                read.retention,
+                ObjectReadRetention::Owned { logical_bytes: 4 }
+            );
             assert_eq!(work.spent().peak_allocation_bytes, 35);
+            assert_eq!(work.allocations.live_bytes(), 35);
+            drop(read);
+            // Ordinary output reports its caller-owned charge for retirement.
+            work.allocations.release_owned(4)?;
         } else {
             assert!(matches!(
                 result,
