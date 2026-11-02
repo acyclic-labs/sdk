@@ -64,7 +64,8 @@ mod committed {
     };
     use acyclic_actors::guest::CancellationToken;
     use acyclic_stream::{
-        CommitCondition, CommitOutcome, MemoryStream, ReadRequest, StreamProviderExt as _,
+        CommitCondition, CommitOutcome, MemoryStream, ReadRequest, StreamProvider,
+        StreamProviderExt as _,
     };
     use futures::TryStreamExt;
 
