@@ -39,7 +39,10 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         "bytes": bytes,
     });
     for revision in 0..2 {
-        let base = json!({"base": revision, "nested": {"base": revision}});
+        // Change one cache-key dimension at a time. Otherwise a changed
+        // base could hide a missing source or imported-content dependency.
+        let base_revision = if mode == 1 || mode == 2 { revision } else { 0 };
+        let base = json!({"base": base_revision, "nested": {"base": base_revision}});
         let imported = json!({"imported": revision, "value": literal});
         let tree = Files(serde_json::to_vec(&imported).map_err(|error| error.to_string())?);
         let encoded = serde_json::to_string(&literal).map_err(|error| error.to_string())?;
