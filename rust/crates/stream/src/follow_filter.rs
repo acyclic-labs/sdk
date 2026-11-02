@@ -19,7 +19,15 @@ impl FollowFilter {
         self.0.as_deref().map_or(&[], Vec::as_slice)
     }
     /// Validates and canonicalizes a requested subscription filter.
-    pub fn new(mut requested: wire::SessionFilter) -> Result<Self, StreamError> {
+    pub fn new(requested: wire::SessionFilter) -> Result<Self, StreamError> {
+        Ok(Self::from_clauses(Self::requested_clauses(requested)?))
+    }
+
+    fn from_clauses(clauses: Vec<Clause>) -> Self {
+        Self((!clauses.is_empty()).then(|| Arc::new(clauses)))
+    }
+
+    fn requested_clauses(mut requested: wire::SessionFilter) -> Result<Vec<Clause>, StreamError> {
         if requested.encoded_len() > crate::MAX_COMMAND_BYTES
             || requested.all_of.len() > crate::MAX_ITEMS
         {
@@ -47,7 +55,7 @@ impl FollowFilter {
                 });
             }
         }
-        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
+        Ok(clauses)
     }
 
     /// Intersects a request with authenticated capability clauses. Subject
@@ -57,7 +65,7 @@ impl FollowFilter {
         capability: &acyclic_auth::verify::VerifiedCapability,
     ) -> Result<Self, StreamError> {
         use acyclic_auth::contract::SubjectReferenceKind;
-        let mut clauses = Self::new(requested)?.clauses().to_vec();
+        let mut clauses = Self::requested_clauses(requested)?;
         for scoped in capability.effective().filters() {
             let source = scoped.filter();
             let attributes = source
@@ -121,7 +129,7 @@ impl FollowFilter {
                 })?,
             });
         }
-        Ok(Self((!clauses.is_empty()).then(|| Arc::new(clauses))))
+        Ok(Self::from_clauses(clauses))
     }
 
     /// Returns whether opaque record headers satisfy the full intersection.
@@ -399,32 +407,197 @@ mod tests {
             FollowFilter(Some(Arc::new(vec![requested]))).matches(&headers(&["b", "z"], "alice"))
         );
     }
-    #[test]
-    fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
-        let make = |all_keys, start, end| Clause {
+    #[tokio::test]
+    async fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {
+        use acyclic_auth::{contract as auth, testing as signed};
+        use futures::StreamExt as _;
+
+        let make = |all_keys, start: &[u8], end: &[u8]| Clause {
             all_keys,
             filter: canonical(wire::SessionFilter {
-                keys: vec![range(start, end)],
+                keys: vec![wire::KeyRange {
+                    start: start.to_vec().into(),
+                    end: end.to_vec().into(),
+                }],
                 attributes: vec![],
                 all_of: vec![],
             })
             .unwrap(),
         };
-        let original = FollowFilter(Some(Arc::new(vec![
-            make(false, b"a", b"c"),
-            make(true, b"a", b"m"),
-            make(true, b"b", b"z"),
-        ])));
+        let token = signed::root(|block| {
+            for (start, end) in [(b"a", b"m"), (b"b", b"z")] {
+                block.caveats.push(auth::Caveat {
+                    kind: auth::CaveatKind::Filter(auth::Filter {
+                        keys: vec![auth::KeyRange {
+                            start: start.to_vec(),
+                            end: end.to_vec(),
+                        }],
+                        attributes: vec![],
+                    }),
+                });
+            }
+            block.caveats.push(auth::Caveat {
+                kind: auth::CaveatKind::Pin(auth::Pin {
+                    name: "owner".into(),
+                    value: auth::PinValue::Literal(b"alice".to_vec()),
+                }),
+            });
+        });
+        let capability =
+            acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
+                .unwrap();
+        let requested = wire::SessionFilter {
+            keys: vec![range(b"a", b"c")],
+            attributes: vec![wire::AttributeMatch {
+                name: "owner".into(),
+                any_of: vec![b"bob".as_slice().into(), b"alice".as_slice().into()],
+            }],
+            all_of: vec![wire::SessionFilterClause {
+                keys: vec![range(b"a", b"z")],
+                attributes: vec![],
+                all_keys: false,
+            }],
+        };
+        let old_request = requested.clone();
+        let mut original = None;
+        let mut transferred = None;
+        let before = acyclic_test_support::measure(|| {
+            // Original ownership boundary, with independently specified authority clauses.
+            let mut clauses = FollowFilter::new(old_request).unwrap().clauses().to_vec();
+            clauses.push(make(true, b"a", b"m"));
+            clauses.push(make(true, b"b", b"z"));
+            clauses.push(Clause {
+                all_keys: true,
+                filter: canonical(wire::SessionFilter {
+                    keys: vec![],
+                    attributes: vec![wire::AttributeMatch {
+                        name: "owner".into(),
+                        any_of: vec![bytes::Bytes::copy_from_slice(b"alice")],
+                    }],
+                    all_of: vec![],
+                })
+                .unwrap(),
+            });
+            original = Some(FollowFilter(Some(Arc::new(clauses))));
+        });
+        let after = acyclic_test_support::measure(|| {
+            transferred = Some(FollowFilter::authorized(requested, &capability).unwrap());
+        });
+        let original = original.unwrap();
+        let transferred = transferred.unwrap();
+        assert_eq!(original, transferred);
+        assert!(after.count_total < before.count_total);
+        assert!(after.bytes_total < before.bytes_total);
+        eprintln!(
+            "authorized clauses: {} -> {} allocations, {} -> {} bytes",
+            before.count_total, after.count_total, before.bytes_total, after.bytes_total
+        );
         let forwarded = FollowFilter::new(original.transport_filter().unwrap()).unwrap();
         assert_eq!(original.digest(), forwarded.digest());
         assert!(forwarded.matches(&headers(&["b", "j"], "alice")));
         assert!(!forwarded.matches(&headers(&["b", "z"], "alice")));
         assert!(!forwarded.matches(&headers(&["a", "b"], "alice")));
         assert!(!forwarded.matches(&headers(&["j"], "alice")));
+        assert!(!forwarded.matches(&headers(&["b"], "bob")));
         let dropped_ceiling = FollowFilter(Some(Arc::new(vec![make(false, b"a", b"c")])));
         assert!(
             dropped_ceiling.matches(&headers(&["b", "z"], "alice")),
             "negative control needs the authority ceiling"
+        );
+
+        // Capture opaque and typed records from the real provider, then compare
+        // projection and refusal across the ownership boundary and transport hop.
+        let provider = crate::MemoryStream::default();
+        let path = crate::StreamPath::new("filter-projection").unwrap();
+        crate::StreamProviderExt::append(
+            &provider,
+            crate::AppendRequest {
+                path: path.clone(),
+                records: vec![
+                    crate::AppendRecord {
+                        value: "opaque".into(),
+                        headers: headers(&["b", "j"], "alice"),
+                    },
+                    crate::AppendRecord {
+                        value: "denied".into(),
+                        headers: headers(&["b"], "bob"),
+                    },
+                    crate::AppendRecord::changes(
+                        b"filter-control",
+                        &["b", "z"].map(|key| wire::ChangeEntry {
+                            key: key.into(),
+                            operation: "write".into(),
+                            metadata: bytes::Bytes::new(),
+                        }),
+                        vec![crate::Attribute {
+                            name: "owner".into(),
+                            value: "alice".into(),
+                        }],
+                    )
+                    .unwrap(),
+                ],
+                if_tail: Some(0),
+                idempotency_key: crate::IdempotencyKey::unique(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut records = crate::StreamProvider::read(
+            &provider,
+            crate::ReadRequest {
+                key: None,
+                path,
+                from: 0,
+                limit: 3,
+                at_least: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut seen = 0;
+        while let Some(record) = records.next().await {
+            let record = record.unwrap();
+            let expected = original.project(record.clone()).unwrap();
+            assert_eq!(transferred.project(record.clone()).unwrap(), expected);
+            assert_eq!(forwarded.project(record.clone()).unwrap(), expected);
+            if crate::changes::marked(&record.headers) {
+                let projected = expected.unwrap();
+                assert_eq!(projected.headers.keys().len(), 1);
+                assert_eq!(projected.headers.keys()[0].as_ref(), b"b");
+                let mut malformed = record;
+                malformed.value = bytes::Bytes::new().into();
+                assert_eq!(
+                    original.project(malformed.clone()),
+                    Err(StreamError::InvalidArgument)
+                );
+                assert_eq!(
+                    transferred.project(malformed.clone()),
+                    original.project(malformed)
+                );
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 3);
+        let malformed = wire::SessionFilter {
+            keys: vec![range(b"c", b"a")],
+            ..Default::default()
+        };
+        assert_eq!(
+            FollowFilter::authorized(malformed.clone(), &capability),
+            FollowFilter::new(malformed)
+        );
+        let token = signed::root(|_| {});
+        let unrestricted =
+            acyclic_auth::verify::verify(&token, &signed::Snapshot::default(), signed::NOW)
+                .unwrap();
+        let mut empty = None;
+        let work = acyclic_test_support::measure(|| {
+            empty = Some(FollowFilter::authorized(Default::default(), &unrestricted).unwrap());
+        });
+        assert!(empty.unwrap().matches(&headers(&["z"], "bob")));
+        assert_eq!(
+            work.count_total, 0,
+            "unrestricted filters must stay allocation-free"
         );
     }
 
