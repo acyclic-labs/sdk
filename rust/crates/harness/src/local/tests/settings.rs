@@ -94,10 +94,45 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     let project = volume(directory.path()).await?;
     let path = "sys/models/catalog.json";
     let original = OwnedBytes::from_static(b"{\"version\":1}");
-    let harness = LocalHarness::open(
-        volume_config(directory.path(), project, text())?.system_file(path, original.clone()),
-    )
-    .await?;
+    let mut config =
+        volume_config(directory.path(), project, text())?.system_file(path, original.clone());
+    // Generated contract inputs test noninterference: changing a plain value
+    // cannot change any published byte, including its content-addressed volume.
+    let mut variables: Vec<_> = ["a/b", "a%2Fb", "clé"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| acyclic_auth::contract::SecretVariable {
+            kind: acyclic_auth::contract::SecretVariableKind::Plain(
+                acyclic_auth::contract::PlainSecretVariable {
+                    name: name.into(),
+                    version: u64::MAX - index as u64,
+                    value: format!("private-value-{index}"),
+                },
+            ),
+        })
+        .collect();
+    variables.push(acyclic_auth::contract::SecretVariable {
+        kind: acyclic_auth::contract::SecretVariableKind::Protected(
+            acyclic_auth::contract::ProtectedSecretVariable {
+                name: "protected".into(),
+                version: 1,
+            },
+        ),
+    });
+    config
+        .secret_metadata("explicit-scope", u64::MAX, &variables)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let metadata = config.system_files.clone();
+    for variable in &mut variables {
+        if let acyclic_auth::contract::SecretVariableKind::Plain(row) = &mut variable.kind {
+            row.value.push_str("changed");
+        }
+    }
+    config
+        .secret_metadata("explicit-scope", u64::MAX, &variables)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(config.system_files, metadata);
+    let harness = LocalHarness::open(config).await?;
     let private = || -> Result<_> {
         Ok(ContentBindings {
             volume: harness.journal.clone(),
@@ -140,8 +175,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     let FileReadSource::Authored(selected) = source else {
         panic!("original authored identity")
     };
-    let files = std::collections::BTreeMap::from([(path.into(), original)]);
-    let shared = harness.files.system_layer(&files).await?;
+    let shared = harness.files.system_layer(&metadata).await?;
     assert_eq!(
         (&shared.volume, &shared.generation),
         (&selected.volume, &selected.generation)
@@ -157,6 +191,23 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         )
         .is_err()
     );
+
+    for variable in &variables {
+        let (name, version) = variable.identity();
+        let result = run(task.clone(), crate::tool::files::read()?, json!({
+            "path": format!("{}sys/secrets/{}.toml", crate::layers::EFFECTIVE_PATH, acyclic_auth::encode_component(name.as_bytes()))
+        })).await?;
+        let metadata: toml::Table =
+            toml::from_str(result.value["text"].as_str().expect("TOML text"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(metadata["scope"].as_str(), Some("explicit-scope"));
+        assert_eq!(metadata["name"].as_str(), Some(name));
+        assert_eq!(
+            metadata["version"].as_str(),
+            Some(version.to_string().as_str())
+        );
+        assert!(!metadata.contains_key("value"));
+    }
 
     // Neither a home shadow nor a subsequent trusted host commit changes this run.
     write(&harness, path, "home shadow").await?;
@@ -200,12 +251,7 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
     // still requires the caller's original volume and directory read authority.
     let denied = Bindings {
         scope: RuntimeScope::new(
-            Capabilities::new([
-                "tool:call:read".into(),
-                selected
-                    .volume
-                    .capability(VolumeOperation::Read, &mut None)?,
-            ]),
+            Capabilities::new(["tool:call:read".into()]),
             harness.limits.clone(),
         )?,
         content: Some(ContentBindings {

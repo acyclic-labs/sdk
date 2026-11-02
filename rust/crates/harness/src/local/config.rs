@@ -1,5 +1,17 @@
 use super::*;
 
+/// A system secret inventory could not be selected or encoded. Auth failures
+/// retain their typed, redacted classification and original operation context.
+#[derive(Debug, thiserror::Error)]
+pub enum SecretCatalogError {
+    /// The generation-fenced Auth listing failed; it was not restarted.
+    #[error(transparent)]
+    Auth(#[from] acyclic_auth::secrets::Error),
+    /// Public metadata could not be encoded as TOML.
+    #[error("cannot encode public secret metadata: {0}")]
+    Encoding(#[from] toml::ser::Error),
+}
+
 /// Resolves ambient or injected roots before checkout capture can write metadata.
 pub(super) enum StateLocation {
     Directory(PathBuf),
@@ -90,6 +102,72 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Selects one complete Auth scope for `sys/secrets/<name>.toml`.
+    /// The client retains the caller's original stop/deadline owner across
+    /// pages. Names are injectively escaped as path components; plain values
+    /// are omitted too. A changed listing fails without replay. The resulting
+    /// metadata is shared and pinned when this composition opens.
+    pub async fn auth_secrets<T: acyclic_auth::secrets::Transport>(
+        mut self,
+        client: &acyclic_auth::secrets::Client<T>,
+        mut request: acyclic_auth::contract::SecretListRequest,
+    ) -> std::result::Result<Self, SecretCatalogError> {
+        if request.cursor.is_some() {
+            return Err(acyclic_auth::secrets::Error::InvalidRequest.into());
+        }
+        self.system_files
+            .retain(|path, _| !path.starts_with("sys/secrets/"));
+        loop {
+            let page = client.list(&request).await?;
+            self.secret_metadata(&request.scope, page.generation, &page.variables)?;
+            let Some(next) = page.next_cursor else { break };
+            request.cursor = Some(next);
+        }
+        Ok(self)
+    }
+
+    pub(super) fn secret_metadata(
+        &mut self,
+        scope: &str,
+        generation: u64,
+        variables: &[acyclic_auth::contract::SecretVariable],
+    ) -> std::result::Result<(), SecretCatalogError> {
+        for variable in variables {
+            let (name, version) = variable.identity();
+            let kind = match &variable.kind {
+                acyclic_auth::contract::SecretVariableKind::Plain(_) => "plain",
+                acyclic_auth::contract::SecretVariableKind::Protected(_) => "protected",
+            };
+            // Versions are decimal strings so the whole u64 Auth identity
+            // space is representable even on TOML's signed integer domain.
+            #[derive(serde::Serialize)]
+            struct Metadata<'a> {
+                format_version: u32,
+                scope: &'a str,
+                name: &'a str,
+                kind: &'a str,
+                version: String,
+                generation: String,
+            }
+            let metadata = toml::to_string(&Metadata {
+                format_version: 1,
+                scope,
+                name,
+                kind,
+                version: version.to_string(),
+                generation: generation.to_string(),
+            })?;
+            self.system_files.insert(
+                format!(
+                    "sys/secrets/{}.toml",
+                    acyclic_auth::encode_component(name.as_bytes())
+                ),
+                metadata.into_bytes().into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Publishes public host metadata under `sys/models/` or `sys/secrets/`.
     /// The caller must project metadata before calling this method: credentials,
     /// secret values and private headers do not belong in this read-only layer.
