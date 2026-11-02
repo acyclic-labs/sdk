@@ -247,12 +247,6 @@ async fn settle(
         ));
     }
     if let Some(sampling) = settings.sampling {
-        crate::model::ModelSampling {
-            seed: None,
-            temperature: sampling.temperature,
-            top_p: sampling.top_p,
-        }
-        .validate()?;
         if sampling.max_output_tokens == Some(0) {
             return Err(rejected("sampling.maxOutputTokens must be positive"));
         }
@@ -266,6 +260,19 @@ async fn settle(
         })?;
         resolve(&settings.model)?
     };
+    if let Some(sampling) = settings.sampling {
+        crate::model::ModelSampling::admit(
+            Some(crate::model::ModelSampling {
+                seed: None,
+                temperature: sampling.temperature,
+                top_p: sampling.top_p,
+            }),
+            model
+                .1
+                .model_profile(&model.0)?
+                .map(|profile| profile.sampling()),
+        )?;
+    }
     let compaction = if unchanged_model {
         compaction.0.clone()
     } else {

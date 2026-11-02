@@ -15,6 +15,20 @@ pub struct ModelSampling {
 }
 
 impl ModelSampling {
+    /// Resolves explicit settings against an immutable model profile before
+    /// execution. An absent selection retains the profile's sampling.
+    pub fn admit(explicit: Option<Self>, pinned: Option<Self>) -> Result<Self> {
+        if let Some(explicit) = explicit {
+            explicit.validate()?;
+            if pinned.is_some_and(|pinned| explicit != pinned) {
+                return Err(Error::Invalid(
+                    "sampling admission failed: explicit settings differ from the pinned profile; recovery: select the same sampling in the model profile".into(),
+                ));
+            }
+        }
+        Ok(pinned.or(explicit).unwrap_or_default())
+    }
+
     /// Refuses invalid numbers at admission, before hashing or provider I/O.
     pub fn validate(&self) -> Result<()> {
         if self.temperature.is_some_and(|n| !n.is_finite() || n < 0.0)
