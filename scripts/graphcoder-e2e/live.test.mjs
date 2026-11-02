@@ -182,6 +182,7 @@ test("the completed-tool recorder uses literal executable arguments on every OS"
     const executed = await processes.run(hook.command, hook.args,
       { cwd: join(root, "session/workspace") }, JSON.stringify(original));
     assert.equal(executed.code, 0, executed.stderr);
+    assert.equal(executed.stdout, "", "the live recorder must not inject model context");
     assert.deepEqual(JSON.parse(await readFile(join(root, "session/workspace/hooks.jsonl"), "utf8")), original);
     requireTools([original], ["spawn"]);
   } finally {
