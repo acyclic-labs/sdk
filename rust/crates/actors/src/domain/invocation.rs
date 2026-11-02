@@ -236,6 +236,10 @@ macro_rules! invocation_header {
             pub const fn request(&self) -> &$request {
                 &self.0
             }
+
+            pub(crate) fn into_http_parts(self) -> (String, String, Vec<Header>) {
+                (self.0.method, self.0.url, self.0.headers)
+            }
         }
 
         impl $request {

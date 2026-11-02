@@ -69,6 +69,10 @@ fn event() -> GuestEvent {
 #[tokio::test]
 async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners()
 -> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_actors::domain::{
+        ActorId, ActorNamespace, Header, InvokeActorHeader, InvokeActorRequest, InvokeWorkerHeader,
+        InvokeWorkerRequest,
+    };
     use acyclic_stream::body::BodyChunk;
     use futures::{StreamExt as _, channel::mpsc};
     use http_body::{Body as _, Frame};
@@ -125,6 +129,19 @@ async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners(
         let mut definition = definition();
         definition.fetch = |_, mut request, context| {
             Box::pin(async move {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.uri(), "https://original.example/input");
+                let headers = request.headers().get_all("x-original");
+                let mut headers = headers.iter();
+                assert_eq!(
+                    headers.next().map(|value| value.as_bytes()),
+                    Some(b"first".as_slice())
+                );
+                assert_eq!(
+                    headers.next().map(|value| value.as_bytes()),
+                    Some(b"second".as_slice())
+                );
+                assert!(headers.next().is_none());
                 context.env.entered.fetch_add(1, Ordering::SeqCst);
                 let frame = request
                     .body_mut()
@@ -153,7 +170,30 @@ async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners(
             .actor(runtime)
             .delivery("original-fetch".into())
             .build();
-        let request = http::Request::new(body);
+        let headers = vec![
+            Header::new("x-original".into(), "first".into()),
+            Header::new("x-original".into(), "second".into()),
+        ];
+        let request = if length == 1024 {
+            InvokeActorHeader::try_from(InvokeActorRequest::new(
+                ActorId::new("actor-1".into())?,
+                "POST".into(),
+                "https://original.example/input".into(),
+                vec![],
+                headers,
+            ))?
+            .into_streaming(body)?
+        } else {
+            InvokeWorkerHeader::try_from(InvokeWorkerRequest::new(
+                ActorNamespace::new("original-worker".into())?,
+                "POST".into(),
+                "https://original.example/input".into(),
+                vec![],
+                headers,
+            )?)?
+            .into_streaming(body)?
+        };
+        assert_eq!(inspected.load(Ordering::SeqCst), 0);
         let mut delivery = Box::pin(activation.fetch(request, &context));
         let response = match futures::poll!(delivery.as_mut()) {
             std::task::Poll::Ready(response) => response,
@@ -207,6 +247,40 @@ async fn credited_fetch_enters_before_eof_and_retires_original_transport_owners(
         assert_eq!(credit.available_permits(), 1);
         assert_eq!(capacity.available_permits(), baseline);
     }
+
+    // Invalid HTTP metadata retires the same queued body before any source poll.
+    let (sender, frames) = mpsc::unbounded();
+    let inspected = Arc::new(AtomicUsize::new(0));
+    let observed = inspected.clone();
+    let frames = frames.inspect(move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    sender.unbounded_send(Ok(Frame::data(BodyChunk::new(
+        Bytes::from(vec![7; 1024]),
+        (
+            credit.clone().try_acquire_owned()?,
+            capacity.clone().try_acquire_many_owned(1024)?,
+        ),
+    ))))?;
+    let original = capacity.clone();
+    let body = GuestBody::from_credited(http_body_util::StreamBody::new(frames), move |bytes| {
+        original
+            .clone()
+            .try_acquire_many_owned(bytes.try_into().expect("fixed control fits u32"))
+            .map_err(|_| GuestError::Handler("original byte credit refused".into()))
+    })?;
+    let header = InvokeActorHeader::try_from(InvokeActorRequest::new(
+        ActorId::new("actor-1".into())?,
+        "invalid method".into(),
+        "https://original.example/input".into(),
+        vec![],
+        vec![],
+    ))?;
+    assert!(header.into_streaming(body).is_err());
+    assert_eq!(inspected.load(Ordering::SeqCst), 0);
+    assert!(sender.is_closed());
+    assert_eq!(credit.available_permits(), 1);
+    assert_eq!(capacity.available_permits(), baseline);
 
     // Withheld EOF exposes the old eager collector as a deterministic failure.
     let (sender, mut source) = mpsc::unbounded::<Result<Frame<BodyChunk<()>>, GuestError>>();

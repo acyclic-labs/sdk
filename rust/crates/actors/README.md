@@ -104,6 +104,13 @@ invocation admission and guest context before attaching the credited body to
 `GuestActivation::fetch`; header construction performs no dispatch or input
 polling.
 
+After that admission, `header.into_streaming(original_body)` projects the
+canonical HTTP method, URL and ordered headers through the same conversion as
+`GuestRequest::into_streaming`. It moves the supplied `GuestBody` unchanged,
+including its source, trailers and cancellation. The host retains the original
+invocation authority and context through delivery; this conversion supplies
+neither.
+
 `GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
 frames, terminal trailers and cancellation when dropped. Existing buffered
 bytes use `GuestBody::Buffered`; lazy data and trailers share `GuestBody::Frames`.
