@@ -91,7 +91,8 @@ test("original WASM/TS invocation owns successful HTTP, stopped inputs and open 
         expect(credentials).toBe(1);
       } else {
         if (mode !== "pre-stopped") {
-          await entered.promise;
+          // An early transport/credential failure must end this control too.
+          await Promise.race([entered.promise, pending]);
           if (mode === "credential-source") cache.invalidate();
           else stopped.abort(mode === "deadline" ? "deadline" : planted);
         }
