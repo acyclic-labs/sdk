@@ -19,7 +19,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
             })
             .await?
         else {
-            return Err(StreamError::Unavailable.into());
+            return Err(StreamError::unavailable().into());
         };
         let oldest = *oldest.get_or_insert(receipt.commit_id);
         if [1, 10, 100, 1000].contains(&step) {
@@ -72,7 +72,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
     }
     // Original reverse scan, independent of the indexed lookup.
     let state = provider.state.read().await;
-    let oldest = oldest.ok_or(StreamError::Unavailable)?;
+    let oldest = oldest.ok_or(StreamError::unavailable())?;
     let mut linear = 0;
     let previous = state
         .retained
@@ -119,7 +119,7 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
     for bit in 0..=256 {
         let mut key = [0; 32];
         if bit < 256 {
-            *key.get_mut(bit / 8).ok_or(StreamError::Unavailable)? = 0x80 >> (bit % 8);
+            *key.get_mut(bit / 8).ok_or(StreamError::unavailable())? = 0x80 >> (bit % 8);
         }
         let commit_id = CommitId::from_bytes(key);
         let envelope = CommittedEnvelope {
@@ -221,13 +221,13 @@ async fn commit_index_work_is_admitted_before_append_or_coordinated_publication(
                 .native_commit(commit, None, funded.original())
                 .await??;
             let CommitOutcome::Committed(envelope) = output.value() else {
-                return Err(StreamError::Unavailable.into());
+                return Err(StreamError::unavailable().into());
             };
             envelope.commit_id
         } else {
             let output = provider.native_append(request, funded.original()).await??;
             let AppendOutcome::Committed(receipt) = output.value() else {
-                return Err(StreamError::Unavailable.into());
+                return Err(StreamError::unavailable().into());
             };
             receipt.commit_id
         };

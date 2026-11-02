@@ -16,7 +16,7 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
         let mut lifetime = self.lifetime.clone()?;
         Some(Box::pin(async move {
             let _ = lifetime.changed().await;
-            StreamError::Unavailable
+            StreamError::unavailable()
         }))
     }
 

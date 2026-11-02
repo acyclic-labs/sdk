@@ -173,5 +173,5 @@ export type StreamFailureCode = RustStreamErrorCode
   | "configuration" | "invalid_cursor" | "invalid_page" | "invalid_response"
   | "provider_mismatch" | "response_too_large" | "transport";
 export class StreamError extends Error {
-  constructor(readonly code: StreamFailureCode, message: string, readonly status?: number) { super(message); }
+  constructor(readonly code: StreamFailureCode, message: string, readonly status?: number, readonly reason?: string, readonly reasonBytes?: Uint8Array) { super(message); }
 }

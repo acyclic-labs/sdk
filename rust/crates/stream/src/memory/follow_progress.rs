@@ -86,7 +86,7 @@ impl MemoryStream {
                 let record = cursor
                     .next_record()
                     .await?
-                    .ok_or(StreamError::Unavailable)?;
+                    .ok_or(StreamError::unavailable())?;
                 if anchor.is_some() {
                     *anchor = Some(record.commit_id);
                 }
@@ -97,7 +97,7 @@ impl MemoryStream {
             let record = cursor
                 .next_record()
                 .await?
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(StreamError::unavailable())?;
             skipped = Some(record.commit_id);
             if anchor.is_some() {
                 *anchor = skipped;
@@ -158,7 +158,7 @@ impl MemoryStream {
                         if state.anchor.is_some() {
                             StreamError::PrefixNotRetained
                         } else {
-                            StreamError::Unavailable
+                            StreamError::unavailable()
                         }
                     })?;
                 }

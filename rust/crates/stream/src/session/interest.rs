@@ -66,10 +66,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     self.controls.push_back(frame(
                         identity.channel_id,
                         identity.generation,
-                        Body::Closed(wire::SessionClosed {
-                            code: error.code().into(),
-                            message: String::new(),
-                        }),
+                        Body::Closed(wire_codec::session::closed(error)),
                     ));
                     continue;
                 }
@@ -510,7 +507,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         while let Some(update) = self
             .records
             .as_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .next()
             .await
             .transpose()?
@@ -552,7 +549,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         }
         // An unbounded provider follow must remain live. Its original EOF is
         // terminal; another invocation may explicitly open a new subscription.
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     }
 
     async fn key_event(&mut self) -> Result<Event, StreamError> {
@@ -569,7 +566,10 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                     .await?,
             );
             self.opened = true;
-            let records = self.key_records.as_ref().ok_or(StreamError::Unavailable)?;
+            let records = self
+                .key_records
+                .as_ref()
+                .ok_or(StreamError::unavailable())?;
             return Ok(Event::Opened(
                 None,
                 Some(wire_codec::revision_to_wire(&records.snapshot)),
@@ -579,7 +579,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
         let Some(record) = self
             .key_records
             .as_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .next()
             .await
             .transpose()?

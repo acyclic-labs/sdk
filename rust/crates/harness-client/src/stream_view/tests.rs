@@ -72,7 +72,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
                 at_least: Default::default(),
             })
             .await?;
-        let original = records.next().await.ok_or(StreamError::Unavailable)??;
+        let original = records.next().await.ok_or(StreamError::unavailable())??;
         assert!(
             records.next().await.is_none(),
             "finite producer did not end"
@@ -168,7 +168,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
             count * 2,
             "metadata visited more than once"
         );
-        let output = retained.record(0).ok_or(StreamError::Unavailable)?;
+        let output = retained.record(0).ok_or(StreamError::unavailable())?;
         assert_eq!(output, record);
         let expected = size_of::<RecordEntry>()
             + output.value.len()

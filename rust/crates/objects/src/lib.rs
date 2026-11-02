@@ -121,21 +121,61 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Semantic service failure or the original local operation stop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("Objects operation failed ({code:?})")]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("Objects operation failed ({code:?}, {reason})")]
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
+    /// Original unavailable refusal, shared with Streams and Actors.
+    pub reason: acyclic_auth::refusal::RefusalReason,
     /// Original local stop, when the caller's operation budget ended. Neither
     /// cancellation nor expiry proves that a remote mutation did not commit.
     #[source]
     pub stopped: Option<acyclic_auth::operation::Stopped>,
 }
+impl Error {
+    /// Classifies a canonical gRPC status when no typed service detail exists.
+    /// Unknown statuses remain unavailable; this does not decide a write's outcome.
+    #[must_use]
+    pub fn from_grpc_status(status: i32) -> Self {
+        match status {
+            3 => wire::ErrorCode::InvalidArgument,
+            5 => wire::ErrorCode::NotFound,
+            7 | 16 => wire::ErrorCode::AccessDenied,
+            8 => wire::ErrorCode::QuotaExceeded,
+            11 => wire::ErrorCode::RangeNotSatisfiable,
+            12 => wire::ErrorCode::Unsupported,
+            15 => wire::ErrorCode::Corrupt,
+            4 => wire::ErrorCode::DeadlineElapsed,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
+    }
+
+    /// Classifies an HTTP status when no typed service detail exists.
+    /// Unknown statuses remain unavailable; this does not decide a write's outcome.
+    #[must_use]
+    pub fn from_http_status(status: u16) -> Self {
+        match status {
+            400 => wire::ErrorCode::InvalidArgument,
+            401 | 403 => wire::ErrorCode::AccessDenied,
+            404 => wire::ErrorCode::NotFound,
+            409 => wire::ErrorCode::Conflict,
+            413 | 429 => wire::ErrorCode::QuotaExceeded,
+            416 => wire::ErrorCode::RangeNotSatisfiable,
+            501 => wire::ErrorCode::Unsupported,
+            _ => wire::ErrorCode::Unavailable,
+        }
+        .into()
+    }
+}
+
 impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
         Self {
             code,
             stopped: None,
+            reason: acyclic_auth::refusal::RefusalReason::Unspecified,
         }
     }
 }
@@ -147,6 +187,18 @@ impl From<acyclic_auth::operation::Stopped> for Error {
                 acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
             },
             stopped: Some(stopped),
+            reason: acyclic_auth::refusal::RefusalReason::Unspecified,
         }
+    }
+}
+
+impl Error {
+    /// Retain original remote metadata only for an unavailable service failure.
+    #[must_use]
+    pub fn with_refusal_reason(mut self, reason: acyclic_auth::refusal::RefusalReason) -> Self {
+        if self.code == wire::ErrorCode::Unavailable && self.stopped.is_none() {
+            self.reason = reason;
+        }
+        self
     }
 }

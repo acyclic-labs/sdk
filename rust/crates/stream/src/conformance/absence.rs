@@ -18,7 +18,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         .await
             != Some(StreamError::NotFound)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let mut request = crate::FollowRequest::new(path.clone(), 0);
         request.when_absent = crate::WhenAbsent::Wait;
@@ -39,10 +39,10 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         }
         for sequence in 0..2 {
             let Some(Ok(crate::FollowUpdate::Record(record))) = follow.next().await else {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             };
             if record.sequence != sequence {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
         }
     }
@@ -51,7 +51,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     checked.preceding = Some(crate::CommitId::from_bytes([1; 32]));
     checked.when_absent = crate::WhenAbsent::Wait;
     if refusal(provider.follow(checked).await).await != Some(StreamError::PrefixNotRetained) {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let source = path("absence/fork-source/status")?;
     provider
@@ -78,7 +78,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         Some(Ok(crate::FollowUpdate::Record(record))) if record.value.as_ref() == b"inherited" => {
             Ok(())
         }
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamError::unavailable()),
     }
 }
 

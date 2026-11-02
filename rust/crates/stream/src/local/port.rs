@@ -67,7 +67,7 @@ impl CommandJournal for LocalPort {
                 "read-page",
                 PersistenceKey::new(Arc::as_ptr(&journal) as usize, from),
                 move || {
-                    let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
+                    let journal = journal.lock().map_err(|_| StreamError::unavailable())?;
                     if journal.bytes != head {
                         return Err(StreamError::InvalidResponse);
                     }
@@ -111,7 +111,7 @@ impl CommandJournal for LocalPort {
                     Ok(entries)
                 },
             );
-            read.await.map_err(|_| StreamError::Unavailable)??
+            read.await.map_err(|_| StreamError::unavailable())??
         };
         Ok(JournalPage {
             entries,
@@ -238,7 +238,7 @@ impl CommandJournal for LocalPort {
                 .await
                 {
                     futures::future::Either::Left((result, _)) => {
-                        result.map_err(|_| StreamError::Unavailable)?
+                        result.map_err(|_| StreamError::unavailable())?
                     }
                     futures::future::Either::Right((error, _)) => return Err(error),
                 }

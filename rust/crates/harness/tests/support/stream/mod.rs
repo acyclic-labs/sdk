@@ -39,7 +39,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             .hide_receipt
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let observation = self.inner.inspect_idempotency(key).await?;
         if let Some(observation) = &observation
@@ -108,7 +108,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         if let Some(cancellation) = self
             .history_cancel_after_tail
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .take()
         {
             cancellation.cancel();
@@ -153,7 +153,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                     if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
                         self.observation_writes
                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                     self.inner.fork(request).await
                 },
@@ -202,7 +202,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 .hide_location_read
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if request
             .path
@@ -212,7 +212,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 .hide_aggregate_read
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let head_race = if request
             .path
@@ -221,7 +221,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         {
             self.message_head_race
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .take()
         } else {
             None
@@ -289,7 +289,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                             .into_iter()
                             .take(1)
                             .map(Ok)
-                            .chain(std::iter::once(Err(StreamError::Unavailable))),
+                            .chain(std::iter::once(Err(StreamError::unavailable()))),
                     ))
                 }));
             }
@@ -345,7 +345,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                 .hide_receipt
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                return Ok(Err(StreamError::Unavailable));
+                return Ok(Err(StreamError::unavailable()));
             }
             let result = self.inner.native_inspect_idempotency(key, original).await?;
             if let Ok(output) = &result
@@ -419,7 +419,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                     .starts_with("harness/v2/aggregate-operations/")
                     && self.hide_aggregate_read.swap(false, Ordering::SeqCst))
             {
-                return Ok(Err(StreamError::Unavailable));
+                return Ok(Err(StreamError::unavailable()));
             }
             let head_race = if request
                 .path

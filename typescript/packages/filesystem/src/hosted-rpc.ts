@@ -1,4 +1,5 @@
 import { isObjectReference } from "./binding-values.js";
+import { refusalReason } from "@acyclic-labs/auth/refusal";
 import { type Client, ConnectError, Code } from "@connectrpc/connect";
 import { type FilesystemService, OperationOptionsSchema } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { create } from "@bufbuild/protobuf";
@@ -11,9 +12,12 @@ export type HostedFsErrorCode =
   | "internal" | "unavailable" | "data_loss" | "unauthenticated" | "unknown";
 
 export class HostedFsError extends Error {
-  constructor(readonly code: HostedFsErrorCode, message: string) {
-    super(message);
+  readonly reason: string | undefined;
+
+  constructor(readonly code: HostedFsErrorCode, message: string, options?: ErrorOptions & { readonly reason?: string | undefined }) {
+    super(message, options);
     this.name = "HostedFsError";
+    this.reason = options?.reason;
   }
 }
 
@@ -95,29 +99,33 @@ export async function call<T>(request: Promise<T>): Promise<T> {
   catch (error) {
     if (error instanceof HostedFsError) throw error;
     if (error instanceof ConnectError) {
-      const codes: Record<Code, HostedFsErrorCode | undefined> = {
-        [Code.Canceled]: "cancelled",
-        [Code.Unknown]: undefined,
-        [Code.InvalidArgument]: "invalid_argument",
-        [Code.DeadlineExceeded]: "deadline_exceeded",
-        [Code.NotFound]: "not_found",
-        [Code.AlreadyExists]: "already_exists",
-        [Code.PermissionDenied]: "permission_denied",
-        [Code.ResourceExhausted]: "resource_exhausted",
-        [Code.FailedPrecondition]: "failed_precondition",
-        [Code.Aborted]: "aborted",
-        [Code.OutOfRange]: "out_of_range",
-        [Code.Unimplemented]: "unsupported",
-        [Code.Internal]: "internal",
-        [Code.Unavailable]: "unavailable",
-        [Code.DataLoss]: "data_loss",
-        [Code.Unauthenticated]: "unauthenticated",
-      };
-      throw new HostedFsError(codes[error.code] ?? "unknown", error.rawMessage);
+      throw new HostedFsError(grpcCodes[error.code] ?? "unknown", error.rawMessage, {
+        cause: error,
+        reason: error.code === Code.Unavailable ? refusalReason(error.metadata) : undefined,
+      });
     }
     throw error;
   }
 }
+
+const grpcCodes: Readonly<Record<Code, HostedFsErrorCode | undefined>> = {
+  [Code.Canceled]: "cancelled",
+  [Code.Unknown]: undefined,
+  [Code.InvalidArgument]: "invalid_argument",
+  [Code.DeadlineExceeded]: "deadline_exceeded",
+  [Code.NotFound]: "not_found",
+  [Code.AlreadyExists]: "already_exists",
+  [Code.PermissionDenied]: "permission_denied",
+  [Code.ResourceExhausted]: "resource_exhausted",
+  [Code.FailedPrecondition]: "failed_precondition",
+  [Code.Aborted]: "aborted",
+  [Code.OutOfRange]: "out_of_range",
+  [Code.Unimplemented]: "unsupported",
+  [Code.Internal]: "internal",
+  [Code.Unavailable]: "unavailable",
+  [Code.DataLoss]: "data_loss",
+  [Code.Unauthenticated]: "unauthenticated",
+};
 
 export function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number): typeof globalThis.fetch {
   return async (input, init) => {

@@ -85,7 +85,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     assert_eq!(
         rows.next()
             .await
-            .ok_or(StreamError::Unavailable)??
+            .ok_or(StreamError::unavailable())??
             .committed_at_micros,
         125_000
     );

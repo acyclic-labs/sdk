@@ -30,8 +30,8 @@ extern "C" {
     fn close(this: &Cursor) -> Result<(), JsValue>;
 }
 
-fn failed(_: JsValue) -> StreamError {
-    StreamError::Unavailable
+fn failed(error: JsValue) -> StreamError {
+    super::with_original_reason(StreamError::unavailable(), &error)
 }
 async fn reply(promise: Result<Promise, JsValue>) -> Result<JsValue, StreamError> {
     let reply = JsFuture::from(promise.map_err(failed)?)
@@ -39,7 +39,10 @@ async fn reply(promise: Result<Promise, JsValue>) -> Result<JsValue, StreamError
         .map_err(failed)?;
     let code = Reflect::get(&reply, &"code".into()).map_err(failed)?;
     if let Some(code) = code.as_string() {
-        return Err(StreamError::from_code(&code).unwrap_or(StreamError::InvalidResponse));
+        return Err(super::with_original_reason(
+            StreamError::from_code(&code).unwrap_or(StreamError::InvalidResponse),
+            &reply,
+        ));
     }
     if !code.is_undefined() {
         return Err(StreamError::InvalidResponse);
@@ -235,7 +238,7 @@ impl InjectedStream {
                         return if read || finite {
                             Ok(None)
                         } else {
-                            Err(StreamError::Unavailable)
+                            Err(StreamError::unavailable())
                         };
                     };
                     if frame.channel_id != 1 || frame.generation != 1 {
@@ -581,7 +584,7 @@ impl super::WasmStream {
             .chain(stream)
             .boxed_local();
         Ok(super::WasmFollow {
-            state: Rc::new(super::FollowState::new(stream, StreamError::Unavailable)),
+            state: Rc::new(super::FollowState::new(stream, StreamError::unavailable())),
         })
     }
 }

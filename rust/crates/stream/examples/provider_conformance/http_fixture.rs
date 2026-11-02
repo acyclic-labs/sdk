@@ -17,7 +17,7 @@ pub async fn verify(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     let bounded = HttpStream::with_ca_certificate(endpoint, "conformance", 1, ca.as_deref())?;
     assert_eq!(
         bounded.tail(StreamPath::new("conformance/source")?).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
     Ok(())
 }

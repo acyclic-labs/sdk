@@ -24,7 +24,7 @@ impl<'a> NamespaceBuilder<'a> {
     ) -> Result<Arc<NamespaceNode>, StreamError> {
         if let Some(pool) = &mut self.reserve {
             let mut node = pool.nodes.pop().ok_or(StreamError::Capacity)?;
-            let slot = Arc::get_mut(&mut node).ok_or(StreamError::Unavailable)?;
+            let slot = Arc::get_mut(&mut node).ok_or(StreamError::unavailable())?;
             slot.data = data;
             slot.children = children;
             slot.origin = origin;
@@ -202,7 +202,7 @@ fn branch(
     };
     let allocation = if let Some(slot) = &mut spare {
         Arc::get_mut(slot)
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             ._allocation
             .take()
     } else {
@@ -221,7 +221,7 @@ fn branch(
         _allocation: allocation,
     };
     if let Some(mut spare) = spare {
-        *Arc::get_mut(&mut spare).ok_or(StreamError::Unavailable)? = value;
+        *Arc::get_mut(&mut spare).ok_or(StreamError::unavailable())? = value;
         Ok(spare)
     } else {
         Ok(Arc::new(value))
@@ -235,7 +235,7 @@ fn balance(
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<Arc<Branch>, StreamError> {
     if height(&left) > height(&right) + 1 {
-        let l = left.as_ref().ok_or(StreamError::Unavailable)?;
+        let l = left.as_ref().ok_or(StreamError::unavailable())?;
         if height(&l.left) >= height(&l.right) {
             let r = branch(name, node, l.right.clone(), right, build)?;
             return branch(
@@ -246,7 +246,7 @@ fn balance(
                 build,
             );
         }
-        let middle = l.right.as_ref().ok_or(StreamError::Unavailable)?;
+        let middle = l.right.as_ref().ok_or(StreamError::unavailable())?;
         let l2 = branch(
             l.name.clone(),
             l.node.clone(),
@@ -264,7 +264,7 @@ fn balance(
         );
     }
     if height(&right) > height(&left) + 1 {
-        let r = right.as_ref().ok_or(StreamError::Unavailable)?;
+        let r = right.as_ref().ok_or(StreamError::unavailable())?;
         if height(&r.right) >= height(&r.left) {
             let l = branch(name, node, left, r.left.clone(), build)?;
             return branch(
@@ -275,7 +275,7 @@ fn balance(
                 build,
             );
         }
-        let middle = r.left.as_ref().ok_or(StreamError::Unavailable)?;
+        let middle = r.left.as_ref().ok_or(StreamError::unavailable())?;
         let l2 = branch(name, node, left, middle.left.clone(), build)?;
         let r2 = branch(
             r.name.clone(),
@@ -393,7 +393,7 @@ impl Namespace {
             let next = if parts.clone().next().is_none() {
                 node
             } else {
-                let parent = existing.ok_or(StreamError::Unavailable)?;
+                let parent = existing.ok_or(StreamError::unavailable())?;
                 let children = put(&parent.children, parts, node, build)?;
                 build.node(parent.data.clone(), children, parent.origin.clone())?
             };
@@ -443,7 +443,7 @@ impl Namespace {
             };
             let children = index_put(
                 &node.children,
-                segment(&node.children, name).ok_or(StreamError::Unavailable)?,
+                segment(&node.children, name).ok_or(StreamError::unavailable())?,
                 child,
                 build,
             )?;

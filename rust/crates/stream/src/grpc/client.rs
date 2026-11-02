@@ -125,7 +125,7 @@ impl StreamProvider for Client {
                 .as_ref()
                 .is_some_and(|observation| observation.idempotency_key != idempotency_key)
             {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             // A recovered write floors later reads exactly like its lost reply would have.
             if let Some(revision) = observation.as_ref().and_then(|o| o.revision.as_ref()) {

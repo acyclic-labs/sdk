@@ -24,6 +24,12 @@ fuzz_target!(|input: &[u8]| {
     let Ok(frame) = wire::SessionFrame::decode(input) else {
         return;
     };
+    if let Some(wire::session_frame::Body::Closed(closed)) = &frame.body {
+        let error = acyclic_stream::wire_codec::session::closed_error(closed);
+        if let Some(reason) = error.refusal_reason() {
+            assert_eq!(reason.as_bytes(), closed.refusal_reason.as_deref());
+        }
+    }
     if let Some(wire::session_frame::Body::Data(data)) = &frame.body {
         let after = data.after.as_ref().map_or(0, |cursor| cursor.next);
         for next in [0, after.saturating_sub(1), after, u64::MAX] {

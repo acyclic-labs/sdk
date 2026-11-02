@@ -71,7 +71,9 @@ impl acyclic_harness::hosting::Platform for Owner {
         Box::pin(async move {
             if let Some(gate) = gate {
                 let _ = gate.entered.send(());
-                gate.decision.await.map_err(|_| StreamError::Unavailable)?;
+                gate.decision
+                    .await
+                    .map_err(|_| StreamError::unavailable())?;
             }
             Ok(PolicyDecision::Allow)
         })
@@ -430,7 +432,7 @@ async fn run(producer: Producer) -> Outcome {
         assert!(matches!(
             failure.cause,
             Some(acyclic_conformance::client::Cause::Stream(
-                StreamError::Unavailable
+                StreamError::Unavailable { .. }
             ))
         ));
         if drop_reply_host {

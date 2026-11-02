@@ -220,7 +220,7 @@ fn watermark_corpus_seeds_reach_their_named_outcomes() {
     for (seed, expected) in [
         (
             include_bytes!("../fuzz/corpus/follow_contract/watermarks-impossible").as_slice(),
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
         (
             include_bytes!("../fuzz/corpus/follow_contract/watermarks-held-flush").as_slice(),

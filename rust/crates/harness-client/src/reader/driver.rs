@@ -50,7 +50,7 @@ impl Stream for FollowSource {
         let source = self.get_mut();
         match source.records.poll_next_unpin(cx) {
             Poll::Ready(record) => {
-                let record = record.unwrap_or(Err(StreamError::Unavailable));
+                let record = record.unwrap_or(Err(StreamError::unavailable()));
                 if let Ok(record) = &record {
                     source.position = record.sequence + 1;
                     source.accepted = source.accepted.max(source.position);
@@ -373,11 +373,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let open = async move {
                 let opened = async {
                     if !access.check().await {
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                     let head = provider.head(path.clone()).await;
                     if !access.check().await {
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                     let head = head?;
                     let records = provider
@@ -388,7 +388,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                         .await
                         .map(acyclic_stream::records_only);
                     if !access.check().await {
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                     records.map(|records| (head, records))
                 }

@@ -16,7 +16,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
         let pause = if owned && !coordinator_write {
             self.owned_commit_pause
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .take()
         } else {
             None
@@ -25,8 +25,11 @@ impl<P: StreamProvider> LostSessionAck<P> {
             pause
                 .entered
                 .send(())
-                .map_err(|()| StreamError::Unavailable)?;
-            pause.release.await.map_err(|_| StreamError::Unavailable)?;
+                .map_err(|()| StreamError::unavailable())?;
+            pause
+                .release
+                .await
+                .map_err(|_| StreamError::unavailable())?;
         }
         self.io.writes.fetch_add(1, Ordering::SeqCst);
         for mutation in &request.mutations {
@@ -36,13 +39,13 @@ impl<P: StreamProvider> LostSessionAck<P> {
         }
         if self.forbid_writes.load(Ordering::SeqCst) {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if request.mutations.iter().any(|mutation| matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str() == COORDINATOR_PATH))
             && self.location_fault.compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst).is_ok()
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if self.execution_race.swap(false, Ordering::SeqCst) {
             let (path, tail) = request
@@ -61,7 +64,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                     }
                     _ => None,
                 })
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(StreamError::unavailable())?;
             self.inner
                 .append(acyclic_stream::AppendRequest {
                     path,
@@ -82,7 +85,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.execution_faults.fetch_add(1, Ordering::SeqCst);
         }
         if fault == ExecutionFaultMode::Before as u8 {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let aggregate = request.mutations.iter().any(|mutation| matches!(mutation,
             acyclic_stream::CommitMutation::Append { path, .. } if path.as_str().starts_with("harness/v2/aggregate-operations/")));
@@ -93,7 +96,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             0
         };
         if aggregate_fault == 1 {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok((fault, aggregate_fault))
     }
@@ -108,7 +111,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             self.hide_receipt.store(true, Ordering::SeqCst);
         }
         if matches!(aggregate_fault, 2 | 3) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         corrupt_aggregate_receipt(outcome, aggregate_fault);
         if fault == ExecutionFaultMode::AfterHidden as u8 {
@@ -118,7 +121,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             || self.commit_lose_ack.swap(false, Ordering::SeqCst)
             || self.lose_ack.swap(false, Ordering::SeqCst)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(())
     }

@@ -10,7 +10,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
         self.measure_write(&request.records);
         if self.forbid_writes.load(Ordering::SeqCst) {
             self.observation_writes.fetch_add(1, Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if request.path.as_str() == COORDINATOR_PATH
             && self
@@ -18,7 +18,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                 .compare_exchange(4, 0, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let fault = if request
             .path
@@ -30,7 +30,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
             0
         };
         if fault == 1 {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(fault)
     }
@@ -44,12 +44,12 @@ impl<P: StreamProvider> LostSessionAck<P> {
             if fault == 3 {
                 self.hide_location_read.store(true, Ordering::SeqCst);
             }
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if matches!(outcome, AppendOutcome::Committed(_))
             && self.lose_ack.swap(false, Ordering::SeqCst)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if let AppendOutcome::Committed(receipt) = outcome {
             match self.append_receipt_fault.swap(0, Ordering::SeqCst) {

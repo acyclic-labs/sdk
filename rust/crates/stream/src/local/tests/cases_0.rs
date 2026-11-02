@@ -377,11 +377,11 @@ async fn a_poisoned_store_fails_waits_for_frames_already_durable()
     provider.inner.poison();
     assert_eq!(
         provider.await_publication(required).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
     assert_eq!(
         provider.tail(StreamPath::new("durable")?).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
     Ok(())
 }
@@ -990,7 +990,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
             provider.inner.poison();
             assert_eq!(
                 records.next().await.unwrap().unwrap_err(),
-                StreamError::Unavailable
+                StreamError::unavailable()
             );
             assert!(records.next().await.is_none());
         } else {

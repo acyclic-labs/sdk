@@ -345,7 +345,7 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
         assert_eq!(
             client.read(request).await.err(),
             Some(if cancelled {
-                StreamError::Unavailable
+                StreamError::unavailable()
             } else {
                 StreamError::Capacity
             }),
@@ -388,7 +388,7 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             .await?
             .next()
             .await
-            .ok_or(StreamError::Unavailable)??,
+            .ok_or(StreamError::unavailable())??,
         Some(&StreamPath::new(crate::conformance::key_seek::SOURCE)?),
     );
     let mut data = wire::SessionData {
@@ -1138,7 +1138,7 @@ async fn interrupted_read(moved: bool) -> TestResult {
         match record {
             Ok(record) => assert!(record.sequence < 5, "read crossed its original snapshot"),
             Err(error) => {
-                assert_eq!(error, StreamError::Unavailable);
+                assert_eq!(error, StreamError::unavailable());
                 refused = true;
                 break;
             }

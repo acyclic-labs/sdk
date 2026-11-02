@@ -53,7 +53,7 @@ impl<T: Clone> Cache<T> {
         }
     }
     pub(crate) fn get_or_try_init(&self, create: impl FnOnce() -> T) -> Result<T, StreamError> {
-        let mut client = self.client.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut client = self.client.lock().map_err(|_| StreamError::unavailable())?;
         if let Some(client) = client.as_ref() {
             return Ok(client.clone());
         }
@@ -67,7 +67,7 @@ impl Cache {
         let client = self
             .client
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .clone();
         // Release the cache lock before touching the pool's wakeup gate.
         client.map_or(Ok(()), |client| client.abandon_pending())

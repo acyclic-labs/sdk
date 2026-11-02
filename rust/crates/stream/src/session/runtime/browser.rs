@@ -48,7 +48,7 @@ impl Drop for HostTurn {
 }
 pub(crate) async fn yield_now() -> Result<(), crate::StreamError> {
     use wasm_bindgen::JsCast;
-    let channel = web_sys::MessageChannel::new().map_err(|_| crate::StreamError::Unavailable)?;
+    let channel = web_sys::MessageChannel::new().map_err(|_| crate::StreamError::unavailable())?;
     let (sender, receiver) = oneshot::channel();
     let mut sender = Some(sender);
     let callback = Closure::new(move |_: web_sys::MessageEvent| {
@@ -66,6 +66,8 @@ pub(crate) async fn yield_now() -> Result<(), crate::StreamError> {
     turn.channel
         .port2()
         .post_message(&wasm_bindgen::JsValue::UNDEFINED)
-        .map_err(|_| crate::StreamError::Unavailable)?;
-    receiver.await.map_err(|_| crate::StreamError::Unavailable)
+        .map_err(|_| crate::StreamError::unavailable())?;
+    receiver
+        .await
+        .map_err(|_| crate::StreamError::unavailable())
 }

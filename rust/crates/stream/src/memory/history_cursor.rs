@@ -272,8 +272,8 @@ impl Iterator for FiniteRead {
     type Item = Result<Record, StreamError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
-            Ok(Some(_)) => Some(self.take_record().ok_or(StreamError::Unavailable)),
+        match self.peek(|_| Ok::<_, StreamError>(()), || StreamError::unavailable()) {
+            Ok(Some(_)) => Some(self.take_record().ok_or(StreamError::unavailable())),
             result => {
                 let error = result.err();
                 self.remaining = 0;

@@ -635,6 +635,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Body::Closed(wire::SessionClosed {
                 code: reason.code().into(),
                 message: String::new(),
+                refusal_reason: None,
             }),
         ));
         Ok(())
@@ -707,7 +708,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         match event {
             AuthorityEvent::Trust(Err(SourceClosed)) => self.fence(),
             AuthorityEvent::Trust(Ok(())) | AuthorityEvent::Expired => self.revalidate(None),
-            AuthorityEvent::ClockLost => Err(StreamError::Unavailable),
+            AuthorityEvent::ClockLost => Err(StreamError::unavailable()),
         }
     }
     /// Applies a trust change or credential expiry that happened since the

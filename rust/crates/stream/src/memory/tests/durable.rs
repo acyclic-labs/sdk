@@ -106,10 +106,10 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         .map_ok(crate::records_only)
         .await?;
     let refused = apply(&core, WriteRequest::Append(append.clone()), None, async {
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     })
     .await;
-    assert!(matches!(refused, Err(StreamError::Unavailable)));
+    assert!(matches!(refused, Err(StreamError::Unavailable { .. })));
     assert_eq!(core.tail(append.path.clone()).await?, 1);
     assert!(futures::poll!(follow.next()).is_pending());
     {
@@ -135,7 +135,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         follow
             .next()
             .await
-            .ok_or(StreamError::Unavailable)??
+            .ok_or(StreamError::unavailable())??
             .sequence,
         1
     );
@@ -155,14 +155,14 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
     let path = next.path.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     let pending = apply(&core, WriteRequest::Append(next), None, async {
-        receive.await.map_err(|_| StreamError::Unavailable)?
+        receive.await.map_err(|_| StreamError::unavailable())?
     });
     let mut pending = std::pin::pin!(pending);
     assert!(futures::poll!(pending.as_mut()).is_pending());
     let envelope = core
         .read_commit(initial.commit_id)
         .now_or_never()
-        .ok_or(StreamError::Unavailable)??;
+        .ok_or(StreamError::unavailable())??;
     assert_eq!(envelope.commit_id, initial.commit_id);
     assert_eq!(core.tail(path.clone()).now_or_never(), Some(Ok(1)));
     let mut later = request(2)?;
@@ -174,10 +174,10 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
     let follow = core
         .follow(crate::FollowRequest::new(path.clone(), 1))
         .now_or_never()
-        .ok_or(StreamError::Unavailable)??;
+        .ok_or(StreamError::unavailable())??;
     let mut follow = crate::records_only(follow);
     assert!(futures::poll!(follow.next()).is_pending());
-    send.send(Ok(())).map_err(|_| StreamError::Unavailable)?;
+    send.send(Ok(())).map_err(|_| StreamError::unavailable())?;
     assert!(matches!(
         pending.await?,
         WriteOutcome::Append(AppendOutcome::Committed(_))
@@ -191,7 +191,7 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
             follow
                 .next()
                 .await
-                .ok_or(StreamError::Unavailable)??
+                .ok_or(StreamError::unavailable())??
                 .sequence,
             sequence
         );
@@ -202,12 +202,15 @@ async fn pending_durability_preserves_reads_registration_and_writer_order()
     let key = refused.idempotency_key.clone();
     let (send, receive) = tokio::sync::oneshot::channel::<Result<(), StreamError>>();
     let pending = apply(&core, WriteRequest::Append(refused), None, async {
-        receive.await.map_err(|_| StreamError::Unavailable)?
+        receive.await.map_err(|_| StreamError::unavailable())?
     });
     let mut pending = std::pin::pin!(pending);
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(send);
-    assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+    assert!(matches!(
+        pending.await,
+        Err(StreamError::Unavailable { .. })
+    ));
     assert_eq!(core.tail(path).await?, 3);
     assert!(core.inspect_idempotency(key).await?.is_none());
     assert!(futures::poll!(follow.next()).is_pending());
@@ -347,12 +350,15 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
         if let Some(key) = key {
             let (send, receive) = tokio::sync::oneshot::channel();
             let persist =
-                std::pin::pin!(async { receive.await.map_err(|_| StreamError::Unavailable) });
+                std::pin::pin!(async { receive.await.map_err(|_| StreamError::unavailable()) });
             let pending = core.apply_durable(&canonical, None, persist);
             let mut pending = std::pin::pin!(pending);
             assert!(futures::poll!(pending.as_mut()).is_pending());
             drop(send);
-            assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+            assert!(matches!(
+                pending.await,
+                Err(StreamError::Unavailable { .. })
+            ));
             assert!(core.inspect_idempotency(key).await?.is_none());
             assert_eq!(
                 core.tail(destination.clone()).await,

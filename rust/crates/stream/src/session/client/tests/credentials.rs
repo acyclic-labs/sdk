@@ -44,7 +44,10 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
         let source = stream::unfold(receive, |mut receive| async {
             receive.recv().await.map(|frame| (frame, receive))
         });
-        let mut response = endpoint.session(Box::pin(source)).await?;
+        let mut response = endpoint
+            .session(Box::pin(source))
+            .await?
+            .map_err(|failure| failure.cause);
         assert!(matches!(
             response
                 .next()

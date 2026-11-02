@@ -40,7 +40,7 @@ impl<T> Signal<T> {
     }
     pub(crate) fn send(&self, value: T) -> Result<(), StreamError> {
         let wake = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             state.0.push_back(value);
             state.1.take()
         };
@@ -53,7 +53,7 @@ impl<T> Signal<T> {
         Ok(self
             .state
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .0
             .pop_front())
     }
@@ -61,7 +61,7 @@ impl<T> Signal<T> {
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable()));
             };
             if let Some(value) = state.0.pop_front() {
                 return Poll::Ready(Ok(value));

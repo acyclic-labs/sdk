@@ -90,7 +90,7 @@ impl Remote {
                         .await
                         .map_err(|_| StreamError::AccessDenied)?;
                 }
-                return Err(wire_codec::status(&error));
+                return Err(wire_codec::error_from_status(&error));
             }
         };
         lease.check().await.map_err(|_| StreamError::AccessDenied)?;
@@ -124,7 +124,7 @@ impl StreamProvider for Remote {
             .map(wire_codec::observation_from_wire)
             .transpose()?;
         if observed.as_ref().is_some_and(|o| o.idempotency_key != key) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         // A recovered write floors later reads exactly like its lost reply would have.
         if let Some(revision) = observed.as_ref().and_then(|o| o.revision.as_ref()) {

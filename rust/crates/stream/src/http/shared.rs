@@ -6,7 +6,7 @@ pub(super) fn shared<T: Clone>(
 ) -> Result<T, StreamError> {
     // One lock: never nested with provider/session locks or held across await.
     // Initialization creates a lazy transport; it does not poll that transport.
-    let mut slot = slot.lock().map_err(|_| StreamError::Unavailable)?;
+    let mut slot = slot.lock().map_err(|_| StreamError::unavailable())?;
     if let Some(value) = &*slot {
         return Ok(value.clone());
     }

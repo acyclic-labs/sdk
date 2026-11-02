@@ -41,7 +41,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
         )?;
         let visibility = stream.inner.visibility.write().await;
         let publication = stream.inner.publication.write().await;
-        assert_eq!(stream.persist(frame).await, Err(StreamError::Unavailable));
+        assert_eq!(stream.persist(frame).await, Err(StreamError::unavailable()));
         let cause = stream.failure().ok_or("missing original failure")?;
         assert_eq!(cause.operation, "write");
         assert_eq!(cause.cause, "io");
@@ -50,7 +50,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
         if let Some(work) = work {
             assert_eq!(work.failure("write"), Some(cause));
             assert!(
-                work.finish::<(), StreamError>(Err(StreamError::Unavailable))
+                work.finish::<(), StreamError>(Err(StreamError::unavailable()))
                     .is_err()
             );
         }
@@ -64,7 +64,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
         drop(visibility);
         assert!(matches!(
             follow.next().await,
-            Some(Err(StreamError::Unavailable))
+            Some(Err(StreamError::Unavailable { .. }))
         ));
         assert!(follow.next().await.is_none());
         drop(follow);

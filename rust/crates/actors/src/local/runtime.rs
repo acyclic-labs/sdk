@@ -483,7 +483,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     return Poll::Ready(Event::Failed(error));
                                 }
                                 Poll::Ready(None) => {
-                                    return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                                    return Poll::Ready(Event::Failed(StreamError::unavailable()));
                                 }
                                 Poll::Pending => {}
                             }

@@ -145,7 +145,7 @@ fn every_stream_category_survives_the_authority_wrapper() {
         (E::IdempotencyMismatch, Code::FailedPrecondition),
         (E::Capacity, Code::ResourceExhausted),
         (E::AccessDenied, Code::PermissionDenied),
-        (E::Unavailable, Code::Unavailable),
+        (E::unavailable(), Code::Unavailable),
         (E::DeadlineElapsed, Code::DeadlineExceeded),
         (E::Unsupported, Code::Unimplemented),
         (E::RevisionForeign, Code::FailedPrecondition),

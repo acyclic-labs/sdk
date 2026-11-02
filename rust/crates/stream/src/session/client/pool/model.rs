@@ -237,7 +237,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         for sender in senders {
             assert!(matches!(
                 loom::future::block_on(sender.next()),
-                Err(StreamError::Unavailable)
+                Err(StreamError::Unavailable { .. })
             ));
         }
     });
@@ -371,7 +371,7 @@ pub fn verify_link_isolation(broken: bool) {
         assert!(pool.links.contains_key("good"));
         assert!(matches!(
             loom::future::block_on(bad.next()),
-            Err(StreamError::Unavailable)
+            Err(StreamError::Unavailable { .. })
         ));
         let delivery = healthy.try_recv().unwrap().unwrap();
         let Some(Body::Data(wire::SessionData {
@@ -463,7 +463,7 @@ pub fn verify_registration_cancellation(broken: bool) {
                 }
             });
             let mut registration = Some(Box::pin(async move {
-                let result = opened.await.unwrap_or(Err(StreamError::Unavailable));
+                let result = opened.await.unwrap_or(Err(StreamError::unavailable()));
                 if broken && result.is_err() {
                     future::pending::<()>().await;
                 }
@@ -472,7 +472,7 @@ pub fn verify_registration_cancellation(broken: bool) {
                     if complete {
                         Ok(1)
                     } else {
-                        Err(StreamError::Unavailable)
+                        Err(StreamError::unavailable())
                     }
                 );
                 drop(cursor); // Existing guard owns cancellation and removal.
@@ -683,6 +683,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
                 Body::Closed(wire::SessionClosed {
                     code: StreamError::AccessDenied.code().into(),
                     message: String::new(),
+                    refusal_reason: None,
                 })
             )
         ));

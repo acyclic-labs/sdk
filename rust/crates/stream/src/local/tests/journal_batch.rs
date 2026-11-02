@@ -152,7 +152,7 @@ mod cuts {
             stream.cut_persistence(cut.clone());
             assert!(matches!(
                 stream.persist_frames(frames(3, None)?.into_iter()).await,
-                Err(StreamError::Unavailable)
+                Err(StreamError::Unavailable { .. })
             ));
             assert!(cut.crashed.load(Ordering::SeqCst));
             assert_eq!(cut.frame.load(Ordering::SeqCst), 2);
@@ -248,11 +248,11 @@ mod deadlines {
         }
         assert!(matches!(
             stream.persist_frames(prepared.into_iter()).await,
-            Err(StreamError::Unavailable)
+            Err(StreamError::Unavailable { .. })
         ));
         assert!(matches!(
             stream.check_available(),
-            Err(StreamError::Unavailable)
+            Err(StreamError::Unavailable { .. })
         ));
         drop(stream);
         let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;

@@ -87,7 +87,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
                 idempotency_key: IdempotencyKey::unique(),
             })
             .await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
     assert!(cut.0.load(Ordering::SeqCst));
     let cause = stream

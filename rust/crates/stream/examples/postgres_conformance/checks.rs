@@ -222,11 +222,11 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
     assert_eq!(killed.len(), 1);
     assert!(matches!(
         records.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     assert!(matches!(
         updates.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     assert!(records.next().await.is_none());
     assert!(updates.next().await.is_none());

@@ -20,7 +20,10 @@ impl Window {
     }
 
     pub(super) fn grant(&self, grant: &wire::SessionWindow) -> Result<(), StreamError> {
-        let mut balance = self.balance.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut balance = self
+            .balance
+            .lock()
+            .map_err(|_| StreamError::unavailable())?;
         let mut next = *balance;
         wire_codec::session::grant_credit(&mut next, grant)?;
         if !usize::try_from(next.bytes).is_ok_and(|bytes| bytes <= Semaphore::MAX_PERMITS)
@@ -40,12 +43,12 @@ impl Window {
             .frames
             .acquire()
             .await
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let bytes = self
             .bytes
             .acquire_many(length)
             .await
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         frames.forget();
         bytes.forget();
         Ok(Reservation {
@@ -77,7 +80,7 @@ impl Reservation {
             .window
             .balance
             .lock()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let bytes = balance
             .bytes
             .checked_sub(u64::from(self.length))
@@ -159,7 +162,7 @@ impl State {
         *self
             .connection
             .lock()
-            .map_err(|_| StreamError::Unavailable)? = Some(connection);
+            .map_err(|_| StreamError::unavailable())? = Some(connection);
         Ok(())
     }
     pub(super) fn close(&self, cause: StreamError) {
@@ -180,7 +183,10 @@ impl State {
         &self,
         finish: oneshot::Sender<Result<(), StreamError>>,
     ) -> Result<(), StreamError> {
-        let mut terminal = self.terminal.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut terminal = self
+            .terminal
+            .lock()
+            .map_err(|_| StreamError::unavailable())?;
         if let Some(cause) = &terminal.cause {
             let cause = cause.clone();
             drop(terminal);
@@ -197,7 +203,7 @@ impl State {
         let finish = self
             .terminal
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .finish
             .take()
             .ok_or(StreamError::InvalidResponse)?;
@@ -209,7 +215,7 @@ impl State {
             .lock()
             .ok()
             .and_then(|terminal| terminal.cause.clone())
-            .unwrap_or(StreamError::Unavailable)
+            .unwrap_or(StreamError::unavailable())
     }
     async fn until_closed<T>(
         &self,
@@ -226,9 +232,9 @@ impl State {
         let connection = self
             .connection
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .clone()
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         let channel = self.window.reserve(length).await?;
         let aggregate = connection.reserve(length).await?;
         Ok(Credit { channel, aggregate })
@@ -237,12 +243,12 @@ impl State {
         let mut terminal = state
             .terminal
             .lock()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         terminal.clients = terminal
             .clients
             .checked_add(1)
             .filter(|clients| *clients == 2)
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         Ok(CallInputSender {
             state: state.clone(),
             next: 0,
@@ -250,7 +256,7 @@ impl State {
         })
     }
     pub(super) fn cancel(&self) {
-        self.close(StreamError::Unavailable);
+        self.close(StreamError::unavailable());
         // Withdraw the upload without erasing an earlier typed reply failure
         // already queued by the same route. The reply cursor owns its fence.
         let _ = self.pool.removed.send(self.id);
@@ -274,7 +280,7 @@ impl State {
 pub(super) struct Owner(pub Arc<State>);
 impl Drop for Owner {
     fn drop(&mut self) {
-        self.0.close(StreamError::Unavailable);
+        self.0.close(StreamError::unavailable());
     }
 }
 
@@ -355,8 +361,8 @@ impl CallInputSender {
                 sent,
             })
             .await
-            .map_err(|_| StreamError::Unavailable)?;
-        result.await.map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?;
+        result.await.map_err(|_| StreamError::unavailable())?
     }
 }
 impl Drop for CallInputSender {

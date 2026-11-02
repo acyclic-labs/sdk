@@ -23,7 +23,7 @@ impl SocketInbound for EchoInbound {
         }
         self.frames
             .unbounded_send(frame)
-            .map_err(|_| StreamError::Unavailable)
+            .map_err(|_| StreamError::unavailable())
     }
 }
 
@@ -273,7 +273,7 @@ fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult
     })) if bytes == b"queued"[..]));
     assert!(
         matches!(session.controls.pop_front().and_then(|frame| frame.body),
-        Some(Body::Closed(wire::SessionClosed { code, .. })) if code == StreamError::Unavailable.code())
+        Some(Body::Closed(wire::SessionClosed { code, .. })) if code == StreamError::unavailable().code())
     );
     assert!(session.channels.is_empty());
     assert_eq!(session.pending_frames, 0);
@@ -600,7 +600,7 @@ async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
                     if frame.channel_id == 7 {
                         "forbidden"
                     } else {
-                        StreamError::Unavailable.code()
+                        StreamError::unavailable().code()
                     }
                 );
                 assert!(closed.insert((frame.channel_id, frame.generation)));

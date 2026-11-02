@@ -151,7 +151,7 @@ impl BrowserStream {
                                 .changed
                                 .changed()
                                 .await
-                                .map_err(|_| StreamError::Unavailable)?;
+                                .map_err(|_| StreamError::unavailable())?;
                         }
                     },
                 )

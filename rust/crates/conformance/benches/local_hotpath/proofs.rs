@@ -170,7 +170,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     }
     // The same failed producer must terminate later publication attempts rather
     // than leave an event waiter parked behind a dead persistence worker.
-    if fixture.stream.commit(original.clone()).await != Err(StreamError::Unavailable) {
+    if fixture.stream.commit(original.clone()).await != Err(StreamError::unavailable()) {
         return Err("cut journal did not terminate a later submission as unavailable".into());
     }
     // Re-enter the public composition with the SAME retained owner. The

@@ -192,7 +192,7 @@ mod tests {
         let encoded = WriteRequest::Append(request.clone()).encode_to_vec();
         replay(&provider, decode_command(&encoded)?).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         assert_eq!(receipt.start, 0);
         assert_eq!(receipt.end, 1);

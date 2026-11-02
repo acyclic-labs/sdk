@@ -173,7 +173,7 @@ async fn coherent_native_heads_keep_original_credit_and_leave_future_cut_append_
         let mut lost = provider.native_heads(selected, meter.original());
         assert!((&mut lost).now_or_never().is_none());
         revisions.close();
-        assert!(matches!(lost.await?, Err(StreamError::Unavailable)));
+        assert!(matches!(lost.await?, Err(StreamError::Unavailable { .. })));
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
 

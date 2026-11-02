@@ -1,3 +1,4 @@
+import { refusalReason } from "@acyclic-labs/auth/refusal";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import type { Opened } from "./opened.js";
@@ -5,9 +6,9 @@ import { webSocketSession, type SessionWebSocketFactory } from "./session-websoc
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
+import { streamFailure } from "./error.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
@@ -129,7 +130,7 @@ export class HttpStreamProvider implements StreamProvider {
     try { text = await boundedText(response, this.#maximum, sizes); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     if (!response.ok) {
-      const error = await hostedError(route, text, response.status);
+      const error = await hostedError(route, text, response.status, refusalReason(response.headers));
       throw error;
     }
     lease.check();
@@ -143,22 +144,18 @@ export class HttpStreamProvider implements StreamProvider {
 }
 
 /** Unknown peer error codes remain transport failures. */
-async function hostedError(route: string, text: string, status: number): Promise<StreamError> {
+async function hostedError(route: string, text: string, status: number, reason?: string): Promise<StreamError> {
   const fallback = text || `HTTP ${status}`;
   const details = parseHostedError(text);
-  if (details.code === undefined) return new StreamError("transport", fallback, status);
+  if (details.code === undefined) return new StreamError("transport", fallback, status, reason);
   try {
     await ensureStreamWasm();
-    const code = publicHttpErrorCode(details.code, route);
-    if (code !== undefined && isPublicHttpCode(code)) return new StreamError(code, details.message ?? fallback, status);
+    const failure = streamFailure(details.code, details.message ?? fallback, route, status, reason);
+    if (failure !== undefined) return failure;
   } catch { /* Unknown or unavailable contract remains a transport error. */ }
-  return new StreamError("transport", fallback, status);
+  return new StreamError("transport", fallback, status, reason);
 }
 
-const HTTP_ALIASES = ["stream_not_found", "commit_not_found", "destination_exists", "capacity_exhausted"] as const satisfies readonly StreamFailureCode[];
-function isPublicHttpCode(code: string): code is StreamFailureCode {
-  return is_stream_error_code(code) || (HTTP_ALIASES as readonly string[]).includes(code);
-}
 
 function parseHostedError(text: string): { readonly code?: string; readonly message?: string } {
   try {
@@ -201,6 +198,3 @@ async function boundedText(response: Response, maximum: number | undefined, size
   return decoder.decode(bytes);
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
-
-/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;

@@ -35,6 +35,12 @@ pub struct NativeStreamErrorMetadata {
     pub code: String,
     /// Rust-owned diagnostic message.
     pub message: String,
+    /// Original remote unavailable reason.
+    pub reason: Option<String>,
+    /// Exact original reason bytes when they are not UTF-8.
+    #[napi(js_name = "reasonBytes")]
+    #[serde(rename = "reasonBytes", skip_serializing_if = "Option::is_none")]
+    pub reason_bytes: Option<Vec<u8>>,
 }
 
 /// Typed unary operation result. Exactly one of `value` and `error` is set.
@@ -150,6 +156,14 @@ impl NativeStreamNextResult {
 
 fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
     NativeStreamErrorMetadata {
+        reason_bytes: error
+            .refusal_reason()
+            .and_then(|reason| reason.non_text_bytes())
+            .map(<[u8]>::to_vec),
+        reason: error
+            .refusal_reason()
+            .and_then(|reason| reason.as_str())
+            .map(str::to_owned),
         code: error.code().to_owned(),
         message: error.to_string(),
     }
@@ -163,6 +177,8 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
         | grpc::ConnectError::InvalidCaCertificate => "configuration",
     };
     NativeStreamErrorMetadata {
+        reason: None,
+        reason_bytes: None,
         code: code.to_owned(),
         message: if code == "transport" {
             format!("{error:?}")
@@ -189,6 +205,8 @@ fn decode<T: Message + Default>(
     T::decode(request.as_ref()).map_err(|error| NativeStreamErrorMetadata {
         code: "invalid_argument".to_owned(),
         message: format!("{operation} request is not valid Stream protobuf: {error}"),
+        reason: None,
+        reason_bytes: None,
     })
 }
 
@@ -202,6 +220,8 @@ fn encode<T: Message>(
         .map_err(|error| NativeStreamErrorMetadata {
             code: "unavailable".to_owned(),
             message: format!("{operation} response could not be encoded: {error}"),
+            reason: None,
+            reason_bytes: None,
         })?;
     Ok(Buffer::from(bytes))
 }
@@ -224,6 +244,8 @@ where
         return Err(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
+            reason: None,
+            reason_bytes: None,
         });
     }
     tokio::select! {
@@ -231,7 +253,7 @@ where
         _ = cancellation.cancelled() => Err(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
-        }),
+         reason: None, reason_bytes: None }),
         result = operation => result,
     }
 }

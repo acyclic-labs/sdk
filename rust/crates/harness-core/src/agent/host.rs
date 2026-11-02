@@ -338,7 +338,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             match committed.next().await {
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
+                None => return Err(Error::Stream(StreamError::unavailable())),
             }
         }
     }

@@ -85,10 +85,10 @@ fn serve(
             let value = input
                 .next
                 .call1(&JsValue::UNDEFINED, &input.abort.signal())
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             let value = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&value))
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             if value.is_null() || value.is_undefined() {
                 if let Some(decoder) = &input.decoder {
                     decoder.finish()?;
@@ -133,6 +133,6 @@ fn serve(
         })
         .boxed_local();
     Ok(WasmFollow {
-        state: Rc::new(FollowState::new(frames, StreamError::Unavailable)),
+        state: Rc::new(FollowState::new(frames, StreamError::unavailable())),
     })
 }

@@ -20,15 +20,19 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::ConnectionResponses, transport::ConnectionFailure>>
+    {
         Box::pin(async move {
-            session::serve(
-                self.0.clone(),
-                session::testing::authority(),
-                "node".into(),
-                session::Limits::default(),
-                source.map(Ok).boxed(),
-            )
+            Ok(Box::pin(
+                session::serve(
+                    self.0.clone(),
+                    session::testing::authority(),
+                    "node".into(),
+                    session::Limits::default(),
+                    source.map(Ok).boxed(),
+                )?
+                .map(|frame| frame.map_err(Into::into)),
+            ) as transport::ConnectionResponses)
         })
     }
 }
@@ -40,7 +44,7 @@ fn attachment(
 ) -> Result<AttachedSession, Box<dyn std::error::Error>> {
     let pool = Client::with_transport(
         Arc::new(Endpoint(memory)),
-        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(|_| Box::pin(async { Err(StreamError::unavailable()) })),
         Arc::new(PlatformExecutor),
     );
     pool.register_credential(0, session::testing::credential())?;

@@ -18,7 +18,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     };
     let written = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(receipt) = &written else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     assert_eq!(
         receipt.appends,
@@ -34,10 +34,10 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let observed = provider
         .inspect_idempotency(request.idempotency_key.clone())
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     assert_eq!(observed.outcome, IdempotencyOutcome::Commit(facts.clone()));
     let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     assert_eq!(append.records[0].value.as_ref(), &[42; 4096]);
     assert_eq!(
@@ -66,7 +66,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     };
     let forked = provider.commit(fork.clone()).await?;
     let CommitOutcome::Committed(fork_receipt) = &forked else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     assert!(fork_receipt.appends.is_empty());
     assert_eq!(fork_receipt.forks.len(), 1);
@@ -81,7 +81,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
                     .mutations
                     .first()
                     .map(crate::CommitMutation::path)
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .clone(),
                 sequence: 0,
             },
@@ -110,7 +110,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     let fork_observed = provider
         .inspect_idempotency(fork.idempotency_key.clone())
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     assert_eq!(
         fork_observed.outcome,
         IdempotencyOutcome::Commit(fork_facts.clone())
@@ -364,7 +364,7 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
         .spawn(|| -> Result<(), StreamError> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .build()
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             runtime.block_on(async {
                 let provider = MemoryStream::default();
                 let mut source = StreamPath::new("c00000")?;

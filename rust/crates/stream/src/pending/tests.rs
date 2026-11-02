@@ -184,12 +184,12 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     assert_eq!(second_wake.0.load(Ordering::SeqCst), 1);
     assert!(matches!(
         second.as_mut().poll(&mut second_context),
-        std::task::Poll::Ready(Err(StreamError::Unavailable))
+        std::task::Poll::Ready(Err(StreamError::Unavailable { .. }))
     ));
     drop(second);
     assert!(matches!(
         pending.result().now_or_never(),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     drop(pending);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);

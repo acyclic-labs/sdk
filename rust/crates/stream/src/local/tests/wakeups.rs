@@ -39,7 +39,7 @@ where
     for stream in streams {
         assert!(matches!(
             stream.next().await,
-            Some(Err(StreamError::Unavailable))
+            Some(Err(StreamError::Unavailable { .. }))
         ));
         assert!(stream.next().await.is_none());
     }

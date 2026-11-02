@@ -56,7 +56,7 @@ impl CallProvider for Endpoint {
             if let AgentCommand::Staged { digest, .. } = call.command() {
                 // Each staged command's parts are taken once, by its head.
                 let whole =
-                    std::mem::take(&mut *staged.lock().map_err(|_| StreamError::Unavailable)?)
+                    std::mem::take(&mut *staged.lock().map_err(|_| StreamError::unavailable())?)
                         .concat();
                 if blake3::hash(whole.as_bytes()).to_hex().as_str() != digest {
                     return Err(StreamError::InvalidArgument);
@@ -70,7 +70,7 @@ impl CallProvider for Endpoint {
             let delivery = acyclic_harness_core::agent::Delivered::Committed { inbox: 3 };
             let reply = match call.command() {
                 AgentCommand::Stage { part, text, .. } => {
-                    let mut staged = staged.lock().map_err(|_| StreamError::Unavailable)?;
+                    let mut staged = staged.lock().map_err(|_| StreamError::unavailable())?;
                     assert_eq!(*part as usize, staged.len());
                     staged.push(text.clone());
                     AgentReply::Staged {}

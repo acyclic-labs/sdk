@@ -60,8 +60,16 @@ pub use progress::verify_latest_progress;
 mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
-type Response = transport::Responses;
-type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
+type Response = transport::ConnectionResponses;
+type Read = BoxProviderFuture<
+    'static,
+    (
+        String,
+        u64,
+        Response,
+        Option<Result<Frame, transport::ConnectionFailure>>,
+    ),
+>;
 const QUEUE: usize = RECEIVE_FRAMES;
 const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 
@@ -146,11 +154,11 @@ fn consume_frame(
                 mark.preceding_commit_id
                     .as_ref()
                     .try_into()
-                    .map_err(|_| StreamError::Unavailable)?,
+                    .map_err(|_| StreamError::unavailable())?,
             ),
             None => progress.current(generation),
         },
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamError::unavailable()),
     }
 }
 fn consume_data(
@@ -167,7 +175,7 @@ fn consume_data(
                 .commit_id
                 .as_ref()
                 .try_into()
-                .map_err(|_| StreamError::Unavailable)?,
+                .map_err(|_| StreamError::unavailable())?,
         ),
         Some(
             Item::LatestValue(_)
@@ -176,7 +184,7 @@ fn consume_data(
             | Item::ChildrenPage(_)
             | Item::Heads(_),
         ) => progress.consume_latest(generation, sequence),
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamError::unavailable()),
     }
 }
 
@@ -455,7 +463,7 @@ impl Client {
             .try_send(Command::Credential { slot, credential })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+                mpsc::error::TrySendError::Closed(_) => StreamError::unavailable(),
             })
     }
     /// Observes successful handshakes without depending on further task records.
@@ -589,7 +597,7 @@ impl Client {
                         })
                     }),
                     Some(Body::Watermark(_)) => None,
-                    _ => Some(Err(StreamError::Unavailable)),
+                    _ => Some(Err(StreamError::unavailable())),
                 },
                 Err(error) => Some(Err(error)),
             };
@@ -810,10 +818,10 @@ impl Client {
                     input: input.map(input::Owner),
                 })))
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
-            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::Unavailable)??;
+                .map_err(|_| StreamError::unavailable())?;
+            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::unavailable())??;
             if opened_id != id {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             cursor.opened = receipt;
             Ok(())
@@ -894,7 +902,7 @@ impl Cursor {
                         self.observation.finish(None);
                         return Ok(None);
                     }
-                    None => Err(StreamError::Unavailable),
+                    None => Err(StreamError::unavailable()),
                 },
             };
             let delivery = match received {
@@ -915,7 +923,7 @@ impl Drop for Cursor {
         self.receiver.close();
         if let Some(input) = &self.input {
             if !self.progress.ended() {
-                input.close(StreamError::Unavailable);
+                input.close(StreamError::unavailable());
                 self.client.pool.cancel_interest(self.id, &self.progress);
             }
             input.release();

@@ -102,7 +102,7 @@ impl StreamProvider for Arc<Counted> {
         let mut completion = self
             .completion
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .take();
         let counted = Arc::clone(self);
         Ok(self.memory.follow(request).await?.map_cursor(|cursor| {

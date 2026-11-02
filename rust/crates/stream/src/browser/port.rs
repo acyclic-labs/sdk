@@ -29,7 +29,7 @@ impl CommandJournal for BrowserPort<'_> {
         let store = self
             .transaction
             .as_ref()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .object_store(JOURNAL)
             .map_err(backend)?;
         let metadata = store
@@ -146,7 +146,7 @@ impl CommandJournal for BrowserPort<'_> {
         let store = self
             .transaction
             .as_ref()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .object_store(JOURNAL)
             .map_err(backend)?;
         for (offset, frame) in frames.iter().enumerate() {
@@ -179,7 +179,7 @@ impl CommandJournal for BrowserPort<'_> {
         self.stream.inner.publications.publish()?;
         self.transaction
             .take()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .commit()
             .await
             .map_err(backend)?;
@@ -193,7 +193,7 @@ impl CommandJournal for BrowserPort<'_> {
 
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
         let head = self.head;
-        let registration = self.changed.take().ok_or(StreamError::Unavailable);
+        let registration = self.changed.take().ok_or(StreamError::unavailable());
         Box::pin(async move {
             if head > after {
                 return Ok(());

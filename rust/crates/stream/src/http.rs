@@ -186,7 +186,7 @@ impl HttpStream {
         let url = self
             .endpoint
             .join(&format!("v1/stream/{route}"))
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let (authorization, lease) = self.authorization().await?;
         let mut response = self
             .client
@@ -196,7 +196,7 @@ impl HttpStream {
             .body(body)
             .send()
             .await
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         if response.status().as_u16() == 401 {
             if let Some(lease) = &lease {
                 lease
@@ -206,21 +206,30 @@ impl HttpStream {
             }
         }
         let success = response.status().is_success();
+        let reason = acyclic_auth::refusal::RefusalReason::from_header(
+            (!success)
+                .then(|| {
+                    response
+                        .headers()
+                        .get(acyclic_auth::refusal::REASON_HEADER)
+                        .map(|value| value.as_bytes())
+                })
+                .flatten(),
+        );
         span.record("http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::Unavailable { reason });
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| StreamError::Unavailable)?
-        {
+        while let Some(chunk) = match response.chunk().await {
+            Ok(chunk) => chunk,
+            Err(_) => return Err(StreamError::Unavailable { reason }),
+        } {
             if chunk.len() > self.maximum.saturating_sub(body.len()) {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::Unavailable { reason });
             }
             body.extend_from_slice(&chunk);
         }
@@ -228,7 +237,10 @@ impl HttpStream {
         if success && let Some(lease) = &lease {
             lease.check().await.map_err(|_| StreamError::AccessDenied)?;
         }
-        let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
+        let value: Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(_) => return Err(StreamError::Unavailable { reason }),
+        };
         if !success {
             let code = value
                 .as_str()
@@ -239,7 +251,9 @@ impl HttpStream {
                         .and_then(|error| error.get("code"))
                         .and_then(Value::as_str)
                 });
-            return Err(code.map_or(StreamError::Unavailable, contract_error));
+            return Err(code
+                .map_or(StreamError::unavailable(), contract_error)
+                .with_refusal_reason(reason));
         }
         // A well-formed body that breaks the response contract is the peer's fault.
         http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
@@ -256,7 +270,7 @@ impl HttpStream {
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
                 appends: field(value, "appends")?
                     .as_array()
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .iter()
                     .map(|range| {
                         Ok(crate::AppendRange {
@@ -268,7 +282,7 @@ impl HttpStream {
                     .collect::<Result<_, StreamError>>()?,
                 forks: field(value, "forks")?
                     .as_array()
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .iter()
                     .map(|fork| parse_nested_fork(fork, &revision))
                     .collect::<Result<_, _>>()?,
@@ -276,19 +290,19 @@ impl HttpStream {
                 skipped: match value.get("skipped") {
                     Some(skipped) => skipped
                         .as_array()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .iter()
                         .map(parse_path)
                         .collect::<Result<_, _>>()?,
                     None => Vec::new(),
                 },
             };
-            receipt.validate().map_err(|_| StreamError::Unavailable)?;
+            receipt.validate().map_err(|_| StreamError::unavailable())?;
             Ok(CommitOutcome::Committed(receipt))
         } else {
             let conflicts = value["conflicts"]
                 .as_array()
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .iter()
                 .map(|value| {
                     let path = parse_path(field(value, "path")?)?;
@@ -312,7 +326,7 @@ impl HttpStream {
                 })
                 .collect::<Result<Vec<_>, StreamError>>()?;
             if conflicts.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             Ok(CommitOutcome::Conflict(conflicts))
         }
@@ -348,18 +362,18 @@ impl StreamProvider for HttpStream {
         }
         let observed = IdempotencyKey::new(parse_bytes(field(&value, "idempotencyKey")?)?)?;
         if observed != key {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let request_digest = parse_bytes(field(&value, "requestDigest")?)?
             .as_ref()
             .try_into()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let outcome = field(&value, "outcome")?;
         let outcome = match parse_string(&outcome["type"])? {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
             "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
             "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
-            _ => return Err(StreamError::Unavailable),
+            _ => return Err(StreamError::unavailable()),
         };
         let revision = match value.get("revision") {
             None | Some(serde_json::Value::Null) => None,
@@ -415,7 +429,7 @@ impl StreamProvider for HttpStream {
                     };
                     let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
                     if result.source != source || result.destination != destination {
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                     self.revisions()?.observe(&result.revision);
                     Ok(result)
@@ -464,7 +478,7 @@ impl StreamProvider for HttpStream {
             .await?;
         let envelope = parse_envelope(&value)?;
         if envelope.commit_id != id {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(envelope)
     }
@@ -628,7 +642,7 @@ mod tests {
                 .instrument(parent)
                 .await;
             server.await?;
-            assert_eq!(result, Err(StreamError::Unavailable));
+            assert_eq!(result, Err(StreamError::unavailable()));
             Ok(())
         }
         .with_subscriber(subscriber)

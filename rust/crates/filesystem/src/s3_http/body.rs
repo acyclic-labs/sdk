@@ -585,7 +585,7 @@ fn stream_read_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
     match error {
         acyclic_stream::StreamError::NotFound => s3s::s3_error!(NoSuchUpload),
         acyclic_stream::StreamError::AccessDenied => s3s::s3_error!(AccessDenied),
-        acyclic_stream::StreamError::Unavailable => s3s::s3_error!(ServiceUnavailable),
+        acyclic_stream::StreamError::Unavailable { .. } => s3s::s3_error!(ServiceUnavailable),
         _ => s3s::s3_error!(InternalError),
     }
 }

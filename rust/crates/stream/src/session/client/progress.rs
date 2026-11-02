@@ -78,12 +78,12 @@ impl Progress {
         Ok(self
             .state
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .position
             .next)
     }
     pub(super) fn fence(&self) -> Result<u64, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         state.generation = state
             .generation
             .checked_add(1)
@@ -95,7 +95,7 @@ impl Progress {
         Ok((position.next, position.opaque))
     }
     pub(super) fn subscription(&self) -> Result<Position, StreamError> {
-        let state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         Ok(state.position.clone())
     }
     pub(super) fn consume_record(
@@ -115,7 +115,7 @@ impl Progress {
         has_bootstrap: bool,
         records: bool,
     ) -> Result<u64, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         if generation != state.generation || state.position.next != 0 {
             return Err(StreamError::InvalidResponse);
         }
@@ -143,14 +143,14 @@ impl Progress {
         Ok(self
             .state
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .generation
             == generation)
     }
     pub(super) fn track_records(&self) -> Result<(), StreamError> {
         self.state
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .track_records = true;
         Ok(())
     }
@@ -160,7 +160,7 @@ impl Progress {
         next: u64,
         preceding: [u8; 32],
     ) -> Result<bool, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         if generation != state.generation || next < state.position.next {
             return Ok(false);
         }
@@ -186,23 +186,23 @@ impl Progress {
         commit: Option<[u8; 32]>,
         conflated: bool,
     ) -> Result<bool, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         if generation != state.generation || sequence < state.position.next {
             return Ok(false);
         }
         let bootstrap = if let Some((selected, expected)) = state.bootstrap {
             if sequence != selected || commit != Some(expected) {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             true
         } else {
             false
         };
         if sequence > state.position.next && !conflated && !bootstrap {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         if state.track_records && commit.is_none() {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         state.position.next = sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
         state.position.opaque = opaque.to_vec();

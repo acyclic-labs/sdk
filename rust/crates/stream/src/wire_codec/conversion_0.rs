@@ -148,8 +148,8 @@ pub fn observation_from_wire(
     value: wire::IdempotencyObservation,
 ) -> Result<IdempotencyObservation, StreamError> {
     let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
-        .map_err(|_| StreamError::Unavailable)?;
-    let outcome = match value.outcome.ok_or(StreamError::Unavailable)? {
+        .map_err(|_| StreamError::unavailable())?;
+    let outcome = match value.outcome.ok_or(StreamError::unavailable())? {
         wire::idempotency_observation::Outcome::Append(value) => {
             IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
         }
@@ -194,7 +194,7 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
 
 /// Validate an append outcome through the same decoder as the SDK client.
 pub fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
-    match value.outcome.ok_or(StreamError::Unavailable)? {
+    match value.outcome.ok_or(StreamError::unavailable())? {
         wire::append_response::Outcome::Committed(receipt) => {
             Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
         }
@@ -209,7 +209,7 @@ pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOut
     if value.envelope.is_some() {
         return Err(StreamError::InvalidResponse);
     }
-    match value.outcome.ok_or(StreamError::Unavailable)? {
+    match value.outcome.ok_or(StreamError::unavailable())? {
         wire::commit_response::Outcome::Committed(receipt) => {
             Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
         }
@@ -225,7 +225,7 @@ pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOut
 
 /// Converts a wire commit-id byte sequence into the fixed-width domain id.
 pub fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
-    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
+    let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::unavailable())?;
     Ok(CommitId::from_bytes(bytes))
 }
 
@@ -332,7 +332,7 @@ pub fn read_key_to_wire(
                     if error.kind() == std::io::ErrorKind::OutOfMemory {
                         StreamError::Capacity
                     } else {
-                        StreamError::Unavailable
+                        StreamError::unavailable()
                     }
                 })?,
                 before: value.before,
@@ -610,7 +610,7 @@ pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvel
 pub(crate) fn committed_mutation(
     value: wire::CommittedMutation,
 ) -> Result<CommittedMutation, StreamError> {
-    match value.mutation.ok_or(StreamError::Unavailable)? {
+    match value.mutation.ok_or(StreamError::unavailable())? {
         wire::committed_mutation::Mutation::Append(value) => {
             let path = path(value.path)?;
             Ok(CommittedMutation::Append(CommittedAppend {
@@ -681,7 +681,7 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
 pub(crate) fn conflict_from_wire(
     value: wire::CommitConflict,
 ) -> Result<CommitConflict, StreamError> {
-    match value.conflict.ok_or(StreamError::Unavailable)? {
+    match value.conflict.ok_or(StreamError::unavailable())? {
         wire::commit_conflict::Conflict::Missing(value) => Ok(CommitConflict::Missing {
             path: path(value.path)?,
         }),

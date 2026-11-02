@@ -49,23 +49,21 @@ async fn input_result<T>(
 async fn session_error(
     error: tonic::Status,
     lease: Option<&acyclic_auth::credential::ResolvedCredential>,
-) -> StreamError {
+) -> transport::ConnectionFailure {
     if error.code() == tonic::Code::Unauthenticated && std::error::Error::source(&error).is_none() {
         if let Some(lease) = lease {
             if lease.reject().await.is_err() {
-                return StreamError::AccessDenied;
+                return transport::ConnectionFailure::terminal(StreamError::AccessDenied);
             }
         }
     }
     if grpc::retryable(&error) {
-        StreamError::Unavailable
-    } else {
-        match grpc::status(&error) {
-            // Unknown peer statuses are terminal; only the transport
-            // classifier above may request another physical connection.
-            StreamError::Unavailable => StreamError::InvalidResponse,
-            error => error,
+        transport::ConnectionFailure {
+            cause: grpc::status(&error),
+            reconnect: true,
         }
+    } else {
+        transport::ConnectionFailure::terminal(grpc::status(&error))
     }
 }
 impl futures::Stream for Input {
@@ -120,7 +118,7 @@ impl transport::Transport for Grpc {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Response, transport::ConnectionFailure>> {
         Box::pin(async move {
             let mut changed = match &self.credential {
                 Some(provider) => provider
@@ -206,7 +204,7 @@ impl Client {
                 }
                 .map_err(|error| {
                     if error.transient() {
-                        StreamError::Unavailable
+                        StreamError::unavailable()
                     } else {
                         StreamError::InvalidResponse
                     }

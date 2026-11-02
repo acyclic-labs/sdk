@@ -154,7 +154,7 @@ impl WasmSession {
         .try_flatten()
         .boxed_local();
         Ok(WasmApplicationSubscription {
-            state: Rc::new(FollowState::new(source, StreamError::Unavailable)),
+            state: Rc::new(FollowState::new(source, StreamError::unavailable())),
         })
     }
 

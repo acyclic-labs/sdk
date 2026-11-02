@@ -65,7 +65,7 @@ impl acyclic_collections::IndexWork for PreparedKeyWork<'_> {
             .record(
                 self.allocation
                     .as_mut()
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .split(bytes),
             )
             .map(Some)
@@ -85,7 +85,7 @@ impl MemoryStream {
         StreamError,
     > {
         let expected = prepared_tail(&mut request, maximum)?;
-        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        let work = self.work.as_ref().ok_or(StreamError::unavailable())?;
         let input = self.request_claim(&request)?;
         let maximum_hash = prepared_hash_bytes(&request, maximum);
         let headers = work.record(crate::record_headers::PreparedHeaders::new(
@@ -109,17 +109,21 @@ impl MemoryStream {
         fact.tail = fact.end;
         fact.records
             .first_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .sequence = expected;
-        history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
-            expected;
+        history_record(
+            plan.histories
+                .first_mut()
+                .ok_or(StreamError::unavailable())?,
+        )?
+        .sequence = expected;
         // Header keys arrive with the body. The shared radix owns its physical
         // node layout and fixed-width work bound; prepay both before issuance.
         let count = crate::MAX_RECORD_KEYS as u64;
         let bound = plan
             .histories
             .first()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .history
             .keys()
             .0
@@ -232,7 +236,7 @@ impl MemoryStream {
         maximum_hash: u64,
         prototype: (CommittedEnvelope, Allocation),
     ) -> Result<NativeProviderFuture<'static, Option<IdempotencyObservation>>, StreamError> {
-        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        let work = self.work.as_ref().ok_or(StreamError::unavailable())?;
         let meter = Arc::clone(&work.meter);
         let mut read = work.record(NativeOperationReservation::new(
             Arc::clone(&meter),
@@ -279,11 +283,11 @@ impl MemoryStream {
                         target.tail,
                     )?;
                     let source = envelope_append(envelope);
-                    let record = source.records.first().ok_or(StreamError::Unavailable)?;
+                    let record = source.records.first().ok_or(StreamError::unavailable())?;
                     *envelope_append_mut(&mut value)
                         .records
                         .first_mut()
-                        .ok_or(StreamError::Unavailable)? = record.clone();
+                        .ok_or(StreamError::unavailable())? = record.clone();
                     value.commit_id = envelope.commit_id;
                     value.committed_at_micros = envelope.committed_at_micros;
                     observed = observed.take().or(record_codec(
@@ -361,7 +365,7 @@ impl PreparedCommit {
             self.provider
                 .work
                 .as_ref()
-                .ok_or(StreamError::Unavailable)?,
+                .ok_or(StreamError::unavailable())?,
         );
         body.headers = work.record(self.headers.finish(&body.headers))?;
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
@@ -424,7 +428,7 @@ impl PreparedCommit {
                     records,
                     keys,
                     ..
-                } = Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
+                } = Arc::get_mut(&mut history.history).ok_or(StreamError::unavailable())?
                 {
                     *keys = parent
                         .as_ref()
@@ -504,10 +508,14 @@ fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), Str
     let record = envelope_append_mut(&mut plan.envelope)
         .records
         .first_mut()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     record.value = body.value.clone();
     record.headers = body.headers.clone();
-    let record = history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?;
+    let record = history_record(
+        plan.histories
+            .first_mut()
+            .ok_or(StreamError::unavailable())?,
+    )?;
     record.value = body.value;
     record.headers = body.headers;
     Ok(())
@@ -545,11 +553,11 @@ fn envelope_append_mut(envelope: &mut CommittedEnvelope) -> &mut crate::Committe
 }
 fn history_record(history: &mut PreparedHistory) -> Result<&mut Record, StreamError> {
     let Some(History::Batch { records, .. }) = Arc::get_mut(&mut history.history) else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     Arc::get_mut(records)
         .and_then(|batch| batch.records.first_mut())
-        .ok_or(StreamError::Unavailable)
+        .ok_or(StreamError::unavailable())
 }
 fn digest(
     conditions: &[CommitCondition; 2],

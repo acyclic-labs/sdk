@@ -36,7 +36,7 @@ impl LocalInner {
         Ok(self
             .journal
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .required)
     }
 
@@ -59,7 +59,7 @@ impl LocalInner {
         self.synced.send_modify(|_| {});
         // Parked revision waits end too: this incarnation serves nothing more.
         self.provider.revisions.close();
-        StreamError::Unavailable
+        StreamError::unavailable()
     }
 
     fn published(&self, frames: u64) {
@@ -70,10 +70,10 @@ impl LocalInner {
     async fn unavailable(failed: &mut watch::Receiver<Option<LocalStreamFailure>>) -> StreamError {
         loop {
             if failed.borrow_and_update().is_some() {
-                return StreamError::Unavailable;
+                return StreamError::unavailable();
             }
             if failed.changed().await.is_err() {
-                return StreamError::Unavailable;
+                return StreamError::unavailable();
             }
         }
     }

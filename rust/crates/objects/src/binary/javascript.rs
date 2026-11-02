@@ -52,11 +52,22 @@ fn unavailable() -> Error {
 }
 
 fn original_error(value: JsValue) -> Error {
-    error_code(&value)
+    let error = error_code(&value)
         .ok()
         .and_then(|code| wire::ErrorCode::try_from(code).ok())
         .filter(|code| *code != wire::ErrorCode::Unspecified)
-        .map_or_else(unavailable, Into::into)
+        .map_or_else(unavailable, Error::from);
+    let reason = Reflect::get(&value, &"reason".into())
+        .ok()
+        .and_then(|value| value.as_string());
+    let raw = Reflect::get(&value, &"reasonBytes".into())
+        .ok()
+        .and_then(|value| value.dyn_into::<Uint8Array>().ok())
+        .map(|value| value.to_vec());
+    error.with_refusal_reason(acyclic_auth::refusal::RefusalReason::from_header(
+        raw.as_deref()
+            .or_else(|| reason.as_deref().map(str::as_bytes)),
+    ))
 }
 
 /// Preserve an original Objects failure at a JavaScript boundary.
@@ -66,6 +77,12 @@ pub fn js_error(value: Error) -> JsValue {
     result.set_name("ObjectsV1Error");
     // The fresh error is extensible and has no caller-defined properties.
     let _ = Reflect::set(&result, &"code".into(), &JsValue::from(value.code as i32));
+    if let Some(reason) = value.reason.as_str() {
+        let _ = Reflect::set(&result, &"reason".into(), &JsValue::from_str(reason));
+    }
+    if let Some(bytes) = value.reason.non_text_bytes() {
+        let _ = Reflect::set(&result, &"reasonBytes".into(), &Uint8Array::from(bytes));
+    }
     result.into()
 }
 

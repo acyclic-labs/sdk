@@ -55,7 +55,7 @@ mod error_code_tests {
         for code in ["internal", "unknown", "", "stream_not_found"] {
             assert_eq!(
                 StreamError::from_session_close(code),
-                StreamError::Unavailable,
+                StreamError::unavailable(),
                 "{code}"
             );
         }
@@ -301,7 +301,7 @@ mod replay_tests {
             let inner = MemoryStream::new(MemoryLimits::default());
             let stream = filled(Gapped { inner, missing }, 2_100).await;
             let mut replay = stream.replay(0);
-            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_eq!(drain(&mut replay).await, Err(StreamError::unavailable()));
         }
     }
 }

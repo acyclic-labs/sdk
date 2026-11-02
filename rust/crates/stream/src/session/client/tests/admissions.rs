@@ -44,6 +44,7 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
             Body::Closed(wire::SessionClosed {
                 code: StreamError::AccessDenied.code().into(),
                 message: String::new(),
+                refusal_reason: None,
             })
         )
     ));

@@ -136,7 +136,7 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
         let admitted = provider.with_context(work);
         let claim = admitted
             .request_claim(&request)?
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         assert_eq!(claim.bytes(), input_bytes as u64);
     }
     assert_eq!(input_meter.held.load(Ordering::SeqCst), 0);
@@ -162,8 +162,8 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
     };
     {
         let state = provider.state.read().await;
-        let entry = state.retained.last().ok_or(StreamError::Unavailable)?;
-        let facts = entry.envelope().ok_or(StreamError::Unavailable)?;
+        let entry = state.retained.last().ok_or(StreamError::unavailable())?;
+        let facts = entry.envelope().ok_or(StreamError::unavailable())?;
         assert!(receipt.matches_envelope(facts));
         let [CommittedMutation::Fork(fork)] = facts.mutations.as_slice() else {
             panic!("one fork")
@@ -183,7 +183,7 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
             entry
                 ._allocation
                 .as_ref()
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .bytes(),
             expected
         );
@@ -235,7 +235,7 @@ async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<
     let output = provider
         .native_inspect_idempotency(key, meter.original())
         .await??;
-    let observation = output.value().as_ref().ok_or(StreamError::Unavailable)?;
+    let observation = output.value().as_ref().ok_or(StreamError::unavailable())?;
     let IdempotencyOutcome::Commit(facts) = &observation.outcome else {
         panic!("full commit facts")
     };
@@ -337,7 +337,7 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
                 index.to_be_bytes().to_vec(),
             ))?)
             .await?
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         assert!(matches!(observed.outcome,
             IdempotencyOutcome::Append(AppendOutcome::Committed(receipt))
             if receipt.start == 255 - index && receipt.end == 256 - index));
@@ -402,7 +402,7 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         let cached = provider.inspect_idempotency(key).await?;
         if index == 0 {
             let IdempotencyOutcome::Commit(envelope) =
-                cached.ok_or(StreamError::Unavailable)?.outcome
+                cached.ok_or(StreamError::unavailable())?.outcome
             else {
                 panic!("original Commit family")
             };
@@ -518,7 +518,7 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let (mut issued, packet_guard) = issued.into_parts();
     let recovery = issued
         .take_recovery_future()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     assert!(issued.take_recovery_future().is_none());
     let allocations = meter.allocations.load(Ordering::SeqCst);
     builder
@@ -573,14 +573,17 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         .await?
         .next()
         .await
-        .ok_or(StreamError::Unavailable)??;
+        .ok_or(StreamError::unavailable())??;
     assert_eq!(indexed.value.as_ref(), b"root-body");
     drop(indexed);
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
     let observed = recovery.await??;
-    let observation = observed.value().as_ref().ok_or(StreamError::Unavailable)?;
+    let observation = observed
+        .value()
+        .as_ref()
+        .ok_or(StreamError::unavailable())?;
     let IdempotencyOutcome::Commit(recovered) = &observation.outcome else {
         panic!("original Commit family")
     };
@@ -619,7 +622,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         let (mut issued, packet_guard) = issued.into_parts();
         let recovery = issued
             .take_recovery_future()
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         let published = if larger_commit {
             let outcome = provider
                 .commit(CommitRequest {
@@ -671,7 +674,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         let retained = provider
             .inspect_idempotency(foreign_key)
             .await?
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         assert_eq!(retained.outcome, published);
         drop(retained);
         drop(published);
@@ -729,7 +732,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let accepted = provider
         .inspect_idempotency(key)
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let IdempotencyOutcome::Commit(envelope) = &accepted.outcome else {
         panic!("canonical Commit family");
     };
@@ -762,7 +765,7 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
     let (mut mismatch, mismatch_guard) = mismatch.into_parts();
     let recovery = mismatch
         .take_recovery_future()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let failed = mismatch
         .finish((OwnedBytes::from_static(b"different-scalars")).into())
         .await?

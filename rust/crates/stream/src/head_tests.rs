@@ -103,7 +103,7 @@ async fn seed<P: StreamProvider>(provider: &P, path: &StreamPath) -> Result<Comm
         })
         .await?;
     let AppendOutcome::Committed(receipt) = result else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     Ok(receipt.commit_id)
 }
@@ -132,7 +132,7 @@ async fn head_condition_checks_identity_under_the_commit_lock_and_binds_retries(
         commit_id: original,
     }];
     let CommitOutcome::Committed(changed) = provider.commit(changed).await? else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     let correct = request(&path, 2, changed.commit_id, b"correct")?;
     let result = provider.commit(correct.clone()).await?;

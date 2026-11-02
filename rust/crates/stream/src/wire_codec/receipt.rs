@@ -9,7 +9,7 @@ pub fn receipt_from_wire(value: wire::CommitReceipt) -> Result<crate::CommitRece
         .into_iter()
         .map(|range| {
             if range.start >= range.tail {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             Ok(crate::AppendRange {
                 path: path(range.path)?,
@@ -27,13 +27,13 @@ pub fn receipt_from_wire(value: wire::CommitReceipt) -> Result<crate::CommitRece
                 .get_or_insert_with(|| revision_to_wire(&revision));
             let fork = fork_receipt_from_wire(fork)?;
             if fork.commit_id != id || fork.forked_at > fork.tail {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             Ok(fork)
         })
         .collect::<Result<Vec<_>, StreamError>>()?;
     if appends.is_empty() && forks.is_empty() {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let skipped = value
         .skipped
@@ -48,14 +48,14 @@ pub fn receipt_from_wire(value: wire::CommitReceipt) -> Result<crate::CommitRece
         revision,
         skipped,
     };
-    receipt.validate().map_err(|_| StreamError::Unavailable)?;
+    receipt.validate().map_err(|_| StreamError::unavailable())?;
     Ok(receipt)
 }
 
 /// Decode the same fork identity used by standalone and coordinated commits.
 pub fn fork_receipt_from_wire(value: wire::ForkReceipt) -> Result<ForkReceipt, StreamError> {
     if value.forked_at > value.tail {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(ForkReceipt {
         source: path(value.source)?,

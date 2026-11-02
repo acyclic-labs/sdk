@@ -283,7 +283,7 @@ impl SkillPublicationSource {
     /// immediately before the journal submits its contributions.
     pub fn pending(&self) -> Result<Option<&SkillPublicationCut>> {
         if self.failed {
-            return Err(StreamError::Unavailable.into());
+            return Err(StreamError::unavailable().into());
         }
         if self.pending.is_some() {
             (self.revalidate)()?;
@@ -329,7 +329,7 @@ impl SkillPublicationSource {
             });
         }
         if self.failed {
-            return Err(StreamError::Unavailable.into());
+            return Err(StreamError::unavailable().into());
         }
         let scope = crate::filesystem::PreparationScope::new(Some(session))?;
         let io = scope.io().ok_or(StreamError::InvalidArgument)?;
@@ -367,10 +367,10 @@ impl SkillPublicationSource {
         }
         loop {
             (self.revalidate)()?;
-            let records = self.records.as_mut().ok_or(StreamError::Unavailable)?;
+            let records = self.records.as_mut().ok_or(StreamError::unavailable())?;
             let update = gated(&mut self.terminal, session, records.next())
                 .await?
-                .ok_or(StreamError::Unavailable)??;
+                .ok_or(StreamError::unavailable())??;
             (self.revalidate)()?;
             match update {
                 FollowUpdate::Opening { .. } => {}
@@ -547,7 +547,7 @@ async fn gated<T>(
         Either::Left((Either::Left((error, _)), _)) => Err(error.into()),
         Either::Left((Either::Right(((), _)), _)) => {
             io.check_cancellation()?;
-            Err(StreamError::Unavailable.into())
+            Err(StreamError::unavailable().into())
         }
         Either::Right((value, _)) => {
             io.check_cancellation()?;

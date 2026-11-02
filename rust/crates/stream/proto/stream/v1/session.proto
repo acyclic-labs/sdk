@@ -215,6 +215,9 @@ message SessionClosed {
   // delivered its whole range. "end" is never an error.
   string code = 1;
   string message = 2;
+  // Original acyclic-unserved-reason, including values unknown to the client.
+  // Absent when the producer supplied no reason; never inferred from message.
+  optional bytes refusal_reason = 3;
 }
 message SessionNode {
   string node_id = 1;

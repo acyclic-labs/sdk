@@ -92,7 +92,8 @@ impl Client {
                 credential,
             )
             .await?;
-        let sender = input::State::sender(cursor.input.as_ref().ok_or(StreamError::Unavailable)?)?;
+        let sender =
+            input::State::sender(cursor.input.as_ref().ok_or(StreamError::unavailable())?)?;
         Ok((sender, Self::reply_cursor(cursor, maximum_reply_bytes)))
     }
 
@@ -169,7 +170,7 @@ impl Client {
                 return Ok(reply.into());
             }
         }
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     }
 
     async fn reply_chunks(
@@ -207,7 +208,7 @@ impl Client {
                 let (data, credit) = cursor
                     .receive_data()
                     .await?
-                    .ok_or(StreamError::Unavailable)?;
+                    .ok_or(StreamError::unavailable())?;
                 let length = wire_codec::session::actor_call_total(&data)?;
                 if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
                     return Err(StreamError::InvalidResponse);

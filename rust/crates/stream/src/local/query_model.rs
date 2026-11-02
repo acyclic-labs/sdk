@@ -16,7 +16,7 @@ where
     crate::snapshot::model::spawn(async move {
         let _ = completed.send(future.await);
     });
-    async move { received.await.map_err(|_| StreamError::Unavailable) }
+    async move { received.await.map_err(|_| StreamError::unavailable()) }
 }
 
 pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
@@ -234,9 +234,9 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
             {
                 Ok(mut follow) => assert!(matches!(
                     follow.next().await,
-                    Some(Err(StreamError::Unavailable))
+                    Some(Err(StreamError::Unavailable { .. }))
                 )),
-                Err(error) => assert_eq!(error, StreamError::Unavailable),
+                Err(error) => assert_eq!(error, StreamError::unavailable()),
             }
         });
         writer.join().map_err(|_| "writer panicked")?;

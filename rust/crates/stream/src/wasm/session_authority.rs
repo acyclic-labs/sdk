@@ -135,7 +135,7 @@ impl WasmSessionAuthority {
                 .state
                 .current
                 .lock()
-                .map_err(|_| js_error(StreamError::Unavailable))?;
+                .map_err(|_| js_error(StreamError::unavailable()))?;
             if current.environment != next.environment
                 || current.account != next.account
                 || current.minimum_key_epoch > next.minimum_key_epoch

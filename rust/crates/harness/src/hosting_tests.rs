@@ -83,14 +83,17 @@ impl Platform for Owner {
             let pause = self
                 .admission
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .take();
             if let Some(pause) = pause {
                 pause
                     .entered
                     .send(())
-                    .map_err(|()| StreamError::Unavailable)?;
-                pause.release.await.map_err(|_| StreamError::Unavailable)?;
+                    .map_err(|()| StreamError::unavailable())?;
+                pause
+                    .release
+                    .await
+                    .map_err(|_| StreamError::unavailable())?;
             }
             Ok(())
         })
@@ -364,7 +367,7 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
     // The already committed publication is replayed by this original follow;
     // loss of its producer ends the same channel with a typed failure.
     loop {
-        let update = follow.next().await.ok_or(StreamError::Unavailable)??;
+        let update = follow.next().await.ok_or(StreamError::unavailable())??;
         if let Some(session_wire::session_frame::Body::Data(data)) = update.into_wire().body
             && let Some(session_wire::session_data::Item::Record(record)) = data.item
         {
@@ -937,7 +940,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         .expect_err("a child query survived its admission producer");
     assert!(matches!(
         refused.downcast_ref::<StreamError>(),
-        Some(StreamError::Unavailable)
+        Some(StreamError::Unavailable { .. })
     ));
     waiting.await?;
     // Nothing waits on an approval, so none is listed and none can be decided.

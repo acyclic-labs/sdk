@@ -165,7 +165,7 @@ pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
             round_trip(&response)?;
             let expected = match response.durable {
                 None => Err(StreamError::Unsupported),
-                Some(durable) if durable > response.tail => Err(StreamError::Unavailable),
+                Some(durable) if durable > response.tail => Err(StreamError::unavailable()),
                 Some(durable) => Ok(StreamWatermarks {
                     accepted: response.tail,
                     durable,

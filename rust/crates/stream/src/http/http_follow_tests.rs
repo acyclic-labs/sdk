@@ -320,7 +320,7 @@ async fn truncated_unary_body_fails_without_retry() {
     let server = Server::with_body_mode(vec![reply], Some(BodyMode::Truncated)).await;
     assert!(matches!(
         server.client.inspect_idempotency(key).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
     assert_eq!(server.requests().len(), 1);
 }

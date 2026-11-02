@@ -446,7 +446,7 @@ impl AttestedProvider for Evidence {
     ) -> std::result::Result<Option<Arc<Self>>, StreamError> {
         self.presented
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .push(attestation.clone());
         if !self.valid || attestation.0.len() != 32 {
             return Err(StreamError::AccessDenied);
@@ -507,7 +507,7 @@ impl StreamProvider for Evidence {
                         self.published.fetch_add(1, Ordering::SeqCst);
                         let outcome = self.inner.commit(request).await?;
                         if self.unknown_first.swap(false, Ordering::SeqCst) {
-                            return Err(StreamError::Unavailable);
+                            return Err(StreamError::unavailable());
                         }
                         Ok(outcome)
                     },
@@ -553,7 +553,7 @@ impl Attestor for Digests {
         Box::pin(async move {
             self.0
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .push(attempt.digest);
             Ok(Attestation(attempt.digest.to_vec().into()))
         })

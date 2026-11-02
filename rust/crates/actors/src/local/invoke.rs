@@ -290,7 +290,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 );
                 let mut journal = Journal::default();
                 let (terminal, outcome) = loop {
-                    let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
+                    let record = records
+                        .try_next()
+                        .await?
+                        .ok_or(StreamError::unavailable())?;
                     if let Entry::Terminal(outcome) = journal.apply(&record)? {
                         break (record, outcome);
                     }

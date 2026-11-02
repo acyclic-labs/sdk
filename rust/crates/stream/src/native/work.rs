@@ -97,7 +97,7 @@ impl Work {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get_or_insert(error);
-            StreamError::Unavailable
+            StreamError::unavailable()
         })
     }
 

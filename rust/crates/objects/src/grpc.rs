@@ -239,35 +239,35 @@ impl GrpcObjects {
 }
 
 /// Maps canonical service details, falling back to stable transport categories.
-fn error_from_status(status: &tonic::Status) -> Error {
+pub fn error_from_status(status: &tonic::Status) -> Error {
     if let Some(stopped) = std::error::Error::source(status)
         .and_then(|source| source.downcast_ref::<acyclic_auth::operation::Stopped>())
     {
         return (*stopped).into();
     }
-    if let Ok(detail) = wire::ErrorDetail::decode(status.details())
+    let error = if let Ok(detail) = wire::ErrorDetail::decode(status.details())
         && let Ok(code) = wire::ErrorCode::try_from(detail.code)
         && code != wire::ErrorCode::Unspecified
     {
-        return code.into();
-    }
-    match status.code() {
-        tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
-        tonic::Code::NotFound => wire::ErrorCode::NotFound,
-        tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
-            wire::ErrorCode::AccessDenied
-        }
-        tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
-        tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
-        tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
-        tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
-        tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
-        _ => wire::ErrorCode::Unavailable,
-    }
-    .into()
+        Error::from(code)
+    } else {
+        Error::from_grpc_status(status.code() as i32)
+    };
+    error.with_refusal_reason(acyclic_auth::refusal::RefusalReason::from_header(
+        status
+            .metadata()
+            .get(acyclic_auth::refusal::REASON_HEADER)
+            .map(|value| value.as_bytes()),
+    ))
 }
 
 fn status(error: Error) -> tonic::Status {
+    error_status(&error, String::new())
+}
+
+/// Encodes the original Objects failure and caller-owned diagnostic identity.
+/// The shared mapping retains canonical details and the original refusal reason.
+pub fn error_status(error: &Error, request_id: String) -> tonic::Status {
     let code = match error.code {
         wire::ErrorCode::InvalidArgument
         | wire::ErrorCode::DigestMismatch
@@ -287,13 +287,28 @@ fn status(error: Error) -> tonic::Status {
     };
     let detail = wire::ErrorDetail {
         code: error.code as i32,
-        request_id: String::new(),
+        request_id,
     };
-    tonic::Status::with_details(
+    let mut status = tonic::Status::with_details(
         code,
         "objects operation failed",
         detail.encode_to_vec().into(),
-    )
+    );
+    if let Some(value) = error.reason.as_bytes() {
+        match tonic::metadata::MetadataValue::try_from(value) {
+            Ok(value) => {
+                status
+                    .metadata_mut()
+                    .insert(acyclic_auth::refusal::REASON_HEADER, value);
+            }
+            // Diagnostic encoding cannot change the original outcome category.
+            // The original cause remains available to the serving caller.
+            Err(_) => {
+                status.set_source(std::sync::Arc::new(error.clone()));
+            }
+        }
+    }
+    status
 }
 
 /// The revision a response carries, if any; a malformed one is unavailable.
@@ -645,7 +660,7 @@ async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error>
 async fn deadline(metadata: &MetadataMap) {
     match metadata
         .get("grpc-timeout")
-        .and_then(|value| value.to_str().ok())
+        .map(|value| value.as_bytes())
         .and_then(grpc_timeout)
     {
         // The remote caller explicitly chose this request's grpc-timeout deadline.

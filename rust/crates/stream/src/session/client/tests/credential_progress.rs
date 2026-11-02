@@ -180,7 +180,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     response
                         .next()
                         .await
-                        .ok_or(StreamError::Unavailable)??
+                        .ok_or(StreamError::unavailable())??
                         .into_wire()
                         .body,
                     Some(Body::Welcome(_))
@@ -197,13 +197,14 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     } else {
                         Err(Status::unauthenticated("synthetic remote refusal"))
                     })
-                    .map_err(|_| StreamError::Unavailable)?;
+                    .map_err(|_| StreamError::unavailable())?;
                 response
                     .next()
                     .await
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .map(Some)
             };
+            let operation = async { operation.await.map_err(|failure| failure.cause) };
             futures::pin_mut!(operation);
             match futures::future::select(operation.as_mut(), entered_owner).await {
                 Either::Right((entered, _)) => entered?,

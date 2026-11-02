@@ -321,7 +321,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             .await?
             .next()
             .await
-            .ok_or(StreamError::Unavailable)??;
+            .ok_or(StreamError::unavailable())??;
         assert_eq!(record.sequence, expected_tail - 1);
         assert_eq!(record.value.as_ref(), expected);
     }
@@ -355,7 +355,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             .await?
             .next()
             .await
-            .ok_or(StreamError::Unavailable)??;
+            .ok_or(StreamError::unavailable())??;
         assert_eq!(record.sequence, 1);
         assert_eq!(record.value.as_ref(), expected);
     }
@@ -382,7 +382,7 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
             .map_ok(crate::records_only)
             .await?;
         for expected in 0..count {
-            let record = follow.next().await.ok_or(StreamError::Unavailable)??;
+            let record = follow.next().await.ok_or(StreamError::unavailable())??;
             assert_eq!(record.sequence, expected);
         }
         drop(provider);
@@ -416,7 +416,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
     let observation = provider
         .inspect_idempotency(key(b"only-key")?)
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     assert_ne!(observation.request_digest, [0; 32]);
     assert_eq!(observation.outcome, IdempotencyOutcome::Append(committed));
     assert_eq!(
@@ -558,7 +558,7 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
             .unwrap_or_else(|_| unreachable!()),
     };
     let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     clock.0.store(1, Ordering::SeqCst);
     assert_eq!(

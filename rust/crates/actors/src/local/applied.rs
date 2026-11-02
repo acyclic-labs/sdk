@@ -176,7 +176,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         });
                     }
                 }
-                Err(acyclic_stream::StreamError::Unavailable.into())
+                Err(acyclic_stream::StreamError::unavailable().into())
             }
         )
     }

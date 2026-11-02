@@ -403,7 +403,7 @@ async fn moved_owner_withdraws() -> TestResult {
         begin.notify_one();
         Box::pin(async move {
             let _guard = guard;
-            gate.await.map_err(|_| StreamError::Unavailable)?;
+            gate.await.map_err(|_| StreamError::unavailable())?;
             Ok(target)
         })
     });
@@ -528,7 +528,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
             fixture._channel.clone(),
             None,
             Some(credential),
-            std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+            std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::unavailable())))),
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let a_origin = origin(&subscriber, true);

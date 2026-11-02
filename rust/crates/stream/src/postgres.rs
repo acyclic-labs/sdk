@@ -50,7 +50,7 @@ pub struct PostgresStream {
 
 fn unavailable(error: impl std::fmt::Display) -> StreamError {
     tracing::error!(%error, "Postgres Stream operation failed; reopen PostgresStream::connect with the same database and namespace");
-    StreamError::Unavailable
+    StreamError::unavailable()
 }
 
 impl PostgresStream {
@@ -229,7 +229,7 @@ impl PostgresStream {
 
     fn check(&self) -> Result<(), StreamError> {
         if self.inner.failed.load(Ordering::Acquire) {
-            Err(StreamError::Unavailable)
+            Err(StreamError::unavailable())
         } else {
             Ok(())
         }
@@ -271,7 +271,7 @@ impl PostgresStream {
                 let result = replica.execute(command, deadline, PAGE).await;
                 if matches!(
                     result,
-                    Err(StreamError::Unavailable | StreamError::InvalidResponse)
+                    Err(StreamError::Unavailable { .. } | StreamError::InvalidResponse)
                 ) {
                     provider.fail();
                 }
@@ -297,13 +297,13 @@ impl PostgresStream {
                 }
                 if *failure.borrow() {
                     return Some((
-                        Err(StreamError::Unavailable),
+                        Err(StreamError::unavailable()),
                         (records, failure, true, owner),
                     ));
                 }
                 tokio::select! {
                     value = records.next() => value.map(|value| (value, (records, failure, false, owner))),
-                    _ = failure.changed() => Some((Err(StreamError::Unavailable), (records, failure, true, owner))),
+                    _ = failure.changed() => Some((Err(StreamError::unavailable()), (records, failure, true, owner))),
                 }
             },
         ))

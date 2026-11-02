@@ -52,11 +52,12 @@ impl transport::Transport for Observed {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Response, crate::session::transport::ConnectionFailure>>
+    {
         let mut owner = ResponseOwner {
             received: self.received.clone(),
             attempt: self.received.attempts.fetch_add(1, Ordering::Relaxed) + 1,
-            cause: StreamError::Unavailable,
+            cause: StreamError::unavailable(),
         };
         Box::pin(async move {
             let received = self.received.clone();
@@ -81,14 +82,14 @@ impl transport::Transport for Observed {
             let source = match self.inner.session(Box::pin(requests)).await {
                 Ok(source) => source,
                 Err(error) => {
-                    owner.cause = error.clone();
+                    owner.cause = error.cause.clone();
                     return Err(error);
                 }
             };
             let received = self.received.clone();
             Ok(Box::pin(source.map(move |frame| {
                 if let Err(error) = &frame {
-                    owner.cause = error.clone();
+                    owner.cause = error.cause.clone();
                 }
                 // Retain the complete drop owner through the original response.
                 let _owner = &owner;

@@ -105,7 +105,7 @@ impl ActorSocketSender {
                 sent,
             })
             .await
-            .map_err(|_| StreamError::Unavailable)?;
-        result.await.map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?;
+        result.await.map_err(|_| StreamError::unavailable())?
     }
 }

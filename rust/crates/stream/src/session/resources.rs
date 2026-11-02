@@ -203,7 +203,7 @@ impl ResourceAuthorization {
             .state
             .expires_at(unix_seconds)
             .await
-            .map_err(|_| StreamError::Unavailable)
+            .map_err(|_| StreamError::unavailable())
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
         let mut current = self
@@ -282,10 +282,10 @@ pub(super) fn source(
                 let event = loop {
                     let update = records
                         .as_mut()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .next()
                         .await
-                        .ok_or(StreamError::Unavailable)??;
+                        .ok_or(StreamError::unavailable())??;
                     let event = match update {
                         crate::FollowUpdate::Opening { tail } => {
                             if !opening_cut {

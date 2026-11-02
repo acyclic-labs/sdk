@@ -4,10 +4,43 @@ use std::sync::Arc;
 
 /// Canonical inbound frames from one physical platform connection.
 pub type Responses = BoxProviderStream<'static, Result<super::super::Frame, StreamError>>;
+/// Platform responses retain the independent connection recovery decision.
+pub type ConnectionResponses =
+    BoxProviderStream<'static, Result<super::super::Frame, ConnectionFailure>>;
 /// Canonical wire frames, without process-local backing metadata.
 pub type WireResponses = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 /// Canonical outbound frames; dropping this source cancels the connection.
 pub type Requests = BoxProviderStream<'static, wire::SessionFrame>;
+
+/// A physical connection failure with its original cause and independent recovery decision.
+/// Refusal diagnostics never authorize another connection or replay.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{cause}")]
+pub struct ConnectionFailure {
+    /// Original failure delivered to affected interests when recovery is forbidden.
+    #[source]
+    pub cause: StreamError,
+    /// Whether this transport proved a transient connection failure.
+    pub reconnect: bool,
+}
+
+impl ConnectionFailure {
+    /// A definite endpoint refusal, including an unavailable service.
+    #[must_use]
+    pub fn terminal(cause: StreamError) -> Self {
+        Self {
+            cause,
+            reconnect: false,
+        }
+    }
+}
+
+impl From<StreamError> for ConnectionFailure {
+    fn from(cause: StreamError) -> Self {
+        let reconnect = matches!(cause, StreamError::Unavailable { .. });
+        Self { cause, reconnect }
+    }
+}
 
 /// Retain one registered source event across the physical connection's waits.
 /// A ready change/refusal wins over transport data; no task or timer is added.
@@ -38,9 +71,11 @@ pub trait Transport: ProviderPlatform {
         None
     }
     /// Opens one bidirectional platform connection from the canonical frame source.
-    /// `Unavailable` denotes a transient transport failure and permits backoff;
-    /// every other error terminates the opening interests.
-    fn session(&self, source: Requests) -> BoxProviderFuture<'_, Result<Responses, StreamError>>;
+    /// Recovery is a transport decision, independent of the original refusal cause.
+    fn session(
+        &self,
+        source: Requests,
+    ) -> BoxProviderFuture<'_, Result<ConnectionResponses, ConnectionFailure>>;
     /// Withdraws an unadmitted write owned wholly by this logical channel.
     /// Synchronous socket writes need no hook; asynchronous platform queues
     /// cancel that write without closing the shared physical connection.

@@ -54,7 +54,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await?
         .is_some()
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let initial = AppendRequest {
         path: source.clone(),
@@ -67,14 +67,14 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     };
     let first = provider.append(initial.clone()).await?;
     let AppendOutcome::Committed(first_receipt) = &first else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if first_receipt.start != 0
         || first_receipt.end != 2
         || first_receipt.tail != 2
         || provider.append(initial).await? != first
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     if provider
         .append(AppendRequest {
@@ -86,17 +86,17 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await
         != Err(StreamError::IdempotencyMismatch)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let append_observation = provider
         .inspect_idempotency(append_key.clone())
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     if append_observation.idempotency_key != append_key
         || append_observation.request_digest == [0; 32]
         || append_observation.outcome != IdempotencyOutcome::Append(first.clone())
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     if provider
         .append(AppendRequest {
@@ -108,7 +108,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await?
         != (AppendOutcome::TailConflict { actual_tail: 2 })
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let fork = provider
         .fork(ForkRequest {
@@ -120,7 +120,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         })
         .await?;
     if fork.forked_at != 1 || fork.tail != 1 {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let inherited = provider
         .read(ReadRequest {
@@ -134,10 +134,10 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .try_collect::<Vec<_>>()
         .await?;
     let [item] = inherited.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if item.value != Bytes::from_static(b"one") {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let children = provider
         .children_page(ChildrenPageRequest {
@@ -155,7 +155,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .collect::<Vec<_>>();
     child_paths.sort();
     if child_paths != vec![path("conformance/child")?, path("conformance/source")?] {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let first_page = provider
         .children_page(ChildrenPageRequest {
@@ -167,10 +167,10 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         })
         .await?;
     let [first_child] = first_page.children.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if first_page.next_after.as_ref() != Some(&first_child.path) {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let final_page = provider
         .children_page(ChildrenPageRequest {
@@ -182,10 +182,10 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         })
         .await?;
     let [final_child] = final_page.children.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if final_page.next_after.is_some() || final_child.path == first_child.path {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     provider
         .append(AppendRequest {
@@ -206,7 +206,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await
         != Err(StreamError::HierarchyChanged)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let live_page = provider
         .children_page(ChildrenPageRequest {
@@ -221,7 +221,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         if child.path == path("conformance/paging-new")?
             && live_page.next_after.as_ref() == Some(&child.path))
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     if provider
         .children_page(ChildrenPageRequest {
@@ -234,7 +234,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .await
         != Err(StreamError::InvalidArgument)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let mut follow = provider
         .follow(crate::FollowRequest::new(child.clone(), 1))
@@ -248,9 +248,9 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             idempotency_key: key(b"conformance-live-follow")?,
         })
         .await?;
-    let live = follow.next().await.ok_or(StreamError::Unavailable)??;
+    let live = follow.next().await.ok_or(StreamError::unavailable())??;
     if live.sequence != 1 || live.value != Bytes::from_static(b"live") {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let complete_history = provider
         .read(ReadRequest {
@@ -268,7 +268,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             && second.value == Bytes::from_static(b"live"))
         || provider.tail(child.clone()).await? != 2
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
@@ -293,12 +293,12 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     };
     let committed = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(receipt) = &committed else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if provider.commit(request).await? != committed
         || !receipt.matches_envelope(&provider.read_commit(receipt.commit_id).await?)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     verify_stale_tail_condition(provider, source.clone()).await?;
     verify_fork_with_records(provider, source.clone()).await?;
@@ -322,20 +322,20 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         || provider.commit(absent_request).await? != absent_outcome
         || provider.tail(absent).await? != 1
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let absent_observation = provider
         .inspect_idempotency(absent_key)
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let CommitOutcome::Committed(receipt) = absent_outcome else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     let facts = provider.read_commit(receipt.commit_id).await?;
     if !receipt.matches_envelope(&facts)
         || absent_observation.outcome != IdempotencyOutcome::Commit(facts)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     verify_unspent_conflicts(provider).await?;
     verify_subtree_fork(provider).await?;
@@ -367,7 +367,7 @@ async fn verify_read_open_failures(
     if open(path("conformance/never-written")?, 0).await != Some(StreamError::NotFound)
         || open(source, beyond).await != Some(StreamError::OutOfRange)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -408,7 +408,7 @@ async fn verify_stale_tail_condition(
         || provider.tail(stale_path).await != Err(StreamError::NotFound)
         || provider.tail(source).await? != 2
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -444,14 +444,14 @@ async fn verify_fork_with_records(
     };
     let committed = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(receipt) = &committed else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     let envelope = provider.read_commit(receipt.commit_id).await?;
     if !receipt.matches_envelope(&envelope) {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let [CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     let appended = fork
         .records
@@ -466,7 +466,7 @@ async fn verify_fork_with_records(
                 (2, Bytes::from_static(b"again"), envelope.commit_id),
             ]
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let values = provider
         .read(ReadRequest {
@@ -489,7 +489,7 @@ async fn verify_fork_with_records(
         || provider.tail(destination).await? != 3
         || provider.commit(request).await? != committed
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -519,11 +519,11 @@ async fn verify_unspent_conflicts(
         AppendOutcome::TailConflict { actual_tail: 0 }
     ) || provider.inspect_idempotency(append_key).await?.is_some()
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     request.if_tail = Some(0);
     if !matches!(provider.append(request).await?, AppendOutcome::Committed(_)) {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let commit_key = key(b"unspent-commit")?;
     let mut request = CommitRequest {
@@ -543,14 +543,14 @@ async fn verify_unspent_conflicts(
         CommitOutcome::Conflict(_)
     ) || provider.inspect_idempotency(commit_key).await?.is_some()
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let Some(CommitCondition::Tail { expected, .. }) = request.conditions.first_mut() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     *expected = 1;
     if !matches!(provider.commit(request).await?, CommitOutcome::Committed(_)) {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -566,14 +566,14 @@ pub async fn verify_subtree_fork(
     let inherited = path("conformance/tree/children/fork/a/events")?;
     let result = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(envelope) = &result else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if provider.commit(request).await? != result
         || provider.tail(inherited.clone()).await? != 1
         || provider.tail(child.clone()).await? != 2
         || provider.tail(destination.clone()).await? != 1
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     verify_subtree_records(provider, seed.commit_id, envelope.commit_id).await?;
     verify_subtree_private_writes(provider).await
@@ -592,7 +592,7 @@ async fn seed_subtree(
         })
         .await?;
     let AppendOutcome::Committed(seed) = initial else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     provider
         .append(AppendRequest {
@@ -701,7 +701,7 @@ async fn verify_subtree_records(
             .first()
             .is_none_or(|record| record.commit_id != seed)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     for name in [
         "conformance/fork-volumes/one",
@@ -723,7 +723,7 @@ async fn verify_subtree_records(
                 .first()
                 .is_none_or(|record| record.commit_id != committed)
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
     }
     let bound: Vec<_> = provider
@@ -755,7 +755,7 @@ async fn verify_subtree_records(
             .first()
             .is_none_or(|record| record.commit_id != committed)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -790,7 +790,7 @@ async fn verify_subtree_private_writes(
             .first()
             .is_none_or(|record| record.value.as_ref() != b"source-after-cut")
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let page = provider
         .children_page(ChildrenPageRequest {
@@ -804,7 +804,7 @@ async fn verify_subtree_private_writes(
     if page.children.first().map(|child| child.path.as_str())
         != Some("conformance/tree/children/fork/a")
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     // A nested destination must inherit the pre-commit source, never itself.
     if provider
@@ -812,7 +812,7 @@ async fn verify_subtree_private_writes(
         .await
         != Err(StreamError::NotFound)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     if provider
         .tail(path("conformance/tree/children/old/events")?)
@@ -823,7 +823,7 @@ async fn verify_subtree_private_writes(
             .await
             != Err(StreamError::NotFound)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let second = path("conformance/tree-second")?;
     provider
@@ -840,7 +840,7 @@ async fn verify_subtree_private_writes(
         .await?
         != 2
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -877,7 +877,7 @@ pub async fn verify_page_tails(
             .get(2)
             .is_none_or(|child| child.tail_record.is_some())
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let cut = provider
         .commit(CommitRequest {
@@ -900,7 +900,7 @@ pub async fn verify_page_tails(
         })
         .await?;
     let CommitOutcome::Committed(cut) = cut else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     for child in page.children.iter().take(2) {
         if child
@@ -909,7 +909,7 @@ pub async fn verify_page_tails(
             .map(|record| record.value.as_ref())
             != Some(b"old".as_slice())
         {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
     }
     let next = provider
@@ -922,11 +922,11 @@ pub async fn verify_page_tails(
         })
         .await?;
     if next.children.len() != 3 {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     for child in next.children.iter().take(2) {
         if child.tail_record.as_ref().map(|record| record.commit_id) != Some(cut.commit_id) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
     }
     if provider
@@ -934,7 +934,7 @@ pub async fn verify_page_tails(
         .await
         != Err(StreamError::NotFound)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }
@@ -961,7 +961,7 @@ pub async fn verify_page_tail_bytes(
             })
             .await?;
         if !matches!(outcome, AppendOutcome::Committed(_)) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
     }
     let page = match provider
@@ -989,7 +989,7 @@ pub async fn verify_page_tail_bytes(
         || prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
             > crate::MAX_COMMAND_BYTES
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }

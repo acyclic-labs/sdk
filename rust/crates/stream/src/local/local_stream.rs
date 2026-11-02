@@ -187,7 +187,7 @@ impl LocalStream {
 
     fn check_available(&self) -> Result<(), StreamError> {
         if self.inner.failed.borrow().is_some() {
-            Err(StreamError::Unavailable)
+            Err(StreamError::unavailable())
         } else {
             Ok(())
         }
@@ -267,11 +267,11 @@ impl LocalStream {
                 LocalStreamError::Io(error) => match &self.work {
                     Some(work) => {
                         let _ = work.record::<()>(Err(error));
-                        StreamError::Unavailable
+                        StreamError::unavailable()
                     }
-                    None => StreamError::Unavailable,
+                    None => StreamError::unavailable(),
                 },
-                _ => StreamError::Unavailable,
+                _ => StreamError::unavailable(),
             })?;
         self.inner.commit_clock.pin(committed_at_millis);
         Ok(frame)
@@ -548,7 +548,7 @@ impl LocalStream {
                 .inner
                 .journal
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             if !reserved
                 && journal.synced < journal.appended
                 && let Some(work) = &self.work
@@ -597,7 +597,7 @@ impl LocalStream {
             .await?
         {
             SyncCompletion::Flushed(flushed) => Ok(flushed),
-            SyncCompletion::Ordered => Err(StreamError::Unavailable),
+            SyncCompletion::Ordered => Err(StreamError::unavailable()),
         }
     }
 
@@ -671,7 +671,7 @@ impl LocalStream {
                 }
                 None => {
                     if synced.changed().await.is_err() {
-                        return Err(StreamError::Unavailable);
+                        return Err(StreamError::unavailable());
                     }
                 }
             }
@@ -718,7 +718,7 @@ impl LocalStream {
                 operation.in_scope(|| finish(result))
             }))
             .await
-            .map_err(|_| StreamError::Unavailable)
+            .map_err(|_| StreamError::unavailable())
         }
     }
 

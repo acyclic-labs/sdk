@@ -33,7 +33,8 @@ impl transport::Transport for Unpolled {
     fn session(
         &self,
         _: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, Result<transport::ConnectionResponses, transport::ConnectionFailure>>
+    {
         panic!("display admission must not eagerly open a transport")
     }
 }
@@ -42,7 +43,7 @@ fn client() -> (WireSession, Arc<Scheduler>) {
     let scheduler = Arc::new(Scheduler::default());
     let pool = Client::with_transport(
         Arc::new(Unpolled),
-        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(|_| Box::pin(async { Err(StreamError::unavailable()) })),
         scheduler.clone(),
     );
     (
@@ -381,7 +382,7 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 .to_owned();
             session.replace_interests(streams, resources).unwrap();
             let terminal = if failed {
-                vec![Err(StreamError::Unavailable)]
+                vec![Err(StreamError::unavailable())]
             } else {
                 Vec::new()
             };

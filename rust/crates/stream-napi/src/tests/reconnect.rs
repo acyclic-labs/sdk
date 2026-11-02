@@ -197,7 +197,7 @@ impl StreamSessionService for DisconnectingHost {
                         .extend(interest.upsert.iter().cloned());
                     outage.changed.notify_one();
                 }
-                frame.map_err(|_| StreamError::Unavailable)
+                frame.map_err(|_| StreamError::unavailable())
             })
             .boxed();
         let output = acyclic_stream::session::serve(
@@ -799,7 +799,7 @@ proptest::proptest! {
         prefix in proptest::collection::vec(proptest::collection::vec(proptest::prelude::any::<u8>(), 0..16), 0..8),
     ) {
         let frames: FollowFrames = futures::stream::iter(prefix.iter().cloned().map(Ok)
-            .chain([Err(StreamError::Unavailable)])
+            .chain([Err(StreamError::unavailable())])
             .collect::<Vec<_>>()).boxed();
         let follow = NativeStreamFollow {
             state: FollowState {

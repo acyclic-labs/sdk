@@ -4,6 +4,20 @@ use acyclic_objects::{Blobs, Digest, MemoryObjects, json, wire};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+/// Canonical fallback when a gRPC failure has no typed Objects detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_grpc_error_code(status: i32) -> i32 {
+    acyclic_objects::Error::from_grpc_status(status).code as i32
+}
+
+/// Canonical fallback when an HTTP failure has no typed Objects detail.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_http_error_code(status: u16) -> i32 {
+    acyclic_objects::Error::from_http_status(status).code as i32
+}
+
 /// Accepts a JavaScript byte limit as a number: wasm-bindgen would silently wrap a `usize` argument above 2^32, so reject non-integers and saturate.
 #[allow(
     clippy::cast_possible_truncation,

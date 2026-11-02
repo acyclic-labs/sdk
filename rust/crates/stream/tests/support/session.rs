@@ -215,7 +215,7 @@ impl Counts {
             Some(Body::Hello(hello)) => {
                 self.destinations
                     .lock()
-                    .map_err(|_| StreamError::Unavailable)?
+                    .map_err(|_| StreamError::unavailable())?
                     .push(hello.destination_node.clone());
                 if let Some(interest) = &hello.interest {
                     self.opening_interests.fetch_add(1, Ordering::Relaxed);
@@ -227,7 +227,10 @@ impl Counts {
                 self.acknowledgements.fetch_add(1, Ordering::Relaxed);
             }
             Some(Body::Window(grant)) if frame.channel_id != 0 => {
-                let mut traffic = self.traffic.lock().map_err(|_| StreamError::Unavailable)?;
+                let mut traffic = self
+                    .traffic
+                    .lock()
+                    .map_err(|_| StreamError::unavailable())?;
                 let flow = traffic
                     .entry((session, frame.channel_id, frame.generation))
                     .or_default();
@@ -253,7 +256,7 @@ impl Counts {
                     {
                         self.resumes
                             .lock()
-                            .map_err(|_| StreamError::Unavailable)?
+                            .map_err(|_| StreamError::unavailable())?
                             .push((channel.channel_id, channel.generation, resume.next));
                     }
                     if let (Some(channel), Some(Kind::Follow(follow))) =
@@ -261,7 +264,7 @@ impl Counts {
                     {
                         self.guards
                             .lock()
-                            .map_err(|_| StreamError::Unavailable)?
+                            .map_err(|_| StreamError::unavailable())?
                             .push((
                                 channel.channel_id,
                                 channel.generation,
@@ -348,7 +351,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                 if let Ok(frame) = &input {
                     counts.observe_input(session, frame)?;
                 }
-                input.map_err(|_| StreamError::Unavailable)
+                input.map_err(|_| StreamError::unavailable())
             })
             .boxed();
         let output = session::serve(
@@ -507,7 +510,7 @@ impl Fixture {
             }
             tokio::select! {
                 _ = changed => {},
-                _ = ended.changed() => return Err(StreamError::Unavailable),
+                _ = ended.changed() => return Err(StreamError::unavailable()),
             }
         }
     }

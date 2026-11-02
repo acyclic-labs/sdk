@@ -22,7 +22,7 @@ fn source() -> (
             receive
                 .changed()
                 .await
-                .map_err(|_| crate::StreamError::Unavailable)?;
+                .map_err(|_| crate::StreamError::unavailable())?;
         }
     })
     .boxed_local();
@@ -33,7 +33,7 @@ fn source() -> (
 fn delivery_racing_close_never_restores_a_closed_cursor() {
     loom::model(|| {
         let (send, frames) = source();
-        let state = FollowState::new(frames, crate::StreamError::Unavailable);
+        let state = FollowState::new(frames, crate::StreamError::unavailable());
         let (_, wake) = probe();
         let producer = loom::thread::spawn(move || {
             send.send_replace(Some(vec![7]));
@@ -59,7 +59,7 @@ fn delivery_racing_close_never_restores_a_closed_cursor() {
 fn close_wakeup(broken: bool) {
     loom::model(move || {
         let (_send, frames) = source();
-        let state = FollowState::new(frames, crate::StreamError::Unavailable);
+        let state = FollowState::new(frames, crate::StreamError::unavailable());
         let (count, wake) = probe();
         let mut next = Box::pin(state.next());
         assert!(
@@ -114,7 +114,7 @@ fn source_drop(broken: bool) {
             Poll::<Option<Result<Vec<u8>, crate::StreamError>>>::Pending
         })
         .boxed_local();
-        let state = Rc::new(FollowState::new(frames, crate::StreamError::Unavailable));
+        let state = Rc::new(FollowState::new(frames, crate::StreamError::unavailable()));
         *owner.borrow_mut() = Rc::downgrade(&state);
         if broken {
             let mut slot = state.stream.lock().unwrap();

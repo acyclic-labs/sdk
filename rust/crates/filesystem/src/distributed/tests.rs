@@ -1054,7 +1054,7 @@ impl ReleaseSpy {
                 .map_err(|_| StreamError::InvalidArgument)?;
         }
         if self.lose_ack {
-            Err(StreamError::Unavailable)
+            Err(StreamError::unavailable())
         } else {
             Ok(result)
         }

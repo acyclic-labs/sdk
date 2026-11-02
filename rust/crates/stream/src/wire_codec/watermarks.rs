@@ -5,7 +5,7 @@ use crate::{StreamError, StreamWatermarks, wire};
 pub fn watermarks_from_wire(response: wire::TailResponse) -> Result<StreamWatermarks, StreamError> {
     let durable = response.durable.ok_or(StreamError::Unsupported)?;
     if durable > response.tail {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(StreamWatermarks {
         accepted: response.tail,
@@ -32,7 +32,7 @@ mod tests {
             prop_assert_eq!(&decoded, &wire);
             let expected = match durable {
                 None => Err(StreamError::Unsupported),
-                Some(durable) if durable > accepted => Err(StreamError::Unavailable),
+                Some(durable) if durable > accepted => Err(StreamError::unavailable()),
                 Some(durable) => Ok(StreamWatermarks { accepted, durable }),
             };
             prop_assert_eq!(watermarks_from_wire(decoded), expected);

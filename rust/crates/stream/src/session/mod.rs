@@ -116,7 +116,7 @@ struct Channel {
     sent: wire::SessionCursor,
     applied: wire::SessionCursor,
     /// The `SessionClosed` code sent once every queued frame has drained.
-    ending: Option<&'static str>,
+    ending: Option<Result<(), StreamError>>,
     /// Peer frames of an actor socket; dropping it ends that socket.
     socket: Option<Box<dyn SocketInbound>>,
     input: Option<calls::InputProducer>,
@@ -205,8 +205,9 @@ impl<P: ?Sized> ServingSession<P> {
                 id,
                 channel.generation,
                 Body::Closed(wire::SessionClosed {
-                    code: StreamError::Unavailable.code().into(),
+                    code: StreamError::unavailable().code().into(),
                     message: String::new(),
+                    refusal_reason: None,
                 }),
             )
             .into(),
@@ -375,7 +376,7 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
                         for channel in session.channels.values_mut() {
                             channel.socket.take();
                             if let Some(input) = &mut channel.input {
-                                let _ = input.finish(Err(StreamError::Unavailable));
+                                let _ = input.finish(Err(StreamError::unavailable()));
                             }
                         }
                         // Preserve terminal responses for channels already removed.
@@ -534,7 +535,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             .get(&identity.channel_id)
                             .is_some_and(|channel| channel.generation == identity.generation)
                         {
-                            self.end(identity.channel_id, StreamError::Unavailable.code())?;
+                            self.end(identity.channel_id, Err(StreamError::unavailable()))?;
                         }
                         return Ok(());
                     }
@@ -707,7 +708,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         generation: input.generation,
                     };
                     if let Err(error) = producer.receive(identity, data, length, released) {
-                        self.end(input.channel_id, error.code())?;
+                        self.end(input.channel_id, Err(error))?;
                     }
                     return Ok(());
                 }
@@ -721,7 +722,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 // Handed over without awaiting the owner, so one socket's
                 // storage latency never stalls the session's other channels.
                 if let Err(error) = socket.receive(bytes) {
-                    self.end(input.channel_id, error.code())?;
+                    self.end(input.channel_id, Err(error))?;
                 }
                 Ok(())
             }

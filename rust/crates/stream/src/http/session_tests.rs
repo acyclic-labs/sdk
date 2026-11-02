@@ -92,7 +92,7 @@ async fn measure_append_follow(provider: &MemoryStream, measured: &mut RecordStr
         let started = std::time::Instant::now();
         let (_, record, elapsed) = crate::test_latency::sample(
             append(provider, "events"),
-            async { measured.next().await.ok_or(StreamError::Unavailable)? },
+            async { measured.next().await.ok_or(StreamError::unavailable())? },
             || started.elapsed().as_nanos(),
         )
         .await?;

@@ -45,7 +45,7 @@ impl PreparedNativeCommit {
         self.record.supply(record);
         std::mem::replace(
             &mut self.future,
-            NativeProviderFuture::ready(Ok(Err(StreamError::Unavailable))),
+            NativeProviderFuture::ready(Ok(Err(StreamError::unavailable()))),
         )
     }
 }
@@ -92,7 +92,7 @@ impl NativeCommitRecordSlot {
             if let Some(record) = &mut state.0 {
                 return std::task::Poll::Ready(std::mem::replace(
                     record,
-                    Err(StreamError::Unavailable),
+                    Err(StreamError::unavailable()),
                 ));
             }
             if !state
@@ -127,7 +127,7 @@ impl NativeCommitRecordSlot {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0.get_or_insert(Err(StreamError::Unavailable));
+            state.0.get_or_insert(Err(StreamError::unavailable()));
             state.1.take()
         };
         if let Some(waiter) = waiter {

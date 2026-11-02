@@ -22,7 +22,10 @@ impl transport::Transport for HeldInputTerminal {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<transport::ConnectionResponses, crate::session::transport::ConnectionFailure>,
+    > {
         let held = self.held.clone();
         let calls = self.calls.clone();
         let mut lifetime = self.lifetime.clone();
@@ -36,20 +39,23 @@ impl transport::Transport for HeldInputTerminal {
                 }
                 Some((Ok(frame), (source, held)))
             });
-            serve_on_with_products(
-                Arc::new(MemoryStream::default()),
-                testing::authority(),
-                Products {
-                    calls: Some(calls),
-                    ..Products::default()
-                },
-                "local".into(),
-                Limits::default(),
-                Box::pin(source),
-                Some(Box::pin(async move {
-                    let _ = lifetime.changed().await;
-                })),
-            )
+            Ok(Box::pin(
+                serve_on_with_products(
+                    Arc::new(MemoryStream::default()),
+                    testing::authority(),
+                    Products {
+                        calls: Some(calls),
+                        ..Products::default()
+                    },
+                    "local".into(),
+                    Limits::default(),
+                    Box::pin(source),
+                    Some(Box::pin(async move {
+                        let _ = lifetime.changed().await;
+                    })),
+                )?
+                .map(|frame| frame.map_err(Into::into)),
+            ) as transport::ConnectionResponses)
         })
     }
 }
@@ -83,8 +89,8 @@ impl CallProvider for InputCalls {
             let (answer, reply) = oneshot::channel();
             admitted
                 .send((input, answer))
-                .map_err(|_| StreamError::Unavailable)?;
-            reply.await.map_err(|_| StreamError::Unavailable)
+                .map_err(|_| StreamError::unavailable())?;
+            reply.await.map_err(|_| StreamError::unavailable())
         })
     }
 }
@@ -123,7 +129,7 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     });
     let client = Client::with_transport(
         endpoint,
-        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::unavailable())))),
         Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, credential.into())?;
@@ -229,10 +235,10 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     let mut pending = Box::pin(cancelled.send(Bytes::from_static(b"blocked")));
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(cancelled_reply);
-    assert_eq!(pending.await, Err(StreamError::Unavailable));
+    assert_eq!(pending.await, Err(StreamError::unavailable()));
     assert!(matches!(
         input.next_chunk().await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
     assert_eq!(cancelled_first.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(cancelled_second.as_ref().as_ptr(), second_original.as_ptr());
@@ -257,13 +263,13 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     drop(input);
     assert_eq!(
         pending.await,
-        Err(StreamError::Unavailable),
+        Err(StreamError::unavailable()),
         "consumer loss must wake without escaped credit returning"
     );
     futures::pin_mut!(abandoned_reply);
     assert!(matches!(
         abandoned_reply.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
@@ -285,14 +291,17 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         .ok_or("no blocked terminal before host loss")?;
     drop(host);
     assert!(
-        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
+        matches!(
+            input.next_chunk().await,
+            Err(StreamError::Unavailable { .. })
+        ),
         "producer loss cannot become EOF"
     );
-    assert_eq!(finish.await, Err(StreamError::Unavailable));
+    assert_eq!(finish.await, Err(StreamError::unavailable()));
     futures::pin_mut!(lost);
     assert!(matches!(
         lost.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     assert_eq!(held.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
@@ -477,7 +486,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
     drop(host);
     assert!(matches!(
         stopped.next().await,
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable { .. }))
     ));
     assert_eq!(first.1.as_ref(), &body[..crate::MAX_RECORD_BYTES]);
     assert_eq!(

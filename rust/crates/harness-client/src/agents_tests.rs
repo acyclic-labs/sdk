@@ -14,15 +14,21 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, std::result::Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<
+        '_,
+        std::result::Result<transport::ConnectionResponses, transport::ConnectionFailure>,
+    > {
         Box::pin(async move {
-            session::serve(
-                self.0.clone(),
-                session::testing::authority(),
-                "node".into(),
-                session::Limits::default(),
-                source.map(Ok).boxed(),
-            )
+            Ok(Box::pin(
+                session::serve(
+                    self.0.clone(),
+                    session::testing::authority(),
+                    "node".into(),
+                    session::Limits::default(),
+                    source.map(Ok).boxed(),
+                )?
+                .map(|frame| frame.map_err(Into::into)),
+            ) as transport::ConnectionResponses)
         })
     }
 }
@@ -59,7 +65,7 @@ async fn empty_conversation_waits_for_creation_without_selection_retry()
     let path = agent.conversation()?;
     let pool = Client::with_transport(
         Arc::new(Endpoint(memory.clone())),
-        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(|_| Box::pin(async { Err(StreamError::unavailable()) })),
         Arc::new(PlatformExecutor),
     );
     pool.register_credential(0, session::testing::credential())?;
@@ -412,7 +418,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
         append(&memory, path.clone(), history).await?;
         let pool = Client::with_transport(
             Arc::new(Endpoint(memory.clone())),
-            Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+            Arc::new(|_| Box::pin(async { Err(StreamError::unavailable()) })),
             Arc::new(PlatformExecutor),
         );
         pool.register_credential(0, session::testing::credential())?;
@@ -592,7 +598,7 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
     .await?;
     let pool = Client::with_transport(
         Arc::new(Endpoint(Arc::clone(&memory))),
-        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(|_| Box::pin(async { Err(StreamError::unavailable()) })),
         Arc::new(PlatformExecutor),
     );
     pool.register_credential(0, session::testing::credential())?;

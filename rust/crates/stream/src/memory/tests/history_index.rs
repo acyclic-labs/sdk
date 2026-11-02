@@ -39,7 +39,7 @@ async fn point_read(
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(records.len(), 1);
-    let expected = records.first().ok_or(StreamError::Unavailable)?;
+    let expected = records.first().ok_or(StreamError::unavailable())?;
     assert_eq!(expected.sequence, sequence);
     assert_eq!(expected.value.as_ref(), b"value");
     let visits = HISTORY_VISITS.with(std::cell::Cell::get);
@@ -60,7 +60,7 @@ async fn point_read(
         .value_mut()
         .next()
         .await
-        .ok_or(StreamError::Unavailable)???;
+        .ok_or(StreamError::unavailable())???;
     assert_eq!(record.value(), expected);
     assert!(output.value_mut().next().await.is_none());
     // The position index charges key-byte comparisons as well as node visits;
@@ -140,7 +140,7 @@ async fn assert_records(
                 .collect::<Vec<_>>(),
             expected
                 .get(from..end)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .iter()
                 .collect::<Vec<_>>()
         );
@@ -162,7 +162,7 @@ async fn assert_records(
                 .value_mut()
                 .next()
                 .await
-                .ok_or(StreamError::Unavailable)???;
+                .ok_or(StreamError::unavailable())???;
             assert_eq!(record.value(), &expected);
         }
         assert!(output.value_mut().next().await.is_none());

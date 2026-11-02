@@ -25,7 +25,7 @@ impl Pool {
                 released = self.released.next() => { self.released(released?)?; },
                 id = self.removed.next() => self.remove(id?)?,
                 ready = future::poll_fn(|cx| poll_dials(&mut self.dials, cx)), if !self.dials.is_empty() => {
-                    let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
+                    let (node,epoch,result) = ready.ok_or(StreamError::unavailable())?;
                     self.dial_ready(&node, epoch, result)?;
                 }
                 () = future::ready(()), if !self.pending.is_empty() => {
@@ -37,11 +37,11 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(StreamError::Unavailable)) | None => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&error),
+                            Some(Err(transport::ConnectionFailure { reconnect: true, .. })) | None => self.reconnect(&node)?,
+                            Some(Err(error)) => self.fail_link(&node,&error.cause),
                         }
                     }
-                    None => return Err(StreamError::Unavailable),
+                    None => return Err(StreamError::unavailable()),
                 }
             }
             self.close_idle();
@@ -64,7 +64,7 @@ impl Pool {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in stale {
-            self.reject(id, StreamError::Unavailable);
+            self.reject(id, StreamError::unavailable());
         }
         Ok(())
     }
@@ -101,7 +101,7 @@ impl Pool {
                             .get(&opening.channel_id)
                             .is_some_and(|route| !route.resumable())
                         {
-                            self.reject(opening.channel_id, StreamError::Unavailable);
+                            self.reject(opening.channel_id, StreamError::unavailable());
                         }
                     }
                     ready.0.clone()
@@ -120,7 +120,7 @@ impl Pool {
                     for (id, _) in &bound {
                         self.routes
                             .rehome(id, &installed)
-                            .ok_or(StreamError::Unavailable)?;
+                            .ok_or(StreamError::unavailable())?;
                     }
                 }
                 if !reused && let Some(opening) = opening {
@@ -204,7 +204,7 @@ impl Pool {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
                 let error = match error {
-                    StreamError::Unavailable | StreamError::InvalidArgument => {
+                    StreamError::Unavailable { .. } | StreamError::InvalidArgument => {
                         StreamError::InvalidResponse
                     }
                     other => other,
@@ -275,7 +275,7 @@ impl Pool {
                     .get(&id)
                     .filter(|route| route.opened && matches!(route.kind, Kind::ActorSocket(_)));
                 let Some(route) = route else {
-                    let _ = sent.send(Err(StreamError::Unavailable));
+                    let _ = sent.send(Err(StreamError::unavailable()));
                     return Ok(());
                 };
                 let value = frame(
@@ -306,7 +306,7 @@ impl Pool {
                         && matches!(&route.kind, Kind::ActorCall(call) if call.input)
                 });
                 let Some(route) = route else {
-                    let _ = sent.send(Err(StreamError::Unavailable));
+                    let _ = sent.send(Err(StreamError::unavailable()));
                     return Ok(());
                 };
                 if sent.is_closed() {
@@ -320,7 +320,7 @@ impl Pool {
                     route
                         .input
                         .as_ref()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .0
                         .finishing(sent)?;
                     // The original queue verdict is insufficient for half-close:
@@ -354,7 +354,7 @@ impl Pool {
                 } = *open;
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
-                    let _ = ready.send(Err(StreamError::Unavailable));
+                    let _ = ready.send(Err(StreamError::unavailable()));
                     return Ok(());
                 }
                 if self.routes.len() >= Limits::default().channels {
@@ -427,7 +427,7 @@ impl Pool {
             route.buffered_data = route
                 .buffered_data
                 .checked_sub(1)
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(StreamError::unavailable())?;
         }
         self.flush_watermark(id)?;
         let Some(route) = self.routes.get_mut(&id) else {
@@ -465,10 +465,14 @@ impl Pool {
             return self.control(node, received.generation, received.body.as_ref());
         }
         if matches!(received.body, Some(Body::Data(_))) {
-            let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
+            let link = self.links.get_mut(node).ok_or(StreamError::unavailable())?;
             wire_codec::session::consume_credit(&mut link.credit, received)?;
         }
-        let epoch = self.links.get(node).ok_or(StreamError::Unavailable)?.epoch;
+        let epoch = self
+            .links
+            .get(node)
+            .ok_or(StreamError::unavailable())?
+            .epoch;
         let length = received.encoded_len() as u64;
         let Some(route) = self
             .routes
@@ -513,7 +517,7 @@ impl Pool {
                             Some(error)
                         } else {
                             if let Some(input) = &route.input {
-                                let link = self.links.get(node).ok_or(StreamError::Unavailable)?;
+                                let link = self.links.get(node).ok_or(StreamError::unavailable())?;
                                 input.0.bind(Arc::clone(&link.input))?;
                             }
                             Self::opened(route, id, &opened).err()
@@ -537,14 +541,14 @@ impl Pool {
             }
             Some(Body::Closed(closed)) => {
                 if let Some(input) = &route.input {
-                    input.0.close(StreamError::from_session_close(&closed.code));
+                    input.0.close(wire_codec::session::closed_error(closed));
                 }
                 let error = Self::closed(route, &closed);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.
                     self.flush_watermark(id)?;
                 }
-                let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
+                let route = self.routes.remove(&id).ok_or(StreamError::unavailable())?;
                 if let Some(error) = error {
                     self.executor.spawn(Box::pin(async move {
                         let _ = route.records.send(Err(error)).await;
@@ -554,21 +558,21 @@ impl Pool {
             }
             Some(Body::Moved(moved)) => {
                 if !route.resumable() {
-                    self.reject(id, StreamError::Unavailable);
+                    self.reject(id, StreamError::unavailable());
                     return Ok(());
                 }
-                let destination = moved.node.ok_or(StreamError::Unavailable)?;
+                let destination = moved.node.ok_or(StreamError::unavailable())?;
                 if destination.node_id.is_empty()
                     || destination.placement_epoch <= route.placement_epoch
                 {
-                    return Err(StreamError::Unavailable);
+                    return Err(StreamError::unavailable());
                 }
                 route.placement_epoch = destination.placement_epoch;
                 route.generation = route.progress.fence()?;
                 route.opened = false;
                 self.routes
                     .rehome(&id, &destination.node_id)
-                    .ok_or(StreamError::Unavailable)?;
+                    .ok_or(StreamError::unavailable())?;
                 if self.links.contains_key(&destination.node_id) {
                     self.subscribe(id)
                 } else {
@@ -598,7 +602,7 @@ impl Pool {
                 .0
                 .window
                 .grant(&grant),
-            _ => Err(StreamError::Unavailable),
+            _ => Err(StreamError::unavailable()),
         }
     }
     fn watermark(
@@ -615,7 +619,7 @@ impl Pool {
                 || mark.preceding_commit_id.len() != 32
                 || after.next == 0
             {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             route.received = after.next;
         }
@@ -710,7 +714,7 @@ impl Pool {
             route.progress.end();
             return None;
         }
-        let error = StreamError::from_session_close(&closed.code);
+        let error = wire_codec::session::closed_error(closed);
         if let Some(ready) = route.ready.take() {
             let _ = ready.send(Err(error));
             return None;
@@ -725,13 +729,13 @@ impl Pool {
         body: Option<&Body>,
     ) -> Result<(), StreamError> {
         if generation != 0 {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         match body {
             Some(Body::InterestApplied(applied)) => {
-                let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
+                let link = self.links.get_mut(node).ok_or(StreamError::unavailable())?;
                 if applied.revision < link.applied_revision || applied.revision > link.revision {
-                    return Err(StreamError::Unavailable);
+                    return Err(StreamError::unavailable());
                 }
                 link.applied_revision = applied.revision;
                 Ok(())
@@ -739,10 +743,10 @@ impl Pool {
             Some(Body::Window(grant)) => self
                 .links
                 .get(node)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .input
                 .grant(grant),
-            _ => Err(StreamError::Unavailable),
+            _ => Err(StreamError::unavailable()),
         }
     }
     fn data(
@@ -755,11 +759,11 @@ impl Pool {
         epoch: u64,
     ) -> Result<(), StreamError> {
         // Pending skipped progress shares the next data envelope in wire order.
-        let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        let route = self.routes.get_mut(&id).ok_or(StreamError::unavailable())?;
         let Some(Body::Data(data)) = &item.wire().body else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
-        let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+        let after = data.after.as_ref().ok_or(StreamError::unavailable())?;
         let sequence = match (&route.kind, data.item.as_ref()) {
             (Kind::Follow(follow), _) => {
                 wire_codec::session::follow_data_sequence(follow, route.received, data)?
@@ -774,7 +778,7 @@ impl Pool {
             (Kind::ActorSocket(_), Some(Item::ActorSocket(_))) => {
                 wire_codec::session::actor_socket_sequence(route.received, &data)?
             }
-            _ => return Err(StreamError::Unavailable),
+            _ => return Err(StreamError::unavailable()),
         };
         route.received = after.next;
         route.received_opaque = after.opaque.clone();
@@ -821,7 +825,7 @@ impl Pool {
         let epoch = self
             .links
             .get(&route.node)
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .epoch;
         let delivery = Delivery {
             before: None,
@@ -864,7 +868,7 @@ impl Pool {
         if node == self.home
             && matches!(
                 error,
-                StreamError::Unavailable | StreamError::InvalidArgument
+                StreamError::Unavailable { .. } | StreamError::InvalidArgument
             )
         {
             self.reset_home();

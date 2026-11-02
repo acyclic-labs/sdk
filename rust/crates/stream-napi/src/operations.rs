@@ -212,7 +212,7 @@ mod tests {
 
         let (producer, event) = tokio::sync::oneshot::channel::<()>();
         let pending = run_operation!(
-            async { event.await.map_err(|_| StreamError::Unavailable) },
+            async { event.await.map_err(|_| StreamError::unavailable()) },
             None
         );
         futures::pin_mut!(pending);
@@ -220,13 +220,13 @@ mod tests {
         assert!(futures::poll!(&mut pending).is_pending());
         drop(producer);
         let error = pending.await.expect_err("dropped event producer");
-        assert_eq!(error.code, StreamError::Unavailable.code());
-        assert_eq!(error.message, StreamError::Unavailable.to_string());
+        assert_eq!(error.code, StreamError::unavailable().code());
+        assert_eq!(error.message, StreamError::unavailable().to_string());
 
         let cancellation = NativeStreamCancellation::new();
         let (producer, event) = tokio::sync::oneshot::channel::<()>();
         let pending = run_operation!(
-            async { event.await.map_err(|_| StreamError::Unavailable) },
+            async { event.await.map_err(|_| StreamError::unavailable()) },
             Some(&cancellation)
         );
         futures::pin_mut!(pending);

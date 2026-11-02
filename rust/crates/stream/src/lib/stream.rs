@@ -211,7 +211,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         };
         for record in &page {
             if record.sequence != self.next {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             self.next = self.next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
         }

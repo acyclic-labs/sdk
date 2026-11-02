@@ -626,10 +626,10 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
                 let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
                     &mut observation
                         .as_mut()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .outcome
                 else {
-                    return Err(StreamError::Unavailable);
+                    return Err(StreamError::unavailable());
                 };
                 if fault == 0 {
                     receipt.start = receipt.end;
@@ -641,13 +641,16 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
             } else {
                 let Some(crate::CommittedMutation::Append(append)) = envelope
                     .as_mut()
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .mutations
                     .first_mut()
                 else {
-                    return Err(StreamError::Unavailable);
+                    return Err(StreamError::unavailable());
                 };
-                let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
+                let record = append
+                    .records
+                    .first_mut()
+                    .ok_or(StreamError::unavailable())?;
                 if fault == 2 {
                     record.sequence = 9;
                 } else {
@@ -706,15 +709,15 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
                 .envelope()
                 .is_some_and(|envelope| envelope.commit_id == receipt.commit_id)
         })
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let corrupted = corrupt_retained(&encoded, index, |_, envelope| {
         let Some(crate::CommittedMutation::Fork(fork)) = envelope
             .as_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .mutations
             .first_mut()
         else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         fork.source = later;
         Ok(())
@@ -750,13 +753,13 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
     let future = state
         .paths
         .get(&source)
-        .ok_or(StreamError::Unavailable)?
+        .ok_or(StreamError::unavailable())?
         .history
         .clone();
     let mut corrupted = state
         .paths
         .get(&destination)
-        .ok_or(StreamError::Unavailable)?
+        .ok_or(StreamError::unavailable())?
         .clone();
     corrupted.history = Some(Arc::new(History::Prefix {
         keys: Default::default(),

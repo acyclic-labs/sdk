@@ -558,7 +558,10 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         ),
         ("inherited_wake", &mut inherited_follow, 1, b"child-live"),
     ] {
-        let next = follow.next().await.unwrap_or(Err(StreamError::Unavailable));
+        let next = follow
+            .next()
+            .await
+            .unwrap_or(Err(StreamError::unavailable()));
         let record = history.result(step, next)?;
         history.check(
             step,

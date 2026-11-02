@@ -81,7 +81,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         Poll::Ready(Some(Err(error))) => return Poll::Ready(error.into()),
-                        Poll::Ready(None) => return Poll::Ready(StreamError::Unavailable.into()),
+                        Poll::Ready(None) => return Poll::Ready(StreamError::unavailable().into()),
                         Poll::Pending => break,
                     }
                 }

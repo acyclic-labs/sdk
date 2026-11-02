@@ -159,7 +159,7 @@ async fn publication_uses_only_required_sql_observations()
     let observed = provider
         .inspect_idempotency(original.idempotency_key.clone())
         .now_or_never()
-        .ok_or(StreamError::Unavailable)??
+        .ok_or(StreamError::unavailable())??
         .ok_or(StreamError::NotFound)?;
     assert_eq!(
         observed.outcome,

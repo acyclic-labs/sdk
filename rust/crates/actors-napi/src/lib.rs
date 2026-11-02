@@ -21,6 +21,12 @@ pub struct NativeActorsErrorMetadata {
     pub code: String,
     /// Human-readable reason.
     pub message: String,
+    /// Original remote unavailable reason.
+    pub reason: Option<String>,
+    /// Exact original reason bytes when they are not UTF-8.
+    #[napi(js_name = "reasonBytes")]
+    #[serde(rename = "reasonBytes", skip_serializing_if = "Option::is_none")]
+    pub reason_bytes: Option<Vec<u8>>,
     #[napi(js_name = "grpcCode")]
     #[serde(rename = "grpcCode", skip_serializing_if = "Option::is_none")]
     /// Numeric gRPC status code.
@@ -180,6 +186,8 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
     NativeActorsErrorMetadata {
         code: metadata.code,
         message: metadata.message,
+        reason: metadata.reason,
+        reason_bytes: metadata.reason_bytes,
         grpc_code: metadata.grpc_code,
         grpc_name: metadata.grpc_name,
         credential_rejected: metadata.credential_rejected,
@@ -210,6 +218,7 @@ mod tests {
     #[test]
     fn service_metadata_preserves_original_message_unknown_code_and_bytes() {
         let metadata = client_error(client::Error::Service {
+            reason: client::RefusalReason::Unspecified,
             grpc_code: 7,
             message: String::from("original grpc diagnostic"),
             raw_details: vec![255, 0],

@@ -19,7 +19,7 @@ pub(super) async fn data(
     source: &mut ApplicationSubscription,
 ) -> Result<ApplicationDelivery, StreamError> {
     loop {
-        let delivery = source.next().await?.ok_or(StreamError::Unavailable)?;
+        let delivery = source.next().await?.ok_or(StreamError::unavailable())?;
         if matches!(delivery.frame().body, Some(Body::Data(_))) {
             return Ok(delivery);
         }
@@ -114,7 +114,10 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
     assert_eq!(source.checkpoint()?, initial);
     drop(delivery); // Credit returns; application progress must remain zero.
     assert_eq!(source.checkpoint()?, initial);
-    assert!(matches!(source.next().await, Err(StreamError::Unavailable)));
+    assert!(matches!(
+        source.next().await,
+        Err(StreamError::Unavailable { .. })
+    ));
     drop(source);
 
     let mut recovered = client.deliveries(initial).await?;

@@ -73,7 +73,7 @@ impl Accounts {
     pub fn follow(&self, account: impl Into<String>) -> Result<(), StreamError> {
         self.0
             .unbounded_send(account.into())
-            .map_err(|_| StreamError::Unavailable)
+            .map_err(|_| StreamError::unavailable())
     }
 }
 
@@ -124,7 +124,7 @@ impl Future for Next<'_> {
                 let event = match futures::ready!(records.as_mut().poll_next(cx)) {
                     Some(Ok(record)) => Event::Record(record),
                     Some(Err(error)) => Event::Ended(error),
-                    None => Event::Ended(StreamError::Unavailable),
+                    None => Event::Ended(StreamError::unavailable()),
                 };
                 let Some(Reading::Records(records)) = this.reading.take() else {
                     unreachable!("original read retains its follow")
@@ -234,7 +234,7 @@ impl<S: Source> TrustFeed<S> {
         } = self;
         let environment = follower
             .environment()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let mut follows = FuturesUnordered::new();
         for (key, from) in next.iter() {
             follows.push(open(
@@ -333,7 +333,7 @@ impl<S: Source> TrustFeed<S> {
                 }
                 Either::Left(Some(((_, Event::Ended(error)), _))) => return Err(error),
                 // Every follow ends with an `Ended` event first.
-                Either::Left(None) => return Err(StreamError::Unavailable),
+                Either::Left(None) => return Err(StreamError::unavailable()),
                 Either::Right(Some(account)) => {
                     let key = Some(account);
                     if !next.contains_key(&key) {
@@ -383,10 +383,10 @@ fn open<'a, S: Source>(
             let mut refused = false;
             let mut replayed = false;
             while position < tail {
-                let record = records.next().await.ok_or(StreamError::Unavailable)??;
+                let record = records.next().await.ok_or(StreamError::unavailable())??;
                 let initialized = follower
                     .initialized(account)
-                    .map_err(|_| StreamError::Unavailable)?;
+                    .map_err(|_| StreamError::unavailable())?;
                 let now = follower.protected_now(clock.now_unix_millis() / 1000);
                 match follower.apply_queued(account, &record.value, now) {
                     Ok(_) => {
@@ -404,7 +404,7 @@ fn open<'a, S: Source>(
             }
             if !follower
                 .initialized(account)
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
             {
                 return Err(StreamError::AccessDenied);
             }

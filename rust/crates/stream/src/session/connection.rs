@@ -31,7 +31,7 @@ impl Connections {
         // Lock order: never nested with pool, cursor or signal locks.
         // Registration and generation observation are atomic. Wake after unlock.
         let waiters = {
-            let mut state = self.0.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.0.lock().map_err(|_| StreamError::unavailable())?;
             state.generation = state
                 .generation
                 .checked_add(1)
@@ -65,7 +65,10 @@ impl Future for Change<'_> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let connections = self.connections;
         let waker = cx.waker().clone();
-        let mut state = connections.0.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = connections
+            .0
+            .lock()
+            .map_err(|_| StreamError::unavailable())?;
         if state.generation > self.after {
             return Poll::Ready(Ok(state.generation));
         }

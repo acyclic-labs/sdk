@@ -82,7 +82,7 @@ impl LocalStream {
                                     slot.close();
                                     return Err({
                                         let _ = work.record::<()>(Err(error));
-                                        StreamError::Unavailable
+                                        StreamError::unavailable()
                                     });
                                 }
                             };
@@ -172,11 +172,11 @@ impl LocalStream {
             LocalStreamError::Io(error) => match &self.work {
                 Some(work) => {
                     let _ = work.record::<()>(Err(error));
-                    StreamError::Unavailable
+                    StreamError::unavailable()
                 }
-                None => StreamError::Unavailable,
+                None => StreamError::unavailable(),
             },
-            _ => StreamError::Unavailable,
+            _ => StreamError::unavailable(),
         }
     }
 }

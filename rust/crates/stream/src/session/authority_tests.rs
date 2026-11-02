@@ -97,7 +97,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         assert!(
             matches!(
                 futures::poll!(next.as_mut()),
-                std::task::Poll::Ready(Some(Err(StreamError::Unavailable))),
+                std::task::Poll::Ready(Some(Err(StreamError::Unavailable { .. }))),
             ),
             "clock loss must terminate, rather than expire, re-arm or park"
         );

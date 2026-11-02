@@ -50,7 +50,7 @@ fn initialization_negative_control_splits_the_cache_cut() {
 fn initialization_does_not_hide_failures_or_replace_the_shared_client() {
     loom::model(|| {
         let slot = SyncMutex::new(None);
-        assert!(shared::<usize>(&slot, || Err(StreamError::Unavailable)).is_err());
+        assert!(shared::<usize>(&slot, || Err(StreamError::unavailable())).is_err());
         assert_eq!(shared(&slot, || Ok(7)).unwrap(), 7);
         assert_eq!(shared(&slot, || panic!("initialized twice")).unwrap(), 7);
     });

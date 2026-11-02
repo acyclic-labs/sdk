@@ -49,7 +49,7 @@ pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool)
                 finished
                     .changed()
                     .await
-                    .map_err(|_| StreamError::Unavailable)
+                    .map_err(|_| StreamError::unavailable())
                     .map(|()| None)
             };
             let persist = std::pin::pin!(persist);
@@ -73,7 +73,7 @@ pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool)
             drop(finish);
             assert!(matches!(
                 writer.join().unwrap(),
-                Err(StreamError::Unavailable)
+                Err(StreamError::Unavailable { .. })
             ));
         } else {
             finish.send_replace(());

@@ -28,7 +28,7 @@ impl hosting::Platform for Policy {
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         Box::pin(async move {
             let cancel =
-                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::Unavailable)?;
+                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::unavailable())?;
             let principal =
                 acyclic_auth::contract::PrincipalProto::from(principal.clone()).encode_to_vec();
             let command = to_js(command).map_err(|_| StreamError::InvalidArgument)?;
@@ -40,10 +40,10 @@ impl hosting::Platform for Policy {
                     &command,
                     &cancel.signal,
                 )
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             match result.as_bool() {
                 Some(true) => Ok(PolicyDecision::Allow),
                 Some(false) => Ok(PolicyDecision::Deny),
@@ -57,14 +57,14 @@ impl hosting::Platform for Policy {
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
             let cancel =
-                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::Unavailable)?;
+                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::unavailable())?;
             let result = self
                 .admitted
                 .call1(&JsValue::UNDEFINED, &cancel.signal)
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             Ok(())
         })
     }
@@ -388,14 +388,14 @@ impl WasmAgentServer {
     ) -> std::result::Result<JsValue, JsValue> {
         let (operation, handle) = futures::future::abortable(self.owned(async {
             let cancel = crate::wasm::cancel::Cancel::new()
-                .map_err(|_| stream_error(StreamError::Unavailable))?;
+                .map_err(|_| stream_error(StreamError::unavailable()))?;
             let result = operation.call1(&JsValue::UNDEFINED, &cancel.signal)?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result)).await
         }));
         let _listening = guest::Listening::abort(&signal, move || handle.abort())?;
         operation
             .await
-            .map_err(|_| stream_error(StreamError::Unavailable))?
+            .map_err(|_| stream_error(StreamError::unavailable()))?
     }
 
     pub async fn read(
@@ -484,7 +484,7 @@ impl WasmAgentServer {
         let closed = lifetime.changed();
         futures::pin_mut!(closed, operation);
         match futures::future::select(closed, operation).await {
-            futures::future::Either::Left(_) => Err(stream_error(StreamError::Unavailable)),
+            futures::future::Either::Left(_) => Err(stream_error(StreamError::unavailable())),
             futures::future::Either::Right((result, _)) => result,
         }
     }
@@ -536,7 +536,7 @@ impl WasmAgentServer {
     }
     fn served(&self) -> std::result::Result<Arc<Hosted>, JsValue> {
         if self.lifetime.borrow().is_none() {
-            return Err(stream_error(StreamError::Unavailable));
+            return Err(stream_error(StreamError::unavailable()));
         }
         self.server
             .borrow()
@@ -549,7 +549,7 @@ impl WasmAgentServer {
             .borrow()
             .as_ref()
             .map(tokio::sync::watch::Sender::subscribe)
-            .ok_or_else(|| stream_error(StreamError::Unavailable))
+            .ok_or_else(|| stream_error(StreamError::unavailable()))
     }
 }
 

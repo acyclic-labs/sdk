@@ -35,7 +35,7 @@ impl FollowIndex {
         filter: FollowFilter,
         tail: u64,
     ) -> Result<FollowInterest, StreamError> {
-        let mut state = index.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = index.lock().map_err(|_| StreamError::unavailable())?;
         let id = state.next.checked_add(1).ok_or(StreamError::Capacity)?;
         let (changed, receiver) = watch::channel(tail);
         if let Some(ranges) = filter.ranges() {

@@ -194,7 +194,7 @@ mod uncertain_tests {
 
     #[test]
     fn store_uncertainty_survives_every_wrapper() {
-        for undecided in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
+        for undecided in [StreamError::unavailable(), StreamError::DeadlineElapsed] {
             assert!(Error::Stream(undecided.clone()).uncertain());
             assert!(Error::Turn(Box::new(crate::Error::from(undecided.clone()))).uncertain());
             assert!(

@@ -51,7 +51,7 @@ impl FollowState {
                 if self.anchor.is_some() {
                     StreamError::PrefixNotRetained
                 } else {
-                    StreamError::Unavailable
+                    StreamError::unavailable()
                 }
             }),
         }

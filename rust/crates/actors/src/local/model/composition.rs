@@ -95,7 +95,7 @@ async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), 
     for refusal in StreamError::ALL {
         if matches!(
             refusal,
-            StreamError::Unavailable | StreamError::InvalidResponse
+            StreamError::Unavailable { .. } | StreamError::InvalidResponse
         ) {
             continue;
         }
@@ -342,7 +342,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .clone();
         assert!(matches!(
             store.enqueue_invoke(&invocation).await,
-            Err(Error::Stream(StreamError::Unavailable))
+            Err(Error::Stream(StreamError::Unavailable { .. }))
         ));
         let original = provider.inspect_idempotency(operation.clone()).await?;
         assert_eq!(original.is_some(), fault == Fault::LoseAck);

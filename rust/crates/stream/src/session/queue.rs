@@ -51,7 +51,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 let channel = self
                     .channels
                     .get_mut(&identity.channel_id)
-                    .ok_or(StreamError::Unavailable)?;
+                    .ok_or(StreamError::unavailable())?;
                 channel.progress = Some(mark);
                 self.flush_progress(identity.channel_id)?;
                 self.refresh_source(identity.channel_id);
@@ -92,7 +92,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 None,
             ),
             Ok(Event::End) => {
-                self.end(identity.channel_id, wire_codec::session::END_CODE)?;
+                self.end(identity.channel_id, Ok(()))?;
                 return Ok(());
             }
             Err(error) => {
@@ -109,14 +109,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     self.controls.push_back(frame(
                         identity.channel_id,
                         generation,
-                        Body::Closed(wire::SessionClosed {
-                            code: error.code().into(),
-                            message: String::new(),
-                        }),
+                        Body::Closed(wire_codec::session::closed(error)),
                     ));
                     return Ok(());
                 }
-                self.end(identity.channel_id, error.code())?;
+                self.end(identity.channel_id, Err(error))?;
                 return Ok(());
             }
         };
@@ -134,7 +131,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = self
             .channels
             .get_mut(&identity.channel_id)
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         let prior = key.as_ref().and_then(|key| {
             channel
                 .pending
@@ -159,14 +156,26 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
 
-    /// Stops both producers; `code` closes the channel after its queued frames.
-    pub(super) fn end(&mut self, id: u64, code: &'static str) -> Result<(), StreamError> {
-        let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
-        channel.ending = Some(code);
+    /// Stops both producers; the original outcome follows its queued frames.
+    pub(super) fn end(
+        &mut self,
+        id: u64,
+        outcome: Result<(), StreamError>,
+    ) -> Result<(), StreamError> {
+        let channel = self
+            .channels
+            .get_mut(&id)
+            .ok_or(StreamError::unavailable())?;
         channel.socket.take();
         if let Some(input) = &mut channel.input {
-            let _ = input.finish(Err(StreamError::from_session_close(code)));
+            let error = outcome
+                .as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_else(StreamError::unavailable);
+            let _ = input.finish(Err(error));
         }
+        channel.ending = Some(outcome);
         self.sources.remove(id);
         self.finish_if_drained(id)
     }
@@ -179,15 +188,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         {
             return Ok(());
         }
-        if let Some(channel) = self.channels.get(&id)
-            && let Some(code) = channel.ending
+        if let Some(channel) = self.channels.get_mut(&id)
+            && let Some(outcome) = channel.ending.take()
         {
             self.controls.push_back(frame(
                 id,
                 channel.generation,
-                Body::Closed(wire::SessionClosed {
-                    code: code.into(),
-                    message: String::new(),
+                Body::Closed(match outcome {
+                    Ok(()) => wire::SessionClosed {
+                        code: wire_codec::session::END_CODE.into(),
+                        message: String::new(),
+                        refusal_reason: None,
+                    },
+                    Err(error) => wire_codec::session::closed(error),
                 }),
             ));
             self.remove(id)?;
@@ -225,7 +238,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             let generation = self
                 .channels
                 .get(&id)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .generation;
             self.close_authority(
                 wire::SessionChannel {
@@ -246,17 +259,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 let generation = self
                     .channels
                     .get(&id)
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .generation;
                 self.remove(id)?;
                 return Ok(Some(
                     frame(
                         id,
                         generation,
-                        Body::Closed(wire::SessionClosed {
-                            code: error.code().into(),
-                            message: String::new(),
-                        }),
+                        Body::Closed(wire_codec::session::closed(error)),
                     )
                     .into(),
                 ));
@@ -267,17 +277,20 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         {
             self.head_visits += 1;
         }
-        let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        let channel = self
+            .channels
+            .get_mut(&id)
+            .ok_or(StreamError::unavailable())?;
         let pending = channel
             .pending
             .pop_front()
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         wire_codec::session::consume_credit(&mut self.credit, pending.frame.wire())?;
         wire_codec::session::consume_credit(&mut channel.credit, pending.frame.wire())?;
         self.pending_bytes -= pending.frame.wire().encoded_len();
         self.pending_frames -= 1;
         if let Some(Body::Data(data)) = &pending.frame.wire().body {
-            channel.sent = data.after.clone().ok_or(StreamError::Unavailable)?;
+            channel.sent = data.after.clone().ok_or(StreamError::unavailable())?;
         }
         self.finish_if_drained(id)?;
         self.flush_progress(id)?;
@@ -293,9 +306,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Ok(());
         }
         if let Some(mark) = channel.progress.take() {
-            let after = mark.after.as_ref().ok_or(StreamError::Unavailable)?;
+            let after = mark.after.as_ref().ok_or(StreamError::unavailable())?;
             if after.next <= channel.sent.next {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             channel.sent = after.clone();
             self.controls

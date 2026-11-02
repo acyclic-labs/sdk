@@ -21,14 +21,14 @@ impl Admissions {
         }
     }
     pub(super) fn insert(&self, id: u64) -> Result<(), StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         state.entries.insert(id, ());
         Ok(())
     }
     pub(super) fn remove(&self, id: u64) -> Result<(), StreamError> {
         self.state
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .entries
             .remove(&id);
         Ok(())
@@ -40,7 +40,7 @@ impl Admissions {
         progress.cancel();
     }
     pub(super) fn bind_home(&self, node: &str) -> Result<(), StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         state.home.clear();
         state.home.push_str(node);
         Ok(())

@@ -153,7 +153,7 @@ impl MemoryStream {
             if let Some(allocation) = _allocation {
                 self.work
                     .as_ref()
-                    .ok_or(StreamError::Unavailable)?
+                    .ok_or(StreamError::unavailable())?
                     .record(allocation.absorb(&mut other))?;
             } else {
                 *_allocation = Some(other);
@@ -212,7 +212,7 @@ impl MemoryStream {
 
     fn digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
         let bytes = commit_hash_bytes(request);
-        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        let work = self.work.as_ref().ok_or(StreamError::unavailable())?;
         work.record(work.meter.admit_codec(0, 0, bytes))?;
         let digest = commit_digest(request)?;
         work.record(work.meter.record_codec(0, 0, bytes))?;

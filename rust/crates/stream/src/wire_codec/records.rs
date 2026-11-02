@@ -151,13 +151,13 @@ pub fn read_response_batch(value: wire::ReadResponse) -> Result<Bytes, StreamErr
     let length = usize::try_from(value.decoded_length)
         .ok()
         .filter(|length| *length <= crate::MAX_COMMAND_BYTES)
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     match wire::Codec::try_from(value.codec) {
         Ok(wire::Codec::None) if value.data.len() == length => Ok(value.data),
         Ok(wire::Codec::Zstd) => zstd(&value.data, length)
             .map(Bytes::from)
-            .ok_or(StreamError::Unavailable),
-        _ => Err(StreamError::Unavailable),
+            .ok_or(StreamError::unavailable()),
+        _ => Err(StreamError::unavailable()),
     }
 }
 
@@ -166,7 +166,7 @@ pub fn read_response_records(value: wire::ReadResponse) -> Result<Vec<wire::Reco
     use prost::Message;
     wire::RecordBatch::decode(read_response_batch(value)?)
         .map(|batch| batch.records)
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|_| StreamError::unavailable())
 }
 
 /// Decompresses one or more complete Zstandard frames to exactly `length` bytes.

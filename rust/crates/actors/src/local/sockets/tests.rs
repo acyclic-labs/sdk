@@ -758,7 +758,7 @@ impl StreamProvider for ControlledStream {
             }
             match pause {
                 Some((false, resumed)) => {
-                    resumed.await.map_err(|_| StreamError::Unavailable)?;
+                    resumed.await.map_err(|_| StreamError::unavailable())?;
                     self.inner.write(request).await
                 }
                 Some((true, resumed)) => {
@@ -774,7 +774,7 @@ impl StreamProvider for ControlledStream {
                         ));
                         *self.accepted.lock().unwrap() = Some((original, outcome.clone()));
                     }
-                    resumed.await.map_err(|_| StreamError::Unavailable)?;
+                    resumed.await.map_err(|_| StreamError::unavailable())?;
                     result
                 }
                 None => self.inner.write(request).await,
@@ -1205,7 +1205,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     drop(executor.take()?); // Drop the actual close future before its first poll.
     assert!(matches!(
         waiting.await,
-        Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable))
+        Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable { .. }))
     ));
     let terminal = pin
         .completion()
@@ -1213,7 +1213,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         .expect_err("original producer loss must remain terminal");
     assert!(matches!(
         terminal.downcast_ref::<Error>(),
-        Some(Error::Stream(StreamError::Unavailable))
+        Some(Error::Stream(StreamError::Unavailable { .. }))
     ));
     assert!(
         last.await.is_err(),
@@ -1348,7 +1348,7 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         if lose_producer {
             drop(opening);
             assert!(
-                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable)))
+                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable { .. })))
             );
             assert!(last.await.is_err());
             assert!(matches!(

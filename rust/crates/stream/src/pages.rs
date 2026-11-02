@@ -57,7 +57,7 @@ impl<S: futures::Stream<Item = Result<Record, StreamError>>> futures::Stream for
                 return Poll::Ready(Some(Ok(record)));
             }
             Poll::Ready(Some(Err(error))) => Err(error),
-            Poll::Ready(_) => Err(StreamError::Unavailable),
+            Poll::Ready(_) => Err(StreamError::unavailable()),
         };
         *this.done = true;
         Poll::Ready(Some(result))
@@ -143,12 +143,12 @@ impl<S: PageSource> PinnedCursor<S> {
                 .map(Iterator::peekable);
             self.exhausted = self.page.is_none();
             if self.page.as_mut().is_some_and(|page| page.peek().is_none()) {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
         }
         let record = self.page.as_mut().and_then(|page| page.peek());
         if record.is_some_and(|record| record.sequence != self.next) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(record)
     }
@@ -162,7 +162,7 @@ impl<S: PageSource> PinnedCursor<S> {
             .page
             .as_mut()
             .and_then(Iterator::next)
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         self.next = record
             .sequence
             .checked_add(1)

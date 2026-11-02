@@ -1108,7 +1108,7 @@ where
         let server = self.this.upgrade();
         Box::pin(async move {
             let call = admitted?;
-            let server = server.ok_or(StreamError::Unavailable)?;
+            let server = server.ok_or(StreamError::unavailable())?;
             let principal = authorization.principal()?;
             let by = Sender::User {
                 principal: principal.id.clone(),

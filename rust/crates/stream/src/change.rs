@@ -36,7 +36,7 @@ impl Change {
         }
     }
     pub(crate) fn subscribe(&self) -> Result<Subscription, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         let id = state.next_id;
         let next_id = id.checked_add(1).ok_or(StreamError::Capacity)?;
         let seen = state.revision.ok_or(StreamError::Capacity)?;
@@ -49,7 +49,7 @@ impl Change {
     }
     pub(crate) fn notify(&self) -> Result<(), StreamError> {
         let (revision, waiters) = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             state.revision = state.revision.and_then(|revision| revision.checked_add(1));
             (state.revision, std::mem::take(&mut state.waiters))
         };
@@ -62,7 +62,7 @@ impl Change {
 impl Subscription {
     fn mark(&mut self) -> Result<(), StreamError> {
         let previous = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             self.seen = state.revision.ok_or(StreamError::Capacity)?;
             state.waiters.remove(&self.id)
         };
@@ -73,7 +73,7 @@ impl Subscription {
         let wake = cx.waker().clone();
         let (previous, result) = {
             let Ok(mut state) = self.state.lock() else {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable()));
             };
             let Some(revision) = state.revision else {
                 return Poll::Ready(Err(StreamError::Capacity));

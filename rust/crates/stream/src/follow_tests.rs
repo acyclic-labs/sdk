@@ -16,7 +16,7 @@ async fn seed(
         })
         .await?;
     let AppendOutcome::Committed(receipt) = result else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     Ok(receipt.commit_id)
 }

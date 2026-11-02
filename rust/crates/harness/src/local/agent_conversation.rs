@@ -646,7 +646,7 @@ mod tests {
         );
         assert_eq!(
             sent(Ok(Err(AgentExchangeError::Session(
-                StreamError::Unavailable
+                StreamError::unavailable()
             ))))?,
             Sent::Unknown
         );

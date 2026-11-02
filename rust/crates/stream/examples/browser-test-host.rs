@@ -268,7 +268,7 @@ async fn serve(host: Host, socket: WebSocket) {
             match message {
                 Ok(Message::Binary(bytes)) => Some(wire_codec::session::decode_frame(&bytes)),
                 Ok(Message::Ping(_) | Message::Pong(_)) => None,
-                _ => Some(Err(StreamError::Unavailable)),
+                _ => Some(Err(StreamError::unavailable())),
             }
         })
         .inspect(move |frame| {

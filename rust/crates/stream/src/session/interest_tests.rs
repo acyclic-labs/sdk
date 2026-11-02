@@ -55,7 +55,7 @@ async fn original_follow_eof_is_terminal_without_reopening_the_provider()
     let before = provider.requests();
     assert!(matches!(
         original.event().await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
     let ended = provider.requests().since(before);
     assert_eq!(ended.control(), 0);

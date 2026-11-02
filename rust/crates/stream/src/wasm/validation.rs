@@ -2,6 +2,21 @@ fn error_code_str(error: &StreamError) -> &'static str {
     error.code()
 }
 
+/// Retain the original shared refusal property at the existing JavaScript boundary.
+fn with_original_reason(error: StreamError, original: &JsValue) -> StreamError {
+    let reason = Reflect::get(original, &JsValue::from_str("reason"))
+        .ok()
+        .and_then(|value| value.as_string());
+    let raw = Reflect::get(original, &"reasonBytes".into())
+        .ok()
+        .and_then(|value| value.dyn_into::<Uint8Array>().ok())
+        .map(|value| value.to_vec());
+    error.with_refusal_reason(RefusalReason::from_header(
+        raw.as_deref()
+            .or_else(|| reason.as_deref().map(str::as_bytes)),
+    ))
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "passed to map_err, which hands over the error by value"
@@ -14,6 +29,26 @@ pub fn js_error(error: StreamError) -> JsValue {
         &JsValue::from_str("code"),
         &JsValue::from_str(error.code()),
     );
+    if let Some(reason) = error
+        .refusal_reason()
+        .and_then(acyclic_auth::refusal::RefusalReason::as_str)
+    {
+        let _property_result = Reflect::set(
+            value.as_ref(),
+            &JsValue::from_str("reason"),
+            &JsValue::from_str(reason),
+        );
+    }
+    if let Some(bytes) = error
+        .refusal_reason()
+        .and_then(RefusalReason::non_text_bytes)
+    {
+        let _ = Reflect::set(
+            value.as_ref(),
+            &"reasonBytes".into(),
+            &Uint8Array::from(bytes),
+        );
+    }
     value.into()
 }
 

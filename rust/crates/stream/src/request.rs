@@ -680,7 +680,7 @@ mod tests {
         };
         let binding = commit_binding_with(&mut request, |_| Ok::<(), StreamError>(()))??;
         let crate::CommitOutcome::Committed(receipt) = provider.commit(request).await? else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         let mut facts = provider.read_commit(receipt.commit_id).await?;
         let mut charged = 0;
@@ -718,7 +718,7 @@ mod tests {
         let Some(IdempotencyObservation { request_digest, .. }) =
             provider.inspect_idempotency(key).await?
         else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         assert_eq!(digest, request_digest);
         Ok(())

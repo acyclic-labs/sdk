@@ -542,7 +542,7 @@ fn transient_io(error: &(dyn std::error::Error + 'static)) -> bool {
 
 use crate::wire_codec::error_status;
 
-pub(crate) use crate::wire_codec::status;
+pub(crate) use crate::wire_codec::error_from_status as status;
 
 /// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.
 struct Completion {

@@ -62,7 +62,7 @@ impl StreamProvider for Provider {
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
         if let Some(cut) = self.take(true) {
             let _ = cut.entered.send(());
-            cut.released.await.map_err(|_| StreamError::Unavailable)?;
+            cut.released.await.map_err(|_| StreamError::unavailable())?;
             return Err(StreamError::AccessDenied);
         }
         self.inner.heads(request).await
@@ -75,11 +75,11 @@ impl StreamProvider for Provider {
         Box::pin(async move {
             if let Some(cut) = self.take(false) {
                 let _ = cut.entered.send(());
-                cut.released.await.map_err(|_| StreamError::Unavailable)?;
+                cut.released.await.map_err(|_| StreamError::unavailable())?;
                 return match cut.fault {
                     Fault::Unknown => {
                         self.inner.write(request).await?;
-                        Err(StreamError::Unavailable)
+                        Err(StreamError::unavailable())
                     }
                     Fault::Refuse => Err(StreamError::AccessDenied),
                     Fault::Commit => self.inner.write(request).await,
@@ -232,7 +232,7 @@ async fn completed_unread_failure() -> TestResult {
     drop(completion);
     let Err(Error::Unknown {
         publication,
-        source: StreamError::Unavailable,
+        source: StreamError::unavailable(),
     }) = runtime.pause(&address, false).await
     else {
         return Err("unread completed pause lost its original Unknown".into());
@@ -429,7 +429,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
     match (known_failure, succeeded) {
         (true, _) => {
             let expected = if producer_lost {
-                StreamError::Unavailable
+                StreamError::unavailable()
             } else {
                 StreamError::AccessDenied
             };
@@ -448,7 +448,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
         (false, false) => {
             let Err(Error::Unknown {
                 publication,
-                source: StreamError::Unavailable,
+                source: StreamError::unavailable(),
             }) = outcome
             else {
                 return Err("lost original Unknown publication".into());
@@ -555,7 +555,7 @@ async fn replacement_and_producer_loss() -> TestResult {
     drop(release); // Original provider producer disappears; no timeout involved.
     assert!(matches!(
         pause.await,
-        Err(Error::Stream(StreamError::Unavailable))
+        Err(Error::Stream(StreamError::Unavailable { .. }))
     ));
     runtime.wake(&address);
     runtime.drain_actor(&address).await?;

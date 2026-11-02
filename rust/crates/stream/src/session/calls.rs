@@ -130,7 +130,7 @@ impl CallInput {
             match event {
                 future::Either::Left(terminal) => {
                     self.terminal = None;
-                    match terminal.unwrap_or(Err(StreamError::Unavailable)) {
+                    match terminal.unwrap_or(Err(StreamError::unavailable())) {
                         Ok(end) => self.end = Some(end),
                         Err(error) => {
                             self.failed = true;
@@ -147,9 +147,9 @@ impl CallInput {
                     let result = self
                         .terminal
                         .take()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .await
-                        .unwrap_or(Err(StreamError::Unavailable));
+                        .unwrap_or(Err(StreamError::unavailable()));
                     match result {
                         Ok(end) => self.end = Some(end),
                         Err(error) => {
@@ -230,7 +230,7 @@ impl InputProducer {
             .try_send(chunk)
             .map_err(|error| match error {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => StreamError::unavailable(),
             })?;
         self.next = next;
         Ok(())

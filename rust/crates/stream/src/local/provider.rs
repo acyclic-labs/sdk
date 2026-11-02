@@ -65,7 +65,7 @@ impl StreamProvider for LocalStream {
                             .inner
                             .durable_tails
                             .lock()
-                            .map_err(|_| StreamError::Unavailable)?;
+                            .map_err(|_| StreamError::unavailable())?;
                         for (path, head) in request.paths.iter().zip(&mut view.heads) {
                             if let Some(head) = head {
                                 let mut durable = tails.get(path).copied().unwrap_or(0);
@@ -94,7 +94,7 @@ impl StreamProvider for LocalStream {
                         .inner
                         .durable_tails
                         .lock()
-                        .map_err(|_| StreamError::Unavailable)?;
+                        .map_err(|_| StreamError::unavailable())?;
                     for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
                         if let Some(head) = head {
                             let durable = tails.entry(path).or_default();
@@ -513,7 +513,7 @@ impl LocalStream {
             .inner
             .durable_tails
             .lock()
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let durable = tails.entry(path.clone()).or_default();
         let marks = flushed_watermarks(durable, accepted, _flushed);
         Ok(crate::DurableReceipt::covering(path, &marks, through))

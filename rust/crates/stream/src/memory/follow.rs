@@ -174,7 +174,7 @@ impl MemoryStream {
                                 break Err(if state.anchor.is_some() {
                                     StreamError::PrefixNotRetained
                                 } else {
-                                    StreamError::Unavailable
+                                    StreamError::unavailable()
                                 });
                             }
                         }

@@ -28,7 +28,7 @@ async fn immutable_commit_reads_bypass_pending_publication_but_absence_does_not(
     provider.inner.poison();
     assert!(matches!(
         provider.read_commit(receipt.commit_id).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
     Ok(())
 }

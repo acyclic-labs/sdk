@@ -116,9 +116,9 @@ pub fn revision_from_wire(value: wire::Revision) -> Result<Revision, StreamError
 /// Decodes a peer-issued revision that the response contract requires.
 pub fn issued_from_wire(value: Option<wire::Revision>) -> Result<Revision, StreamError> {
     value
-        .ok_or(StreamError::Unavailable)
+        .ok_or(StreamError::unavailable())
         .and_then(revision_from_wire)
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|_| StreamError::unavailable())
 }
 
 /// Encodes a minimum cut.

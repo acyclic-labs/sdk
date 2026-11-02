@@ -87,7 +87,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
-        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::unavailable())))),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut all = client
@@ -162,7 +162,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
         fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
-        Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        Arc::new(|_| Box::pin(future::ready(Err(StreamError::unavailable())))),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut latest = client

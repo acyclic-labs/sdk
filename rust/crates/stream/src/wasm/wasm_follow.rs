@@ -27,7 +27,7 @@ impl WasmOpened {
                     records
                         .map(|item| item.map(|frame| frame.wire().encode_to_vec()))
                         .boxed_local(),
-                    StreamError::Unavailable,
+                    StreamError::unavailable(),
                 )),
             },
         })
@@ -61,7 +61,7 @@ impl WasmOpened {
         let cursor = WasmFollow {
             state: Rc::new(FollowState::new(
                 wire_codec::record_frames(records, path).boxed_local(),
-                StreamError::Unavailable,
+                StreamError::unavailable(),
             )),
         };
         Self { opened, cursor }

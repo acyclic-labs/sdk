@@ -20,10 +20,10 @@ pub(super) enum Fault {
 // cursor or calls the production inverse to derive the expected sequence.
 fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {
     let Some(after) = &data.after else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     if data.durable > data.accepted || after.next > data.accepted || !after.opaque.is_empty() {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     match (&data.item, delivery) {
         (Some(Item::Record(record)), 1)
@@ -34,7 +34,7 @@ fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, S
                 return Err(StreamError::OutOfRange);
             }
             if u128::from(after.next) != successor {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             Ok(record.sequence)
         }
@@ -46,7 +46,7 @@ fn expected(delivery: i32, next: u64, data: &wire::SessionData) -> Result<u64, S
         {
             Ok(after.next - 1)
         }
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamError::unavailable()),
     }
 }
 
@@ -80,7 +80,7 @@ pub(super) fn check(
                     && after.next > next.saturating_add(1)
                     && actual.is_ok() =>
             {
-                actual = Err(StreamError::Unavailable);
+                actual = Err(StreamError::unavailable());
             }
             Fault::SkipAll if delivery == SessionDelivery::All as i32 => {
                 if let Some(Item::Record(record)) = &data.item

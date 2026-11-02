@@ -2,6 +2,7 @@ import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js"
 import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
+import { streamError } from "./error.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
@@ -14,7 +15,7 @@ import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRe
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
 let modulePromise: Promise<typeof GeneratedNative> | undefined;
@@ -292,26 +293,6 @@ function invalidResponse(operation: string, error: unknown): StreamError {
 }
 
 function nativeError(error: unknown, operation: string): Error {
-  if (error instanceof StreamError) return error;
-  let code: unknown;
-  let message: string;
-  if (typeof error === "object" && error !== null) {
-    code = "code" in error ? (error as { readonly code?: unknown }).code : undefined;
-    message = "message" in error && typeof (error as { readonly message?: unknown }).message === "string"
-      ? (error as { readonly message: string }).message : String(error);
-  } else message = String(error);
-  if (typeof code !== "string") return new StreamError("unavailable", message);
-  let mappedCode = code;
-  if (mappedCode === "not_found") mappedCode = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
-  else if (mappedCode === "already_exists") mappedCode = "destination_exists";
-  else if (mappedCode === "capacity") mappedCode = "capacity_exhausted";
-  else if (mappedCode === "prefix_not_retained" && operation === "commit") mappedCode = "invalid_argument";
-  const knownCodes = new Set<StreamFailureCode>([
-    "invalid_path", "invalid_argument", "limit_exceeded", "not_found", "already_exists",
-    "prefix_not_retained", "out_of_range", "idempotency_mismatch", "capacity", "access_denied",
-    "unavailable", "hierarchy_changed", "deadline_elapsed", "unsupported", "stream_not_found",
-    "commit_not_found", "destination_exists", "capacity_exhausted", "configuration", "invalid_cursor",
-    "invalid_page", "invalid_response", "provider_mismatch", "response_too_large", "transport", "revision_foreign",
-  ]);
-  return new StreamError(knownCodes.has(mappedCode as StreamFailureCode) ? mappedCode as StreamFailureCode : "unavailable", message);
+  const failure = streamError(error, operation);
+  return failure instanceof StreamError ? failure : new StreamError("unavailable", failure.message);
 }

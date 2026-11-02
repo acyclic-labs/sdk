@@ -165,6 +165,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
         Body::Closed(wire::SessionClosed {
             code: "not_found".into(),
             message: "server diagnostic".into(),
+            refusal_reason: None,
         })
     } else {
         Body::Opened(fixture::opened(

@@ -1,3 +1,5 @@
+pub use acyclic_auth::refusal::RefusalReason;
+
 /// Stable public failures. CAS and absence conflicts are values instead.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
@@ -38,8 +40,11 @@ pub enum StreamError {
     #[error("stream access denied")]
     AccessDenied,
     /// Required authority is unavailable.
-    #[error("stream unavailable")]
-    Unavailable,
+    #[error("stream unavailable ({reason})")]
+    Unavailable {
+        /// Original member refusal; absence never implies a specific cause.
+        reason: RefusalReason,
+    },
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -52,6 +57,32 @@ pub enum StreamError {
 }
 
 impl StreamError {
+    /// Unavailability without a supplied remote cause, including local producer loss.
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self::Unavailable {
+            reason: RefusalReason::Unspecified,
+        }
+    }
+
+    /// Retain the original response reason only for an unavailable operation.
+    #[must_use]
+    pub fn with_refusal_reason(self, reason: RefusalReason) -> Self {
+        match self {
+            Self::Unavailable { .. } => Self::Unavailable { reason },
+            other => other,
+        }
+    }
+
+    /// Original remote refusal, if this is an unavailable operation naming one.
+    #[must_use]
+    pub fn refusal_reason(&self) -> Option<&RefusalReason> {
+        match self {
+            Self::Unavailable { reason } => Some(reason),
+            _ => None,
+        }
+    }
+
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
@@ -65,7 +96,7 @@ impl StreamError {
         Self::IdempotencyMismatch,
         Self::Capacity,
         Self::AccessDenied,
-        Self::Unavailable,
+        Self::unavailable(),
         Self::HierarchyChanged,
         Self::DeadlineElapsed,
         Self::Unsupported,
@@ -76,7 +107,7 @@ impl StreamError {
     /// its deadline elapsed, so the same request may yet succeed unchanged.
     #[must_use]
     pub const fn uncertain(&self) -> bool {
-        matches!(self, Self::Unavailable | Self::DeadlineElapsed)
+        matches!(self, Self::Unavailable { .. } | Self::DeadlineElapsed)
     }
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
@@ -94,7 +125,7 @@ impl StreamError {
             Self::IdempotencyMismatch => "idempotency_mismatch",
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
+            Self::Unavailable { .. } => "unavailable",
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",
@@ -120,7 +151,7 @@ impl StreamError {
             "filter_invalid" => Self::InvalidArgument,
             "resource_exhausted" => Self::Capacity,
             "unimplemented" => Self::Unsupported,
-            _ => Self::Unavailable,
+            _ => Self::unavailable(),
         })
     }
 }

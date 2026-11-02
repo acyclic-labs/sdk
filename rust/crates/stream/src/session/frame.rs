@@ -113,10 +113,10 @@ impl Frame {
     /// the canonical decoder on every projection.
     pub fn decode_record(&self, followed: Option<&StreamPath>) -> Result<Record, StreamError> {
         let Some(wire::session_frame::Body::Data(data)) = &self.wire.body else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         let Some(wire::session_data::Item::Record(record)) = &data.item else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         match &self.record {
             Some(original) => {
@@ -130,17 +130,17 @@ impl Frame {
     pub(super) fn into_data(self) -> Result<wire::SessionData, StreamError> {
         match self.wire.body {
             Some(wire::session_frame::Body::Data(data)) => Ok(data),
-            _ => Err(StreamError::Unavailable),
+            _ => Err(StreamError::unavailable()),
         }
     }
 
     pub(super) fn into_record(self, path: &StreamPath) -> Result<Record, StreamError> {
         let original = self.record;
         let Some(wire::session_frame::Body::Data(data)) = self.wire.body else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         let Some(wire::session_data::Item::Record(record)) = data.item else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         if let Some(original) = original {
             validate_origin(&original, &record, Some(path))?;

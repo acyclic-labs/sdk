@@ -2,15 +2,23 @@
 /// gRPC servers use the same mapping.
 #[wasm_bindgen(js_name = grpcErrorStatus)]
 pub fn grpc_error_status(code: &str) -> i32 {
-    let error = StreamError::from_code(code).unwrap_or(StreamError::Unavailable);
+    let error = StreamError::from_code(code).unwrap_or(StreamError::unavailable());
     wire_codec::error_status(&error).code() as i32
 }
 /// Canonical Rust failure vocabulary for JavaScript gRPC platform I/O.
 #[wasm_bindgen(js_name = grpcErrorCode)]
 pub fn grpc_error_code(code: i32, message: &str) -> String {
-    wire_codec::status(&tonic::Status::new(tonic::Code::from_i32(code), message))
+    wire_codec::error_from_status(&tonic::Status::new(tonic::Code::from_i32(code), message))
         .code()
         .to_owned()
+}
+
+/// Classify and project a gRPC failure in one boundary crossing.
+#[wasm_bindgen(js_name = publicGrpcErrorCode)]
+pub fn public_grpc_error_code(code: i32, message: &str, route: &str) -> Option<String> {
+    let error =
+        wire_codec::error_from_status(&tonic::Status::new(tonic::Code::from_i32(code), message));
+    public_http_error_code(error.code(), route)
 }
 
 /// Complete Rust-owned code inventory; adapters must not maintain another list.

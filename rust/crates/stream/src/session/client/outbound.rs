@@ -37,9 +37,9 @@ impl<T> Outbound<T> {
     }
     pub(super) fn push(&self, value: T, bytes: usize) -> Result<(), StreamError> {
         let wake = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             if state.closed {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             if state.frames.len() >= self.frames || bytes > self.bytes - state.bytes {
                 return Err(StreamError::Capacity);
@@ -57,10 +57,10 @@ impl<T> Outbound<T> {
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable()));
             };
             if state.closed {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable()));
             }
             if let Some((value, bytes)) = state.frames.pop_front() {
                 state.bytes -= bytes;
@@ -76,7 +76,7 @@ impl<T> Outbound<T> {
     }
     pub(super) fn close(&self) -> Result<(), StreamError> {
         let (frames, wake) = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             state.closed = true;
             state.bytes = 0;
             (std::mem::take(&mut state.frames), state.reader.take())

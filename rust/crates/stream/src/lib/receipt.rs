@@ -319,7 +319,7 @@ mod receipt_membership_tests {
             })
             .await?;
         let CommitOutcome::Committed(base) = base else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         let mut request = CommitRequest {
             deadline_unix_millis: None,
@@ -371,7 +371,7 @@ mod receipt_membership_tests {
         }
         request::validate_commit(&mut request)?;
         let CommitOutcome::Committed(receipt) = provider.commit(request.clone()).await? else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         let mut validation = None;
         let allocations = acyclic_test_support::measure(|| {

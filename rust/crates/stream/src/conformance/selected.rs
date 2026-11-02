@@ -12,7 +12,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         })
         .await?
     else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     let request = ReadRequest {
         key: None,
@@ -64,7 +64,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         })
         .await?
     else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     // Negative control for the retired post-open sample: it now observes later,
     // while every original cursor must still report and retain the seed cut.

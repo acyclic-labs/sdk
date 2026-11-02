@@ -143,19 +143,19 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
             include_bytes!("../fuzz/corpus/session/latest-empty-key").as_slice(),
             2,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
         (
             include_bytes!("../fuzz/corpus/session/latest-impossible-durable").as_slice(),
             2,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
         (
             include_bytes!("../fuzz/corpus/session/all-short-commit").as_slice(),
             1,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
     ]
     .into_iter()
@@ -214,7 +214,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             10,
             8,
             0,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
         (
             "latest-impossible-durable",
@@ -223,7 +223,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             10,
             11,
             1,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
         ("all-held-flush", 1, 1, 4, 0, 32, Ok(0)),
         (
@@ -233,7 +233,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             4,
             0,
             31,
-            Err(StreamError::Unavailable),
+            Err(StreamError::unavailable()),
         ),
     ] {
         let seed = std::fs::read(root.join(format!("browser-{name}"))).unwrap();

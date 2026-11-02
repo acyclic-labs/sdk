@@ -426,7 +426,7 @@ async fn application_unavailability_returns_without_retry_and_preserves_a_caller
     let key = IdempotencyKey::unique();
     assert_eq!(
         client.inspect_idempotency(key.clone()).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     // The same live server accepts the caller's next request. An automatic
@@ -595,7 +595,7 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
             Ok(u64::try_from(sequence)?)
         );
     }
-    assert_eq!(result.last(), Some(&Err(StreamError::Unavailable)));
+    assert_eq!(result.last(), Some(&Err(StreamError::unavailable())));
     Ok(())
 }
 

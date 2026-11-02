@@ -92,7 +92,7 @@ impl Attempt {
                     }
                     Ok(Some(*at_millis))
                 }
-                AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+                AppendIf::Stale { .. } => Err(StreamError::unavailable()),
                 AppendIf::Refused(error) => Err(error.clone()),
             };
             self.appended = Some(result);
@@ -198,7 +198,7 @@ impl<J: CommandJournal> Replicated<J> {
 
     fn check(&self) -> Result<(), StreamError> {
         if self.failed {
-            Err(StreamError::Unavailable)
+            Err(StreamError::unavailable())
         } else {
             Ok(())
         }
@@ -228,7 +228,7 @@ impl<J: CommandJournal> Replicated<J> {
             None if attempt.started
                 && matches!(
                     result,
-                    Err(StreamError::Unavailable
+                    Err(StreamError::Unavailable { .. }
                         | StreamError::InvalidResponse
                         | StreamError::Unsupported)
                 ) =>

@@ -192,7 +192,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
         facts(
             &mutations,
             |_| Ok(Some(4)),
-            |_, _, _, _| Err(StreamError::Unavailable),
+            |_, _, _, _| Err(StreamError::unavailable()),
             Vec::new()
         ),
         Err(StreamError::InvalidArgument),
@@ -223,8 +223,8 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
         idempotency_key: crate::IdempotencyKey::new(vec![1])?,
     };
     assert_eq!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
-        Err(StreamError::Unavailable)
+        authority(&request, |_| Err(StreamError::unavailable())),
+        Err(StreamError::unavailable())
     );
     assert_eq!(
         authority(&request, |_| Ok(None)),
@@ -243,7 +243,7 @@ fn backend_authority_distinguishes_missing_history_from_failed_storage() -> Resu
     );
     // The missing-on-error control would disguise a disk failure as NotFound.
     assert_ne!(
-        authority(&request, |_| Err(StreamError::Unavailable)),
+        authority(&request, |_| Err(StreamError::unavailable())),
         authority(&request, |_| Ok(None))
     );
     Ok(())

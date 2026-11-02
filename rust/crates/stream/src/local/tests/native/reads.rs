@@ -111,8 +111,14 @@ async fn finite_reads_admit_before_revision_waits_and_keep_the_original_producer
         assert!((&mut portable).now_or_never().is_none());
         assert!((&mut native).now_or_never().is_none());
         revisions.close();
-        assert!(matches!(portable.await, Err(StreamError::Unavailable)));
-        assert!(matches!(native.await?, Err(StreamError::Unavailable)));
+        assert!(matches!(
+            portable.await,
+            Err(StreamError::Unavailable { .. })
+        ));
+        assert!(matches!(
+            native.await?,
+            Err(StreamError::Unavailable { .. })
+        ));
         meter.assert_refunded();
     }
     Ok(())

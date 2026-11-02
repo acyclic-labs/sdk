@@ -204,7 +204,7 @@ impl Observer {
         tracing::debug!(%error, "observer follow failed");
         if matches!(
             &error,
-            AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable))
+            AgentClientError::Session(WireSessionError::Stream(StreamError::Unavailable { .. }))
         ) {
             self.connection.stream_failure(error)
         } else {

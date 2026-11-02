@@ -53,12 +53,12 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
         .next()
         .await
         .transpose()?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let second = pinned
         .next()
         .await
         .transpose()?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     if first.sequence != 0
         || second.sequence != 2
         || second.value.as_ref() != b"opaque\0\xff"
@@ -74,14 +74,14 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
             .await
             .is_some()
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let resumed: Vec<_> = read_records(read(b"a", 3, 4, 1))
         .await?
         .try_collect()
         .await?;
     if resumed.len() != 1 || resumed[0].sequence != 3 {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(())
 }

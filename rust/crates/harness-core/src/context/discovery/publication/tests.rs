@@ -669,7 +669,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     // readiness. These are real oneshot events, without a timeout or retry.
     let (producer, receiver) = tokio::sync::oneshot::channel::<StreamError>();
     let mut terminal: acyclic_stream::BoxProviderFuture<'static, StreamError> =
-        Box::pin(async { receiver.await.unwrap_or(StreamError::Unavailable) });
+        Box::pin(async { receiver.await.unwrap_or(StreamError::unavailable()) });
     let waiting = gated(&mut terminal, &session, std::future::pending::<()>());
     assert!(waiting.now_or_never().is_none());
     drop(producer);

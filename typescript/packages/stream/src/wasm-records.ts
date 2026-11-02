@@ -3,7 +3,7 @@ import { WasmOpened, type WasmProviderRequest } from "../generated/wasm/acyclic_
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
-import { streamError } from "./wasm-error.js";
+import { streamError } from "./error.js";
 import { StreamError, type ReadOptions } from "./types.js";
 
 /** Keeps registration and the selected cursor under one cancellation owner. */

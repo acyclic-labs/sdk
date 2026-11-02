@@ -102,7 +102,7 @@ impl<R, H> Pending<R, H> {
         if !completion.finished.load(Ordering::Acquire) {
             notified.await;
         }
-        let result = completion.result.get().ok_or(StreamError::Unavailable);
+        let result = completion.result.get().ok_or(StreamError::unavailable());
         completion.changed.notify_one();
         result
     }

@@ -1,7 +1,8 @@
+import { refusalReason } from "@acyclic-labs/auth/refusal";
 import { awaitSignal, credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
-import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
+import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type, objects_v1_http_error_code } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV1Error, ObjectsV1Provider, objectsRequest, objectsStreamRequest, type ObjectsV1Request } from "./v1.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
@@ -15,12 +16,6 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
   /** Optional caller deadline in milliseconds; omitted or zero is unbounded. */
   readonly timeoutMs?: number;
 }
-const STATUS: Readonly<Record<number, wire.ErrorCode>> = {
-  400: wire.ErrorCode.INVALID_ARGUMENT, 401: wire.ErrorCode.ACCESS_DENIED, 403: wire.ErrorCode.ACCESS_DENIED,
-  404: wire.ErrorCode.NOT_FOUND, 409: wire.ErrorCode.CONFLICT, 413: wire.ErrorCode.QUOTA_EXCEEDED,
-  416: wire.ErrorCode.RANGE_NOT_SATISFIABLE, 429: wire.ErrorCode.QUOTA_EXCEEDED, 501: wire.ErrorCode.UNSUPPORTED,
-};
-
 /** Browser-compatible HTTP binding: one canonical JSON message per route, as the Rust HTTP client sends. */
 export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly credential: CredentialProvider;
@@ -116,7 +111,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       if (response.status !== 200) {
         let detail: wire.ErrorDetail | undefined;
         try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, data.byteLength)); } catch { /* the status classifies it */ }
-        throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : STATUS[response.status] ?? wire.ErrorCode.UNAVAILABLE);
+        throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : objects_v1_http_error_code(response.status), refusalReason(response.headers));
       }
       checkCredential(lease);
       let decoded: Uint8Array;

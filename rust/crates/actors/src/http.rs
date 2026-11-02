@@ -34,6 +34,8 @@ pub enum Error {
     Service {
         /// HTTP response status.
         status: u16,
+        /// Original unavailable reason, including future member diagnostics.
+        reason: acyclic_auth::refusal::RefusalReason,
         /// Decoded wire error, including service codes unknown to this SDK.
         detail: Option<wire::Error>,
         /// Exact response body, including empty or malformed error payloads.
@@ -318,6 +320,16 @@ impl Client {
                         });
                 return Err(Error::Service {
                     status: status.as_u16(),
+                    reason: if status.as_u16() == 503 {
+                        acyclic_auth::refusal::RefusalReason::from_header(
+                            response
+                                .headers()
+                                .get(acyclic_auth::refusal::REASON_HEADER)
+                                .map(|value| value.as_bytes()),
+                        )
+                    } else {
+                        acyclic_auth::refusal::RefusalReason::Unspecified
+                    },
                     detail,
                     raw_details: bytes,
                 });

@@ -48,7 +48,7 @@ impl StreamProvider for OpeningRead {
         if let Some(pending) = pending {
             pending
                 .await
-                .map_err(|_| acyclic_stream::StreamError::Unavailable)?;
+                .map_err(|_| acyclic_stream::StreamError::unavailable())?;
         }
         self.inner.read(request).await
     }
@@ -252,7 +252,7 @@ async fn frozen_notice_ranges_page_without_gaining_later_records() -> Result<()>
         .expect_err("a missing frozen suffix must refuse")
         .uncertain()
     );
-    for cause in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
+    for cause in [StreamError::unavailable(), StreamError::DeadlineElapsed] {
         let error = agent_error(crate::agent::Error::Stream(cause));
         assert!(error.uncertain());
         assert!(!Error::Invalid(error.to_string()).uncertain());

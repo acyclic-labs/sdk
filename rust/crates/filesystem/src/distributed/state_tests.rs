@@ -1471,7 +1471,7 @@ async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
     };
     assert!(matches!(
         error,
-        AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unavailable)
+        AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unavailable { .. })
     ));
     assert_eq!(spy.commit_attempts(), 1);
     assert_eq!(provider.tail(path.clone()).await?, 1);

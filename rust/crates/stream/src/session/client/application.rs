@@ -58,7 +58,7 @@ impl ApplicationSubscription {
     /// decision if it is still outstanding. This wait does not poll the peer.
     pub async fn next(&mut self) -> Result<Option<ApplicationDelivery>, StreamError> {
         if let Some(completion) = self.completion.as_mut() {
-            let result = completion.await.map_err(|_| StreamError::Unavailable);
+            let result = completion.await.map_err(|_| StreamError::unavailable());
             self.completion = None;
             result??;
         }
@@ -210,7 +210,7 @@ impl Drop for ApplicationDelivery {
         if let Some(completion) = self.completion.take() {
             self.progress.cancel();
             let _ = self.removed.send(self.id);
-            let _ = completion.send(Err(StreamError::Unavailable));
+            let _ = completion.send(Err(StreamError::unavailable()));
         }
     }
 }

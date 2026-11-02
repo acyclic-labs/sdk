@@ -103,13 +103,13 @@ fn bounded_buffer(value: JsValue, minimum: usize, maximum: usize) -> Result<Vec<
     let array = value.dyn_into::<js_sys::Uint8Array>().map_err(backend)?;
     let length = usize::try_from(array.length()).map_err(backend)?;
     if length < minimum || length > maximum {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(array.to_vec())
 }
 
 fn backend<T>(_: T) -> StreamError {
-    StreamError::Unavailable
+    StreamError::unavailable()
 }
 
 impl BrowserStream {
@@ -142,7 +142,7 @@ impl BrowserStream {
                 .map_err(backend)?
                 .await
                 .map_err(backend)?
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(StreamError::unavailable())?;
             u128::from_be_bytes(
                 bounded_buffer(recorded, 16, 16)?
                     .try_into()

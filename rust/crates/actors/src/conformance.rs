@@ -409,7 +409,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                 record = state.next().fuse() => match record {
                     Some(Ok(_)) => {}
                     Some(Err(error)) => return Err(Error::from(error).into()),
-                    None => return Err(Error::from(StreamError::Unavailable).into()),
+                    None => return Err(Error::from(StreamError::unavailable()).into()),
                 },
                 result = (&mut deadline).fuse() => {
                     result.map_err(Error::from)?;
@@ -1202,7 +1202,7 @@ async fn wait_pool_used<T: Target + ?Sized>(
             return Ok(());
         }
     }
-    Err(Error::Stream(StreamError::Unavailable).into())
+    Err(Error::Stream(StreamError::unavailable()).into())
 }
 
 /// A committed input cut is observed through the same original state stream.

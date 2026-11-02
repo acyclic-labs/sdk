@@ -38,7 +38,7 @@ impl CommandJournal for Advancing {
         }
         let outcome = self.port.append_if(expected, frames).await?;
         if self.lose_reply && matches!(outcome, AppendIf::Accepted { .. }) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(outcome)
     }
@@ -199,13 +199,16 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
         replica
             .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
     assert!(matches!(
         replica.refresh(1).await,
-        Err(StreamError::Unavailable)
+        Err(StreamError::Unavailable { .. })
     ));
-    assert!(matches!(replica.changed(), Err(StreamError::Unavailable)));
+    assert!(matches!(
+        replica.changed(),
+        Err(StreamError::Unavailable { .. })
+    ));
     assert_eq!(replica.journal.proposals.len(), 1);
     drop(replica);
     drop(source);

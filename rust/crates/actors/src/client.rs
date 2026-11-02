@@ -5,6 +5,8 @@ use crate::wire;
 
 mod validation;
 pub use acyclic_auth::credential::CredentialProvider;
+/// Shared member refusal diagnostics.
+pub use acyclic_auth::refusal::RefusalReason;
 use prost::Message;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
@@ -64,6 +66,8 @@ pub enum Error {
     Service {
         /// Numeric gRPC status code.
         grpc_code: i32,
+        /// Original member refusal, shared with Streams and Objects.
+        reason: acyclic_auth::refusal::RefusalReason,
         /// Original gRPC status message.
         message: String,
         /// Exact gRPC status detail bytes, including malformed payloads.
@@ -98,6 +102,10 @@ pub struct ErrorMetadata {
     /// Authenticated remote credential rejection, distinct from local freshness
     /// refusal. Only this verdict can invalidate an exact request lease.
     pub credential_rejected: bool,
+    /// Original remote unavailable reason, including values unknown to this SDK.
+    pub reason: Option<String>,
+    /// Exact original reason bytes when they are not UTF-8.
+    pub reason_bytes: Option<Vec<u8>>,
     /// Decoded int32 service code, including future values unknown to this SDK version.
     pub service_code: Option<i32>,
     /// Decoded service diagnostic, separate from the gRPC status message.
@@ -125,10 +133,13 @@ impl Error {
             }
             Self::Service {
                 grpc_code,
+                reason,
                 detail,
                 raw_details,
                 message,
             } => {
+                metadata.reason = reason.as_str().map(str::to_owned);
+                metadata.reason_bytes = reason.non_text_bytes().map(<[u8]>::to_vec);
                 metadata.message = message;
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
@@ -210,13 +221,21 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tonic map_err supplies owned status values"
-)]
-fn service_error(status: tonic::Status) -> Error {
+/// Projects an original service status without changing its code or details.
+/// Credential renewal remains owned by the client's original request boundary.
+pub fn error_from_status(status: &tonic::Status) -> Error {
     Error::Service {
         grpc_code: status.code() as i32,
+        reason: if status.code() == tonic::Code::Unavailable {
+            acyclic_auth::refusal::RefusalReason::from_header(
+                status
+                    .metadata()
+                    .get(acyclic_auth::refusal::REASON_HEADER)
+                    .map(|value| value.as_bytes()),
+            )
+        } else {
+            acyclic_auth::refusal::RefusalReason::Unspecified
+        },
         message: status.message().to_owned(),
         raw_details: status.details().to_vec(),
         detail: if status.details().is_empty() {
@@ -245,7 +264,7 @@ async fn request_error(
             }
         }
     }
-    service_error(status)
+    error_from_status(&status)
 }
 
 /// Connected Actors client whose operation methods are shared by all targets.
@@ -676,12 +695,13 @@ mod tests {
                 detail.encode_to_vec().into(),
             );
 
-            match service_error(status) {
+            match error_from_status(&status) {
                 Error::Service {
                     grpc_code,
                     detail: Some(actual),
                     message,
                     raw_details,
+                    ..
                 } => {
                     assert_eq!(message, "service rejected request");
                     assert_eq!(raw_details, detail.encode_to_vec());
@@ -707,7 +727,7 @@ mod tests {
                 "original grpc diagnostic",
                 bytes.clone().into(),
             );
-            let error = service_error(status);
+            let error = error_from_status(&status);
             let metadata = error.metadata();
             assert_eq!(metadata.code, "permission_denied");
             assert_eq!(metadata.message, "original grpc diagnostic");
@@ -748,6 +768,7 @@ mod tests {
             (17, "unknown"),
         ] {
             let error = Error::Service {
+                reason: acyclic_auth::refusal::RefusalReason::Unspecified,
                 grpc_code: code,
                 message: String::new(),
                 raw_details: Vec::new(),

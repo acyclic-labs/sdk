@@ -46,7 +46,7 @@ async fn partial_budget_and_cancellation_keep_the_exact_ordered_prefix() -> Memo
             .value_mut()
             .next()
             .await
-            .ok_or(StreamError::Unavailable)???;
+            .ok_or(StreamError::unavailable())???;
         assert_eq!(first.value().sequence, 0);
         assert_eq!(first.value().value, OwnedBytes::from_static(b"aa"));
         let alias = first.value().value.clone();
@@ -55,7 +55,7 @@ async fn partial_budget_and_cancellation_keep_the_exact_ordered_prefix() -> Memo
             .value_mut()
             .next()
             .await
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         assert!(
             matches!(error, Err(error) if error.kind() == if cancellation {
             std::io::ErrorKind::Interrupted
@@ -105,7 +105,7 @@ async fn tail_read_fits_its_budget_without_hydrating_older_batches() -> MemoryRe
         .value_mut()
         .next()
         .await
-        .ok_or(StreamError::Unavailable)???;
+        .ok_or(StreamError::unavailable())???;
     assert_eq!(record.value().sequence, 999);
     assert_eq!(record.value().value.as_ref(), b"aa");
     assert!(output.value_mut().next().await.is_none());
@@ -250,8 +250,8 @@ async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
         end: 3,
     });
     assert!(matches!(
-        cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::Unavailable),
-        Err(StreamError::Unavailable)
+        cursor.peek(|_| Ok::<_, StreamError>(()), || StreamError::unavailable()),
+        Err(StreamError::Unavailable { .. })
     ));
     Ok(())
 }

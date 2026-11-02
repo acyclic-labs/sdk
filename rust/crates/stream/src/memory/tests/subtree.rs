@@ -84,7 +84,7 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
         costs.push(count.get());
     }
     let [small, large] = costs.as_slice() else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     assert_eq!(small, large);
     Ok(())

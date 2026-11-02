@@ -44,7 +44,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         create: impl FnOnce() -> V,
     ) -> Result<Interest<K, V>, StreamError> {
         let value = {
-            let mut entries = self.entries.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| StreamError::unavailable())?;
             let entry = match entries.entry(key.clone()) {
                 Entry::Vacant(entry) => entry.insert(Registration {
                     value: create(),
@@ -70,9 +73,9 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
             let changed = self
                 .entries
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .get(&interest.key)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .changed
                 .clone();
             interest.changed = Some(changed.subscribe()?);
@@ -84,7 +87,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         Ok(self
             .entries
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .get(key)
             .map(|entry| entry.value.clone()))
     }
@@ -99,7 +102,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         Ok(self
             .entries
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .range::<Q, _>(range)
             .map(|(key, _)| key.clone())
             .collect())
@@ -109,7 +112,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         let changed = self
             .entries
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .get(key)
             .map(|entry| entry.changed.clone());
         if let Some(changed) = changed {
@@ -122,7 +125,7 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         let changed = self
             .entries
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|_| StreamError::unavailable())?
             .values()
             .map(|entry| entry.changed.clone())
             .collect::<Vec<_>>();
@@ -149,7 +152,7 @@ impl<K: Ord + Clone, V: Clone> Interest<K, V> {
     ) -> Result<T, StreamError> {
         self.changed
             .as_mut()
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .next(snapshot)
             .await
     }
@@ -196,7 +199,7 @@ impl Refresh {
         }
     }
     pub(crate) fn request(&self, force: bool) -> Result<bool, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         state.dirty = true;
         state.force |= force;
         let start = !state.running;
@@ -204,7 +207,7 @@ impl Refresh {
         Ok(start)
     }
     pub(crate) fn take(&self) -> Result<Option<bool>, StreamError> {
-        let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
         if !state.dirty {
             state.running = false;
             return Ok(None);

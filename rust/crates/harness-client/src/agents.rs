@@ -473,7 +473,7 @@ impl AgentClient {
                     Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
                     Poll::Ready(Ok(None)) => {
                         return Poll::Ready(Err(WireSessionError::Stream(
-                            acyclic_stream::StreamError::Unavailable,
+                            acyclic_stream::StreamError::unavailable(),
                         )
                         .into()));
                     }
@@ -504,7 +504,7 @@ impl AgentClient {
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                 Poll::Ready(Ok(None)) => {
                     return Poll::Ready(Err(WireSessionError::Stream(
-                        acyclic_stream::StreamError::Unavailable,
+                        acyclic_stream::StreamError::unavailable(),
                     )
                     .into()));
                 }

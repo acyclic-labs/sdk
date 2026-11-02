@@ -20,7 +20,7 @@ fuzz_target!(|input: &[u8]| {
         );
         let expected = match response.durable {
             None => Err(StreamError::Unsupported),
-            Some(durable) if durable > response.tail => Err(StreamError::Unavailable),
+            Some(durable) if durable > response.tail => Err(StreamError::unavailable()),
             Some(durable) => Ok(StreamWatermarks {
                 accepted: response.tail,
                 durable,

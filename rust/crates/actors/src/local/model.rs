@@ -57,11 +57,11 @@ macro_rules! delegate {
                     let call = self.calls.fetch_add(1, Ordering::SeqCst);
                     match self.plan.get(call).cloned().unwrap_or(Fault::None) {
                         Fault::None => self.inner.write(request).await,
-                        Fault::Drop => Err(StreamError::Unavailable),
+                        Fault::Drop => Err(StreamError::unavailable()),
                         Fault::Refuse(error) => Err(error),
                         Fault::LoseAck => {
                             self.inner.write(request).await?;
-                            Err(StreamError::Unavailable)
+                            Err(StreamError::unavailable())
                         }
                     }
                 })

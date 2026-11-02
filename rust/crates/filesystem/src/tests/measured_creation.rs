@@ -349,7 +349,7 @@ mod source_bound_lost_ack {
                             if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
                                 self.committed.fetch_add(1, Ordering::SeqCst);
                                 if self.armed.swap(false, Ordering::SeqCst) {
-                                    return Err(StreamError::Unavailable);
+                                    return Err(StreamError::unavailable());
                                 }
                             }
                             Ok(result)
@@ -448,7 +448,7 @@ mod source_bound_lost_ack {
             failure.error,
             acyclic_fs::LazyWorkspaceError::WorkspaceCause(WorkspaceError::Filesystem(
                 acyclic_fs::FsError::Authority(acyclic_fs::AuthorityStoreError::NativeStream(
-                    StreamError::Unavailable
+                    StreamError::Unavailable { .. }
                 ))
             ))
         ));

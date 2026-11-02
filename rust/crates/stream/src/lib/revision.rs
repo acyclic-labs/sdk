@@ -548,7 +548,7 @@ impl AppliedRevisions {
         loop {
             let observed = *applied.borrow_and_update();
             if observed.closed {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             if observed.index >= minimum {
                 return Ok(self.at(observed.index));
@@ -556,7 +556,7 @@ impl AppliedRevisions {
             applied
                 .changed()
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
         }
     }
 
@@ -581,7 +581,7 @@ impl AppliedRevisions {
     fn ready(&self) -> Result<Revision, StreamError> {
         let applied = *self.applied.borrow();
         if applied.closed {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         Ok(self.at(applied.index))
     }
@@ -665,7 +665,7 @@ mod tests {
         tokio::pin!(closing);
         assert!(futures::poll!(closing.as_mut()).is_pending());
         authority.close();
-        assert_eq!(closing.await, Err(StreamError::Unavailable));
+        assert_eq!(closing.await, Err(StreamError::unavailable()));
     }
 
     #[test]

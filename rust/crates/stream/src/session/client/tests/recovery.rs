@@ -9,15 +9,19 @@ impl super::super::transport::Transport for Outage {
     fn session(
         &self,
         input: super::super::transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<super::super::Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<super::super::Response, crate::session::transport::ConnectionFailure>,
+    > {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if (1..=4).contains(&call) {
-                return Err(if self.terminal {
+                return Err((if self.terminal {
                     StreamError::AccessDenied
                 } else {
-                    StreamError::Unavailable
-                });
+                    StreamError::unavailable()
+                })
+                .into());
             }
             self.endpoint.session(input).await
         })
@@ -39,7 +43,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
             calls: calls.clone(),
             terminal,
         }),
-        std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::unavailable())))),
         std::sync::Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, crate::session::testing::credential())?;

@@ -216,7 +216,7 @@ impl Undecided {
     async fn retry(&mut self, executor: &dyn Executor, error: Error) -> Result<(), Error> {
         if !matches!(
             error,
-            Error::Stream(StreamError::Unavailable | StreamError::InvalidResponse)
+            Error::Stream(StreamError::Unavailable { .. } | StreamError::InvalidResponse)
         ) {
             return Err(error);
         }
@@ -464,7 +464,7 @@ impl Entry {
         let completion: BoxProviderFuture<'static, Result<(), Arc<Error>>> = Box::pin(async move {
             completion
                 .await
-                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(StreamError::Unavailable))))
+                .unwrap_or_else(|_| Err(Arc::new(Error::Stream(StreamError::unavailable()))))
         });
         let completion = completion.shared();
         self.completed = Some(completed);
@@ -1482,9 +1482,10 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                             Ok(frame) => Some((Ok(frame.encode()), (shared, Outbound::Done))),
                             Err(_) => match last.await {
                                 Ok(frame) => Some((Ok(frame), (shared, Outbound::Done))),
-                                Err(_) => {
-                                    Some((Err(StreamError::Unavailable), (shared, Outbound::Done)))
-                                }
+                                Err(_) => Some((
+                                    Err(StreamError::unavailable()),
+                                    (shared, Outbound::Done),
+                                )),
                             },
                         }
                     }
@@ -1500,7 +1501,7 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
                             }
                             frame = &mut last => match frame {
                                 Ok(frame) => Some((Ok(frame), (shared, Outbound::Done))),
-                                Err(_) => Some((Err(StreamError::Unavailable), (shared, Outbound::Done))),
+                                Err(_) => Some((Err(StreamError::unavailable()), (shared, Outbound::Done))),
                             },
                         }
                     }

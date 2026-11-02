@@ -178,7 +178,7 @@ async fn append(
         })
         .await?
     else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     };
     Ok(receipt.commit_id)
 }

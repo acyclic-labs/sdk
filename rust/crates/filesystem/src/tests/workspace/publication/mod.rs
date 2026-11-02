@@ -67,7 +67,7 @@ impl acyclic_stream::StreamProvider for CutStream {
         key: acyclic_stream::IdempotencyKey,
     ) -> Result<Option<acyclic_stream::IdempotencyObservation>, acyclic_stream::StreamError> {
         if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+            return Err(acyclic_stream::StreamError::unavailable());
         }
         self.inner.inspect_idempotency(key).await
     }
@@ -77,7 +77,7 @@ impl acyclic_stream::StreamProvider for CutStream {
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+            return Err(acyclic_stream::StreamError::unavailable());
         }
         self.inner.heads(request).await
     }
@@ -97,7 +97,7 @@ impl acyclic_stream::StreamProvider for CutStream {
                 Box::pin(futures::TryFutureExt::map_ok(
                     async move {
                         if self.fails_now() {
-                            return Err(acyclic_stream::StreamError::Unavailable);
+                            return Err(acyclic_stream::StreamError::unavailable());
                         }
                         self.inner.append(request).await
                     },
@@ -107,7 +107,7 @@ impl acyclic_stream::StreamProvider for CutStream {
             acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
                     if self.fails_now() {
-                        return Err(acyclic_stream::StreamError::Unavailable);
+                        return Err(acyclic_stream::StreamError::unavailable());
                     }
                     self.inner.fork(request).await
                 },
@@ -118,11 +118,11 @@ impl acyclic_stream::StreamProvider for CutStream {
                     async move {
                         let fails = self.fails_now();
                         if fails && matches!(self.cut(), ForkCut::Before) {
-                            return Err(acyclic_stream::StreamError::Unavailable);
+                            return Err(acyclic_stream::StreamError::unavailable());
                         }
                         let outcome = self.inner.commit(request).await?;
                         if fails {
-                            return Err(acyclic_stream::StreamError::Unavailable);
+                            return Err(acyclic_stream::StreamError::unavailable());
                         }
                         Ok(outcome)
                     },
@@ -137,7 +137,7 @@ impl acyclic_stream::StreamProvider for CutStream {
         request: acyclic_stream::ReadRequest,
     ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
         if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+            return Err(acyclic_stream::StreamError::unavailable());
         }
         self.inner.read(request).await
     }
@@ -147,7 +147,7 @@ impl acyclic_stream::StreamProvider for CutStream {
         request: acyclic_stream::FollowRequest,
     ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+            return Err(acyclic_stream::StreamError::unavailable());
         }
         self.inner.follow(request).await
     }
@@ -157,7 +157,7 @@ impl acyclic_stream::StreamProvider for CutStream {
         commit_id: acyclic_stream::CommitId,
     ) -> Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
         if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+            return Err(acyclic_stream::StreamError::unavailable());
         }
         self.inner.read_commit(commit_id).await
     }

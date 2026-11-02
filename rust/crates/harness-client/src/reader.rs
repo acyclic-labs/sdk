@@ -291,7 +291,7 @@ impl Failure {
     #[must_use]
     pub fn of(error: &StreamError) -> Self {
         match error {
-            StreamError::Unavailable | StreamError::DeadlineElapsed => Self::Unavailable,
+            error if error.uncertain() => Self::Unavailable,
             StreamError::Capacity => Self::Overloaded,
             StreamError::HierarchyChanged => Self::Changed,
             StreamError::AccessDenied => Self::Denied,

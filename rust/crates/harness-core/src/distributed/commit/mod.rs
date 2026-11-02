@@ -163,7 +163,7 @@ impl Settlement {
             input,
         } = self;
         if let Err(error) = &committed
-            && *error != StreamError::Unavailable
+            && *error != StreamError::unavailable()
             && let Some(phase) = phase.as_deref_mut()
         {
             *phase = CommitPhase::Uncommitted;
@@ -176,7 +176,7 @@ impl Settlement {
                 released.and(observed)?;
                 outcome
             }
-            (Err(StreamError::Unavailable), Some(operation)) => {
+            (Err(StreamError::Unavailable { .. }), Some(operation)) => {
                 released?;
                 let before = quota.retained();
                 match inspect_idempotency(client, key, &binding, operation, quota, phase).await? {

@@ -61,7 +61,7 @@ where
         match receive.await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(failure)) => Err(failure.take()),
-            Err(_) => Err(Error::Stream(StreamError::Unavailable)),
+            Err(_) => Err(Error::Stream(StreamError::unavailable())),
         }
     }
 }

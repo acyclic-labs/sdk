@@ -99,10 +99,10 @@ fn bind_histories(
 ) -> Result<(), StreamError> {
     for history in histories {
         if let History::Batch { records, .. } =
-            Arc::get_mut(&mut history.history).ok_or(StreamError::Unavailable)?
+            Arc::get_mut(&mut history.history).ok_or(StreamError::unavailable())?
         {
             for record in &mut Arc::get_mut(records)
-                .ok_or(StreamError::Unavailable)?
+                .ok_or(StreamError::unavailable())?
                 .records
             {
                 record.commit_id = commit_id;
@@ -256,7 +256,7 @@ impl MemoryStream {
         let source = fact_records(fact);
         if source.is_empty() {
             return Ok(PreparedHistory {
-                history: parent.ok_or(StreamError::Unavailable)?,
+                history: parent.ok_or(StreamError::unavailable())?,
                 ranges,
             });
         }
@@ -652,7 +652,7 @@ impl MemoryStream {
         let path = condition_path(condition);
         let actual = state.tail(path);
         crate::preparation::condition_conflict(condition, actual, || {
-            let stream = state.paths.get(path).ok_or(StreamError::Unavailable)?;
+            let stream = state.paths.get(path).ok_or(StreamError::unavailable())?;
             self.preceding_commit(stream)
         })
     }
@@ -679,7 +679,7 @@ impl MemoryStream {
                     .get(window.start)
                     .map(|record| record.commit_id)
             })
-            .ok_or(StreamError::Unavailable)
+            .ok_or(StreamError::unavailable())
     }
 }
 
@@ -737,10 +737,10 @@ fn bind_acceptance(
         };
         let data = namespace.unpublished_path(path)?;
         let History::Batch { records, .. } =
-            Arc::get_mut(data.history.as_mut().ok_or(StreamError::Unavailable)?)
-                .ok_or(StreamError::Unavailable)?
+            Arc::get_mut(data.history.as_mut().ok_or(StreamError::unavailable())?)
+                .ok_or(StreamError::unavailable())?
         else {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         };
         // These two bounded prefix windows are the only aliases of this new
         // batch. Retain their ranges while borrowing its original allocation.
@@ -755,7 +755,7 @@ fn bind_acceptance(
             }
         });
         for record in &mut Arc::get_mut(records)
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .records
         {
             record.committed_at_micros = time;
@@ -781,13 +781,13 @@ impl Namespace {
             name: &str,
         ) -> Result<&'a mut NamespaceNode, StreamError> {
             loop {
-                let edge = Arc::get_mut(index.as_mut().ok_or(StreamError::Unavailable)?)
-                    .ok_or(StreamError::Unavailable)?;
+                let edge = Arc::get_mut(index.as_mut().ok_or(StreamError::unavailable())?)
+                    .ok_or(StreamError::unavailable())?;
                 match name.cmp(edge.name.text.as_str()) {
                     std::cmp::Ordering::Less => index = &mut edge.left,
                     std::cmp::Ordering::Greater => index = &mut edge.right,
                     std::cmp::Ordering::Equal => {
-                        return Arc::get_mut(&mut edge.node).ok_or(StreamError::Unavailable);
+                        return Arc::get_mut(&mut edge.node).ok_or(StreamError::unavailable());
                     }
                 }
             }

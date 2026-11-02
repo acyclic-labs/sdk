@@ -318,9 +318,9 @@ pub fn follow_sequence(
     data: &wire::SessionData,
 ) -> Result<u64, StreamError> {
     use wire::{SessionDelivery, session_data::Item};
-    let after = data.after.as_ref().ok_or(StreamError::Unavailable)?;
+    let after = data.after.as_ref().ok_or(StreamError::unavailable())?;
     if !after.opaque.is_empty() || data.accepted < after.next || data.durable > data.accepted {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     match (SessionDelivery::try_from(delivery), &data.item) {
         (Ok(SessionDelivery::All), Some(Item::Record(record)))
@@ -332,7 +332,7 @@ pub fn follow_sequence(
                     .checked_add(1)
                     .ok_or(StreamError::OutOfRange)?
             {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             Ok(record.sequence)
         }
@@ -341,7 +341,7 @@ pub fn follow_sequence(
         {
             Ok(after.next - 1)
         }
-        _ => Err(StreamError::Unavailable),
+        _ => Err(StreamError::unavailable()),
     }
 }
 
@@ -392,3 +392,22 @@ pub fn consume_credit(
 
 #[cfg(test)]
 mod tests;
+
+/// Preserve a channel's original typed refusal on its canonical terminal.
+pub fn closed(error: crate::StreamError) -> crate::wire::SessionClosed {
+    crate::wire::SessionClosed {
+        code: error.code().into(),
+        message: String::new(),
+        refusal_reason: error
+            .refusal_reason()
+            .and_then(|reason| reason.as_bytes())
+            .map(bytes::Bytes::copy_from_slice),
+    }
+}
+
+/// Decode the canonical terminal using the same shared remote reason vocabulary.
+pub fn closed_error(closed: &crate::wire::SessionClosed) -> crate::StreamError {
+    crate::StreamError::from_session_close(&closed.code).with_refusal_reason(
+        acyclic_auth::refusal::RefusalReason::from_header(closed.refusal_reason.as_deref()),
+    )
+}

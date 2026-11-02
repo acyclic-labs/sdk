@@ -127,13 +127,13 @@ impl OpenJournals {
         let Some(address) = self.addresses.get_checked(journal.unchecked_ref()) else {
             return Ok(None);
         };
-        let address = address.as_f64().ok_or(StreamError::Unavailable)? as usize;
+        let address = address.as_f64().ok_or(StreamError::unavailable())? as usize;
         self.owners
             .borrow()
             .get(&address)
             .and_then(Weak::upgrade)
             .map(Some)
-            .ok_or(StreamError::Unavailable)
+            .ok_or(StreamError::unavailable())
     }
 
     fn insert(&self, inner: &Rc<Inner>) {
@@ -172,7 +172,7 @@ impl Drop for Inner {
 pub struct JournalStream(Rc<Inner>);
 
 fn unavailable<T>(_: T) -> StreamError {
-    StreamError::Unavailable
+    StreamError::unavailable()
 }
 
 impl JournalStream {

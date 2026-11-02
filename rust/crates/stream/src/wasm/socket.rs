@@ -1,7 +1,8 @@
 //! Browser physical I/O for the same session pool used by native clients.
 use super::*;
-use crate::session::transport::{Requests, Responses, Transport};
+use crate::session::transport::{ConnectionResponses as Responses, Requests, Transport};
 use futures::{
+    TryStreamExt as _,
     channel::oneshot,
     future::{Either, select},
 };
@@ -70,7 +71,8 @@ impl Transport for Endpoint {
     fn session(
         &self,
         source: Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Responses, crate::session::transport::ConnectionFailure>>
+    {
         Box::pin(async move {
             use base64::Engine as _;
             let mut changed = self
@@ -144,18 +146,18 @@ impl Transport for Endpoint {
             let error_ready = ready.clone();
             let error_socket = socket.clone();
             let error = Closure::new(move |_: web_sys::Event| {
-                failure.borrow_mut().fail(StreamError::Unavailable);
+                failure.borrow_mut().fail(StreamError::unavailable());
                 if let Some(sender) = error_ready.borrow_mut().take() {
-                    let _ = sender.send(Err(StreamError::Unavailable));
+                    let _ = sender.send(Err(StreamError::unavailable()));
                 }
                 let _ = error_socket.close();
             });
             let closed = incoming.clone();
             let close_ready = ready;
             let close = Closure::new(move |_: web_sys::Event| {
-                closed.borrow_mut().fail(StreamError::Unavailable);
+                closed.borrow_mut().fail(StreamError::unavailable());
                 if let Some(sender) = close_ready.borrow_mut().take() {
-                    let _ = sender.send(Err(StreamError::Unavailable));
+                    let _ = sender.send(Err(StreamError::unavailable()));
                 }
             });
             socket.set_onopen(Some(open.as_ref().unchecked_ref()));
@@ -171,7 +173,7 @@ impl Transport for Endpoint {
                 _close: close,
             };
             crate::session::transport::credential_event(&mut changed, async {
-                opened.await.map_err(|_| StreamError::Unavailable)??;
+                opened.await.map_err(|_| StreamError::unavailable())??;
                 guard
                     .credential
                     .check()
@@ -214,7 +216,7 @@ impl Transport for Endpoint {
                                     .borrow_mut()
                                     .terminal
                                     .take()
-                                    .unwrap_or(StreamError::Unavailable));
+                                    .unwrap_or(StreamError::unavailable()));
                             }
                             Either::Right(Some(frame)) => {
                                 let bytes = frame.encode_to_vec();
@@ -227,14 +229,14 @@ impl Transport for Endpoint {
                                 guard
                                     .socket
                                     .send_with_u8_array(&bytes)
-                                    .map_err(|_| StreamError::Unavailable)?;
+                                    .map_err(|_| StreamError::unavailable())?;
                             }
                             Either::Right(None) => return Ok(None),
                         }
                     }
                 },
             );
-            Ok(Box::pin(response) as Responses)
+            Ok(Box::pin(response.map_err(Into::into)) as Responses)
         })
     }
 }

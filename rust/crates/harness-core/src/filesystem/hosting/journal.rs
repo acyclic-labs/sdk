@@ -366,6 +366,6 @@ where
             .try_next()
             .await
             .map_err(Error::Stream)?
-            .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))
+            .ok_or(Error::Stream(acyclic_stream::StreamError::unavailable()))
     }
 }

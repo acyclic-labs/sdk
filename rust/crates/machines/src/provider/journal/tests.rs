@@ -26,7 +26,7 @@ impl StreamProvider for HeldHead {
         let result = self.inner.heads(request).await?;
         let release = self.release.lock().unwrap().take();
         if let Some(release) = release {
-            release.await.map_err(|_| StreamError::Unavailable)?;
+            release.await.map_err(|_| StreamError::unavailable())?;
         }
         Ok(result)
     }

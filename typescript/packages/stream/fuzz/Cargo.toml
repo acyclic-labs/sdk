@@ -28,3 +28,10 @@ path = "fuzz_targets/session.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "refusal"
+path = "fuzz_targets/refusal.rs"
+test = false
+doc = false
+bench = false

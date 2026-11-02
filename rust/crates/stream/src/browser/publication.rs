@@ -178,7 +178,7 @@ impl Before {
                             records.0.push(record);
                         }
                         if next <= initial {
-                            return Err(StreamError::Unavailable);
+                            return Err(StreamError::unavailable());
                         }
                     }
                 }

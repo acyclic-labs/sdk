@@ -1,13 +1,13 @@
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
-    value.as_str().ok_or(StreamError::Unavailable)
+    value.as_str().ok_or(StreamError::unavailable())
 }
 fn parse_u64(value: &Value) -> Result<u64, StreamError> {
     parse_string(value)?
         .parse()
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|_| StreamError::unavailable())
 }
 fn parse_path(value: &Value) -> Result<StreamPath, StreamError> {
-    StreamPath::new(parse_string(value)?).map_err(|_| StreamError::Unavailable)
+    StreamPath::new(parse_string(value)?).map_err(|_| StreamError::unavailable())
 }
 fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
     base64::Engine::decode(
@@ -15,38 +15,38 @@ fn parse_bytes(value: &Value) -> Result<Bytes, StreamError> {
         parse_string(value)?,
     )
     .map(Bytes::from)
-    .map_err(|_| StreamError::Unavailable)
+    .map_err(|_| StreamError::unavailable())
 }
 fn parse_id(value: &Value) -> Result<CommitId, StreamError> {
     Ok(CommitId::from_bytes(
         parse_bytes(value)?
             .as_ref()
             .try_into()
-            .map_err(|_| StreamError::Unavailable)?,
+            .map_err(|_| StreamError::unavailable())?,
     ))
 }
 // An envelope's records belong to the mutation's path, which spells none.
 fn parse_records(value: &Value, owner: &StreamPath) -> Result<Vec<Record>, StreamError> {
     value
         .as_array()
-        .ok_or(StreamError::Unavailable)?
+        .ok_or(StreamError::unavailable())?
         .iter()
         .map(|record| parse_record(record, owner))
         .collect()
 }
 fn parse_record(value: &Value, owner: &StreamPath) -> Result<Record, StreamError> {
     if value.get("origin").is_some() {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let bytes = parse_bytes(field(value, "value")?)?;
     let keys = field(value, "keys")?
         .as_array()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     let attributes = field(value, "attributes")?
         .as_array()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let headers = crate::changes::record_headers(
         &bytes,
@@ -63,9 +63,9 @@ fn parse_record(value: &Value, owner: &StreamPath) -> Result<Record, StreamError
             })
             .collect::<Result<Vec<_>, StreamError>>()?,
     )
-    .map_err(|_| StreamError::Unavailable)?;
+    .map_err(|_| StreamError::unavailable())?;
     if bytes.len().saturating_add(headers.payload_bytes()) > MAX_RECORD_BYTES {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     Ok(Record {
         sequence: parse_u64(field(value, "sequence")?)?,
@@ -126,9 +126,9 @@ fn parse_fork(value: &Value) -> Result<ForkReceipt, StreamError> {
 fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
     let mutations = value["mutations"]
         .as_array()
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     if mutations.len() > MAX_ITEMS {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::unavailable());
     }
     let mutations = mutations
         .iter()
@@ -137,7 +137,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
             let owner = match kind {
                 "append" => parse_path(field(value, "path")?)?,
                 "fork" => parse_path(field(value, "destination")?)?,
-                _ => return Err(StreamError::Unavailable),
+                _ => return Err(StreamError::unavailable()),
             };
             let records = value
                 .get("records")
@@ -145,7 +145,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                 .transpose()?
                 .unwrap_or_default();
             if records.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::unavailable());
             }
             match kind {
                 "append" => Ok(CommittedMutation::Append(CommittedAppend {
@@ -158,7 +158,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                 "fork" => Ok(CommittedMutation::Fork(CommittedFork {
                     exclude: field(value, "exclude")?
                         .as_array()
-                        .ok_or(StreamError::Unavailable)?
+                        .ok_or(StreamError::unavailable())?
                         .iter()
                         .map(parse_path)
                         .collect::<Result<_, _>>()?,
@@ -168,7 +168,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                     tail: parse_u64(field(value, "tail")?)?,
                     records,
                 })),
-                _ => Err(StreamError::Unavailable),
+                _ => Err(StreamError::unavailable()),
             }
         })
         .collect::<Result<Vec<_>, StreamError>>()?;
@@ -184,10 +184,10 @@ fn contract_error(code: &str) -> StreamError {
         "stream_not_found" | "commit_not_found" => StreamError::NotFound,
         "destination_exists" => StreamError::AlreadyExists,
         "capacity_exhausted" => StreamError::Capacity,
-        _ => StreamError::from_code(code).unwrap_or(StreamError::Unavailable),
+        _ => StreamError::from_code(code).unwrap_or(StreamError::unavailable()),
     }
 }
 
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value, StreamError> {
-    value.get(name).ok_or(StreamError::Unavailable)
+    value.get(name).ok_or(StreamError::unavailable())
 }

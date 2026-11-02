@@ -122,11 +122,11 @@ impl Observed {
             }
         };
         if matches!(fault, Some(Fault::Before)) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         let result = operation.await;
         if matches!(fault, Some(Fault::After)) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         result
     }
@@ -160,11 +160,11 @@ impl Observed {
             }
         };
         match fault {
-            Some(Fault::Before) => Err(StreamError::Unavailable),
+            Some(Fault::Before) => Err(StreamError::unavailable()),
             Some(Fault::Refuse) => Err(StreamError::AccessDenied),
             Some(Fault::After) => {
                 self.inner.write(command).await?;
-                Err(StreamError::Unavailable)
+                Err(StreamError::unavailable())
             }
             None => self.inner.write(command).await,
         }
@@ -334,7 +334,7 @@ mod tests {
             captured.arm(0, Fault::Before);
             assert!(matches!(
                 futures::executor::block_on(captured.commit(request.clone())),
-                Err(StreamError::Unavailable)
+                Err(StreamError::Unavailable { .. })
             ));
             let retried = captured.take_commits();
             assert_eq!(retried, history);

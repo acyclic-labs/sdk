@@ -180,7 +180,7 @@ impl Source for InterruptedReplay {
             {
                 Ok(records
                     .take(2)
-                    .chain(stream::once(future::ready(Err(StreamError::Unavailable))))
+                    .chain(stream::once(future::ready(Err(StreamError::unavailable()))))
                     .boxed())
             } else {
                 Ok(records)
@@ -214,7 +214,7 @@ fn reconnect_completes_an_interrupted_authenticated_replay() {
     let mut run = Box::pin(feed.run());
     assert!(step(&mut run).is_none());
     accounts.follow("account").unwrap();
-    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    assert_eq!(step(&mut run), Some(Err(StreamError::unavailable())));
     drop(run);
     assert!(follower.initialized("account").unwrap());
     assert!(!served(&follower, "account"));
@@ -251,9 +251,9 @@ fn a_cancelled_run_fences_the_trust_it_served() {
     );
     assert_eq!(
         world.accounts.follow("account"),
-        Err(StreamError::Unavailable)
+        Err(StreamError::unavailable())
     );
-    assert_eq!(late.follow("late"), Err(StreamError::Unavailable));
+    assert_eq!(late.follow("late"), Err(StreamError::unavailable()));
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn losing_one_account_follow_fences_everything() {
     assert!(served(&follower, "account"));
     // The environment follow stays live; only the account's ends.
     fake.end(&account_path("test", "account"));
-    assert_eq!(step(&mut run), Some(Err(StreamError::Unavailable)));
+    assert_eq!(step(&mut run), Some(Err(StreamError::unavailable())));
     assert!(!served(&follower, "account"));
     assert_eq!(
         *follower.state().borrow(),

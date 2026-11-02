@@ -25,7 +25,7 @@ impl WasmProviderRequest {
         Self {
             state: Rc::new(crate::pull::PullCursor::new(
                 futures::stream::once(request).boxed_local(),
-                js_error(StreamError::Unavailable),
+                js_error(StreamError::unavailable()),
             )),
         }
     }

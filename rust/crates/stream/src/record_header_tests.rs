@@ -35,7 +35,7 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
     request
         .records
         .first_mut()
-        .ok_or(StreamError::Unavailable)?
+        .ok_or(StreamError::unavailable())?
         .value = vec![0; MAX_RECORD_BYTES].into();
     assert_eq!(
         crate::request::append_digest(&request),

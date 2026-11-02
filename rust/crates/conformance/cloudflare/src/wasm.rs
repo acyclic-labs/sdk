@@ -47,7 +47,7 @@ pub async fn qualify_journal_deadline(
     let result = async {
         let journal = journal
             .call1(&JsValue::NULL, &acceptance)
-            .map_err(|_| StreamError::Unavailable)?;
+            .map_err(|_| StreamError::unavailable())?;
         let path = StreamPath::new("deadline/acceptance")?;
         let key = IdempotencyKey::new(b"deadline-acceptance".to_vec())?;
         let request = CommitRequest {

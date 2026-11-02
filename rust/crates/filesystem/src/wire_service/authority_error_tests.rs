@@ -141,7 +141,7 @@ async fn observe_failure(error: StreamError, expected: Code) -> TestResult {
 
 #[tokio::test]
 async fn observe_stream_unavailable_stays_retryable() -> TestResult {
-    observe_failure(StreamError::Unavailable, Code::Unavailable).await
+    observe_failure(StreamError::unavailable(), Code::Unavailable).await
 }
 
 #[tokio::test]
@@ -219,7 +219,7 @@ async fn join_failure(error: StreamError, expected: Code) -> TestResult {
 
 #[tokio::test]
 async fn apply_join_stream_unavailable_stays_retryable() -> TestResult {
-    join_failure(StreamError::Unavailable, Code::Unavailable).await
+    join_failure(StreamError::unavailable(), Code::Unavailable).await
 }
 
 #[tokio::test]

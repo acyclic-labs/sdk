@@ -315,27 +315,23 @@ impl HttpObjects {
 
     async fn failure(&self, response: Response) -> Error {
         let status = response.status().as_u16();
+        let reason = acyclic_auth::refusal::RefusalReason::from_header(
+            response
+                .headers()
+                .get(acyclic_auth::refusal::REASON_HEADER)
+                .map(|value| value.as_bytes()),
+        );
         let bytes = match self.bytes(response).await {
             Ok(bytes) => bytes,
-            Err(error) => return error,
+            Err(error) => return error.with_refusal_reason(reason),
         };
         if let Ok(detail) = json::decode::<wire::ErrorDetail>("ErrorDetail", &bytes, self.maximum)
             && let Ok(code) = wire::ErrorCode::try_from(detail.code)
             && code != wire::ErrorCode::Unspecified
         {
-            return code.into();
+            return Error::from(code).with_refusal_reason(reason);
         }
-        match status {
-            400 => wire::ErrorCode::InvalidArgument,
-            401 | 403 => wire::ErrorCode::AccessDenied,
-            404 => wire::ErrorCode::NotFound,
-            409 => wire::ErrorCode::Conflict,
-            413 | 429 => wire::ErrorCode::QuotaExceeded,
-            416 => wire::ErrorCode::RangeNotSatisfiable,
-            501 => wire::ErrorCode::Unsupported,
-            _ => wire::ErrorCode::Unavailable,
-        }
-        .into()
+        Error::from_http_status(status).with_refusal_reason(reason)
     }
 }
 

@@ -64,15 +64,16 @@ impl Drop for Connection {
 fn method(object: &JsValue, name: &str) -> Result<Function, StreamError> {
     Reflect::get(object, &JsValue::from_str(name))
         .and_then(|value| value.dyn_into::<Function>())
-        .map_err(|_| StreamError::Unavailable)
+        .map_err(|_| StreamError::unavailable())
 }
 fn failure(error: JsValue) -> StreamError {
-    Reflect::get(&error, &JsValue::from_str("code"))
+    let cause = Reflect::get(&error, &JsValue::from_str("code"))
         .ok()
         .and_then(|code| code.as_string())
         .as_deref()
         .and_then(StreamError::from_code)
-        .unwrap_or(StreamError::Unavailable)
+        .unwrap_or(StreamError::unavailable());
+    with_original_reason(cause, &error)
 }
 impl Connection {
     fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, StreamError> {
@@ -120,10 +121,7 @@ impl Responses {
                                     channel_id: writing.channel.channel_id,
                                     generation: writing.channel.generation,
                                     body: Some(wire::session_frame::Body::Closed(
-                                        wire::SessionClosed {
-                                            code: error.code().into(),
-                                            ..Default::default()
-                                        },
+                                        wire_codec::session::closed(error),
                                     )),
                                 })));
                             }
@@ -163,7 +161,7 @@ impl Responses {
         if self.read.is_none() {
             self.read = Some(self.connection.call("next", &JsValue::UNDEFINED)?);
         }
-        match Pin::new(self.read.as_mut().ok_or(StreamError::Unavailable)?).poll(cx) {
+        match Pin::new(self.read.as_mut().ok_or(StreamError::unavailable())?).poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
                 self.read = None;
@@ -193,13 +191,13 @@ impl Drop for Responses {
     }
 }
 impl Stream for Responses {
-    type Item = Result<crate::session::Frame, StreamError>;
+    type Item = Result<crate::session::Frame, transport::ConnectionFailure>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let result = self.poll(cx);
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             self.ended = true;
         }
-        result.map(|item| item.map(|item| item.map(Into::into)))
+        result.map(|item| item.map(|item| item.map(Into::into).map_err(Into::into)))
     }
 }
 impl transport::Transport for Endpoint {
@@ -223,7 +221,10 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<
+        '_,
+        Result<transport::ConnectionResponses, crate::session::transport::ConnectionFailure>,
+    > {
         Box::pin(async move {
             let mut connection = Connection {
                 controller: web_sys::AbortController::new().map_err(failure)?,
@@ -248,7 +249,7 @@ impl transport::Transport for Endpoint {
                 read: None,
                 write: None,
                 ended: false,
-            }) as transport::Responses)
+            }) as transport::ConnectionResponses)
         })
     }
 }

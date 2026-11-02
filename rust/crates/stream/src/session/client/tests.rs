@@ -200,9 +200,9 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         let gate = blocked.lock().ok().and_then(|mut gate| gate.take());
         let channel = channel.clone();
         Box::pin(async move {
-            gate.ok_or(StreamError::Unavailable)?
+            gate.ok_or(StreamError::unavailable())?
                 .await
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::unavailable())?;
             Ok(channel)
         })
     });
@@ -378,7 +378,7 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
                 .counts
                 .resumes
                 .lock()
-                .map_err(|_| StreamError::Unavailable)?
+                .map_err(|_| StreamError::unavailable())?
                 .len()
                 >= 4
             {
@@ -647,7 +647,7 @@ async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestRes
     let mut reply = Box::pin(opened.receive());
     assert!(futures::poll!(reply.as_mut()).is_pending());
     provider.revisions.close();
-    assert!(matches!(reply.await, Err(StreamError::Unavailable)));
+    assert!(matches!(reply.await, Err(StreamError::Unavailable { .. })));
     assert_eq!(report()?, "");
     Ok(())
 }

@@ -53,7 +53,7 @@ impl Pool {
         (node, mut link, response): Ready,
     ) -> Result<String, StreamError> {
         if self.links.contains_key(&node) {
-            return Err(StreamError::Unavailable);
+            return Err(StreamError::unavailable());
         }
         link.epoch = self.next_link;
         self.next_link = self.next_link.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -148,11 +148,11 @@ impl Pool {
                             break Ok((node, link, response));
                         }
                         Err(error) => {
-                            observation.finish(Some(&error));
+                            observation.finish(Some(&error.cause));
                             // Admission carries the request. An effectful call
                             // may have committed before transport failed.
-                            if error != StreamError::Unavailable || !replayable {
-                                break Err(error);
+                            if !error.reconnect || !replayable {
+                                break Err(error.cause);
                             }
                             attempt = attempt.saturating_add(1);
                             executor.sleep(10).await;
@@ -202,7 +202,7 @@ impl Pool {
         node: &str,
         value: wire::SessionFrame,
     ) -> Result<Result<(), StreamError>, StreamError> {
-        let link = self.links.get_mut(node).ok_or(StreamError::Unavailable)?;
+        let link = self.links.get_mut(node).ok_or(StreamError::unavailable())?;
         if value.channel_id == 0
             && let Some(Body::Window(grant)) = &value.body
         {
@@ -218,14 +218,14 @@ impl Pool {
         Ok(queued)
     }
     pub(super) fn subscribe(&mut self, id: u64) -> Result<(), StreamError> {
-        let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        let route = self.routes.get_mut(&id).ok_or(StreamError::unavailable())?;
         if route.progress.cancelled() {
             return self.remove(id);
         }
         let served = &self
             .links
             .get(&route.node)
-            .ok_or(StreamError::Unavailable)?
+            .ok_or(StreamError::unavailable())?
             .served;
         let subscription = match route.subscription(id, served) {
             Ok(subscription) => subscription,
@@ -237,7 +237,7 @@ impl Pool {
         let link = self
             .links
             .get_mut(&route.node)
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(StreamError::unavailable())?;
         if let Some(observation) = &link.observation {
             observation
                 .operation
@@ -358,9 +358,9 @@ impl Pool {
         )
     }
     pub(super) fn reconnect(&mut self, node: &str) -> Result<(), StreamError> {
-        let mut link = self.links.remove(node).ok_or(StreamError::Unavailable)?;
+        let mut link = self.links.remove(node).ok_or(StreamError::unavailable())?;
         if let Some(observation) = &mut link.observation {
-            observation.finish(Some(&StreamError::Unavailable));
+            observation.finish(Some(&StreamError::unavailable()));
         }
         if node == self.home {
             self.reset_home();
@@ -375,7 +375,7 @@ impl Pool {
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in interrupted {
-            self.reject(id, StreamError::Unavailable);
+            self.reject(id, StreamError::unavailable());
         }
         // The authenticated discovery endpoint may now host a replacement
         // node. Rediscover there without retaining the previous destination;
@@ -399,7 +399,7 @@ impl Pool {
             let route = self
                 .routes
                 .rehome(&id, destination)
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(StreamError::unavailable())?;
             route.generation = route.progress.fence()?;
             route.observation.in_scope(|| {
                 tracing::debug!(event = "reconnect", generation = route.generation);
@@ -436,7 +436,7 @@ async fn handshake(
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
     interest: wire::SessionInterest,
-) -> Result<Ready, StreamError> {
+) -> Result<Ready, transport::ConnectionFailure> {
     let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -469,7 +469,9 @@ async fn handshake(
     );
     let bytes = hello.encoded_len();
     if bytes > crate::MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
+        return Err(transport::ConnectionFailure::terminal(
+            StreamError::LimitExceeded,
+        ));
     }
     sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
@@ -496,18 +498,26 @@ async fn handshake(
         .next()
         .await
         .transpose()?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(StreamError::unavailable())?;
     if welcome.wire().channel_id != 0 || welcome.wire().generation != 0 {
-        return Err(StreamError::InvalidResponse);
+        return Err(transport::ConnectionFailure::terminal(
+            StreamError::InvalidResponse,
+        ));
     }
     let Some(Body::Welcome(welcome)) = welcome.into_wire().body else {
-        return Err(StreamError::InvalidResponse);
+        return Err(transport::ConnectionFailure::terminal(
+            StreamError::InvalidResponse,
+        ));
     };
     if welcome.version != super::super::VERSION {
-        return Err(StreamError::Unsupported);
+        return Err(transport::ConnectionFailure::terminal(
+            StreamError::Unsupported,
+        ));
     }
     if welcome.node_id.is_empty() || (!destination.is_empty() && welcome.node_id != destination) {
-        return Err(StreamError::InvalidResponse);
+        return Err(transport::ConnectionFailure::terminal(
+            StreamError::InvalidResponse,
+        ));
     }
     link.input.grant(&wire::SessionWindow {
         bytes: welcome.receive_bytes,

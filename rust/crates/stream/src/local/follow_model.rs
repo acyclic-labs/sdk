@@ -204,9 +204,9 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
                     .map_ok(crate::records_only)
                     .await
                 {
-                    Err(error) => assert_eq!(error, StreamError::Unavailable),
+                    Err(error) => assert_eq!(error, StreamError::unavailable()),
                     Ok(mut follow) => {
-                        assert_eq!(follow.next().await, Some(Err(StreamError::Unavailable)))
+                        assert_eq!(follow.next().await, Some(Err(StreamError::unavailable())))
                     }
                 }
             });

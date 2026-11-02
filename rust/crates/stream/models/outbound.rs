@@ -16,7 +16,7 @@ fn saturation(broken: bool) {
             } else {
                 assert!(matches!(
                     stalled.push(2, 1),
-                    Err(StreamError::Capacity | StreamError::Unavailable)
+                    Err(StreamError::Capacity | StreamError::Unavailable { .. })
                 ));
             }
             healthy.push(3, 1).unwrap();
@@ -28,7 +28,7 @@ fn saturation(broken: bool) {
             first.is_ready(),
             "a blocked node must never park independent dispatch"
         );
-        assert_eq!(stalled.push(4, 1), Err(StreamError::Unavailable));
+        assert_eq!(stalled.push(4, 1), Err(StreamError::unavailable()));
         assert_eq!(loom::future::block_on(healthy.next()).unwrap(), 3);
     });
 }
@@ -76,7 +76,7 @@ fn registration(close: bool, broken: u8) {
         if close {
             assert!(matches!(
                 first,
-                Poll::Ready(Err(StreamError::Unavailable)) | Poll::Pending
+                Poll::Ready(Err(StreamError::Unavailable { .. })) | Poll::Pending
             ));
         } else {
             let value = match first {
@@ -147,13 +147,13 @@ proptest::proptest! {
                 match operation {
                     0 => {
                         let result = queue.push(*bytes, *bytes);
-                        if closed { assert_eq!(result, Err(StreamError::Unavailable)); }
+                        if closed { assert_eq!(result, Err(StreamError::unavailable())); }
                         else if expected.len() == 2 || bytes > &(5 - used) { assert_eq!(result, Err(StreamError::Capacity)); }
                         else { assert!(result.is_ok()); expected.push_back(*bytes); used += bytes; }
                     }
                     1 => {
                         let result = queue.poll(&mut Context::from_waker(&wake));
-                        if closed { assert_eq!(result, Poll::Ready(Err(StreamError::Unavailable))); }
+                        if closed { assert_eq!(result, Poll::Ready(Err(StreamError::unavailable()))); }
                         else if let Some(value) = expected.pop_front() { used -= value; assert_eq!(result, Poll::Ready(Ok(value))); }
                         else { assert!(result.is_pending()); }
                     }

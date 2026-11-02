@@ -18,7 +18,7 @@ impl Gate {
     }
     pub(super) fn set(&self, enabled: bool) -> Result<(), StreamError> {
         let wake = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock().map_err(|_| StreamError::unavailable())?;
             if state.0 == enabled {
                 return Ok(());
             }
@@ -34,7 +34,7 @@ impl Gate {
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
-                return Poll::Ready(Err(StreamError::Unavailable));
+                return Poll::Ready(Err(StreamError::unavailable()));
             };
             if state.0 != expected {
                 return Poll::Ready(Ok(()));

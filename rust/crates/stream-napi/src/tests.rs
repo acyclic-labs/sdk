@@ -148,7 +148,7 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
 
 #[tokio::test]
 async fn terminal_peer_and_transport_errors_keep_their_codes_before_end() {
-    for error in [StreamError::InvalidResponse, StreamError::Unavailable] {
+    for error in [StreamError::InvalidResponse, StreamError::unavailable()] {
         let code = error.code();
         let records = futures::stream::once(async move { Err(error) }).boxed();
         let follow = NativeStreamFollow {
