@@ -464,10 +464,17 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
             watch.next().await,
             Some(Ok(OperationObservation { id, phase: OperationPhase::Pending })) if id == operation
         ));
+        let failure = watch.next().await.unwrap().unwrap_err();
         assert_eq!(
-            watch.next().await,
-            Some(Err(ProviderError::OperationIndeterminate(operation)))
+            failure.classification(),
+            &ProviderError::OperationIndeterminate(operation)
         );
+        let original = std::error::Error::source(&failure)
+            .and_then(|cause| cause.downcast_ref::<Status>())
+            .expect("admitted operation watch erased its original status");
+        assert_eq!(original.code(), code);
+        assert_eq!(original.message(), "watch interrupted");
+        assert!(failure.to_string().contains(original.message()));
         assert!(watch.next().await.is_none());
         let _ = shutdown.send(());
         server.await??;
@@ -487,10 +494,15 @@ async fn operation_watch_distinguishes_pre_admission_rejection_from_post_admissi
         watch.next().await,
         Some(Ok(OperationObservation { id, phase: OperationPhase::Pending })) if id == operation
     ));
+    let failure = watch.next().await.unwrap().unwrap_err();
     assert_eq!(
-        watch.next().await,
-        Some(Err(ProviderError::OperationIndeterminate(operation)))
+        failure.classification(),
+        &ProviderError::OperationIndeterminate(operation)
     );
+    let ended = std::error::Error::source(&failure)
+        .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+        .expect("admitted operation watch erased its missing terminal");
+    assert_eq!(ended.kind(), std::io::ErrorKind::UnexpectedEof);
     assert!(watch.next().await.is_none());
     let _ = shutdown.send(());
     server.await??;
