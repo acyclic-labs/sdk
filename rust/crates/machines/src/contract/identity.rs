@@ -39,9 +39,7 @@ macro_rules! uuid_identity {
             /// Derives a deterministic, never-nil identity from a domain-separated SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
             pub fn from_digest(digest: [u8; 32]) -> Self {
                 let mut bytes = [0_u8; 16];
-                for (byte, value) in bytes.iter_mut().zip(digest) {
-                    *byte = value;
-                }
+                bytes.copy_from_slice(&digest[..16]);
                 Self(uuid::Builder::from_sha1_bytes(bytes).into_uuid())
             }
 

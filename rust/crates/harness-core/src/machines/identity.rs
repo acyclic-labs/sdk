@@ -13,10 +13,8 @@ pub(super) fn parse_uuid<T>(
 pub(super) fn machines_key(key: &IdempotencyKey) -> Result<MachinesKey> {
     key.validate()?;
     let digest = blake3::hash(key.as_str().as_bytes());
-    let mut bytes = *digest
-        .as_bytes()
-        .first_chunk::<16>()
-        .ok_or_else(|| Error::Invalid("key digest".into()))?;
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
     if bytes == [0; 16] {
         bytes[0] = 1;
     }
