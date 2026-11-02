@@ -291,6 +291,24 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert_eq!(usage.totals().completed, 1);
     assert!(usage.totals().currency.is_none());
     assert_eq!(usage.totals().token_nano_units.value(), None);
+    // The file exporter must accept the same original completion, including
+    // request settings when research diagnostics are disabled.
+    let mut exported = Vec::new();
+    client.write_usage_jsonl(&mut exported).await?;
+    let mut rows = serde_json::Deserializer::from_slice(&exported)
+        .into_iter::<crate::executor::ModelUsageProjection<'_>>();
+    let completed = rows
+        .next()
+        .ok_or_else(|| Error::Storage("completed usage export is absent".into()))?
+        .map_err(agent)?;
+    assert!(completed.usage.completed);
+    assert_eq!(completed.usage.agent_path.as_deref(), Some(root.as_str()));
+    assert_eq!(
+        completed.usage.sampling,
+        Some(crate::model::ModelSampling::default())
+    );
+    assert_eq!(completed.usage.max_output_tokens, None);
+    assert!(rows.next().is_none());
     // The real journal's current format crosses the same shared boundary in
     // both directions. No other version or agent can enter this usage view.
     let command = AgentCommand::Usage {

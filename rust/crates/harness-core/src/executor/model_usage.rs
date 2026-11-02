@@ -76,10 +76,8 @@ pub(crate) struct ModelCallUsage<'a> {
     pub model: &'a str,
     pub agent_path: Option<&'a str>,
     /// Sampling from the original pinned request.
-    #[cfg(feature = "research")]
     pub sampling: crate::model::ModelSampling,
     /// Original requested output ceiling; absent remains unbounded.
-    #[cfg(feature = "research")]
     pub max_output_tokens: Option<u32>,
     pub tokens: ModelTokenUsage,
     /// Dispatch through receipt of the terminal event, including original

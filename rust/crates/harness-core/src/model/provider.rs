@@ -113,6 +113,11 @@ impl<'a> ModelStream<'a> {
 
 impl futures::Stream for ModelStream<'_> {
     type Item = Result<ModelEvent>;
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.stream.size_hint()
+    }
+
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

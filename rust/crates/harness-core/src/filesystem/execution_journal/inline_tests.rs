@@ -419,9 +419,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         provider: "test",
         model: "inline",
         agent_path: None,
-        #[cfg(feature = "research")]
         sampling: Default::default(),
-        #[cfg(feature = "research")]
         max_output_tokens: None,
         #[cfg(feature = "research")]
         provider_request_id: None,
