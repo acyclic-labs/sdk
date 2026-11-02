@@ -22,7 +22,7 @@ mod driver;
 pub mod live;
 mod requests;
 
-pub use backing::RecordBytes;
+pub use backing::{RecordBytes, RecordEvidence};
 pub use cache::{Listing, ListingProjection, ListingProjections, RecordCache, SnapshotError};
 pub use credential::CredentialStatus;
 use credential::{Access, Credentials};
@@ -235,6 +235,10 @@ pub struct Fetched {
     pub value: OwnedBytes,
     /// Commit that introduced it; anchors a resumed follow.
     pub commit: CommitId,
+    /// Original append stream, distinct from the selected fork path.
+    pub origin: StreamPath,
+    /// Original commit time in Unix microseconds.
+    pub committed_at_micros: u64,
 }
 
 /// A listed child and, when projected, its relative stream's last record.
@@ -1254,8 +1258,18 @@ impl Reader {
     fn keep(&mut self, stream: &StreamPath, record: Fetched, protect: Option<u64>) {
         self.cache
             .note_commit(stream, record.sequence, record.commit);
-        self.cache
-            .insert_record(stream, record.sequence, record.value, protect);
+        self.cache.insert_record(
+            stream,
+            record.sequence,
+            record.value,
+            Some(RecordEvidence {
+                origin: record.origin,
+                sequence: record.sequence,
+                commit: record.commit,
+                committed_at_micros: record.committed_at_micros,
+            }),
+            protect,
+        );
     }
 
     fn learn_origin(
@@ -2176,7 +2190,7 @@ mod reader_tests {
         assert_eq!(ops.len(), 2);
         reader
             .cache
-            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None, None);
         reader.cache.observe_origin(
             &child,
             Some(Provenance {
@@ -2244,6 +2258,8 @@ mod reader_tests {
                 sequence: 10,
                 value: OwnedBytes::from_static(b"late"),
                 commit: CommitId::from_bytes([1; 32]),
+                origin: stream.clone(),
+                committed_at_micros: 0,
             }]),
             1,
         );
@@ -2371,6 +2387,8 @@ mod reader_tests {
             sequence,
             value: OwnedBytes::from(vec![7; len]),
             commit: CommitId::from_bytes([1; 32]),
+            origin: StreamPath::new("test/generated").unwrap(),
+            committed_at_micros: 0,
         }
     }
 
@@ -2900,11 +2918,13 @@ mod reader_tests {
         let shared = OwnedBytes::from(vec![0_u8; 64 * 1024]);
         for index in 0..32 {
             let path = StreamPath::new(format!("cold/{index}")).unwrap();
-            assert!(
-                !reader
-                    .cache
-                    .insert_record(&path, 0, shared.clone(), Some(reader.frame_mark),)
-            );
+            assert!(!reader.cache.insert_record(
+                &path,
+                0,
+                shared.clone(),
+                None,
+                Some(reader.frame_mark),
+            ));
         }
         drop(shared);
         let wants = (0..100_000)
@@ -3041,7 +3061,7 @@ mod reader_tests {
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         reader
             .cache
-            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None, None);
         reader.replaced(&stream);
         assert!(reader.cache.record(&stream, 0).is_none());
         assert_eq!(

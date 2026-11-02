@@ -20,13 +20,13 @@
 //! (`follow_checked`). A changed anchor means the provisional suffix was
 //! replaced, and [`RecordCache::forget`] drops that stream's own entries.
 
-use super::backing::{BackingPool, RecordBytes};
+use super::backing::{BackingPool, RecordBytes, RecordEvidence};
 use acyclic_auth::credential::{CredentialBinding, CredentialRevision};
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkCut, OwnedBytesBacking, Provenance, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 /// Fixed accounting charge per entry: map nodes, key and LRU bookkeeping.
-const ENTRY_OVERHEAD: usize = 96;
+const ENTRY_OVERHEAD: usize = 96 + size_of::<Option<RecordEvidence>>();
 
 /// One cache key. Records are immutable; listing pages are hierarchy views
 /// that the scheduler revalidates while they are displayed.
@@ -902,6 +902,7 @@ impl RecordCache {
         stream: &StreamPath,
         sequence: u64,
         value: OwnedBytes,
+        evidence: Option<RecordEvidence>,
         protect: Option<u64>,
     ) -> bool {
         let key = self.resolve(stream, sequence);
@@ -910,10 +911,14 @@ impl RecordCache {
             self.touch(&key);
             return true;
         }
-        let charge = path_len(&key) + ENTRY_OVERHEAD;
+        let charge = path_len(&key)
+            + ENTRY_OVERHEAD
+            + evidence
+                .as_ref()
+                .map_or(0, |evidence| evidence.origin.as_str().len());
         let value = self
             .backings
-            .retain(value, self.max_bytes.saturating_sub(charge));
+            .retain(value, evidence, self.max_bytes.saturating_sub(charge));
         self.insert(key, Value::Record(value), charge, protect)
     }
 
@@ -1335,6 +1340,7 @@ impl RecordCache {
                             sequence,
                             OwnedBytes::copy_from_slice(value),
                             None,
+                            None,
                         );
                     }
                 }
@@ -1553,8 +1559,8 @@ mod tests {
         let first = root.slice(5..9);
         let pointer = first.as_slice().as_ptr();
         let mut cache = RecordCache::new(8192, 16);
-        assert!(cache.insert_record(&stream, 0, first, None));
-        assert!(cache.insert_record(&stream, 1, root.slice(20..24), None));
+        assert!(cache.insert_record(&stream, 0, first, None, None));
+        assert!(cache.insert_record(&stream, 1, root.slice(20..24), None, None));
         cache.observe_origin(
             &child,
             Some(Provenance {
@@ -1600,7 +1606,7 @@ mod tests {
             let pointer = value.as_slice().as_ptr();
             let mut cache = RecordCache::new(budget, 16);
             assert!(
-                cache.insert_record(&stream, 0, value, None),
+                cache.insert_record(&stream, 0, value, None, None),
                 "tiny payload failed cache metadata admission"
             );
             let view = cache.record(&stream, 0).unwrap();
@@ -1616,7 +1622,7 @@ mod tests {
         let full = OwnedBytes::from(vec![5; 8192]);
         let pointer = full.as_slice().as_ptr();
         let mut cache = RecordCache::new(4096, 16);
-        assert!(cache.insert_record(&stream, 1, OwnedBytes::from(vec![2]), None));
+        assert!(cache.insert_record(&stream, 1, OwnedBytes::from(vec![2]), None, None));
         assert!(cache.insert_listing(
             &stream,
             0,
@@ -1631,7 +1637,7 @@ mod tests {
             None,
         ));
         let mark = cache.begin_frame();
-        assert!(!cache.insert_record(&stream, 0, full, Some(mark)));
+        assert!(!cache.insert_record(&stream, 0, full, None, Some(mark)));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ptr(), pointer);
         assert_eq!(cache.record(&stream, 1).unwrap().as_ref(), &[2]);
         assert!(cache.listing(&stream, 0).is_some());
@@ -1642,10 +1648,10 @@ mod tests {
         // After memory pressure, a new tiny record must not prolong an old
         // giant view's allocation once that view leaves the viewport.
         let mut cache = RecordCache::new(2 << 20, 16);
-        assert!(cache.insert_record(&stream, 0, root.clone(), None));
+        assert!(cache.insert_record(&stream, 0, root.clone(), None, None));
         let old_view = cache.record(&stream, 0).unwrap().clone();
         cache.set_budget(4096);
-        assert!(cache.insert_record(&stream, 1, root.slice(11..15), None));
+        assert!(cache.insert_record(&stream, 1, root.slice(11..15), None, None));
         assert_eq!(cache.backing_bytes(), (1 << 20) + 4);
         drop(old_view);
         assert_eq!(cache.backing_bytes(), 4);
@@ -1657,7 +1663,7 @@ mod tests {
         let root = OwnedBytes::from(vec![9; 4096]);
         let mut cache = RecordCache::new(8192, 16);
         for sequence in 0..32 {
-            assert!(cache.insert_record(&stream, sequence, root.clone(), None));
+            assert!(cache.insert_record(&stream, sequence, root.clone(), None, None));
         }
         assert_eq!(cache.backing_bytes(), 4096);
         let bytes = cache.snapshot();
@@ -1684,7 +1690,7 @@ mod tests {
             },
         };
         cache.observe_origin(&child, Some(origin.clone()));
-        cache.insert_record(&child, 0, OwnedBytes::from_static(b"private"), None);
+        cache.insert_record(&child, 0, OwnedBytes::from_static(b"private"), None, None);
         cache.observe_origin(
             &grandchild,
             Some(Provenance {
@@ -1706,7 +1712,13 @@ mod tests {
         restored.restore(&cache.snapshot()).unwrap();
         restored.reset_access(super::super::Access::default());
         restored.observe_origin(&grandchild, None);
-        restored.insert_record(&grandchild, 0, OwnedBytes::from_static(b"new-source"), None);
+        restored.insert_record(
+            &grandchild,
+            0,
+            OwnedBytes::from_static(b"new-source"),
+            None,
+            None,
+        );
         restored.remove_stream(&child, false);
         assert_eq!(
             restored.record(&grandchild, 0).unwrap().as_ref(),
@@ -1783,7 +1795,7 @@ mod tests {
                 }),
             );
         }
-        assert!(!cyclic.insert_record(&child, 0, OwnedBytes::from_static(b"cycle"), Some(0)));
+        assert!(!cyclic.insert_record(&child, 0, OwnedBytes::from_static(b"cycle"), None, Some(0)));
         let mark = cyclic.clock();
         cyclic.retain_range(&child, 0, 1);
         cyclic.retain_passed(mark);
@@ -1884,6 +1896,7 @@ mod tests {
                 &record.origin,
                 record.sequence,
                 record.value.clone(),
+                None,
                 None
             ));
         }
@@ -1966,7 +1979,7 @@ mod tests {
                 }),
             );
         }
-        cyclic.insert_record(&root, 0, records[0].value.clone(), Some(0));
+        cyclic.insert_record(&root, 0, records[0].value.clone(), None, Some(0));
         assert_eq!(
             cyclic
                 .record(&root, 0)
@@ -1996,12 +2009,12 @@ mod tests {
         let other = StreamPath::new("test/other").unwrap();
         let mut cache = RecordCache::new(16 * 1024, 1);
         cache.note_commit(&stream, 0, CommitId::from_bytes([1; 32]));
-        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
+        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None, None);
         cache.begin_frame();
         cache.observe_tail(&other, 0);
         assert!(cache.record(&stream, 0).is_none());
         cache.note_commit(&stream, 0, CommitId::from_bytes([2; 32]));
-        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"new"), None);
+        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"new"), None, None);
         assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"new");
         assert_eq!(
             cache.anchor(&stream, 0),
@@ -2021,7 +2034,7 @@ mod tests {
         }
         cache.set_budget(64 * 1024);
         let stream = StreamPath::new("test/s0").unwrap();
-        assert!(cache.insert_record(&stream, 0, OwnedBytes::from_static(b"row"), None));
+        assert!(cache.insert_record(&stream, 0, OwnedBytes::from_static(b"row"), None, None));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"row");
         assert!(cache.bytes() <= 64 * 1024);
         assert_eq!(cache.streams(), 4096);
@@ -2068,8 +2081,8 @@ mod tests {
                 },
             }),
         );
-        cache.insert_record(&source, 0, OwnedBytes::from_static(b"a"), None);
-        cache.insert_record(&child, 3, OwnedBytes::from_static(b"c"), None);
+        cache.insert_record(&source, 0, OwnedBytes::from_static(b"a"), None, None);
+        cache.insert_record(&child, 3, OwnedBytes::from_static(b"c"), None, None);
         let mark = cache.begin_frame();
         cache.touch_range(&child, 0, 4);
         let large = StreamPath::new("test/z").unwrap();
@@ -2077,6 +2090,7 @@ mod tests {
             &large,
             0,
             OwnedBytes::from(vec![0; 64 * 1024 - 300]),
+            None,
             Some(mark),
         );
         assert!(!cached);
@@ -2092,10 +2106,10 @@ mod tests {
         let obsolete = StreamPath::new("test/obsolete").unwrap();
         let mut source = RecordCache::new(64 * 1024, 16);
         for sequence in 0..40 {
-            source.insert_record(&stream, sequence, OwnedBytes::from(vec![7; 64]), None);
+            source.insert_record(&stream, sequence, OwnedBytes::from(vec![7; 64]), None, None);
         }
         let mut target = RecordCache::new(4096, 16);
-        target.insert_record(&obsolete, 0, OwnedBytes::from_static(b"old"), None);
+        target.insert_record(&obsolete, 0, OwnedBytes::from_static(b"old"), None, None);
         let before = target.snapshot();
         let mut malformed = source.snapshot();
         malformed.push(255);
