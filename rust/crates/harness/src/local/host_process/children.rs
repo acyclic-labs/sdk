@@ -193,7 +193,17 @@ impl NativeChildren {
             FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        let mut children = Self::with(host, cwd, parent, flags, ownership, root);
+        let mut children = Self {
+            host: host.into(),
+            cwd,
+            parent,
+            flags,
+            children: BTreeMap::new(),
+            accepted: BTreeMap::new(),
+            ready: Arc::default(),
+            _ownership: ownership,
+            _root: root,
+        };
         let open = host_files::request(
             &children.cwd,
             HostAction::Sessions {
@@ -209,27 +219,6 @@ impl NativeChildren {
             children.launch(&reference, &mut recovered)?;
         }
         Ok(children)
-    }
-
-    fn with(
-        host: &str,
-        cwd: PathBuf,
-        parent: AgentPath,
-        flags: Vec<String>,
-        ownership: FileLock,
-        root: acyclic_fs::HeldRoot,
-    ) -> Self {
-        Self {
-            host: host.into(),
-            cwd,
-            parent,
-            flags,
-            children: BTreeMap::new(),
-            accepted: BTreeMap::new(),
-            ready: Arc::default(),
-            _ownership: ownership,
-            _root: root,
-        }
     }
 
     /// One exchange about `reference`; with `next`, its reply also carries
