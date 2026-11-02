@@ -15,6 +15,7 @@ const opening = new Set(['(', '[', '{']);
 const closing = new Set([')', ']', '}']);
 const bindingEnds = new Set([';', ',', ')', ']', '}']);
 const statementStarts = new Set(['let', 'const', 'fn', 'return']);
+const cFamily = /\.(?:[ch](?:pp|xx)?|cc|hh|cs)$/;
 const classes = new Set([
  'caller-deadline', 'transient-transport-backoff', 'retryable-tool', 'retryable-model',
  'idempotent-identity', 'event-wait', 'finite-work', 'negative-control',
@@ -44,7 +45,8 @@ function escapedSpelling(source) {
 export function sourceInScope(file) {
  // This declarative file is validated as exact dispositions, never executed.
  if (file === 'scripts/no-polling-dispositions.json') return false;
- return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)[\s\S]+\.(?:rs|[cm]?[jt]s|[jt]sx|[ch]|cc|cpp|cs|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
+ return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/|plugin\/)/.test(file)
+  && (cFamily.test(file) || /\.(?:rs|[cm]?[jt]s|[jt]sx|py|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file));
 }
 
 /** @param {import('typescript-parser').Expression | undefined} expression @returns {string | undefined} */
@@ -116,8 +118,8 @@ function nativeTokens(source, file) {
  const python = file.endsWith('.py');
  const powershell = file.endsWith('.ps1');
  const hashComments = /\.(?:py|sh|ps1|toml|ya?ml)$/.test(file);
- const slashComments = /\.(?:rs|[ch]|cc|cpp|cs|proto)$/.test(file);
- const escapedIdentifiers = /\.(?:[ch]|cc|cpp|cs)$/.test(file);
+ const escapedIdentifiers = cFamily.test(file);
+ const slashComments = escapedIdentifiers || /\.(?:rs|proto)$/.test(file);
  const wordPattern = escapedIdentifiers
   ? /^(?:[A-Za-z_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})(?:[A-Za-z0-9_$]|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8})*/
   : /^[A-Za-z_$][A-Za-z0-9_$]*/;
