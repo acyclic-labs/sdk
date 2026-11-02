@@ -507,14 +507,14 @@ impl<'a> KernelAccounting<'a> {
     /// Returns the remaining bounded allowances.
     pub fn remaining(&self) -> Result<WorkBudget, crate::FsError> {
         self.ensure_active()?;
-        self.check()?;
         match self {
             Self::Standalone {
                 work,
                 allocations,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining
                     .peak_allocation_bytes
@@ -526,8 +526,9 @@ impl<'a> KernelAccounting<'a> {
                 work,
                 allocations,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining
                     .peak_allocation_bytes
@@ -536,7 +537,12 @@ impl<'a> KernelAccounting<'a> {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.remaining().map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+                let native = crate::materializer::native_materialization_work_error;
+                state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                cancellation.check()?;
+                state.remaining().map_err(native).map_err(Into::into)
+            }),
         }
     }
 

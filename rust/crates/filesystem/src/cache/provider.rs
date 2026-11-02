@@ -143,10 +143,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         requests: &[ObjectReadRequest],
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        let mut work = crate::AuthorityWork::new(
-            context.work.remaining(context.budget)?,
-            context.cancellation,
-        );
+        let mut work = crate::AuthorityWork::new(context.read_budget()?, context.cancellation);
         #[cfg(not(target_arch = "wasm32"))]
         {
             work.original = context.original;

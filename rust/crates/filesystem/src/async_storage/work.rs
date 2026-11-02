@@ -247,9 +247,9 @@ impl<'a> AuthorityWork<'a> {
             .map_err(|error| OperationFailure::new(error, self.spent()))
     }
 
-    /// Returns the read budget after accounting for resident cache data.
-    pub fn read_budget(&mut self) -> Result<WorkBudget, WorkError> {
-        let mut remaining = self.work.remaining(self.budget)?;
+    /// Admits a read against the original ledger, including live and resident bytes.
+    pub fn read_budget(&mut self) -> Result<WorkBudget, ObjectStoreError> {
+        let mut remaining = self.accounting().remaining().map_err(super::object_error)?;
         if let Some((_, standing)) = self.read_observation {
             let Some(peak) = remaining.peak_allocation_bytes.checked_sub(standing) else {
                 self.read_observation = None;
@@ -257,7 +257,8 @@ impl<'a> AuthorityWork<'a> {
                     counter: "peak_allocation_bytes",
                     observed: standing,
                     maximum: remaining.peak_allocation_bytes,
-                });
+                }
+                .into());
             };
             remaining.peak_allocation_bytes = peak;
         }
@@ -356,7 +357,7 @@ impl<'a> AuthorityWork<'a> {
         self.record_completed(delta).map_err(Into::into)
     }
 
-    fn record_completed(&mut self, delta: WorkCounters) -> Result<(), WorkError> {
+    pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), WorkError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             return Ok(());

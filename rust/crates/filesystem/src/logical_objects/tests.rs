@@ -49,6 +49,72 @@ async fn authenticated_batch_preserves_raw_validation_and_duplicates()
         )
         .await?;
     assert_eq!(read.bytes, *object.bytes());
+
+    // The earlier buffer and this provider's payload are live together.
+    for available in [4, 3] {
+        let budget = WorkBudget {
+            peak_allocation_bytes: 31 + available,
+            object_probes: 1,
+            backend_read_operations: 1,
+            ..BUDGET
+        };
+        let mut work = AuthorityWork::new(budget, &cancel);
+        let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut work.accounting())?;
+        earlier.value.extend_from_slice(&[7; 31]);
+        let result = store.read(object.object_id(), 4, &mut work).await;
+        if available == 4 {
+            assert_eq!(result?.bytes, *object.bytes());
+            assert_eq!(work.spent().peak_allocation_bytes, 35);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::LogicalObjects(error))
+                    if error.code == wire::ErrorCode::QuotaExceeded
+            ));
+        }
+        assert_eq!(work.spent().object_probes, 1);
+        assert_eq!(work.spent().backend_read_operations, 1);
+        work.spent().verify(budget)?;
+        let completed = work.spent();
+        assert!(matches!(
+            store.read(object.object_id(), 4, &mut work).await,
+            Err(ObjectStoreError::Work(WorkError::BudgetExceeded { .. }))
+        ));
+        assert_eq!(work.spent(), completed);
+        assert_eq!(earlier.value, [7; 31]);
+        earlier.retire(&mut work.accounting())?;
+        assert_eq!(work.allocations.live_bytes(), 0);
+    }
+
+    let mut work = AuthorityWork::new(BUDGET, &cancel);
+    let continuation = crate::kernel::allocation::retained::OwnedAccounting::take_branch(
+        &mut work.accounting(),
+        &cancel,
+    )?;
+    let suspended = work.spent();
+    assert!(matches!(
+        store.read(object.object_id(), 4, &mut work).await,
+        Err(ObjectStoreError::AccountingHandoffActive)
+    ));
+    assert!(matches!(
+        store
+            .read_many(
+                &[ObjectReadRequest {
+                    object_id: object.object_id(),
+                    maximum_bytes: 4,
+                }],
+                &mut work,
+            )
+            .await,
+        Err(ObjectStoreError::AccountingHandoffActive)
+    ));
+    assert_eq!(work.spent(), suspended);
+    continuation.restore(&mut work.accounting())?;
+    assert_eq!(
+        store.read(object.object_id(), 4, &mut work).await?.bytes,
+        *object.bytes()
+    );
+
     let mut wrong = writes;
     wrong[0].bytes = OwnedBytes::from_static(b"bad");
     assert!(matches!(
