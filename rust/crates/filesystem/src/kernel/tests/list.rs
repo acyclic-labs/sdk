@@ -767,6 +767,12 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
     {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
             .map_err(|(error, _)| error)?;
+        let meter = std::sync::Arc::downgrade(&original.state);
+        let baseline = original.live_allocation_bytes();
+        assert_eq!(
+            baseline,
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        );
         let mut accounting = KernelAccounting::native(&original, &cancel);
         let (page, allocation) = persistent_pagination::paginate_with_accounting::<_, TreeFormat>(
             &store,
@@ -778,10 +784,13 @@ async fn reverse_pages_seek_only_the_selected_frontier() -> Result<(), Box<dyn s
         )
         .await?;
         assert_eq!(page.values[0].name.as_bytes(), b"f");
-        assert!(original.live_allocation_bytes() > 0);
+        assert!(original.live_allocation_bytes() > baseline);
         drop(page);
         drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), 0);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        drop(accounting);
+        drop(original);
+        assert!(meter.upgrade().is_none());
     }
     Ok(())
 }
