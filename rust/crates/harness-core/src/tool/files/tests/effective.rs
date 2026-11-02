@@ -226,6 +226,23 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                         "original"
                     );
                     assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
+                    let denied = ToolContext::new(
+                        Arc::new(context.task().scoped(
+                            Capabilities::default(),
+                            context.effective_scope().limits().clone(),
+                        )?),
+                        invocation.operation_id,
+                        &invocation.call_id,
+                    )?;
+                    assert_eq!(
+                        tool.executor
+                            .execute(invocation.clone(), Some(denied))
+                            .await
+                            .unwrap_err()
+                            .code(),
+                        crate::wire::ErrorCode::Unauthorized
+                    );
+                    assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
                     reader
                         .storage
                         .stage(
