@@ -363,10 +363,10 @@ function settled(code, signal, stdoutPath, stderrPath) {
 }
 
 // Why an event spool ended: its source reached EOF or failed, a line was
-// not JSON, a unique key repeated, or the transcript could not be written.
+// not JSON, a unique key repeated, a consumer threw, or the transcript failed.
 export class SpoolEnded extends Error {
   constructor(kind, message, detail) {
-    super(`event spool ${kind}: ${message}`);
+    super(`event spool ${kind}: ${message}`, detail instanceof Error ? { cause: detail } : undefined);
     this.name = "SpoolEnded";
     this.kind = kind;
     this.detail = detail;
@@ -480,18 +480,22 @@ export class Spool {
       // a late keyed lookup reads that event after its original write finishes.
       if (this.#path) indexed = { at, length: bytes.length, written: this.#written };
     }
-    for (const key of this.#key?.(event) ?? []) {
-      if (this.#index.has(key)) {
-        if (this.#unique) { this.#settle(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
-        continue;
+    try {
+      for (const key of this.#key?.(event) ?? []) {
+        if (this.#index.has(key)) {
+          if (this.#unique) { this.#settle(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
+          continue;
+        }
+        this.#index.set(key, indexed);
+        for (const wait of this.#waiting.get(key) ?? []) wait.resolve(event);
+        this.#waiting.delete(key);
       }
-      this.#index.set(key, indexed);
-      for (const wait of this.#waiting.get(key) ?? []) wait.resolve(event);
-      this.#waiting.delete(key);
-    }
-    for (const listener of this.#listeners) listener(event);
-    for (const wait of this.#pending) if (wait.match?.(event)) {
-      this.#pending.delete(wait); wait.resolve(event);
+      for (const listener of this.#listeners) listener(event);
+      for (const wait of this.#pending) if (wait.match?.(event)) {
+        this.#pending.delete(wait); wait.resolve(event);
+      }
+    } catch (error) {
+      this.#settle(new SpoolEnded("consumer", `step=dispatch event ${this.sequence}: ${error?.message ?? String(error)}; recovery=repair the event callback and rerun ${JSON.stringify(process.argv)}`, error));
     }
     return room;
   }
@@ -506,10 +510,9 @@ export class Spool {
   #settle(cause) {
     if (!this.#state.open) return;
     this.#state = { open: false, cause };
-    const pending = [...this.#pending, ...[...this.#waiting.values()].flatMap(waits => [...waits])];
-    this.#pending.clear();
-    this.#waiting.clear();
-    for (const wait of pending) wait.reject(cause);
+    for (const wait of this.#pending) wait.reject(cause);
+    for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(cause);
+    this.#pending.clear(); this.#waiting.clear();
     const blocked = this.#blocked;
     this.#blocked = undefined;
     if (blocked) {
