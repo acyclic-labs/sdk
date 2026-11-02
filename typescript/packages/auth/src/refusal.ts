@@ -1,6 +1,10 @@
+import { REASON_HEADER } from "../generated/refusal.js";
+export { REASON_HEADER, REFUSAL_REASONS } from "../generated/refusal.js";
+export type { KnownRefusalReason, RefusalClass } from "../generated/refusal.js";
+
 /** Original member metadata; diagnostics do not authorize replay or ownership. */
 export function refusalReason(metadata: { get(name: string): string | null }): string | undefined {
-  return metadata.get("acyclic-unserved-reason") ?? undefined;
+  return metadata.get(REASON_HEADER) ?? undefined;
 }
 
 /** The original foreign binding's raw value, never interpreted as replay permission. */

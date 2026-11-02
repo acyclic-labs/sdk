@@ -102,6 +102,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("\n")
         + "\n";
     fs::write(path, typescript)?;
+    let refusal = root.join("typescript/packages/auth/generated");
+    fs::create_dir_all(&refusal)?;
+    let mut reasons = serde_json::Map::new();
+    for reason in acyclic_auth::refusal::RefusalReason::ALL {
+        reasons.insert(
+            reason.class().ok_or("known refusal missing class")?.into(),
+            reason
+                .as_str()
+                .ok_or("known refusal missing wire value")?
+                .into(),
+        );
+    }
+    let header = "// Generated from acyclic_auth::refusal; do not edit.\n\n";
+    let metadata_key = serde_json::to_string(acyclic_auth::refusal::REASON_HEADER)?;
+    let mut declarations = format!(
+        "{header}export declare const REASON_HEADER: {metadata_key};\nexport declare const REFUSAL_REASONS: {{\n"
+    );
+    for (class, value) in &reasons {
+        declarations.push_str(&format!("  readonly {class}: {value};\n"));
+    }
+    declarations.push_str("};\nexport type KnownRefusalReason = typeof REFUSAL_REASONS[keyof typeof REFUSAL_REASONS];\nexport type RefusalClass = keyof typeof REFUSAL_REASONS;\n");
+    fs::write(refusal.join("refusal.d.ts"), declarations)?;
+    fs::write(
+        refusal.join("refusal.js"),
+        format!(
+            "{header}export const REASON_HEADER = {metadata_key};\nexport const REFUSAL_REASONS = Object.freeze({});\n",
+            serde_json::to_string_pretty(&reasons)?,
+        ),
+    )?;
     let vectors = root.join("typescript/packages/auth/generated/conformance");
     fs::create_dir_all(&vectors)?;
     fs::write(
