@@ -764,7 +764,17 @@ async fn write_conflicts_preserve_the_outcome_when_current_cannot_be_read() -> R
             None,
         )?;
         let journal = storage.journal();
-        let ExecutionProgress::Ready(result) = StockExecution::ordinary(&executor)
+        let execution = StockExecution::ordinary(&executor);
+        execution
+            .ensure_started(
+                journal.as_ref(),
+                &TurnInput {
+                    operation_id: operation,
+                    ..input()
+                },
+            )
+            .await?;
+        let ExecutionProgress::Ready(result) = execution
             .code(
                 journal.as_ref(),
                 (operation, 0),
