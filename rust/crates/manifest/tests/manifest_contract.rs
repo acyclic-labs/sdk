@@ -161,7 +161,7 @@ proptest! {
         }
     }
 
-    /// The real validator's visited-byte/node/edge count grows at most linearly.
+    /// The real validator's indexed declaration/selection count grows at most linearly.
     #[test]
     fn validation_work_is_linear(count in 1usize..=16) {
         let small = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
@@ -172,9 +172,9 @@ proptest! {
         prop_assert!(environment_typescript(&large, "production", "agent")?.contains("B0: Streams"));
     }
 
-    /// Native and JSON admission share the aggregate byte ceiling, including wire overhead.
+    /// Native and JSON admission agree across declaration counts and action widths.
     #[test]
-    fn native_and_json_budgets_agree(count in 1usize..=16, width in 1usize..=2040) {
+    fn native_and_json_admission_agree(count in 1usize..=16, width in 1usize..=2040) {
         let mut manifest = scaled(count).map_err(|e| TestCaseError::fail(e.to_string()))?;
         for grant in &mut manifest.environments.first_mut().ok_or_else(missing)?.grants {
             grant.grant.0.actions = vec![format!("streams/{}", "r".repeat(width)); 64];
