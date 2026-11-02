@@ -81,7 +81,7 @@ impl StockExecution<'_> {
                     // output is the answer given after the hook's reason.
                     let answer = if parts { "" } else { text.as_str() };
                     self.continue_after_stop(&mut prior_messages, answer, reason)?;
-                    self.retire_step_text(text)?;
+                    stock_retire_text(text, self.io)?;
                     stop_active = true;
                     continue;
                 }
@@ -97,7 +97,7 @@ impl StockExecution<'_> {
                     transcript,
                 }));
             }
-            self.retire_step_text(text)?;
+            stock_retire_text(text, self.io)?;
             for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
                 match self
                     .resolve_tool_call(
@@ -142,19 +142,6 @@ impl StockExecution<'_> {
         Ok(false)
     }
 
-    pub(super) fn retire_step_text(&self, text: String) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        let custody = self
-            .io
-            .filter(|_| text.capacity() != 0)
-            .map(|io| io.guard_owned(text.capacity() as u64))
-            .transpose()?;
-        drop(text);
-        #[cfg(feature = "filesystem")]
-        drop(custody);
-        Ok(())
-    }
-
     pub(super) fn collect_step_events(
         &self,
         input: &TurnInput,
@@ -179,7 +166,7 @@ impl StockExecution<'_> {
                     )?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
-                    self.retire_step_text(text)?;
+                    stock_retire_text(text, self.io)?;
                     text = completed;
                 }
                 ModelEvent::ToolCall(crate::model::ToolCall {

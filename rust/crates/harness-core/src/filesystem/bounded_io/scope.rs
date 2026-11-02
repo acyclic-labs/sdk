@@ -14,6 +14,16 @@ impl<'a> PreparationScope<'a> {
         })
     }
 
+    /// Owns already admitted input as well as scratch, retaining the same ledger.
+    /// Adoption itself must succeed after cancellation so destruction keeps its
+    /// original custody; subsequent work still checks cancellation normally.
+    pub(crate) fn with_input(original: Option<&'a PreparationIo>, bytes: u64) -> Result<Self> {
+        Ok(Self {
+            original,
+            local: original.map(|io| io.scoped_with_input(bytes)).transpose()?,
+        })
+    }
+
     pub(crate) fn io(&self) -> Option<&PreparationIo> {
         self.local.as_ref()
     }
