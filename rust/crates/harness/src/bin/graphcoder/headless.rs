@@ -978,7 +978,7 @@ pub(super) async fn jsonl(
                         && export.position.input >= export.cut.max(outstanding.accepted_tail)
                 });
                 match &projection {
-                    None => return Ok(0),
+                    None => return Ok(u8::from(outstanding.failed)),
                     Some(projection) if drain.is_none() && execution_complete => {
                         // This single reopen establishes opening cuts after every
                         // input settled. The follows themselves deliver the cuts;

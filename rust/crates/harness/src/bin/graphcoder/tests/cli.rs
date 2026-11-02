@@ -288,6 +288,55 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
 }
 
 #[tokio::test]
+async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    for versioned in [false, true] {
+        let mut args = vec![
+            "--operation",
+            if versioned {
+                "events-refusal"
+            } else {
+                "jsonl-refusal"
+            },
+        ];
+        if versioned {
+            args.extend(["--output-format", "jsonl"]);
+        }
+        args.push("exec");
+        for (input, refused) in [
+            ("", false),
+            ("{\"prompt\":\"/gone\",\"id\":\"refused\"}\n", true),
+        ] {
+            let output = graphcoder(&fixture, &model.catalog, args.clone(), input).await;
+            let records = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(output.status.success(), !refused, "{output:?}");
+            let results = records
+                .iter()
+                .filter(|record| record["id"] == "refused")
+                .collect::<Vec<_>>();
+            assert_eq!(results.len(), usize::from(refused));
+            if let Some(result) = results.first() {
+                assert!(result["error"].is_string());
+                assert!(result.get("text").is_none());
+            }
+            if versioned {
+                let completed = records.last().unwrap();
+                assert_eq!(completed["kind"], "completed");
+                assert_eq!(completed["success"], !refused);
+            } else {
+                assert_eq!(records.len(), usize::from(refused));
+            }
+            assert_eq!(model.generated(), 0, "refusal dispatched model work");
+        }
+    }
+    model.close().await;
+}
+
+#[tokio::test]
 async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
