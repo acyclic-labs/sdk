@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, toNamespacedPath } from "node:path";
 import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
@@ -83,6 +83,16 @@ test("a child merge needs its committed branch result after settlement", () => {
     const workspace = original[0].cwd;
     const check = events => requireTools(events, ["spawn", "wait", "fs"], expected, workspace);
     check(original);
+    // Native Windows canonical paths use the namespace form. Both spellings
+    // must retain the same exact parent-workspace and settled-branch checks.
+    const absolute = resolve(workspace), native = structuredClone(original);
+    for (const event of native) event.cwd = toNamespacedPath(absolute);
+    requireTools(native, ["spawn", "wait", "fs"], expected, absolute);
+    const nativeMerge = native.find(event => event.tool_response?.result?.Committed);
+    for (const cwd of [toNamespacedPath(join(absolute, "child")), "workspace", undefined]) {
+      nativeMerge.cwd = cwd;
+      assert.throws(() => requireTools(native, ["spawn", "wait", "fs"], expected, absolute));
+    }
     for (const mutate of [
       (events, merge) => { events.splice(events.indexOf(merge), 1); },
       (_, merge) => { merge.hook_event_name = "PreToolUse"; },

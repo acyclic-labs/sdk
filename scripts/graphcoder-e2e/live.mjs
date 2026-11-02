@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
@@ -32,6 +32,7 @@ export function answer(result, format) {
 
 export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) {
   const remaining = new Set(names);
+  const mergeCwd = mergeWorkspace === undefined ? undefined : toNamespacedPath(mergeWorkspace);
   let child, childName, consumed = false, merged = false;
   for (const hook of hooks) {
     if (hook.hook_event_name !== "PostToolUse") continue;
@@ -57,7 +58,8 @@ export function requireTools(hooks, names, expectedChildResult, mergeWorkspace) 
       assert.equal(settled.answer, expectedChildResult, "parent did not consume the child's exact result");
       consumed = true;
     } else if (mergeWorkspace !== undefined && consumed && typeof childName === "string"
-      && hook.tool_name === "fs" && hook.cwd === mergeWorkspace
+      && hook.tool_name === "fs" && typeof hook.cwd === "string" && isAbsolute(hook.cwd)
+      && toNamespacedPath(hook.cwd) === mergeCwd
       && hook.tool_response?.result?.Committed?.message === `merge agents/${childName}`) {
       // The filesystem generates this message from its completed join operand.
       merged = true;
