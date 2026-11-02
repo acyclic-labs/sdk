@@ -332,9 +332,8 @@ interface WasmActorsModule extends ActorsNominalBinding {
 }
 
 type DeploymentDeclaration = import("./generated/semantic/actors/readonly.js").Binding;
-type CapturedDeploymentBinding = Omit<DeploymentDeclaration, "targetAccount"> & { readonly targetAccount: Uint8Array<ArrayBuffer> };
 
-function captureDeploymentBinding(input: DeploymentDeclaration): CapturedDeploymentBinding {
+function captureDeploymentBinding(input: DeploymentDeclaration) {
   const binding = { ...input };
   for (const value of [binding.name, binding.capability, binding.resource]) {
     if (typeof value !== "string") throw new TypeError("binding fields must be text");
@@ -343,13 +342,13 @@ function captureDeploymentBinding(input: DeploymentDeclaration): CapturedDeploym
     if (value !== undefined && typeof value !== "string") throw new TypeError("binding targets must be text");
   }
   if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
-  binding.targetAccount = new Uint8Array(binding.targetAccount);
+  const targetAccount = new Uint8Array(binding.targetAccount);
   const stateTransaction = binding.stateTransaction ?? false;
   if (typeof stateTransaction !== "boolean") throw new TypeError("binding state selector must be boolean");
-  return Object.freeze(binding) as CapturedDeploymentBinding;
+  return Object.freeze({ ...binding, targetAccount });
 }
 
-function validateCapturedBinding(wasm: WasmActorsModule, binding: CapturedDeploymentBinding): void {
+function validateCapturedBinding(wasm: WasmActorsModule, binding: ReturnType<typeof captureDeploymentBinding>): void {
   const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
   wasm.validateDeploymentBinding(name, capability, resource, binding.targetAccount, actorNamespace, workerService, binding.stateTransaction ?? false, guestAdmission);
 }
