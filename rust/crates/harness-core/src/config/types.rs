@@ -61,6 +61,20 @@ pub struct Sampling {
     pub max_output_tokens: Option<u32>,
 }
 
+impl Sampling {
+    /// Selects model sampling only when a sampling knob was supplied. An output
+    /// cap alone leaves the immutable profile's sampling in force.
+    pub fn model_sampling(self) -> Option<crate::model::ModelSampling> {
+        (self.temperature.is_some() || self.top_p.is_some()).then_some(
+            crate::model::ModelSampling {
+                seed: None,
+                temperature: self.temperature,
+                top_p: self.top_p,
+            },
+        )
+    }
+}
+
 /// The loop an agent runs in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]

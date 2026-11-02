@@ -51,11 +51,20 @@ impl TaskContext {
     pub(super) fn tool_publication_path<'a>(
         &'a self,
         path: &'a str,
-    ) -> (Option<&'a ContentBindings>, &'a str) {
-        self.home_content_path(path).map_or_else(
+        io: Option<&ContentIo>,
+    ) -> Result<(Option<&'a ContentBindings>, &'a str)> {
+        if crate::layers::read_only(path) {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "file publication path is read-only; recovery: write under .volumes/home/",
+            )
+            .tool_input());
+        }
+        Ok(self.home_content_path(path).map_or_else(
             || (self.tool_content(None), path),
             |(binding, relative)| (Some(binding), relative),
-        )
+        ))
     }
 
     /// A cache commit must not advance the source volume's generation. Only
@@ -231,7 +240,7 @@ impl TaskContext {
         }
         let (binding, path) = match source {
             Some(source) => (self.tool_content(Some(source.volume())), path),
-            None => self.tool_publication_path(path),
+            None => self.tool_publication_path(path, io)?,
         };
         publication_destination(binding, scope, source, path, io)?;
         Ok(())

@@ -502,7 +502,7 @@ impl ToolContext {
         path: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        let (binding, _) = self.task().tool_publication_path(path);
+        let (binding, _) = self.task().tool_publication_path(path, io)?;
         self.observe_once(binding, operation_id, io).await
     }
 
@@ -773,13 +773,7 @@ impl ToolContext {
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        if crate::layers::read_only(path) {
-            return Err(Error::Unauthorized(format!(
-                "{path} is read-only; write under {HOME_PATH}"
-            ))
-            .tool_input());
-        }
-        let (binding, path) = self.task().tool_publication_path(path);
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         self.stage_once(
             binding,
             operation_id,
@@ -1079,7 +1073,7 @@ impl ToolContext {
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        let (binding, path) = self.task().tool_publication_path(path);
+        let (binding, path) = self.task().tool_publication_path(path, io)?;
         let (_, volume, relative) = super::content_write::publication_destination(
             binding,
             self.effective_scope(),

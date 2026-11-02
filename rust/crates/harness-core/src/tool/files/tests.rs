@@ -106,6 +106,73 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
         .build()?
         .agent_context(&Capabilities::default(), home.content_bindings())?,
     );
+    // A single-volume publisher must never interpret a read-only public view
+    // as a literal writable path, regardless of the conditional-write mode.
+    for prefix in [crate::layers::EFFECTIVE_PATH, crate::layers::SEED_PATH] {
+        for mode in ["omitted", "any", "absent"] {
+            let mut arguments =
+                json!({"path":format!("{prefix}example.txt"),"content":"forbidden"});
+            if mode != "omitted" {
+                arguments["ifVersion"] = json!(mode);
+            }
+            let invocation = ToolInvocation {
+                operation_id: OperationId::new(),
+                call_id: format!("read-only-{mode}"),
+                name: "write".into(),
+                arguments,
+            };
+            let context =
+                ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let before = work.receipt();
+            assert_eq!(
+                write()?
+                    .executor
+                    .authorize(
+                        Some(context.effective_scope()),
+                        Some(&context),
+                        &invocation,
+                        Some(&work)
+                    )
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized,
+            );
+            assert_eq!(
+                write()?
+                    .executor
+                    .execute(invocation, Some(context))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized,
+            );
+            let after = work.receipt();
+            assert_eq!(
+                after.backend_write_operations,
+                before.backend_write_operations
+            );
+            assert_eq!(
+                after.authority_records_appended,
+                before.authority_records_appended
+            );
+            assert_eq!(after.durability_operations, before.durability_operations);
+        }
+    }
+    for storage in [&project, &home] {
+        assert!(
+            storage
+                .list_private_directory("", None, None, 1)
+                .await?
+                .1
+                .entries
+                .is_empty()
+        );
+    }
     for (prefix, storage) in [("", &project), (crate::layers::HOME_PATH, &home)] {
         for mode in ["omitted", "any", "absent", "content", "authored"] {
             let relative = format!("{mode}.txt");

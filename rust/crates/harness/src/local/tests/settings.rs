@@ -156,7 +156,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
 }
 
 #[tokio::test]
-async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens() -> Result<()> {
+async fn profile_bound_settings_keep_output_caps_and_reject_sampling_conflicts() -> Result<()> {
     use crate::model::{
         Model, ModelDispatch, ModelEvent, ModelProfileBinding, ModelProvider, PreparedModelRequest,
     };
@@ -203,22 +203,32 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
             .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
     };
     let mut harness = LocalHarness::open(config()?).await?;
-    for (temperature, expected) in [
-        (0.25, AdmissionStatus::Applied),
-        (0.75, AdmissionStatus::Rejected),
+    for (sampling, expected) in [
+        ("{maxOutputTokens: 256}", AdmissionStatus::Applied),
+        ("{temperature: 0.25}", AdmissionStatus::Applied),
+        ("{temperature: 0.75}", AdmissionStatus::Rejected),
     ] {
         let version = write(
             &harness,
             "agent.ts",
-            &format!(
-                "export default (base) => ({{...base, sampling: {{temperature: {temperature}}}}});"
-            ),
+            &format!("export default (base) => ({{...base, sampling: {sampling}}});"),
         )
         .await?;
         drop(harness);
         harness = LocalHarness::open(config()?).await?;
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, expected);
+        if sampling == "{maxOutputTokens: 256}" {
+            let sampling = harness.sampling.expect("applied output cap");
+            assert_eq!(sampling.max_output_tokens, Some(256));
+            assert_eq!(
+                crate::model::ModelSampling::admit(
+                    sampling.model_sampling(),
+                    Some(binding.sampling()),
+                )?,
+                binding.sampling(),
+            );
+        }
         if expected == AdmissionStatus::Rejected {
             assert_eq!(harness.sampling, None);
             assert!(
