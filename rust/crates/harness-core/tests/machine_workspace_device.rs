@@ -967,7 +967,8 @@ async fn committed_handover(refused_close: bool) -> Result {
                     .ok_or("committed Exit disappeared during recovery")?;
                 assert_eq!(result.value["exit_code"], exit);
                 assert_eq!(result.value["omitted_bytes"], 2);
-                let bounded = acyclic_harness_core::tools::shell::bounded_result(result, 2048)?;
+                let bounded =
+                    acyclic_harness_core::tools::shell::bounded_result(result, Some(2048))?;
                 assert_eq!(bounded.value["truncated"], true);
                 assert_eq!(bounded.value["omitted_bytes"], 2);
                 let shell_tool = registry
@@ -1018,7 +1019,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                                 "",
                                 &path,
                                 None,
-                                2,
+                                Some(2),
                                 acyclic_harness_core::conversation::ContentAccess::default(),
                             )?
                             .await?;

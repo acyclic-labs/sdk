@@ -499,7 +499,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _volume: &'a VolumeRef,
         _operation_id: OperationId,
-        _maximum_receipt_bytes: u64,
+        _maximum_receipt_bytes: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
         Err(content_error(
