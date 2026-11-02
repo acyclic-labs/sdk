@@ -234,7 +234,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
     };
     let cancelled = request(b"cancelled")?;
     let ticket = store.enqueue_invoke(&cancelled).await?;
-    let call = cancelled.call(&store.path(&cancelled_actor)?)?;
+    let call = ticket.call()?;
     let cancel = call
         .cancel("original caller cancelled")?
         .request(key("inline-cancel/cancel")?);

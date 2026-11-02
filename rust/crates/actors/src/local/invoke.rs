@@ -62,6 +62,12 @@ impl InvocationTicket {
     pub const fn record(&self) -> &Record {
         &self.record
     }
+    /// Shared call identity derived from this ticket's original admitted state
+    /// path. Use its cancellation commit without resolving the target again.
+    /// This performs no provider I/O and conveys no additional authority.
+    pub fn call(&self) -> Result<call::CallPath, call::Error> {
+        self.invocation.call(&self.state)
+    }
     /// The provider-issued publication revision, usable as a read floor.
     pub const fn storage_revision(&self) -> &Revision {
         &self.revision
@@ -272,7 +278,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 // input. Wait on that operation's reply, whose original state
                 // publication below proves its exact consumed cursor. A later
                 // actor state is neither needed nor evidence of this result.
-                let path = ticket.invocation.call(&ticket.state)?;
+                let path = ticket.call()?;
                 let mut records = acyclic_stream::records_only(
                     self.provider
                         .follow(FollowRequest {

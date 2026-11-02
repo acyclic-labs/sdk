@@ -37,8 +37,11 @@ the response retains that record's `OwnedBytes` owner. The terminal and shared
 settled marker publish with the consumed input and actor state in one commit.
 There is no separate reply stream or response payload wrapper.
 
-A caller's shared call cancellation returns `Error::InvocationTerminated` with
-the original call receipt. If that marker wins before inline publication, the
+A retained invocation ticket exposes its original shared call through
+`ticket.call()`, without looking up the target state again. Publish that call's
+`cancel` commit through the same admitted provider. `wait_invocation` then returns
+`Error::InvocationTerminated` with the original call receipt. If that marker
+wins before inline publication, the
 runtime consumes the input under the same state and settled-marker guards,
 keeping the previous guest state and discarding the refused effects. This adds
 no control read to normal completion. Dropping an observer alone does not cancel
