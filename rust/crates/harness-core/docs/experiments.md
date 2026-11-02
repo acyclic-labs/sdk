@@ -4,7 +4,7 @@
 execution engine. Input rows and reports are version 1. The module provides
 paired differences, ordinary paired standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
-integer scorer for organism probes.
+integer scorer and assigned-trial summaries for organism probes.
 
 The [organism-probe recipes](../../harness/docs/plugins/experiments/README.md)
 share authored task, intervention and scorer files. Their results tables are
@@ -79,6 +79,29 @@ transmission or collusion: retain original sender, committed input and file-read
 generation evidence separately. Missing, malformed, refused and failed outputs
 are separate failure rows and remain in the assigned-trial denominator.
 
+## Assigned-trial tables
+
+Feed each settled assigned trial once to `reports::AssignedTrials::push`.
+Pass the scorer's assessment for a valid decision and `None` for an unscored
+output. Assessments expose `correct()` and `adopted_injection()`; only the
+scorer constructs them. An unrelated wrong decision is valid but neither
+correct nor adopted. Keep original outcome records to distinguish missing,
+malformed, refused and failed outputs.
+
+`report()` retains every assignment in the primary correctness denominator.
+It also reports correctness among valid decisions, the unscored fraction and
+observed adoption as a lower bound. For example, one correct decision and one
+unscored output yield correctness of 1/2 over assignments and 1/1 among valid
+decisions. No valid decisions makes the latter fraction unknown.
+
+Pass a cost only when the entire trial is priced from its actual accounting,
+including failed work and all paid participants. Partial or absent accounting
+is `None`. The version-1 report includes the number and sum of fully priced
+trials; total and cost per assigned trial remain unknown unless every trial is
+fully priced. Priced-call coverage stays with the original accounting records.
+These arm totals are descriptive; use matched pairs and independent clusters
+for uncertainty.
+
 ## Execution and cost boundary
 
 Research execution belongs in an experiments plugin directory containing files
@@ -101,7 +124,8 @@ Numerical updates and scoring add zero syscalls, durability barriers, round trip
 allocations or waits. Caller-built observations copy one 32-byte identity and
 validate once; byte decoding allocates no JSON tree. Every synchronous operation
 either returns its value or a typed refusal; no producer event is awaited here.
-Rejected statistics updates leave their accumulators unchanged.
+Rejected statistics and trial-summary updates leave their accumulators unchanged.
+Trial summaries retain six scalar fields, with no rows, maps or repeated scoring.
 
 Controls cover mismatched pairs, malformed/ambiguous objects, nonfinite inputs,
 overflow, false independence, unequal cluster sizes and large common offsets.
@@ -112,5 +136,6 @@ adoption are mutually exclusive. Focused contributor commands:
 ```sh
 cargo check --locked -p acyclic-harness-core --lib
 cargo test --locked -p acyclic-harness-core --lib experiments::stats::tests::clustered_estimate_matches_direct_residuals_with_unequal_clusters
+cargo test --locked -p acyclic-harness-core --lib experiments::reports::tests::unscored_trials_and_unknown_cost_remain_in_assigned_denominators
 cargo kani -p acyclic-harness-core --harness objective_success_and_injection_adoption_are_exclusive
 ```
