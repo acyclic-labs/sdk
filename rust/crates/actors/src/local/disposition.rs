@@ -48,7 +48,7 @@ struct InputV1 {
     cause: Vec<u8>,
 }
 
-fn encode(value: EntryV1) -> Vec<u8> {
+fn encode(value: &EntryV1) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(FORMAT_V1.len() + value.encoded_len());
     bytes.extend_from_slice(FORMAT_V1);
     value.encode_raw(&mut bytes);
@@ -164,6 +164,9 @@ impl FailureEntry {
             .ok_or(Error::Invalid("unsupported failed-input format"))?;
         let entry =
             EntryV1::decode(bytes).map_err(|_| Error::Invalid("invalid failed-input record"))?;
+        if encode(&entry).as_slice() != record.value.as_ref() {
+            return Err(Error::Invalid("non-canonical failed-input record"));
+        }
         match (entry.failed, entry.resolution, record.sequence) {
             (Some(failed), 0, 0) => {
                 let state = StreamPath::new(failed.state)?;
@@ -263,7 +266,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let path = location(&previous.path, previous.tail)?;
         let status = status_path(&path)?;
         let input_path = captured_path(&path)?;
-        let bytes = encode(EntryV1 {
+        let bytes = encode(&EntryV1 {
             failed: Some(InputV1 {
                 state: previous.path.to_string(),
                 revision: previous.tail,
@@ -351,7 +354,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             mutation: CommitMutation::Append {
                 path: status,
                 records: vec![
-                    encode(EntryV1 {
+                    encode(&EntryV1 {
                         failed: None,
                         resolution: match resolution {
                             FailureResolution::Replay => 1,

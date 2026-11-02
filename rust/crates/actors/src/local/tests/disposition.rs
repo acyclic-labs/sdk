@@ -295,6 +295,15 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         ),
         "fork must not inherit failed-input custody"
     );
+    // The same version cannot silently accept a second field occurrence or a
+    // future schema field, even when protobuf would otherwise skip it.
+    for suffix in [&[0x10, 1][..], &[0x18, 1][..]] {
+        let mut invalid = terminal.clone();
+        let mut bytes = invalid.value.to_vec();
+        bytes.extend_from_slice(suffix);
+        invalid.value = bytes.into();
+        assert!(FailureEntry::decode(&child.path, &invalid).is_err());
+    }
     // A changed codec discriminator must refuse without interpreting old bytes.
     let mut invalid = terminal.clone();
     let mut bytes = invalid.value.to_vec();
