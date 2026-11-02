@@ -31,7 +31,7 @@ pub use tools::serve;
 
 /// Byte bound of one native event line and of a retained answer's source.
 const EVENT_LIMIT: usize = 65_536;
-/// The saved log's line where the bounded framer dropped one native event.
+/// The saved log's line where framing or decoding dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
 /// Byte bound of a retained answer.
 const ANSWER_LIMIT: usize = 4096;
@@ -523,7 +523,7 @@ impl NativeChildren {
                     cause: cause.clone(),
                 },
                 None if running.answer.omitted => Outcome::Failed {
-                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit or contained invalid UTF-8; recovery=acyclic agents".into(),
+                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit, contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
                 },
                 None => Outcome::Failed {
                     message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),
@@ -669,16 +669,18 @@ fn output(running: &mut Running, buffer: &mut [u8]) -> Result<bool> {
             .get(..count)
             .ok_or_else(|| invalid("native output count invalid"))?;
         for line in running.events.push(bytes) {
-            let Ok(line) = line else {
+            let decoded = line.ok().and_then(|line| {
+                serde_json::from_str::<Value>(&line)
+                    .ok()
+                    .map(|event| (line, event))
+            });
+            let Some((line, event)) = decoded else {
                 // A dropped answer replaces an earlier preview, preserving
                 // terminal refusals. Keep draining through the same framer
                 // and owner; later complete answers remain usable.
                 running.answer.omit();
                 // The saved log marks where the event was dropped.
                 running.process.record_event(EVENT_OMITTED)?;
-                continue;
-            };
-            let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
             // The whole event stream joins the conversation at settlement.
