@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { StringDecoder } from "node:string_decoder";
+import { Lines } from "./lines.mjs";
 
 const identity = value => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 const outcomes = new Set(["report", "empty", "write-failed", "exited", "unsupported"]);
@@ -44,16 +44,11 @@ export class ProcessReport {
   }
   #attachChannel(channel) {
     this.#channel = channel;
-    const decoder = new StringDecoder("utf8");
-    let partial = "";
-    channel.on("data", chunk => {
-      const lines = (partial + decoder.write(chunk)).split("\n");
-      partial = lines.pop();
-      for (const line of lines) {
-        try { this.#receive(JSON.parse(line)); }
-        catch { this.#finish("write-failed", "invalid-acknowledgement"); }
-      }
+    const lines = new Lines(line => {
+      try { this.#receive(JSON.parse(line)); }
+      catch { this.#finish("write-failed", "invalid-acknowledgement"); }
     });
+    channel.on("data", chunk => lines.write(chunk));
     channel.on("error", error => {
       this.#finish("write-failed", error.code ?? "transport-error");
       this.#drainResolve();
