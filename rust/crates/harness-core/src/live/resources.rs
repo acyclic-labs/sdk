@@ -5,6 +5,9 @@
 //! source, polls a provider, walks descendants or publishes another record.
 //! Subtree counters require the original indexed aggregate at its admitted cut;
 //! inherited history and shared physical allocations are not added as new work.
+//! These borrowed values describe admitted evidence, not source authorization.
+//! The original reader binds each decoded producer value to that same record
+//! before projection; a separately supplied source tuple cannot establish it.
 
 use crate::executor::{
     ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageRecord, ModelUsageTotals,
@@ -86,6 +89,9 @@ pub struct CacheCall<'a> {
 impl<'a> CacheCall<'a> {
     /// Reuse the one usage/price interpretation; pending calls retain unknown
     /// completion counters and cannot supply a saving or a prefix-hit claim.
+    /// The original journal reader must already have bound this usage to its
+    /// committed dispatch, purpose and request; format/price checks here do not
+    /// authenticate a separately supplied source and decoded value.
     pub fn project(
         source: Source<'a>,
         usage: &'a ModelUsageRecord,
@@ -250,6 +256,10 @@ pub struct Placement<'a> {
 impl<'a> Placement<'a> {
     /// Retain a current-layout logical binding without a provider discovery
     /// read. Its opaque reference cannot authorize physical placement claims.
+    /// The original authorized reader must first admit the settled record at
+    /// position one and its selected agent/target through the shared Machine
+    /// binding decoder. This borrowed projection does not decode or certify
+    /// that source association again.
     pub fn project(
         source: Source<'a>,
         binding: &'a crate::machines::MachineBinding,

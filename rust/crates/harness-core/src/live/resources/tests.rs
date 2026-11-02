@@ -9,12 +9,12 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt as _;
 
-async fn read(provider: &MemoryStream, path: &StreamPath) -> Record {
+async fn read(provider: &MemoryStream, path: &StreamPath, from: u64) -> Record {
     provider
         .read(ReadRequest {
             key: None,
             path: path.clone(),
-            from: 0,
+            from,
             limit: 1,
             at_least: Default::default(),
         })
@@ -82,13 +82,13 @@ fn usage() -> ModelUsageRecord {
 #[test]
 fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
     futures::executor::block_on(async {
-        let provider = MemoryStream::default();
+        let provider = std::sync::Arc::new(MemoryStream::default());
         let account = AccountId::new(&[0xff, 1]).unwrap();
         let root = StreamPath::new("agents/original").unwrap();
         let first = usage();
         let bytes = serde_json::to_vec(&first).unwrap();
         append(&provider, &root, bytes.clone()).await;
-        let original = read(&provider, &root).await;
+        let original = read(&provider, &root, 0).await;
         for name in ["agents/left", "agents/right"] {
             let selected = StreamPath::new(name).unwrap();
             provider
@@ -101,7 +101,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                 })
                 .await
                 .unwrap();
-            let record = read(&provider, &selected).await;
+            let record = read(&provider, &selected, 0).await;
             let shared = Sharing::project(&account, &selected, &record).unwrap();
             assert!(shared.inherited);
             assert_eq!(shared.source.origin, root.as_str());
@@ -124,7 +124,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
         // Identical bytes from an independent publication are not shared work.
         let unrelated = StreamPath::new("agents/unrelated").unwrap();
         append(&provider, &unrelated, bytes).await;
-        let record = read(&provider, &unrelated).await;
+        let record = read(&provider, &unrelated, 0).await;
         let independent = Sharing::project(&account, &unrelated, &record).unwrap();
         assert!(!independent.inherited);
         assert_ne!(independent.source.commit_id, original.commit_id.as_bytes());
@@ -204,7 +204,7 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
             serde_json::to_vec(&estimate).unwrap(),
         )
         .await;
-        let record = read(&provider, &residence).await;
+        let record = read(&provider, &residence, 0).await;
         let estimate = serde_json::from_slice(&record.value).unwrap();
         let estimate_source = Source::project(&account, &residence, &record);
         assert_eq!(
@@ -233,30 +233,41 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
         );
         #[cfg(feature = "machines")]
         {
-            let binding = crate::machines::MachineBinding {
-                version: crate::machines::MACHINE_BINDING_VERSION,
-                target: "generated-target".into(),
-                machine: crate::resources::SandboxRef::new(
-                    crate::resources::ProviderRef::new(
-                        "generated".into(),
-                        "machines".into(),
-                        "1".into(),
-                        &mut None,
+            // Capture the actual lifecycle producer's settled output. The
+            // simulator supplies a logical binding, not physical placement.
+            let provider_ref = crate::resources::ProviderRef::new(
+                "generated".into(),
+                "machines".into(),
+                "1".into(),
+                &mut None,
+            )
+            .unwrap();
+            let machines = crate::machines::AgentMachines::new(
+                std::sync::Arc::clone(&provider),
+                vec![crate::machines::ProvisionedTarget {
+                    name: "generated-target".into(),
+                    host: crate::machines::MachinesHost::new(
+                        std::sync::Arc::new(acyclic_machines::SimulatedMachines::default()),
+                        provider_ref.clone(),
                     )
                     .unwrap(),
-                    vec![1; 16],
-                    None,
-                )
-                .unwrap(),
-                forked_from: None,
-            };
-            let path =
-                StreamPath::new("agents/original/harness/machines/generated-target").unwrap();
-            append(&provider, &path, serde_json::to_vec(&binding).unwrap()).await;
-            let record = read(&provider, &path).await;
+                    artifact: Some(
+                        crate::resources::ArtifactRef::new(provider_ref, [1; 32].into(), None)
+                            .unwrap(),
+                    ),
+                    network_policy_digest: [2; 32],
+                }],
+            )
+            .unwrap();
+            let agent = crate::agent::AgentPath::root(&crate::AgentId::from_bytes([14; 16]));
+            let sandbox = machines.machine(&agent, "generated-target").await.unwrap();
+            let path = agent.machine("generated-target").unwrap();
+            let record = read(&provider, &path, 1).await;
+            assert_eq!(record.sequence, 1);
             let mut binding = serde_json::from_slice(&record.value).unwrap();
             let binding_source = Source::project(&account, &path, &record);
             let placement = Placement::project(binding_source, &binding).unwrap();
+            assert_eq!(placement.binding.machine, sandbox);
             assert!(std::ptr::eq(placement.binding, &binding));
             assert!(
                 placement.host.is_none()
