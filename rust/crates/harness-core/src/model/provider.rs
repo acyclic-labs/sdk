@@ -216,6 +216,15 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
         Ok(None)
     }
+    /// Wire family of the exact immutable selection, independently of its tool
+    /// family. For example, Chat and Responses may share native tools but need
+    /// distinct epoch headers. Unknown adapters refuse rather than inferring a
+    /// family from a provider/model name or reusing another request's header.
+    fn wire_family(&self, _: &Model) -> Result<acyclic_model_render::Family> {
+        Err(Error::Unsupported(
+            "selected model wire family is unavailable".into(),
+        ))
+    }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
         Err(Error::Unsupported(

@@ -303,6 +303,9 @@ impl ModelProvider for RecordedModel {
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
     }
+    fn wire_family(&self, model: &Model) -> Result<acyclic_model_render::Family> {
+        self.live.wire_family(model)
+    }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.live.context_capacity(model)
     }

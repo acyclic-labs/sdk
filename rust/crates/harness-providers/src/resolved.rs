@@ -279,6 +279,11 @@ impl ModelProvider for ResolvedModel {
         Ok(self.tool_profile)
     }
 
+    fn wire_family(&self, model: &Model) -> Result<crate::Adapter> {
+        self.validate(model)?;
+        Ok(self.config.adapter)
+    }
+
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         self.validate(model)?;
         Ok(self.admitted_capacity())

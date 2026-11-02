@@ -152,6 +152,13 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         let selected = alloy.select(turn(2));
         assert_eq!(selected.model().provider, expected);
         assert_eq!(
+            selected.wire_family(selected.model())?,
+            registry.catalog()[expected].adapter
+        );
+        let mut stale = selected.model().clone();
+        stale.revision.push('x');
+        assert!(selected.wire_family(&stale).is_err());
+        assert_eq!(
             selected.native_tool_profile(),
             registry.catalog()[expected].models["fixture"].tool_profile
         );
@@ -357,6 +364,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
         let prepared = PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None)?;
+        let family = provider.wire_family(&prepared.request().model)?;
         crate::call_ids::CallIds::assert_round_trip(prepared.request());
         let body = serde_json::to_vec(&crate::projection::body_named(
             provider,
@@ -372,10 +380,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                 if let ProjectedReasoning::Native { continuity, .. } =
                     crate::project_reasoning(block, &target)
                 {
-                    if matches!(
-                        provider.config.adapter,
-                        Adapter::Anthropic | Adapter::Responses
-                    ) {
+                    if matches!(family, Adapter::Anthropic | Adapter::Responses) {
                         assert!(
                             body.windows(continuity.len())
                                 .any(|window| window == continuity)
@@ -397,7 +402,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
             let sent = transport.sent.lock().unwrap();
             let captured = sent.last().expect("captured provider request");
             assert_eq!(captured.body.as_ref(), body.as_slice());
-            assert_foreign_wire(&captured.body, provider.config.adapter, ordinal);
+            assert_foreign_wire(&captured.body, family, ordinal);
         }
         let replay: Vec<ModelEvent> =
             serde_json::from_slice(&serde_json::to_vec(&events).unwrap()).unwrap();

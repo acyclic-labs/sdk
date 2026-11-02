@@ -34,6 +34,9 @@ where
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.inner().native_tool_profile(model)
     }
+    fn wire_family(&self, model: &Model) -> Result<acyclic_model_render::Family> {
+        self.inner().wire_family(model)
+    }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.record(RequestClass::Metadata);
         self.inner().context_capacity(model)
