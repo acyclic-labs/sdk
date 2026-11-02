@@ -1,7 +1,12 @@
 use super::call::Call;
+use super::fields::Fields;
 use acyclic_model_render::ToolDeclarations;
 use serde::{Serialize, ser::SerializeMap};
-use serde_json::{Map, Value, value::RawValue};
+use serde_json::{Value, value::RawValue};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "trailer_tests.rs"]
+mod tests;
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
 #[derive(Serialize)]
@@ -47,7 +52,7 @@ pub(super) struct Chat<'a> {
 }
 
 pub(crate) struct Body<'a> {
-    pub(crate) fields: Map<String, Value>,
+    pub(super) fields: Fields,
     pub(super) tools:
         Option<ToolDeclarations<'a, acyclic_harness_core::tool::schema::ModelInput<'a>>>,
     pub(super) messages_field: &'static str,
@@ -77,13 +82,14 @@ impl Body<'_> {
         messages: impl Serialize,
     ) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
-        for (name, value) in &self.fields {
-            if include.is_none_or(|fields| fields.contains(&name.as_str()))
+        for (name, value) in self.fields.header() {
+            if include.is_none_or(|fields| fields.contains(&name))
                 && !(name == "model" && model.is_some())
             {
                 map.serialize_entry(name, value)?;
             }
         }
+        self.serialize_trailer(&mut map, include)?;
         if let Some(model) = model {
             map.serialize_entry("model", &model)?;
         }
@@ -94,6 +100,22 @@ impl Body<'_> {
         }
         map.serialize_entry(self.messages_field, &messages)?;
         map.end()
+    }
+
+    // Generation, count projections and summary children all serialize the
+    // original fields here. In particular, Gemini's already composed effort,
+    // sampling and output reservation remain one generationConfig object.
+    fn serialize_trailer<M: SerializeMap>(
+        &self,
+        map: &mut M,
+        include: Option<&[&str]>,
+    ) -> Result<(), M::Error> {
+        for (name, value) in self.fields.call_controls() {
+            if include.is_none_or(|fields| fields.contains(&name)) {
+                map.serialize_entry(name, value)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -110,7 +132,7 @@ impl<'a> Body<'a> {
             .map(|item| Message::Item(Item::Json(item)))
             .collect();
         Self {
-            fields,
+            fields: Fields::from_values(fields),
             tools: None,
             messages_field: field,
             messages,
