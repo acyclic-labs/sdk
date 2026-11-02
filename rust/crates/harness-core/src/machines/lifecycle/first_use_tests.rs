@@ -14,6 +14,7 @@ struct HeldInspection {
     entered: tokio::sync::Notify,
     creates: AtomicUsize,
     inspections: AtomicUsize,
+    requests: AtomicUsize,
 }
 
 macro_rules! forward {
@@ -25,11 +26,13 @@ macro_rules! forward {
             }
 
             async fn create(&self, request: CreateMachine) -> std::result::Result<MutationOutcome, ProviderError> {
+                self.requests.fetch_add(1, Ordering::Relaxed);
                 self.creates.fetch_add(1, Ordering::Relaxed);
                 self.inner.create(request).await
             }
 
             async fn inspect_machine(&self, machine: MachineId) -> std::result::Result<MachineObservation, ProviderError> {
+                self.requests.fetch_add(1, Ordering::Relaxed);
                 self.inspections.fetch_add(1, Ordering::Relaxed);
                 let observed = self.inner.inspect_machine(machine).await?;
                 self.entered.notify_one();
@@ -40,6 +43,7 @@ macro_rules! forward {
                 Ok(observed)
             }
         $(async fn $name(&self, $($argument: $kind),*) -> std::result::Result<$result, ProviderError> {
+            self.requests.fetch_add(1, Ordering::Relaxed);
             self.inner.$name($($argument),*).await
         })*
         }
@@ -120,6 +124,7 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 entered: tokio::sync::Notify::new(),
                 creates: AtomicUsize::new(0),
                 inspections: AtomicUsize::new(0),
+                requests: AtomicUsize::new(0),
             });
             let provider_ref =
                 ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
@@ -259,6 +264,131 @@ async fn first_use_joins_original_allocation_across_waiter_and_provider_loss() -
                 assert!(unrelated.list_machines(None, 1).await?.machines.is_empty());
             }
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn original_provider_precedes_machine_allocation_and_recovery() -> TestResult {
+    for stage in 0..4 {
+        let stream = Arc::new(MemoryStream::default());
+        let (_release, ready) = watch::channel(true);
+        let provider = Arc::new(HeldInspection {
+            inner: SimulatedMachines::default(),
+            ready,
+            entered: tokio::sync::Notify::new(),
+            creates: AtomicUsize::new(0),
+            inspections: AtomicUsize::new(0),
+            requests: AtomicUsize::new(0),
+        });
+        let original_ref =
+            ProviderRef::new("original".into(), "machines".into(), "1".into(), &mut None)?;
+        let target = ProvisionedTarget {
+            name: "machine".into(),
+            host: MachinesHost::new(provider.clone(), original_ref.clone())?,
+            artifact: None,
+            network_policy_digest: [2; 32],
+        };
+        let original = Arc::new(AgentMachines::new(stream.clone(), vec![target.clone()])?);
+        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+        let agent = parent.child(&crate::agent::AgentId::from_bytes([2; 16]))?;
+        if stage == 3 {
+            original.machine(&parent, "machine").await?;
+        }
+        let plan = original.plan(&agent, &target).await?;
+        let allocated = match stage {
+            1 => Some(original.create(&target, &agent).await?),
+            2 => {
+                original.machine(&agent, "machine").await?;
+                original.binding(&agent, "machine").await?
+            }
+            _ => None,
+        };
+        assert_eq!(plan.source.is_some(), stage == 3);
+        let choice = original.binding_record(&agent, "machine", 0).await?;
+        let settled = original.binding(&agent, "machine").await?;
+
+        // Keep the exact same underlying provider and Machine IDs. Only its
+        // admitted identity changes, so a provider call could otherwise succeed.
+        let mut changed = target.clone();
+        changed.host = MachinesHost::new(
+            provider.clone(),
+            ProviderRef::new("foreign".into(), "machines".into(), "1".into(), &mut None)?,
+        )?;
+        let foreign = Arc::new(AgentMachines::new(stream.clone(), vec![changed])?);
+        let executors = Arc::new(BoundExecutors {
+            calls: AtomicUsize::new(0),
+            executor: Arc::new(NeverRun),
+        });
+        let observer = OnFirstUse::new(&foreign, agent.clone(), "machine", executors.clone())?;
+        let before = provider.requests.load(Ordering::Relaxed);
+        assert!(matches!(
+            foreign.machine(&agent, "machine").await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            foreign.suspend(&agent).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            foreign.destroy(&agent).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(observer.executor().await, Err(Error::Invalid(_))));
+        let invocation = ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "replay".into(),
+            name: "shell".into(),
+            arguments: serde_json::Value::Null,
+        };
+        let reconciled = observer.reconcile(invocation, None).await;
+        if stage == 2 {
+            assert!(matches!(reconciled, Err(Error::Invalid(_))));
+        } else {
+            assert!(matches!(reconciled, Err(Error::Indeterminate(_))));
+        }
+        if stage == 3 {
+            let sibling = parent.child(&crate::agent::AgentId::from_bytes([3; 16]))?;
+            assert!(matches!(
+                foreign.machine(&sibling, "machine").await,
+                Err(Error::Invalid(_))
+            ));
+            assert!(original.original_plan(&sibling, "machine").await?.is_none());
+        }
+        assert_eq!(provider.requests.load(Ordering::Relaxed), before);
+        assert_eq!(executors.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            original
+                .binding_record(&agent, "machine", 0)
+                .await?
+                .map(|record| record.value),
+            choice.map(|record| record.value),
+        );
+        assert_eq!(original.binding(&agent, "machine").await?, settled);
+
+        // Restoring the original provider resumes the same choice, including
+        // accepted allocation whose binding was lost, and the chosen fork.
+        let reopened = AgentMachines::new(stream, vec![target.clone()])?;
+        let resumed = reopened.machine(&agent, "machine").await?;
+        if let Some(allocated) = allocated {
+            assert_eq!(resumed, sandbox(&target, &allocated)?);
+        }
+        let binding = reopened
+            .binding(&agent, "machine")
+            .await?
+            .ok_or("binding lost")?;
+        assert_eq!(binding.provider, original_ref);
+        assert_eq!(binding.forked_from.is_some(), stage == 3);
+        reopened.suspend(&agent).await?;
+        assert_eq!(
+            target.host.inspect(&resumed).await?.state,
+            MachineState::Suspended
+        );
+        reopened.destroy(&agent).await?;
+        assert_eq!(
+            target.host.inspect(&resumed).await?.state,
+            MachineState::Destroyed
+        );
     }
     Ok(())
 }

@@ -2,7 +2,7 @@
 //!
 //! The target table is the tree's (every agent reads the root's `targets`),
 //! but each agent runs a provisioned target on a Machine of its own, bound by
-//! one v1 [`MachineBinding`] at [`AgentPath::machine`]. No child inherits
+//! one provider-bound [`MachineBinding`] at [`AgentPath::machine`]. No child inherits
 //! that binding, so the lifecycle follows the agent and never a timer:
 //!
 //! - **First exec** creates the agent's Machine, or forks its parent's when
@@ -31,9 +31,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 /// The persisted format of [`MachineBinding`].
-pub const MACHINE_BINDING_VERSION: u32 = 1;
+pub const MACHINE_BINDING_VERSION: u32 = 2;
 
-/// One agent's own Machine on one provisioned target (v1).
+/// One agent's own Machine on one provisioned target (v2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineBinding {
@@ -41,6 +41,8 @@ pub struct MachineBinding {
     pub version: u32,
     /// The provisioned target's name.
     pub target: String,
+    /// The original provider that admitted this Machine.
+    pub provider: ProviderRef,
     /// The Machine, as its canonical id.
     pub machine: String,
     /// The parent's Machine it was forked from; `None` when created.
@@ -54,7 +56,24 @@ pub struct MachineBinding {
 struct ProvisionPlan {
     version: u32,
     target: String,
+    provider: ProviderRef,
     source: Option<MachineBinding>,
+}
+
+impl MachineBinding {
+    fn from_sandbox(
+        target: &ProvisionedTarget,
+        reference: &SandboxRef,
+        forked_from: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            version: MACHINE_BINDING_VERSION,
+            target: target.name.clone(),
+            machine: target.host.machine_id(reference)?.to_string(),
+            provider: reference.as_resource().provider().clone(),
+            forked_from,
+        })
+    }
 }
 
 /// What a provisioned target's new Machines are created from.
@@ -138,7 +157,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// `agent`'s binding on `target`, `None` before its first use.
     ///
     /// # Errors
-    /// When the binding cannot be read or is not a v1 binding of `target`.
+    /// When the binding cannot be read or is not a v2 binding of `target`.
     pub async fn binding(&self, agent: &AgentPath, target: &str) -> Result<Option<MachineBinding>> {
         let Some(record) = self.binding_record(agent, target, 1).await? else {
             return Ok(None);
@@ -147,7 +166,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .map_err(|error| Error::Storage(format!("Machine binding does not decode: {error}")))?;
         if binding.version != MACHINE_BINDING_VERSION || binding.target != target {
             return Err(Error::Storage(
-                "Machine binding is not a v1 binding of its target".into(),
+                "Machine binding is not a v2 binding of its target".into(),
             ));
         }
         Ok(Some(binding))
@@ -187,7 +206,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .map_err(|error| Error::Storage(format!("Machine plan does not decode: {error}")))?;
         if plan.version != MACHINE_BINDING_VERSION || plan.target != target {
             return Err(Error::Storage(
-                "Machine plan is not a v1 plan of its target".into(),
+                "Machine plan is not a v2 plan of its target".into(),
             ));
         }
         Ok(Some(plan))
@@ -214,6 +233,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             return sandbox(provisioned, &binding);
         }
         let plan = self.plan(agent, provisioned).await?;
+        check_provider(provisioned, &plan.provider)?;
         let binding = match plan.source {
             Some(parent) => self.fork(provisioned, agent, &parent).await?,
             None => self.create(provisioned, agent).await?,
@@ -243,6 +263,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         let plan = ProvisionPlan {
             version: MACHINE_BINDING_VERSION,
             target: target.name.clone(),
+            provider: target.host.provider_ref.clone(),
             source,
         };
         let (_, key) = intent("provision", agent, &target.name)?;
@@ -293,12 +314,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("Machines forked no child".into()))?;
-        Ok(MachineBinding {
-            version: MACHINE_BINDING_VERSION,
-            target: target.name.clone(),
-            machine: target.host.machine_id(&child)?.to_string(),
-            forked_from: Some(parent.machine.clone()),
-        })
+        MachineBinding::from_sandbox(target, &child, Some(parent.machine.clone()))
     }
 
     async fn create(
@@ -318,12 +334,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
                 |_| {},
             )
             .await?;
-        Ok(MachineBinding {
-            version: MACHINE_BINDING_VERSION,
-            target: target.name.clone(),
-            machine: target.host.machine_id(&created)?.to_string(),
-            forked_from: None,
-        })
+        MachineBinding::from_sandbox(target, &created, None)
     }
 
     /// Commits `binding` once; a concurrent first use committed the same one.
@@ -695,9 +706,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> ToolExecutor for OnFir
 }
 
 fn sandbox(target: &ProvisionedTarget, binding: &MachineBinding) -> Result<SandboxRef> {
+    check_provider(target, &binding.provider)?;
     let id =
         MachineId::parse(&binding.machine).map_err(|error| Error::Invalid(error.to_string()))?;
-    SandboxRef::new(target.host.provider_ref.clone(), id.as_bytes().into(), None)
+    SandboxRef::new(binding.provider.clone(), id.as_bytes().into(), None)
+}
+
+fn check_provider(target: &ProvisionedTarget, provider: &ProviderRef) -> Result<()> {
+    if provider != &target.host.provider_ref {
+        return Err(Error::Invalid(
+            "Machine target has a foreign provider; restore its original provider".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The operation and key of `verb` for (agent, target): the same on every retry.

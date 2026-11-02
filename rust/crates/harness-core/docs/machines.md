@@ -4,6 +4,14 @@ The `machines` feature bridges sandbox and checkpoint references to a
 `MachinesProvider`. `MachinesHost` captures selected forkable checkpoints and
 verifies their retained provider identity before admission.
 
+An agent's first-use plan and settled `MachineBinding` retain that original
+`ProviderRef` in the v2 format. Reopening a target under another provider refuses
+before creating, forking, inspecting, executing or releasing a Machine. Restoring
+the original provider resumes the original plan and idempotency keys, including an
+allocation whose acknowledgement or settled binding was lost. A provider identity
+does not certify a physical host, region, core or resource reservation. Earlier
+unbound records are rejected; there is no inferred provider or migration path.
+
 `MachinesHost::exec` returns the provider's original stdout/stderr and terminal
 event stream. `read_file` and `write_file` use the native binary file primitives
 with an absolute guest path, exact offset and original deadline. `suspend` and
