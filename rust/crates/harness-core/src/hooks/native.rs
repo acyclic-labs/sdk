@@ -70,17 +70,26 @@ impl Hooks {
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
-        self.run_commands(event, input, registry, maximum_bytes, |hook, quota, rewritten| {
-            // Each hook reads its own protocol's bytes for the input it judges.
-            let request = match hook.plugin() {
-                Some((_, config)) => request::encode(input, event, config, (rewritten, registry)),
-                None => input.encode(event, cwd, rewritten),
-            }
-            .map(|bytes| Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes)));
-            let hook = Arc::clone(hook);
-            let (check, wake, execution) = (Arc::clone(&check), wake.clone(), execution.clone());
-            async move { run_hook(hook, request?, check, quota, wake, execution).await }
-        })
+        self.run_commands(
+            event,
+            input,
+            registry,
+            maximum_bytes,
+            |hook, quota, rewritten| {
+                // Each hook reads its own protocol's bytes for the input it judges.
+                let request = match hook.plugin() {
+                    Some((_, config)) => {
+                        request::encode(input, event, config, (rewritten, registry))
+                    }
+                    None => input.encode(event, cwd, rewritten),
+                }
+                .map(|bytes| Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes)));
+                let hook = Arc::clone(hook);
+                let (check, wake, execution) =
+                    (Arc::clone(&check), wake.clone(), execution.clone());
+                async move { run_hook(hook, request?, check, quota, wake, execution).await }
+            },
+        )
         .await
     }
 }

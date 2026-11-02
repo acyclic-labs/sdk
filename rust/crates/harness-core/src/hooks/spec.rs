@@ -239,7 +239,10 @@ impl HookSpec {
                     .as_ref()
                     .or(ps1.as_ref())
                     .ok_or_else(|| Error::Invalid("a plugin hook has a script".into()))?;
-                (script, sh.iter().chain(ps1).all(|script| !script.contains('\0')))
+                (
+                    script,
+                    sh.iter().chain(ps1).all(|script| !script.contains('\0')),
+                )
             }
         };
         if command.trim().is_empty()
