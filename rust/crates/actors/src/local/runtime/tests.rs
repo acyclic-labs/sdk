@@ -1069,6 +1069,11 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     ));
     runtime.pause(&child, false).await?;
     let resumed = store.load(&child).await?;
+    assert_eq!(
+        resumed.tail,
+        inherited.tail + 1,
+        "claim and resume must share one publication"
+    );
     assert_eq!(resumed.state().map(State::epoch), Some(1));
     assert_eq!(resumed.state().map(State::paused), Some(false));
     assert_eq!(
@@ -1122,6 +1127,12 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
         })
         .await?;
     runtime.pause(&child, false).await?;
+    let resumed = store.load(&child).await?;
+    assert_eq!(
+        resumed.tail,
+        inherited.tail + 1,
+        "claim and resume must share one publication"
+    );
     runtime.drain_actor(&child).await?;
     let child_state = store.load(&child).await?;
     assert_eq!(

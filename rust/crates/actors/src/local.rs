@@ -800,6 +800,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         epoch: u64,
         key: IdempotencyKey,
     ) -> Result<Snapshot, Error> {
+        self.claim_with_pause(previous, epoch, None, key).await
+    }
+
+    // The original conditional placement publication can also decide control
+    // for a fork that cannot dispatch while it inherits a paused state.
+    async fn claim_with_pause(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        paused: Option<bool>,
+        key: IdempotencyKey,
+    ) -> Result<Snapshot, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.claim",
             Error::kind,
@@ -814,6 +826,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 }
                 state.epoch = epoch;
                 state.placement_branch = previous.placement_branch();
+                if let Some(paused) = paused {
+                    state.paused = paused;
+                }
                 self.submit_retained(self.prepare(previous, state, Vec::new(), key)?)
                     .await?
                     .ok_or(Error::Invalid("claim receipt has no state"))

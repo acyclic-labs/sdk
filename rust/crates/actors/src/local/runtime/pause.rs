@@ -119,7 +119,7 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
     let mut delivery = slot.inner.lock().await;
     let epoch = (delivery.epoch != 0).then_some(delivery.epoch);
     let result = async {
-        let mut snapshot = store.load(actor).await?;
+        let snapshot = store.load(actor).await?;
         let state = snapshot
             .state()
             .ok_or(Error::Invalid("actor state was never created"))?;
@@ -136,18 +136,21 @@ pub(super) async fn apply<P: StreamProvider + ?Sized, T>(
                     .epoch()
                     .checked_add(1)
                     .ok_or(Error::Invalid("actor epoch overflow"))?;
-                snapshot = store
-                    .claim(&snapshot, epoch, key(&snapshot, "control-claim")?)
+                store
+                    .claim_with_pause(
+                        &snapshot,
+                        epoch,
+                        Some(paused),
+                        key(&snapshot, "control-claim")?,
+                    )
                     .await?;
                 delivery.epoch = epoch;
+            } else {
+                let operation = if paused { "pause" } else { "resume" };
+                store
+                    .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
+                    .await?;
             }
-            let state = snapshot
-                .state()
-                .ok_or(Error::Invalid("claim receipt has no state"))?;
-            let operation = if paused { "pause" } else { "resume" };
-            store
-                .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
-                .await?;
             gate.decided = paused;
         }
         Ok(transition.await)
