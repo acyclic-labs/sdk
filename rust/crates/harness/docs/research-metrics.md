@@ -9,9 +9,10 @@ original request digest and survive request continuations and recovery. An absen
 sampling value delegates to the provider. A seed is a hint, not a determinism
 guarantee; protocols without a seed field refuse it.
 
-The private per-call JSONL record is version 2, committed with the original
+The private per-call JSONL record is version 3, committed with the original
 terminal model observation. Research records retain sampling, the requested
-output ceiling, `provider_request_id`, `system_fingerprint` and `ttft_ns`.
+output ceiling, `provider_request_id`, `system_fingerprint`, `ttft_ns` and the
+optional original serialized HTTP `request_body` identity.
 The HTTP request identifier is distinct from the provider's generation `id`.
 TTFT measures dispatch to the first observed nonempty text or reasoning delta,
 including preceding journal backpressure. It remains unknown for a tool-only
@@ -27,20 +28,21 @@ cursor. Model rows reconstruct one original admitted request for its replay key;
 the page does not load conversation history or tool payloads.
 `inbox`, `conversation` and `status` project one original agent record each.
 
-Schema v2 has six tables. `metrics::VERSION`, the row `version` and Arrow
+Schema v4 has six tables. `metrics::VERSION`, the row `version` and Arrow
 `acyclic.metrics.version` metadata identify this layout independently of the
 usage JSONL and cache-observation formats. Version 2 includes scope ownership
-and nullable agent ownership. Union shards only when their version and table
+and nullable agent ownership; version 3 adds original creation context and
+template references; version 4 adds final HTTP body identity. Union shards only when their version and table
 match. Earlier saved layouts must be reprojected from original sources before
-combining them with v2; the library does not migrate shards or fill missing
+combining them with v4; the library does not migrate shards or fill missing
 ownership fields with null. Arrow, Parquet and PROV writers refuse a foreign
 layout before emitting bytes.
 
 | Table | Original observations |
 | --- | --- |
-| `agents` | Adoption, parent and immutable role pin |
+| `agents` | Adoption, parent, original creation context and immutable template reference |
 | `turns` | Journal start and settled conversation entry |
-| `model_calls` | Admission and committed completion, requested sampling, reported usage, timing and identity |
+| `model_calls` | Admission and committed completion, requested sampling, reported usage, timing and original HTTP body identity |
 | `tool_calls` | Admission, completion or typed failure, with original artifact references |
 | `edges` | Forks, messages, notices and child completion |
 | `outcomes` | Settled turn outcome and terminal agent status |
