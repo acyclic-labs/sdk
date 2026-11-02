@@ -124,6 +124,7 @@ function nativeTokens(source, file) {
  const python = file.endsWith('.py');
  const powershell = file.endsWith('.ps1');
  const shell = file.endsWith('.sh');
+ const yaml = /\.ya?ml$/.test(file);
  const wordComments = powershell || shell;
  const escape = powershell ? '`' : shell ? '\\' : undefined;
  const continuation = powershell ? '`\n' : '\\\n';
@@ -157,7 +158,11 @@ function nativeTokens(source, file) {
  while (at < source.length) {
   const tail = source.slice(at);
   if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
-  if (hashComments && (!wordComments || wordBoundary) && tail.startsWith('#')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
+  // YAML plain scalars retain unseparated hashes, including URL fragments.
+  if (hashComments && tail.startsWith('#')
+   && (wordComments ? wordBoundary : !yaml || at === 0 || /\s/.test(source[at - 1]))) {
+   emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue;
+  }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
   if ((slashComments || (powershell && wordBoundary)) && tail.startsWith(blockOpen)) {
    let depth = 1;

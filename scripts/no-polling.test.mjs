@@ -78,6 +78,16 @@ test('PowerShell casing preserves wait, loop and alias review', () => {
  assert.deepEqual(pollingSites(file, '# START-SLEEP 1\nWrite-Output "ordinary"'), []);
 });
 
+test('YAML plain scalar hashes preserve later flow settings', () => {
+ const captured = JSON.parse(readFileSync(new URL('./fixtures/no-polling/yaml-comments.json', import.meta.url), 'utf8'));
+ for (const {source, keys} of captured.records) {
+  const expected = keys.filter(key => key.value === 'timeout').map(key => key.start);
+  for (const extension of ['yaml', 'yml']) {
+   assert.deepEqual(pollingSites(`scripts/control.${extension}`, source).map(site => site.start), expected, source);
+  }
+ }
+});
+
 test('new direct and indirect readiness mutations are rejected', () => {
  // These are intentional bad source edits, not external-tool/provider captures.
  for (const source of [

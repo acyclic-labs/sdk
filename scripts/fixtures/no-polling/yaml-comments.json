@@ -1,0 +1,75 @@
+{
+  "producer": "PyYAML yaml.compose",
+  "version": "5.4.1",
+  "records": [
+    {
+      "source": "settings: [https://example.invalid/#fragment, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 47
+        }
+      ]
+    },
+    {
+      "source": "settings: {url: https://example.invalid/#fragment, timeout: 1}",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "url",
+          "start": 11
+        },
+        {
+          "value": "timeout",
+          "start": 51
+        }
+      ]
+    },
+    {
+      "source": "settings: [{url: path#fragment}, {timeout: 1}]",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "url",
+          "start": 12
+        },
+        {
+          "value": "timeout",
+          "start": 34
+        }
+      ]
+    },
+    {
+      "source": "settings: value # timeout: 1",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        }
+      ]
+    },
+    {
+      "source": "settings: [\"value\", {timeout: 1}] # the producer's \"buffer\"",
+      "keys": [
+        {
+          "value": "settings",
+          "start": 0
+        },
+        {
+          "value": "timeout",
+          "start": 21
+        }
+      ]
+    }
+  ]
+}
