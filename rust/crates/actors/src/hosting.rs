@@ -7,9 +7,12 @@
 use crate::{
     addressing::ActorReference,
     guest::Handler,
-    local::{Clock, Error, Runtime, RuntimeLimits, Store},
+    local::{
+        Clock, Error, FailedDelivery, FailureDisposition, PreparedPublish, Runtime, RuntimeLimits,
+        Store,
+    },
 };
-use acyclic_stream::{StreamPath, StreamProvider};
+use acyclic_stream::{IdempotencyKey, StreamPath, StreamProvider};
 use std::sync::Arc;
 
 /// Production event host for any native or strict-wire guest Handler.
@@ -58,6 +61,19 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     /// This neither delivers nor consumes input. Resume needs a platform wake.
     pub async fn pause(&self, paused: bool) -> Result<(), Error> {
         self.runtime.pause(&self.actor, paused).await
+    }
+
+    /// Prepare an ordinary Stream publication for this admitted Actor's exact
+    /// selected failure. No read, guest invocation or submission occurs here.
+    /// The caller retains the resulting request through uncertain submission.
+    pub fn prepare_disposition(
+        &self,
+        failed: &FailedDelivery,
+        disposition: FailureDisposition<'_>,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        self.store()
+            .prepare_disposition(&self.actor, failed, disposition, key)
     }
 
     /// State and current subscription paths the platform must route here.
