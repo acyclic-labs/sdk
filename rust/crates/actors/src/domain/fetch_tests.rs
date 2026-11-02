@@ -8,6 +8,24 @@ fn untrusted_fetch_policy_rejects_destination_widening_and_environment_collision
         "UPSTREAM".into(),
         vec![EgressRule::new("api.example.com".into(), 443)?],
     )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let rule = fetch.egress().first().ok_or("rule")?;
+        let mut admitted = None;
+        let borrowed = acyclic_test_support::measure(|| {
+            admitted = Some(EgressRule::validate_authority(rule.host(), rule.port()));
+        });
+        admitted.ok_or("authority admission did not complete")??;
+        assert_eq!(borrowed.count_total, 0);
+        assert_eq!(borrowed.bytes_total, 0);
+        // Reconstructing the retained rule restores the removed host copy.
+        let copied = acyclic_test_support::measure(|| {
+            std::hint::black_box(EgressRule::new(rule.host().to_owned(), rule.port()))
+                .expect("same admitted authority");
+        });
+        assert_eq!(copied.count_total, 1);
+        assert_eq!(copied.bytes_total, rule.host().len() as u64);
+    }
     let deployment = DeploymentRequest::worker(
         ActorNamespace::new("gateway".into())?,
         CodeSha256::new(vec![1; 32])?,
@@ -32,6 +50,7 @@ fn untrusted_fetch_policy_rejects_destination_widening_and_environment_collision
         "*.example.com",
         "api.example.com.",
     ] {
+        assert!(EgressRule::validate_authority(host, 443).is_err(), "{host}");
         let mut candidate = wire.clone();
         candidate
             .fetch
@@ -44,6 +63,7 @@ fn untrusted_fetch_policy_rejects_destination_widening_and_environment_collision
         assert!(DeploymentRequest::try_from(candidate).is_err(), "{host}");
     }
     for port in [0, 65536, u32::MAX] {
+        assert!(EgressRule::validate_authority("api.example.com", port).is_err());
         let mut candidate = wire.clone();
         candidate
             .fetch
