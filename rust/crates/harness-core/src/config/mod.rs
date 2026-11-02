@@ -11,7 +11,7 @@
 //! in QuickJS with no clock, randomness, I/O or tools, under a deterministic
 //! instruction budget, and the result must be plain data. A result or a
 //! failure is cached under the digest of everything it read, so identical
-//! stacks evaluate once per process.
+//! the retained stack reuses its latest success or failure.
 pub mod policy;
 mod types;
 
@@ -24,6 +24,10 @@ pub use types::{
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{Evaluated, Surface, Tree, compose, evaluate};
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+#[doc(hidden)]
+pub use evaluate::model;
 
 /// Evaluates and decodes a `policy.ts` holding `source`: plain data, so a
 /// function export is invalid with its own error.
