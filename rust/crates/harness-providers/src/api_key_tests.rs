@@ -62,6 +62,7 @@ impl Responses {
             _ => panic!("unexpected inference retry"),
         };
         Ok(HttpResponse {
+            request_id: None,
             retry_after: None,
             status: 200,
             body: chunks(fixture, 1),
@@ -150,6 +151,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 output_schema: json!({"type":"object"}),
                 projection_schema: json!({"type":"object"}),
             }],
+            sampling: Default::default(),
             max_output_tokens: Some(64),
         };
         let operation_id = acyclic_harness_core::OperationId::new();

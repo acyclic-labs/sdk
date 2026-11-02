@@ -14,16 +14,20 @@ pub(super) struct UsageModel {
     pub name: String,
 }
 
-/// Read only model identity from the original admitted request/header. Serde
-/// skips context, tool schemas and options instead of allocating them again.
-pub(super) async fn usage_model(
+/// Read call parameters from the original admitted request/header. Serde skips
+/// context and tool schemas instead of allocating them again.
+#[derive(Deserialize)]
+pub(super) struct UsageRequest {
+    pub(super) model: UsageModel,
+    #[serde(default)]
+    pub(super) sampling: crate::model::ModelSampling,
+    pub(super) max_output_tokens: Option<u32>,
+}
+
+pub(super) async fn usage_request(
     journal: &dyn ExecutionJournal,
     request: &FileRef,
-) -> Result<UsageModel> {
-    #[derive(Deserialize)]
-    struct Header {
-        model: UsageModel,
-    }
+) -> Result<UsageRequest> {
     #[derive(Deserialize)]
     struct Manifest {
         header: FileRef,
@@ -36,9 +40,9 @@ pub(super) async fn usage_model(
     } else {
         bytes
     };
-    let header: Header = serde_json::from_slice(&header)
+    let header: UsageRequest = serde_json::from_slice(&header)
         .map_err(|_| Error::Storage("usage request header is malformed".into()))?;
-    Ok(header.model)
+    Ok(header)
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32"), not(loom)))]
@@ -130,6 +134,11 @@ struct RequestHeader {
     compose_tools: bool,
     model: Model,
     tools: Vec<crate::tool::ToolDefinition>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::ModelSampling::is_default"
+    )]
+    sampling: crate::model::ModelSampling,
     max_output_tokens: Option<u32>,
 }
 
@@ -138,6 +147,11 @@ struct HeaderView<'a> {
     compose_tools: bool,
     model: &'a Model,
     tools: &'a [crate::tool::ToolDefinition],
+    #[serde(
+        default,
+        skip_serializing_if = "crate::model::ModelSampling::is_default"
+    )]
+    sampling: crate::model::ModelSampling,
     max_output_tokens: Option<u32>,
 }
 
@@ -376,6 +390,7 @@ async fn stage_request_inner(
         compose_tools: request.compose_tools,
         model: &request.model,
         tools: &request.tools,
+        sampling: request.sampling,
         max_output_tokens: request.max_output_tokens,
     };
     let header_digest = preparation_digest(&header, io)?;
@@ -509,6 +524,7 @@ async fn load_request_inner(
             compose_tools: header.compose_tools,
             model: header.model,
             tools: header.tools,
+            sampling: header.sampling,
             max_output_tokens: header.max_output_tokens,
             messages,
         },

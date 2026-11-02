@@ -22,6 +22,7 @@ fn request(count: usize) -> Result<ModelRequest> {
             output_schema: serde_json::json!({"type":"object"}),
             projection_schema: serde_json::json!({"type":"object","properties":{"kind":{"const":"json"},"value":{"type":"object"}},"required":["kind","value"],"additionalProperties":false}),
         }],
+        sampling: Default::default(),
         max_output_tokens: None,
     })
 }

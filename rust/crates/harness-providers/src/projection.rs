@@ -136,6 +136,21 @@ pub(crate) fn body_named<'a>(
     if provider
         .profile
         .as_ref()
+        .is_some_and(|profile| profile.sampling() != request.sampling)
+    {
+        return Err(invalid(
+            "sampling projection failed: request differs from admitted profile; recovery: prepare the request with the selected profile's sampling",
+        ));
+    }
+    if matches!(adapter, Adapter::Anthropic | Adapter::Responses) && request.sampling.seed.is_some()
+    {
+        return Err(invalid(
+            "sampling projection failed: this protocol has no seed field; recovery: remove sampling.seed from the model profile",
+        ));
+    }
+    if provider
+        .profile
+        .as_ref()
         .is_some_and(|profile| profile.max_output_tokens() != request.max_output_tokens)
     {
         return Err(invalid(
@@ -316,6 +331,29 @@ pub(crate) fn body_named<'a>(
     }
     if let Some(profile) = &provider.profile {
         profile::project(adapter, profile, &mut fields);
+    }
+    let sampling = request.sampling;
+    let target = if adapter == Adapter::Gemini {
+        fields.get_mut("generationConfig").and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid("sampling projection failed: generationConfig is absent; recovery: reconstruct the Gemini request"))?
+    } else {
+        &mut fields
+    };
+    for (name, value) in [
+        ("temperature", sampling.temperature.map(Value::from)),
+        (
+            if adapter == Adapter::Gemini {
+                "topP"
+            } else {
+                "top_p"
+            },
+            sampling.top_p.map(Value::from),
+        ),
+        ("seed", sampling.seed.map(Value::from)),
+    ] {
+        if let Some(value) = value {
+            target.insert(name.into(), value);
+        }
     }
     let messages_field = match adapter {
         Adapter::Responses => "input",

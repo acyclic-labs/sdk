@@ -40,6 +40,7 @@ impl HttpTransport for Routing {
                 .to_owned();
             self.sent.lock().unwrap().push(request);
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: 200,
                 body: Box::pin(futures::stream::iter([Ok(Bytes::from(body))])),
@@ -351,6 +352,7 @@ async fn rotating_alloy_replays_mixed_reasoning_and_tool_exchanges() -> Result<(
                 output_schema: json!({}),
                 projection_schema: json!({}),
             }],
+            sampling: Default::default(),
             max_output_tokens: Some(64),
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;

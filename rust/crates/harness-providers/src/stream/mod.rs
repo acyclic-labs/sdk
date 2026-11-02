@@ -65,7 +65,9 @@ pub(crate) fn events<'a>(
     maximum: usize,
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-    Box::pin(events_named(adapter, body, maximum, dispatch, None, None))
+    Box::pin(events_named(
+        adapter, body, maximum, dispatch, None, None, None,
+    ))
 }
 
 pub(crate) fn events_named<'a>(
@@ -75,11 +77,15 @@ pub(crate) fn events_named<'a>(
     dispatch: ModelDispatch,
     names: Option<&'a crate::tool_names::Names<'a>>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
+    request_id: Option<::http::HeaderValue>,
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
     async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
         let mut state = State::new(maximum);
         state.set_origin(origin)?;
+        if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+            state.request_id(request_id.as_ref().and_then(|value| value.to_str().ok()))?;
+        }
         while let Some(data) = input.next().await {
             let data = data?;
             let deltas = parse(&mut state, adapter, &data)?;
@@ -401,8 +407,21 @@ impl<'work> State<'work> {
         Ok(())
     }
 
+    pub(crate) fn request_id(&mut self, value: Option<&str>) -> Result<()> {
+        if let Some(value) = value {
+            self.budget
+                .member_str(&mut self.metadata, "provider_request_id", value)?;
+        }
+        Ok(())
+    }
+
     fn identity(&mut self, value: &Value) -> Result<()> {
-        for field in ["id", "model"] {
+        let fields = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+            &["id", "model", "system_fingerprint"][..]
+        } else {
+            &["id", "model"][..]
+        };
+        for &field in fields {
             if let Some(value) = crate::protocol::present(value.get(field)) {
                 self.budget.member(&mut self.metadata, field, value)?;
             }

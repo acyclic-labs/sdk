@@ -53,6 +53,7 @@ fn main() -> Result<()> {
                 json!({"type":"string"}),
             ),
         }],
+        sampling: Default::default(),
         max_output_tokens: Some(32),
     };
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;

@@ -9,6 +9,7 @@ pub struct ModelProfileBinding {
     pub(crate) digest: [u8; 32],
     pub(crate) prefix: [u8; 32],
     pub(crate) reasoning: Reasoning,
+    pub(crate) sampling: super::ModelSampling,
     pub(crate) cache: Cache,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) capacity: crate::context::ModelContextCapacity,
@@ -28,6 +29,11 @@ impl ModelProfileBinding {
     pub const fn reasoning(&self) -> Reasoning {
         self.reasoning
     }
+    /// Sampling pinned by the original profile.
+    pub const fn sampling(&self) -> super::ModelSampling {
+        self.sampling
+    }
+
     /// Admitted cache semantics, retained independently of a transient request.
     pub const fn cache(&self) -> Cache {
         self.cache

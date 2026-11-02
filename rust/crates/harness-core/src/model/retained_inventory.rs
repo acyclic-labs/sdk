@@ -115,6 +115,7 @@ mod tests {
                 output_schema: sparse.clone(),
                 projection_schema: sparse,
             }],
+            sampling: Default::default(),
             max_output_tokens: None,
         })
     }

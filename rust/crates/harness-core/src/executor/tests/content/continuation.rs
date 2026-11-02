@@ -11,6 +11,7 @@ pub(super) fn request(count: usize) -> Result<crate::model::ModelRequest> {
             })
             .collect(),
         tools: Vec::new(),
+        sampling: Default::default(),
         max_output_tokens: None,
     })
 }

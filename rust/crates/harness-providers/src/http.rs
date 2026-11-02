@@ -29,6 +29,9 @@ pub struct HttpResponse {
     pub status: u16,
     /// Incremental body. Dropping it cancels I/O.
     pub body: BoxProviderStream<'static, Result<Bytes>>,
+    /// Allow-listed provider request identifier. Header storage moves from the
+    /// transport and is copied once into admitted completion metadata.
+    pub request_id: Option<::http::HeaderValue>,
     /// The response's `Retry-After` delay, when it gave one in seconds.
     pub retry_after: Option<std::time::Duration>,
 }
@@ -50,6 +53,7 @@ impl HttpResponse {
         Ok(Self {
             status,
             body: native::body(stream, Some(work))?,
+            request_id: None,
             retry_after: None,
         })
     }
@@ -142,7 +146,7 @@ impl ReqwestTransport {
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
-        let response = builder
+        let mut response = builder
             .body(request.body)
             .send()
             .await
@@ -153,6 +157,14 @@ impl ReqwestTransport {
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(crate::retry::retry_after);
+        let request_id = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+            response
+                .headers_mut()
+                .remove("x-request-id")
+                .or_else(|| response.headers_mut().remove("request-id"))
+        } else {
+            None
+        };
         let body = response
             .bytes_stream()
             .map(move |chunk| chunk.map_err(|error| reqwest_failure(native, &error)));
@@ -163,6 +175,7 @@ impl ReqwestTransport {
         Ok(HttpResponse {
             status,
             body,
+            request_id,
             retry_after,
         })
     }

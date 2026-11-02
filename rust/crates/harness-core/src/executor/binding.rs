@@ -70,6 +70,11 @@ impl StockExecution<'_> {
             executor: &'static str,
             input: &'a TurnInput,
             model: &'a Model,
+            #[serde(
+                default,
+                skip_serializing_if = "crate::model::ModelSampling::is_default"
+            )]
+            sampling: crate::model::ModelSampling,
             max_output_tokens: Option<u32>,
             context: &'a [Value],
             tools: &'a [crate::tool::ToolDefinition],
@@ -116,6 +121,7 @@ impl StockExecution<'_> {
                 executor: "acyclic.stock.v7",
                 input,
                 model: &self.stock.model,
+                sampling: self.sampling()?,
                 max_output_tokens: self.output_tokens(),
                 context: &contracts,
                 tools: &tools,

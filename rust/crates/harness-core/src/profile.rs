@@ -54,6 +54,8 @@ struct ModelLayer {
     #[serde(default)]
     reasoning: Option<Reasoning>,
     #[serde(default)]
+    sampling: Option<crate::model::ModelSampling>,
+    #[serde(default)]
     cache: Option<Cache>,
     #[serde(default)]
     budget_tokens: Option<u32>,
@@ -140,6 +142,9 @@ impl ModelProfile {
             .ok_or_else(|| invalid("model key is absent"))?;
         nonempty(key)?;
         for layer in [&family.metadata, &model.metadata] {
+            if let Some(sampling) = layer.sampling {
+                sampling.validate()?;
+            }
             if let Some(tools) = &layer.tools {
                 let mut seen = BTreeSet::new();
                 for tool in tools {
@@ -252,6 +257,8 @@ pub struct PrefixProfile<'a> {
     pub tools: &'a [ToolRevision],
     /// Epoch baseline; role effort is a separate appended overlay.
     pub reasoning: Reasoning,
+    /// Sampling selected once from the model or family file.
+    pub sampling: crate::model::ModelSampling,
     /// Epoch cache semantics.
     pub cache: Cache,
     /// Verified hard bounds and admitted context reservations.
@@ -375,6 +382,7 @@ pub fn resolve<'a>(
             .as_deref()
             .or(family.tools.as_deref())
             .ok_or_else(|| invalid("profile tool declarations are absent"))?,
+        sampling: selected.sampling.or(family.sampling).unwrap_or_default(),
         reasoning: selected
             .reasoning
             .or(family.reasoning)

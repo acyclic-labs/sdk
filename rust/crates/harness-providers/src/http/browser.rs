@@ -88,10 +88,22 @@ impl HttpTransport for BrowserTransport {
                 .ok()
                 .flatten()
                 .and_then(|value| crate::retry::retry_after(&value));
+            let request_id = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+                response
+                    .headers()
+                    .get("x-request-id")
+                    .ok()
+                    .flatten()
+                    .or_else(|| response.headers().get("request-id").ok().flatten())
+                    .and_then(|value| ::http::HeaderValue::from_str(&value).ok())
+            } else {
+                None
+            };
             let Some(body) = response.body() else {
                 return Ok(HttpResponse {
                     status,
                     body: Box::pin(futures::stream::empty()),
+                    request_id,
                     retry_after,
                 });
             };
@@ -123,6 +135,7 @@ impl HttpTransport for BrowserTransport {
             Ok(HttpResponse {
                 status,
                 body: Box::pin(body),
+                request_id,
                 retry_after,
             })
         })

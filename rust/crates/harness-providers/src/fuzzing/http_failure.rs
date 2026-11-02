@@ -29,6 +29,7 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
     let response = crate::HttpResponse {
         status,
         body: Box::pin(body),
+        request_id: None,
         retry_after: None,
     };
     let error =

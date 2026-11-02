@@ -89,8 +89,8 @@ pub struct ModelCostEstimate<'a> {
     pub token_nano_units: Option<u64>,
 }
 
-/// Version-two usage-file row. The original version-one journal record is
-/// unchanged, including its dispatch identity and reported counter conventions.
+/// Version-two usage-file row, retaining the original journal record's
+/// dispatch identity and reported counter conventions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageProjection<'a> {
@@ -391,8 +391,10 @@ impl ModelUsageTotals {
                 .as_deref()
                 .is_some_and(|currency| !currency_valid(currency))
             || row.version != 2
-            || row.usage.version != 1
-            || previous.is_some_and(|old| old.version != 2 || old.usage.version != 1)
+            || row.usage.version != ModelUsageRecord::VERSION
+            || previous.is_some_and(|old| {
+                old.version != 2 || old.usage.version != ModelUsageRecord::VERSION
+            })
         {
             return Err(ModelPriceError::InvalidRecord);
         }
@@ -477,7 +479,7 @@ mod tests {
 
     fn record(tokens: ModelTokenUsage) -> ModelUsageRecord {
         ModelUsageRecord {
-            version: 1,
+            version: ModelUsageRecord::VERSION,
             completed: true,
             dispatch: crate::model::ModelDispatch {
                 operation_id: crate::OperationId::from_bytes([31; 16]),
@@ -488,8 +490,14 @@ mod tests {
             provider: "generated-provider".into(),
             model: "generated-model".into(),
             agent_path: Some("/selected-agent".into()),
+            sampling: None,
+            max_output_tokens: None,
             tokens,
             latency_ns: None,
+            provider_request_id: None,
+            system_fingerprint: None,
+            ttft_ns: None,
+            cache: None,
         }
     }
 
@@ -593,6 +601,12 @@ mod tests {
             revised.effective_at = 2;
             revised.currency = "EUR".into();
             prop_assert_eq!(total.push(&row.estimate(Some(&revised)).unwrap()), Err(ModelPriceError::CurrencyMismatch));
+            prop_assert_eq!(&total, &snapshot);
+            let mut unsupported = row.clone();
+            unsupported.version = ModelUsageRecord::VERSION ^ 1;
+            let unsupported = unsupported.estimate(Some(&inclusive)).unwrap();
+            prop_assert_eq!(total.push(&unsupported), Err(ModelPriceError::InvalidRecord));
+            prop_assert_eq!(total.replace(&unsupported, &projected), Err(ModelPriceError::InvalidRecord));
             prop_assert_eq!(&total, &snapshot);
             let euro = row.estimate(Some(&revised)).unwrap();
             unpriced.replace(&projected, &euro).unwrap();

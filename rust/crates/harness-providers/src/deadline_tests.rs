@@ -121,6 +121,7 @@ fn response(body: BoxProviderStream<'static, Result<Bytes>>) -> HttpResponse {
     HttpResponse {
         status: 200,
         body,
+        request_id: None,
         retry_after: None,
     }
 }

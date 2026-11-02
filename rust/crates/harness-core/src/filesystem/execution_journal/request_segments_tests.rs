@@ -9,6 +9,7 @@ fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
             model: Model::new("test".into(), "segmented".into(), "1".into())?,
             messages: messages.to_vec(),
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: None,
         },
         Limits::default(),

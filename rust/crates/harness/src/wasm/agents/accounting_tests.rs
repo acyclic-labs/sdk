@@ -32,6 +32,7 @@ fn prepared(revision: &str) -> Result<PreparedModelRequest> {
                 content: ModelContent::Text("canonical input".into()),
             }],
             tools: Vec::new(),
+            sampling: Default::default(),
             max_output_tokens: Some(4),
         },
         Limits::default(),

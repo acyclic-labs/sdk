@@ -285,6 +285,7 @@ impl StockExecution<'_> {
             model: crate::model::clone_model(&self.stock.model, self.io)?,
             messages,
             tools,
+            sampling: self.sampling()?,
             max_output_tokens: self.output_budget()?,
         })
     }
@@ -339,6 +340,7 @@ impl StockExecution<'_> {
             || request.tools != tools
             || request.compose_tools != self.code_composition(&tools)?
             || request.max_output_tokens != self.output_budget()?
+            || request.sampling != self.sampling()?
         {
             return Err(stock_boundary(
                 self.io,

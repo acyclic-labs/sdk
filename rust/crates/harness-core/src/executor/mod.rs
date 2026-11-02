@@ -66,6 +66,8 @@ pub use model_cost::{
     ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageTotals,
     TokenPrice, UsageTotal,
 };
+#[cfg(feature = "metrics-export")]
+pub mod metrics;
 pub(crate) mod model_usage;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;
@@ -576,6 +578,8 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    sampling: Option<crate::model::ModelSampling>,
+    resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

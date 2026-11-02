@@ -7,6 +7,7 @@ fn response(status: u16, padding: usize) -> HttpResponse {
     let recorded = include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
     HttpResponse {
         status,
+        request_id: None,
         retry_after: None,
         body: Box::pin(futures::stream::iter([
             Ok(Bytes::from(vec![b' '; padding])),
@@ -24,6 +25,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
     let recorded = include_bytes!("../../../conformance/fixtures/inference/llamacpp/context.body");
     let fragmented = HttpResponse {
         status: 400,
+        request_id: None,
         retry_after: None,
         body: Box::pin(futures::stream::iter(
             recorded
@@ -49,6 +51,7 @@ async fn context_classification_uses_protocol_budget_and_preserves_status_classe
     for status in [401, 403, 404, 409, 422] {
         let response = HttpResponse {
             status,
+            request_id: None,
             retry_after: None,
             body: Box::pin(futures::stream::poll_fn(|_| {
                 panic!("status-only refusal polled its discarded body")
@@ -95,6 +98,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
         let (producer, terminal) = futures::channel::oneshot::channel::<()>();
         let response = HttpResponse {
             status: 503,
+            request_id: None,
             retry_after: None,
             body: Box::pin(futures::stream::once(async move {
                 assert!(terminal.await.is_err());
@@ -130,6 +134,7 @@ async fn shared_refusal_admission_retains_only_the_original_error() -> crate::Re
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let response = HttpResponse {
         status: 503,
+        request_id: None,
         retry_after: None,
         body: Box::pin(futures::stream::poll_fn(|_| {
             panic!("unfunded refusal polled its body")

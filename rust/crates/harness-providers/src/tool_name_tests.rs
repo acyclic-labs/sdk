@@ -334,6 +334,7 @@ impl HttpTransport for AliasFixture {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status: 200,
                 body: chunks(&self.0.response, 1),

@@ -160,6 +160,7 @@ impl HttpTransport for Recorded {
         Box::pin(async move {
             let (status, bytes, stall) = self.reply(request, false)?;
             Ok(HttpResponse {
+                request_id: None,
                 retry_after: None,
                 status,
                 body: Box::pin(self.chunks(bytes, stall)),

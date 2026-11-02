@@ -27,6 +27,9 @@ mod profile;
 mod provider;
 mod reasoning;
 mod request;
+mod sampling;
+pub use sampling::ModelSampling;
+
 /// Explicit research-build opt-in. Provider adapters use this same setting so
 /// feature unification cannot enable only part of a capture path. Disabled
 /// branches are constant-folded out of ordinary builds.

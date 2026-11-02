@@ -5,13 +5,34 @@ use proptest::prelude::*;
 fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
     use futures::FutureExt as _;
 
-    for (completed, closed) in [(true, false), (false, true), (false, false)] {
-        let mut events = vec![ScriptedEvent::Event(ModelEvent::MessageCompleted {
+    for (completed, closed, delta) in [
+        (true, false, false),
+        (true, false, true),
+        (false, true, true),
+        (false, false, true),
+    ] {
+        let mut events = Vec::new();
+        // Generated harness events control first-delta and missing-producer cases.
+        if delta {
+            events.push(ScriptedEvent::Event(ModelEvent::Content {
+                delta: "".into(),
+            }));
+            events.push(ScriptedEvent::Event(ModelEvent::Reasoning {
+                delta: "partial".into(),
+            }));
+        }
+        events.push(ScriptedEvent::Event(ModelEvent::MessageCompleted {
             text: "done".into(),
-        })];
+        }));
         if completed {
             events.push(ScriptedEvent::Event(ModelEvent::Completed {
-                metadata: Value::Null,
+                metadata: json!({"cache": ModelCacheObservation {
+                    version: 1,
+                    credential_scope: Some([1; 32]),
+                    profile_prefix_digest: None,
+                    ttl: ModelCacheTtl::ProviderManaged,
+                    breakpoint: None,
+                }}),
             }));
         }
         if !closed {
@@ -87,13 +108,32 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             if completed { 2 } else { 1 },
             "a partial/closed stream is not a completed usage record; replay adds none"
         );
-        for file in usage {
+        for (index, file) in usage.into_iter().enumerate() {
             let bytes = futures::executor::block_on(journal.load(&file, None)?)?;
             let record: ModelUsageRecord = crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             assert_eq!(record.provider, "fixture");
             assert_eq!(record.model, "completion");
             assert_eq!(record.tokens, ModelTokenUsage::default());
+            assert_eq!(
+                record.cache.is_some(),
+                cfg!(feature = "research") && index == 1
+            );
+            #[cfg(all(feature = "research", not(target_arch = "wasm32")))]
+            {
+                assert_eq!(record.ttft_ns.is_some(), delta && index == 1);
+                assert!(
+                    record
+                        .ttft_ns
+                        .zip(record.latency_ns)
+                        .is_none_or(|(first, total)| first <= total)
+                );
+            }
+            #[cfg(not(all(feature = "research", not(target_arch = "wasm32"))))]
+            {
+                let _ = index;
+                assert_eq!(record.ttft_ns, None);
+            }
             #[cfg(not(target_arch = "wasm32"))]
             assert!(record.latency_ns.is_some());
             #[cfg(target_arch = "wasm32")]
