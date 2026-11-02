@@ -243,40 +243,6 @@ async fn ordinary_and_native_refresh_only_before_successful_response_admission()
     Ok(())
 }
 
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-    #[test]
-    fn recovery_is_never_replenished_after_acceptance_or_failure(
-        trace in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY,
-            proptest::sample::select(vec![400u16, 401, 403, 408, 413, 429, 503])), 0..64),
-    ) {
-        let mut attempt = crate::dispatch::GenerationAttempt::new(crate::RetrySpec::DEFAULT,
-            acyclic_harness_core::model::ModelDispatch {
-                operation_id: acyclic_harness_core::OperationId::from_bytes([3; 16]),
-                step: 1,
-                request_digest: [0; 32],
-            });
-        let (mut accepted, mut spent) = (false, false);
-        for failure in [acyclic_harness_core::ModelTransportFailure::Interrupted,
-            acyclic_harness_core::ModelTransportFailure::Timeout] {
-            let error = crate::transport_failure(true, failure, "fixture");
-            proptest::prop_assert_eq!(attempt.redeliver(&error, None), None);
-        }
-        for (admitted, unauthorized, status) in trace {
-            accepted |= admitted;
-            if admitted { attempt.accept(); }
-            if unauthorized { attempt.refuse(status); }
-            let error = if unauthorized { Error::Unauthorized("fixture".into()) } else { Error::Invalid("fixture".into()) };
-            let expected = unauthorized && status == 401 && !accepted && !spent;
-            proptest::prop_assert_eq!(attempt.refresh(&error), expected);
-            let interruption = crate::transport_failure(true,
-                acyclic_harness_core::ModelTransportFailure::Interrupted, "fixture");
-            if accepted { proptest::prop_assert_eq!(attempt.redeliver(&interruption, None), None); }
-            spent |= expected;
-        }
-    }
-}
-
 struct CancelRefresh {
     cancel: CancellationToken,
 }

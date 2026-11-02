@@ -22,7 +22,7 @@
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, AgentProfilePin, AgentState, IntentId, MAX_OPEN_CHILDREN, SpawnProfiles,
+        AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
         TurnChildren, TurnEffect, TurnEffects,
     },
     conversation::{ContentAccess, ContentPublisher},
@@ -98,9 +98,10 @@ struct Turn {
     observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
-    /// This agent's role pin and the host's role profiles; spawn refuses
+    /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
-    profiles: Option<(AgentProfilePin, Arc<dyn SpawnProfiles>)>,
+    templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
+    volumes: Vec<crate::agent::VolumeBinding>,
     /// Held from a spawn's limit check through its record, so concurrent
     /// spawns of one turn see each other.
     spawning: futures::lock::Mutex<()>,
@@ -169,12 +170,23 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
-                let Some((parent, profiles)) = &turn.profiles else {
+                let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(
-                        "this agent has no role profile to spawn under".into(),
+                        "this agent has no creation template to spawn from".into(),
                     )));
                 };
-                let profile = match profiles.child(parent, &input.role) {
+                let profile = match templates
+                    .child(
+                        parent,
+                        &turn.agent,
+                        &turn.volumes,
+                        &input.role,
+                        context
+                            .as_ref()
+                            .map(|context| context.effective_scope().grants()),
+                    )
+                    .await
+                {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
@@ -529,7 +541,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child with a role in a fork of your volumes. A worker also forks your settled conversation; an advisor or reviewer sees only its task and sent files. Your role decides which roles you may spawn. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
@@ -565,14 +577,14 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 /// `effects`, the `observer` its `wait` reads, and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool. `spawn`
-/// admits a child only through `profiles`, under `agent`'s role pin.
+/// admits a child only through `templates`, under `agent`'s creation snapshot.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
     (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
-    (names, profiles): (&[String], Option<Arc<dyn SpawnProfiles>>),
+    (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
         agent: agent.path.clone(),
@@ -582,7 +594,8 @@ pub fn bind_agent_tools(
         observer,
         writer,
         maximum_bytes,
-        profiles: agent.profile.clone().zip(profiles),
+        templates: agent.profile.clone().zip(templates),
+        volumes: agent.volumes.clone(),
         spawning: futures::lock::Mutex::new(()),
     });
     for (name, definition) in selected(names)? {

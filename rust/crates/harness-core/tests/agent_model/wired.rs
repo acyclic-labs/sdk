@@ -85,8 +85,6 @@ fn executors_with_render_bytes(
     render_bytes: Option<u64>,
 ) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
-    preset.tools.clear();
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
         base.render_bytes = render_bytes;
@@ -107,12 +105,14 @@ fn executors_with_render_bytes(
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (base, CompactionPolicy::Disabled),
-        Arc::new(Tasks(bindings)),
-    )))
+    Ok(Arc::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (selection, model),
+            ToolRegistry::default(),
+            (base, CompactionPolicy::Disabled),
+            Arc::new(Tasks(bindings)),
+        ),
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -127,21 +127,37 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
 
 #[test]
 fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
+    use acyclic_harness_core::tools;
+
     let preset = acyclic_harness_core::preset::Preset::graphcoder();
-    let shell = preset.tools(|name| name == "shell", Vec::new())?;
-    let all = preset.tools(|_| true, Vec::new())?;
-    let selected = shell.definitions(None)?;
+    for (field, value) in [
+        ("tools", serde_json::json!(["fs"])),
+        ("web_tools", serde_json::json!(false)),
+    ] {
+        let mut restored = serde_json::to_value(&preset)?;
+        restored[field] = value;
+        assert!(serde_json::from_value::<acyclic_harness_core::preset::Preset>(restored).is_err());
+    }
+    let names = tools::default_names();
+    let volume = tools::registry(&names, |_| false, Vec::new())?;
+    let all = tools::registry(&names, |_| true, Vec::new())?;
+    let selected = volume.definitions(None)?;
     let full = all.definitions(None)?;
-    assert!(selected.iter().any(|tool| tool.name == "shell"));
-    assert!(!selected.iter().any(|tool| tool.name == "fs"));
-    // The former all-workspace admission exposes this additional command.
+    assert!(!selected.iter().any(|tool| tool.name == "shell"));
+    assert!(selected.iter().any(|tool| tool.name == "fs"));
+    // The stream-backed filesystem needs no physical workspace. The shell does.
+    assert!(full.iter().any(|tool| tool.name == "shell"));
     assert!(full.iter().any(|tool| tool.name == "fs"));
-    let fs = acyclic_harness_core::tools::catalog()
-        .find(|tool| tool.name == "fs")
-        .expect("stock filesystem tool")
+    let shell = tools::catalog()
+        .find(|tool| tool.name == "shell")
+        .expect("stock shell tool")
         .capability();
-    assert!(!preset.tool_grants(&shell)?.contains(&fs));
-    assert!(preset.tool_grants(&all)?.contains(&fs));
+    let volume_grants = tools::call_grants(&volume, tools::AGENT_TOOLS)?;
+    assert!(!volume_grants.contains(&shell));
+    assert!(tools::call_grants(&all, tools::AGENT_TOOLS)?.contains(&shell));
+    let selected = tools::call_grants(&volume, std::iter::empty())?;
+    assert!(!selected.iter().any(|grant| grant == "tool:call:spawn"));
+    assert!(volume_grants.iter().any(|grant| grant == "tool:call:spawn"));
     Ok(())
 }
 
@@ -1485,148 +1501,6 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
         let calls = run(issued, given, agent, grant).await?;
         assert_eq!(calls, 0, "{case}: refused before any stream IO");
     }
-    Ok(())
-}
-
-/// Effects recorded in memory, once per call.
-#[derive(Default)]
-struct Recorded(std::sync::Mutex<std::collections::BTreeMap<String, TurnEffect>>);
-
-impl TurnEffects for Recorded {
-    fn record<'a>(
-        &'a self,
-        call: &'a str,
-        effect: &'a TurnEffect,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<TurnEffect>> {
-        let mut recorded = self.0.lock().expect("effects");
-        let first = recorded
-            .entry(call.to_owned())
-            .or_insert_with(|| effect.clone());
-        let first = first.clone();
-        Box::pin(async move { Ok(first) })
-    }
-
-    fn recorded(&self) -> BoxProviderFuture<'_, acyclic_harness_core::Result<Vec<TurnEffect>>> {
-        let recorded = self.0.lock().expect("effects").values().cloned().collect();
-        Box::pin(async move { Ok(recorded) })
-    }
-
-    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
-        Box::pin(async { Ok(false) })
-    }
-}
-
-/// A writer that names the agent's private volume and stages every brief as
-/// one fixed file.
-struct Writer(VolumeRef);
-
-impl acyclic_harness_core::conversation::ContentPublisher for Writer {
-    fn volume(&self) -> &VolumeRef {
-        &self.0
-    }
-
-    fn stage_once<'a>(
-        &'a self,
-        _: OperationId,
-        _: &'a str,
-        _: &'a [u8],
-        _: &'a str,
-        _: &'a str,
-        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
-    ) -> acyclic_harness_core::Result<
-        acyclic_harness_core::conversation::BoundedContentFuture<
-            'a,
-            (
-                FileRef,
-                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
-            ),
-        >,
-    > {
-        let file = super::driver::file("brief.md")?;
-        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
-            Ok((file, None))
-        })
-    }
-}
-
-#[tokio::test]
-async fn spawn_admits_children_by_role_within_the_open_children_limit() -> Result {
-    use acyclic_harness_core::{agent::SpawnProfiles, profile::Profiles};
-    let path = AgentPath::root(&id(9));
-    let (_, binding) = private(&path).await?;
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
-    let profiles = Profiles::builtin();
-    state.profile = Some(profiles.root()?);
-    // Each spawn call in order: which ones the tool refused.
-    let refused = |state: AgentState, calls: [(u8, &'static str, &'static str); 3]| {
-        let volume = binding.volume.clone();
-        let profiles = profiles.clone() as Arc<dyn SpawnProfiles>;
-        async move {
-            let effects = Arc::new(Recorded::default());
-            let mut tools = ToolRegistry::default();
-            acyclic_harness_core::tools::bind_agent_tools(
-                &mut tools,
-                &state,
-                (effects.clone() as Arc<dyn TurnEffects>, None),
-                Arc::new(Writer(volume)),
-                1024,
-                (
-                    &acyclic_harness_core::tools::default_names(),
-                    Some(profiles),
-                ),
-            )?;
-            let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;
-            let mut refused = Vec::new();
-            for (call, name, role) in calls {
-                let result = spawn
-                    .executor
-                    .execute(
-                        acyclic_harness_core::tool::ToolInvocation {
-                            operation_id: OperationId::from_bytes([call; 16]),
-                            call_id: format!("call-{call}"),
-                            name: "spawn".into(),
-                            arguments: serde_json::json!({"task": "work", "name": name, "role": role}),
-                        },
-                        None,
-                    )
-                    .await?;
-                refused.push(result.value.get("error").is_some());
-            }
-            Ok::<_, Box<dyn std::error::Error>>((refused, effects.recorded().await?.len()))
-        }
-    };
-    let roles = [(1, "b", "worker"), (2, "b", "worker"), (3, "c", "reviewer")];
-    // Every admitted spawn is recorded; `b`'s second call names the same child.
-    assert_eq!(
-        refused(state.clone(), roles).await?,
-        (vec![false, false, false], 3)
-    );
-    // The parent's role decides: the top-level role and unknown roles refuse.
-    let disallowed = [
-        (1, "b", "worker"),
-        (2, "c", "orchestrator"),
-        (3, "d", "planner"),
-    ];
-    assert_eq!(
-        refused(state.clone(), disallowed).await?,
-        (vec![false, true, true], 1)
-    );
-    // Negative control: an agent without a role pin spawns nothing.
-    let mut unpinned = state.clone();
-    unpinned.profile = None;
-    assert_eq!(refused(unpinned, roles).await?, (vec![true, true, true], 0));
-    // The agent's hard limit still holds: one below it, `b` fits and `c` is
-    // refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, roles).await?, (vec![false, false, true], 2));
     Ok(())
 }
 

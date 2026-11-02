@@ -213,10 +213,11 @@ mod tests {
                     name.into(),
                     &mut None,
                 )?),
-                profile: crate::agent::AgentProfilePin {
-                    role: "worker".into(),
-                    digest: [0; 32],
+                profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::Fork,
+                    template: None,
+                    may_spawn: Vec::new(),
+                    allowed_tools: None,
                 },
             })
         };

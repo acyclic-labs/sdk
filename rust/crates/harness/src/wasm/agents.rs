@@ -144,18 +144,10 @@ struct WasmBrowserAgentOptions {
     #[tsify(optional)]
     handler_timeout_ms: Option<u64>,
     /// This host places and wakes child agents. Its turns then run under the
-    /// built-in role profiles; otherwise both spawn entrances refuse.
+    /// filesystem creation templates; otherwise both spawn entrances refuse.
     #[serde(default)]
     #[tsify(optional)]
     children: bool,
-}
-
-impl WasmBrowserAgentOptions {
-    /// The role profiles of a host that places and wakes children, the one
-    /// choice both its turns and its root creation take; `None` otherwise.
-    fn profiles(&self) -> Option<Arc<crate::profile::Profiles>> {
-        self.children.then(crate::profile::Profiles::builtin)
-    }
 }
 
 /// Outcome of one control commit.
@@ -534,10 +526,15 @@ impl WasmAgents {
             Some(composer),
         )
         .map_err(agent_error)?;
-        // Roots are pinned to the same profiles the turns run under.
-        let agents = Arc::new(match options.profiles() {
-            Some(profiles) => agents.with_profiles(profiles).map_err(agent_error)?,
-            None => agents,
+        // Both spawn entrances use the same admitted template reader.
+        let agents = Arc::new(if options.children {
+            agents.with_templates(Arc::new(crate::filesystem::Templates::new(
+                Arc::clone(&filesystem),
+                owner.issuer.clone(),
+                owner.admission()?,
+            )))
+        } else {
+            agents
         });
         let run = if background {
             let runner = Arc::clone(&agents);
@@ -599,6 +596,7 @@ impl WasmAgents {
         let path = AgentPath::try_from(self.validate_create(&intent, brief.clone())?)
             .map_err(agent_error)?;
         let id = path.id();
+        self.filesystem.seed_layer().await.map_err(js_error)?;
         let volume = private_volume(self.provider.clone(), &id).map_err(js_error)?;
         self.filesystem
             .create_volume(&volume)

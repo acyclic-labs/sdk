@@ -268,13 +268,7 @@ impl CodexLogin {
                 })?,
             };
             let response = RefreshFailure::share(
-                async {
-                    match io.work() {
-                        Some(work) => transport.send_with_native_work(request, work)?.await,
-                        None => transport.send(request).await,
-                    }
-                }
-                .await,
+                async { crate::http::send(transport, request, io.work())?.await }.await,
                 failure,
             )?;
             if response.status != 200 {

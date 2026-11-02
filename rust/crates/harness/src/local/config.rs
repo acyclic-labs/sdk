@@ -97,7 +97,7 @@ impl LocalHarnessConfig {
 
     /// Selects a checkout whose model resolves at open through `models`: `selection`, else the
     /// native settings' configured model, else the resolver's default. Approver
-    /// models resolve through `models` too; the settings' search provider backs the preset's
+    /// models resolve through `models` too; the settings' search provider backs the host's
     /// web tools.
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     #[must_use]
@@ -145,7 +145,7 @@ impl LocalHarnessConfig {
                 } else {
                     search
                 };
-                // The preset alone selects web tools; this only binds their provider.
+                // Resolving credentials does not enable a tool.
                 if let Some(provider) = search.provider()? {
                     self.search_provider = Some(provider);
                 }
@@ -351,26 +351,15 @@ impl LocalHarnessConfig {
         self.served = Some(verifier);
         self
     }
-    /// Applies `preset`'s tool selection and approval policy.
-    /// Web tools need the `search-http` feature.
+    /// Applies the shared approval policy. Tool availability remains with the
+    /// host's registry.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
-        self.default_tools.clone_from(&preset.tools);
-        #[cfg(feature = "search-http")]
-        {
-            self.web_tools = preset.web_tools;
-        }
         self.approval_policy = preset.approval_policy.clone();
         self
     }
-    /// The host-backed tools and approvals this configuration applies.
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
-            tools: self.default_tools.clone(),
-            #[cfg(feature = "search-http")]
-            web_tools: self.web_tools,
-            #[cfg(not(feature = "search-http"))]
-            web_tools: false,
             approval_policy: self.approval_policy.clone(),
         }
     }

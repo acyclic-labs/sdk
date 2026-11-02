@@ -103,6 +103,31 @@ pub trait HttpTransport: ProviderPlatform {
     }
 }
 
+/// Issue one exchange through the selected platform adapter. Native work never
+/// falls back to an unfunded producer, including when admission is refused.
+pub(crate) fn send<'a>(
+    transport: &'a dyn HttpTransport,
+    request: HttpRequest,
+    work: acyclic_harness_core::NativeWork<'a>,
+) -> Result<
+    impl std::future::Future<Output = Result<HttpResponse>> + acyclic_stream::ProviderTask + 'a,
+> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(work) = work {
+            return Ok(futures::future::Either::Right(
+                transport.send_with_native_work(request, work)?,
+            ));
+        }
+        Ok(futures::future::Either::Left(transport.send(request)))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = work;
+        Ok(transport.send(request))
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod browser;
 #[cfg(target_arch = "wasm32")]

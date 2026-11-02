@@ -177,8 +177,8 @@ impl TurnExecutors for Changing {
     fn render_bytes(&self) -> Option<u64> {
         self.current().render_bytes()
     }
-    fn profiles(&self) -> Option<Arc<dyn acyclic_harness::agent::SpawnProfiles>> {
-        self.current().profiles()
+    fn templates(&self) -> bool {
+        self.current().templates()
     }
     fn executor<'a>(
         &'a self,
@@ -195,9 +195,9 @@ fn executors(
     model: Arc<acyclic_harness_providers::ResolvedModel>,
     extra: &[&str],
 ) -> TestResult<Arc<dyn TurnExecutors>> {
-    let mut preset = acyclic_harness::preset::Preset::graphcoder();
-    preset.tools = ["code", "spawn"].map(String::from).to_vec();
-    let tools = preset.tools(
+    let selected = ["code", "spawn"].map(String::from);
+    let tools = acyclic_harness::tools::registry(
+        &selected,
         |_| false,
         extra
             .iter()
@@ -205,7 +205,8 @@ fn executors(
             .collect(),
     )?;
     let limits = Limits::default();
-    let mut grants = preset.tool_grants(&tools)?;
+    let mut grants =
+        acyclic_harness::tools::call_grants(&tools, selected.iter().map(String::as_str))?;
     grants.push(capability::MODEL_GENERATE.into());
     grants.push(capability::INTERACTION_ROUTE.into());
     let bindings = Bindings {
@@ -214,45 +215,22 @@ fn executors(
     }
     .build()?;
     Ok(Arc::new(
-        preset
-            .executors(
-                (model.model().clone(), model),
-                tools,
-                (
-                    limits,
-                    // Usable: 2^20 - 1024 tokens.
-                    CompactionPolicy::Threshold(ThresholdCompaction {
-                        response_reserve_tokens: 1024,
-                        recent_tokens: 1,
-                    }),
-                ),
-                Arc::new(Tasks(bindings)),
-            )
-            .with_profiles(profiles()?),
+        acyclic_harness::filesystem::StockExecutors::new(
+            (model.model().clone(), model),
+            tools,
+            (
+                limits,
+                // Usable: 2^20 - 1024 tokens.
+                CompactionPolicy::Threshold(ThresholdCompaction {
+                    response_reserve_tokens: 1024,
+                    recent_tokens: 1,
+                }),
+            ),
+            Arc::new(Tasks(bindings)),
+        )
+        .with_agent_tools(&selected)
+        .with_templates(),
     ))
-}
-
-/// A lead and a forking worker that pin the same model and instructions, so
-/// the worker's fork can reuse its parent's cached prefix. Roles that differ
-/// in either start a different cache by construction.
-fn profiles() -> TestResult<Arc<acyclic_harness::profile::Profiles>> {
-    let role = |name: &str, context: &str, spawns: &str| {
-        acyclic_harness::profile::RoleFile::parse(&format!(
-            "---
-version: 1
-name: {name}
-model: recorded/model
-context: {context}
-may_spawn: [{spawns}]
----
-Work in small verified steps.
-"
-        ))
-    };
-    Ok(Arc::new(acyclic_harness::profile::Profiles::new([
-        role(acyclic_harness::profile::ROOT_ROLE, "top_level", "worker")?,
-        role("worker", "fork", "worker")?,
-    ])?))
 }
 
 fn resolve(
@@ -387,16 +365,15 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
             id: "local".into(),
         },
     );
+    let filesystem = acyclic_fs::Fs::new(
+        acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
     let bound = Bound::local_root(
         issuer,
         Placement {
-            filesystem: acyclic_fs::Fs::new(
-                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                acyclic_fs::LogicalObjectStore::new(Arc::new(
-                    acyclic_objects::MemoryObjects::memory(),
-                )),
-                acyclic_fs::EmbeddedCapabilities::MEMORY,
-            ),
+            filesystem: filesystem.clone(),
             provider: provider.clone(),
             within: acyclic_actors::addressing::ActorReference::new(
                 b"account", b"agents", b"owner",
@@ -424,7 +401,7 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
                 fresh: vec![acyclic_harness::agent::VolumeBinding {
                     name: PRIVATE_VOLUME.into(),
                     volume: VolumeRef::new(
-                        provider,
+                        provider.clone(),
                         "agent-private".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes(id.to_bytes())),
@@ -441,6 +418,55 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         return Err("uncertain root".into());
     };
     let agents = bound.agents();
+    // A fork with the same directive preserves the entire admitted prefix.
+    // Use the same real template reader as production, with a home override.
+    let root_template = acyclic_harness::seed::TREE
+        .iter()
+        .find(|(path, _)| *path == "templates/orchestrator/AGENT.md")
+        .unwrap()
+        .1;
+    let child_template =
+        std::str::from_utf8(root_template)?.replace("context: top_level", "context: fork");
+    let set_template = |agent: AgentPath| {
+        let filesystem = filesystem.clone();
+        let provider = &provider;
+        let bound = &bound;
+        let child_template = &child_template;
+        async move {
+            let state = bound.agents().state(&agent).await?;
+            let authority = acyclic_harness::filesystem::agent_authority(
+                bound.issuer(),
+                bound.admission(),
+                &agent,
+                &state.volumes,
+                &[],
+            )
+            .await?;
+            let host =
+                acyclic_harness::filesystem::FilesystemHost::new(filesystem, provider, None)?;
+            let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(
+                host,
+                &authority.private.volume,
+                &authority.verifier,
+                &authority.scope,
+                acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
+                None,
+            )?;
+            use acyclic_harness::conversation::ContentPublisher;
+            writer
+                .stage(
+                    acyclic_harness::OperationId::new(),
+                    "templates/worker/AGENT.md",
+                    child_template.as_bytes(),
+                    "text/markdown",
+                    "AGENT.md",
+                    acyclic_harness::conversation::ContentAccess::default(),
+                )?
+                .await?;
+            TestResult::Ok(())
+        }
+    };
+    set_template(root.clone()).await?;
     agents.drain(&root).await?;
     let message = |to: &AgentPath, name: &'static str, prompt: &'static str| {
         let bound = &bound;
@@ -487,6 +513,9 @@ async fn run(adapter: Adapter, path: &'static str, family: &str, messages: &[u8]
         .await?;
     agents.drain(&root).await?;
     let child: AgentPath = acyclic_harness::tools::spawned_child(&root, "kid")?;
+    // Child homes are fresh. A matching grandchild directive requires an
+    // explicit override in its own parent's home as well.
+    set_template(child.clone()).await?;
     transport.label("child");
     agents.drain(&child).await?;
     agents

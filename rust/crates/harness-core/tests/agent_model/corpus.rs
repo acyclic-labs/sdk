@@ -98,7 +98,12 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         (
             "fork-adopted",
             InboxRecord::ForkAdopted(Box::new(ForkAdopted {
-                profile: None,
+                profile: Some(CreationConfig {
+                    context: SpawnContext::Fork,
+                    template: Some(notice_file()?),
+                    may_spawn: vec!["worker".into()],
+                    allowed_tools: None,
+                }),
                 agent: child_id,
                 parent: Some(root),
                 forked_at: 1,

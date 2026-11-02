@@ -65,6 +65,38 @@ pub const TREE: &[(&str, &[u8])] = &[
     ("sys/native/google/tools.json", GOOGLE_TOOLS.as_bytes()),
     ("sys/native/openai/profile.md", OPENAI_PROFILE.as_bytes()),
     ("sys/native/openai/tools.json", OPENAI_TOOLS.as_bytes()),
+    (
+        "templates/advisor/AGENT.md",
+        include_bytes!("templates/advisor/AGENT.md"),
+    ),
+    (
+        "templates/advisor/agent.ts",
+        include_bytes!("templates/advisor/agent.ts"),
+    ),
+    (
+        "templates/orchestrator/AGENT.md",
+        include_bytes!("templates/orchestrator/AGENT.md"),
+    ),
+    (
+        "templates/orchestrator/agent.ts",
+        include_bytes!("templates/orchestrator/agent.ts"),
+    ),
+    (
+        "templates/reviewer/AGENT.md",
+        include_bytes!("templates/reviewer/AGENT.md"),
+    ),
+    (
+        "templates/reviewer/agent.ts",
+        include_bytes!("templates/reviewer/agent.ts"),
+    ),
+    (
+        "templates/worker/AGENT.md",
+        include_bytes!("templates/worker/AGENT.md"),
+    ),
+    (
+        "templates/worker/agent.ts",
+        include_bytes!("templates/worker/agent.ts"),
+    ),
 ];
 
 /// This build's seed generation: a hash of every path and its bytes.
