@@ -56,6 +56,31 @@ fn only_a_holder_of_the_trees_secret_is_admitted() {
             .expect("tree"),
         parts.next().and_then(decode).expect("secret"),
     );
+    let (encoded, [before, after]) = acyclic_test_support::differential(
+        || {
+            format!(
+                "{address}/{id}/{}",
+                secret
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+        },
+        || {
+            super::endpoint(
+                address,
+                usize::try_from(id).expect("tree identity"),
+                &secret,
+            )
+        },
+    );
+    assert_eq!(
+        after.count_total, 1,
+        "only the returned endpoint may allocate"
+    );
+    assert_eq!(after.bytes_total, encoded.len() as u64);
+    assert!(before.count_total > after.count_total);
+    let secret = encoded.rsplit('/').next().and_then(decode).expect("secret");
     let pid = tree.child.as_ref().expect("child").id();
     // Negative control: the right tree and a member, but a foreign secret.
     let mut foreign = secret;
