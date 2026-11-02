@@ -3,15 +3,22 @@ use super::CredentialLease;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
-pub(super) struct Slot(arc_swap::ArcSwapOption<super::CredentialSnapshot>);
+pub(super) struct Slot {
+    value: arc_swap::ArcSwapOption<super::CredentialSnapshot>,
+    #[cfg(test)]
+    pub(super) loads: std::sync::atomic::AtomicUsize,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Slot {
     pub(super) fn load(&self) -> Option<CredentialLease> {
-        self.0.load_full()
+        #[cfg(test)]
+        self.loads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.value.load_full()
     }
     pub(super) fn swap(&self, value: Option<CredentialLease>) -> Option<CredentialLease> {
-        self.0.swap(value)
+        self.value.swap(value)
     }
 }
 
