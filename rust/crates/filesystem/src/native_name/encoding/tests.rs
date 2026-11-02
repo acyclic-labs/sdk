@@ -23,36 +23,45 @@ fn finite_name_budget() -> WorkBudget {
 fn native_name_zero_and_exact_budgets_preserve_real_allocations()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let mut zero = DemandWork::new(WorkBudget::default(), &cancellation);
-    assert!(matches!(
-        host_name_bytes_measured(
-            OsStr::new("native"),
-            FilesystemProfile::Portable,
-            255,
-            &mut zero,
-        ),
-        Err(DemandError::Work(_))
-    ));
-    assert_eq!(zero.work, WorkCounters::default());
-    let mut measured = DemandWork::new(finite_name_budget(), &cancellation);
-    let (_, bytes) = host_name_bytes_measured(
-        OsStr::new("native"),
+    for profile in [
         FilesystemProfile::Portable,
-        255,
-        &mut measured,
-    )?;
-    assert_eq!(bytes, b"native");
-    let exact_budget = measured.work;
-    drop(bytes);
-    let mut exact = DemandWork::new(exact_budget, &cancellation);
-    let (_, bytes) = host_name_bytes_measured(
-        OsStr::new("native"),
-        FilesystemProfile::Portable,
-        255,
-        &mut exact,
-    )?;
-    assert_eq!(bytes, b"native");
-    assert_eq!(exact.work, exact_budget);
+        FilesystemProfile::Browser,
+        FilesystemProfile::Posix,
+        FilesystemProfile::Windows,
+    ] {
+        for text in ["native", "é𝄞"] {
+            let expected = if profile == FilesystemProfile::Windows {
+                text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+            } else {
+                text.as_bytes().to_vec()
+            };
+            let mut zero = DemandWork::new(WorkBudget::default(), &cancellation);
+            assert!(matches!(
+                host_name_bytes_measured(OsStr::new(text), profile, 255, &mut zero),
+                Err(DemandError::Work(_))
+            ));
+            assert_eq!(zero.work, WorkCounters::default());
+            let mut measured = DemandWork::new(finite_name_budget(), &cancellation);
+            let (encoding, bytes) =
+                host_name_bytes_measured(OsStr::new(text), profile, 255, &mut measured)?;
+            assert_eq!(encoding, NameEncoding::native_for_profile(profile));
+            assert_eq!(bytes, expected);
+            assert_eq!(measured.live_allocation_bytes(), bytes.capacity() as u64);
+            let exact_budget = measured.work;
+            drop(bytes);
+            let mut exact = DemandWork::new(exact_budget, &cancellation);
+            let (_, bytes) = host_name_bytes_measured(OsStr::new(text), profile, 255, &mut exact)?;
+            assert_eq!(bytes, expected);
+            assert_eq!(exact.work, exact_budget);
+            let mut bounded = DemandWork::new(finite_name_budget(), &cancellation);
+            assert!(matches!(
+                host_name_bytes_measured(OsStr::new(text), profile, 1, &mut bounded),
+                Err(DemandError::InvalidRequest)
+            ));
+            assert_eq!(bounded.work.allocation_operations, 0);
+            assert_eq!(bounded.live_allocation_bytes(), 0);
+        }
+    }
     Ok(())
 }
 
