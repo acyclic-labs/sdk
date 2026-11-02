@@ -222,8 +222,44 @@ fn admitted_keys_reuse_borrowed_values_and_invalidate_on_continuation() -> Resul
         ))?;
         input.sampling.temperature = Some(0.5);
         let prepared = PreparedModelRequest::prepare(input, Limits::default(), None)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let original = {
+            use crate::executor::json::CodecOperation;
+            let (original, cold) = acyclic_test_support::differential::observe::<
+                _,
+                _,
+                CodecOperation,
+            >(|| (), |()| prepared.replay_key());
+            assert_eq!(cold, [CodecOperation::Serialize]);
+            original?
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let original = prepared.replay_key()?;
         assert_eq!(original, encoded_key(prepared.request())?);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            use crate::executor::json::CodecOperation;
+            let (reused, warm) = acyclic_test_support::differential::observe::<_, _, CodecOperation>(
+                || (),
+                |()| prepared.replay_key(),
+            );
+            assert_eq!(reused?, original);
+            assert!(
+                warm.is_empty(),
+                "warm identity neither decodes nor serializes"
+            );
+            let (recomputed, redundant) = acyclic_test_support::differential::observe::<
+                _,
+                _,
+                CodecOperation,
+            >(|| (), |()| key(prepared.request()));
+            assert_eq!(recomputed?, original);
+            assert_eq!(redundant, [CodecOperation::Serialize]);
+            assert_ne!(
+                warm, redundant,
+                "a full rehash violates the reuse cost oracle"
+            );
+        }
         let mut repeated = None;
         let warm = acyclic_test_support::measure(|| {
             repeated = Some(prepared.replay_key());
