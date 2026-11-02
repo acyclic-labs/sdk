@@ -248,7 +248,7 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
         chunk_bytes: 1,
         page_items: 2,
         page_bytes: 1,
-        maximum_blob_bytes: 1,
+        maximum_blob_bytes: Some(1),
     };
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);

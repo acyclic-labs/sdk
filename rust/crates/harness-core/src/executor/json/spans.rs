@@ -261,7 +261,10 @@ impl JsonSpans {
     ) -> Result<usize> {
         let charge = RefCell::new(charge);
         for (index, byte) in bytes.iter().copied().enumerate() {
-            if self.position >= bounds.maximum_bytes {
+            if bounds
+                .maximum_bytes
+                .is_some_and(|maximum| self.position >= maximum)
+            {
                 return Err(boundary("JSON input exceeds declared byte bound", code));
             }
             let mut yielded = false;

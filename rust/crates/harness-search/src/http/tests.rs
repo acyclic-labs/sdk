@@ -1,6 +1,7 @@
 use super::*;
 use crate::SearchResult;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
@@ -65,16 +66,13 @@ async fn adapters_use_the_documented_protocol_and_normalize_ranked_results() -> 
 }
 
 #[tokio::test]
-async fn response_matrix_rejects_status_errors_malformed_payloads_and_oversized_bodies()
--> Result<()> {
+async fn response_matrix_rejects_status_errors_malformed_payloads() -> Result<()> {
     for exa in [true, false] {
         for (status, body, succeeds) in [
             (200, r#"{"results":[]}"#.to_owned(), true),
             (200, "{}".into(), false),
             (200, r#"{"results":[{"url":7}]}"#.into(), false),
             (200, "test-only-placeholder".into(), false),
-            (200, "x".repeat(MAXIMUM_RESPONSE_BYTES + 1), false),
-            (200, "x".repeat(MAXIMUM_RESPONSE_BYTES + 2), false),
             (401, "test-only-placeholder".into(), false),
             (429, "test-only-placeholder".into(), false),
             (500, "test-only-placeholder".into(), false),
@@ -234,11 +232,7 @@ pub(super) async fn serve(status: u16, body: String) -> Result<(String, Server)>
                 return Err(Error::Invalid("request exceeded fixture bound".into()));
             }
         }
-        let length = if body.len() == MAXIMUM_RESPONSE_BYTES + 1 {
-            String::new()
-        } else {
-            format!("Content-Length: {}\r\n", body.len())
-        };
+        let length = format!("Content-Length: {}\r\n", body.len());
         let output = format!(
             "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nLocation: http://{address}/redirect\r\n{length}Connection: close\r\n\r\n{body}"
         );

@@ -14,7 +14,7 @@ proptest! {
         let size = serde_json::to_vec(&crate::tool::RecordedInvocation { invocation:&invocation, metadata:&metadata, target:None, filesystem:None }).unwrap().len() as u64;
         let maximum = size + offset - 1;
         let event = ModelEvent::ToolCall(ToolCall::new(invocation.call_id, invocation.name, invocation.arguments).with_metadata(metadata));
-        let limits = Limits { file_bytes:maximum, render_bytes:maximum, ..Limits::default() };
+        let limits = Limits { file_bytes:Some(maximum), render_bytes:Some(maximum), ..Limits::default() };
         let mut admission = ModelEventAdmission::default();
         prop_assert_eq!(admission.observe(&event, limits, None).is_ok(), maximum >= size);
     }
@@ -25,12 +25,12 @@ fn individually_bounded_signature_negative_control_cannot_reach_a_tool_handler()
     let metadata = json!({"signature":"x".repeat(1000)});
     let arguments = json!({});
     let limits = Limits {
-        file_bytes: 1024,
-        render_bytes: 1024,
+        file_bytes: Some(1024),
+        render_bytes: Some(1024),
         ..Limits::default()
     };
-    assert!(serde_json::to_vec(&metadata).unwrap().len() < limits.file_bytes as usize);
-    assert!(serde_json::to_vec(&arguments).unwrap().len() < limits.file_bytes as usize);
+    assert!(serde_json::to_vec(&metadata).unwrap().len() < limits.file_bytes.unwrap() as usize);
+    assert!(serde_json::to_vec(&arguments).unwrap().len() < limits.file_bytes.unwrap() as usize);
     let event = ModelEvent::ToolCall(
         ToolCall::new("call".into(), "echo".into(), arguments).with_metadata(metadata),
     );

@@ -112,8 +112,8 @@ impl AsyncBlobSource for StreamingBodySource {
     }
 }
 
-fn validate_http_key(key: &str, maximum: u32) -> S3Result {
-    if key.is_empty() || key.len() > maximum as usize {
+fn validate_http_key(key: &str) -> S3Result {
+    if key.is_empty() {
         return Err(s3s::s3_error!(InvalidArgument));
     }
     Ok(())
@@ -121,8 +121,8 @@ fn validate_http_key(key: &str, maximum: u32) -> S3Result {
 
 fn encode_multipart_created(
     key: &str,
-    maximum_parts: u32,
-    maximum_part_bytes: u64,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
     minimum_part_bytes: u64,
 ) -> S3Result<Bytes> {
     let key_length = u32::try_from(key.len()).map_err(|_| s3s::s3_error!(InvalidArgument))?;
@@ -130,8 +130,8 @@ fn encode_multipart_created(
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 1]);
     output.extend_from_slice(&key_length.to_le_bytes());
     output.extend_from_slice(key.as_bytes());
-    output.extend_from_slice(&maximum_parts.to_le_bytes());
-    output.extend_from_slice(&maximum_part_bytes.to_le_bytes());
+    output.extend_from_slice(&maximum_parts.unwrap_or(0).to_le_bytes());
+    output.extend_from_slice(&maximum_part_bytes.unwrap_or(0).to_le_bytes());
     output.extend_from_slice(&minimum_part_bytes.to_le_bytes());
     Ok(Bytes::from(output))
 }
@@ -196,11 +196,10 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
         .tail(path.clone())
         .await
         .map_err(|error| stream_read_error(&error))?;
-    let maximum_records = u64::from(limits.maximum_multipart_records);
-    if tail == 0 || tail > maximum_records {
+    if tail == 0 {
         return Err(s3s::s3_error!(InvalidRequest));
     }
-    let mut records = Vec::new();
+    let mut replay: Option<MultipartReplay> = None;
     let mut from = 0_u64;
     while from < tail {
         let remaining = tail - from;
@@ -220,10 +219,10 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
             .backend_read_operations
             .checked_add(1)
             .ok_or_else(|| s3s::s3_error!(InternalError))?;
-        let before = records.len();
+        let mut received = 0_u64;
         while let Some(record) = page.next().await {
             let record = record.map_err(|error| stream_read_error(&error))?;
-            if record.sequence != from + u64::try_from(records.len() - before).unwrap_or(u64::MAX) {
+            if received >= u64::from(limit) || record.sequence != from + received {
                 return Err(s3s::s3_error!(InternalError));
             }
             work.authority_records_read = work
@@ -238,17 +237,21 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
                 .items_examined
                 .checked_add(1)
                 .ok_or_else(|| s3s::s3_error!(InternalError))?;
-            records.push(record.value);
+            if let Some(replay) = &mut replay {
+                replay.push(&record.value)?;
+            } else {
+                replay = Some(MultipartReplay::new(&record.value, tail, limits)?);
+            }
+            received += 1;
         }
-        let received = records.len() - before;
         if received == 0 {
             return Err(s3s::s3_error!(InternalError));
         }
         from = from
-            .checked_add(u64::try_from(received).map_err(|_| s3s::s3_error!(InternalError))?)
+            .checked_add(received)
             .ok_or_else(|| s3s::s3_error!(InternalError))?;
     }
-    let mut snapshot = decode_multipart(records, tail, limits)?;
+    let mut snapshot = replay.ok_or_else(|| s3s::s3_error!(NoSuchUpload))?.snapshot;
     snapshot.work = work;
     Ok(snapshot)
 }
@@ -280,45 +283,75 @@ impl From<MultipartDecodeError> for s3s::S3Error {
 fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
-) -> MultipartDecodeResult<(String, u32, u64, u64)> {
+) -> MultipartDecodeResult<(String, Option<u32>, Option<u64>, u64)> {
     let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
-    if key_length == 0 || key_length > limits.maximum_key_bytes {
+    if key_length == 0 {
         return Err(MultipartDecodeError::Malformed);
     }
     let key = std::str::from_utf8(cursor.take(key_length as usize)?)
         .map_err(|_| MultipartDecodeError::Malformed)?
         .to_owned();
-    let maximum_parts = cursor.u32()?;
-    let maximum_part_bytes = cursor.u64()?;
+    let maximum_parts = std::num::NonZeroU32::new(cursor.u32()?).map(std::num::NonZeroU32::get);
+    let maximum_part_bytes =
+        std::num::NonZeroU64::new(cursor.u64()?).map(std::num::NonZeroU64::get);
     let minimum_part_bytes = cursor.u64()?;
     cursor.finish()?;
-    if maximum_parts == 0
-        || maximum_parts > limits.maximum_multipart_parts
-        || maximum_part_bytes == 0
-        || maximum_part_bytes > limits.maximum_multipart_part_bytes
-        || minimum_part_bytes > maximum_part_bytes
+    if limits
+        .maximum_multipart_parts
+        .is_some_and(|maximum| maximum_parts.is_none_or(|saved| saved > maximum))
+        || limits
+            .maximum_multipart_part_bytes
+            .is_some_and(|maximum| maximum_part_bytes.is_none_or(|saved| saved > maximum))
+        || maximum_part_bytes.is_some_and(|maximum| minimum_part_bytes > maximum)
     {
         return Err(MultipartDecodeError::Malformed);
     }
     Ok((key, maximum_parts, maximum_part_bytes, minimum_part_bytes))
 }
 
-fn decode_multipart(
-    records: Vec<acyclic_stream::OwnedBytes>,
-    tail: u64,
-    limits: FilesystemS3Limits,
-) -> MultipartDecodeResult<MultipartSnapshot> {
-    let mut records = records.into_iter();
-    let created = records.next().ok_or(MultipartDecodeError::NoSuchUpload)?;
-    let (key, maximum_parts, maximum_part_bytes, minimum_part_bytes) =
-        decode_multipart_header(&created, limits)?;
-    let mut parts = BTreeMap::new();
-    let mut operations = BTreeMap::new();
-    let mut terminal = None;
-    for record in records {
-        let mut cursor = RecordCursor::new(&record);
+/// Replays one canonical record at a time; only current parts and exact retry
+/// identities survive a page. Historical payloads retire before the next page.
+struct MultipartReplay {
+    snapshot: MultipartSnapshot,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
+}
+
+impl MultipartReplay {
+    fn new(
+        created: &acyclic_stream::OwnedBytes,
+        tail: u64,
+        limits: FilesystemS3Limits,
+    ) -> MultipartDecodeResult<Self> {
+        let (key, maximum_parts, maximum_part_bytes, minimum_part_bytes) =
+            decode_multipart_header(created, limits)?;
+        Ok(Self {
+            snapshot: MultipartSnapshot {
+                key,
+                tail,
+                minimum_part_bytes,
+                maximum_parts,
+                maximum_part_bytes,
+                parts: BTreeMap::new(),
+                operations: BTreeMap::new(),
+                terminal: None,
+                work: crate::WorkCounters::default(),
+            },
+            maximum_parts,
+            maximum_part_bytes,
+        })
+    }
+
+    fn push(&mut self, record: &acyclic_stream::OwnedBytes) -> MultipartDecodeResult<()> {
+        let MultipartSnapshot {
+            parts,
+            operations,
+            terminal,
+            ..
+        } = &mut self.snapshot;
+        let mut cursor = RecordCursor::new(record);
         let tag = cursor.any_header()?;
         if terminal.is_some() && tag != 4 {
             return Err(MultipartDecodeError::Malformed);
@@ -332,8 +365,12 @@ fn decode_multipart(
                 let etag_digest = cursor.array32()?;
                 cursor.finish()?;
                 if part_number == 0
-                    || part_number > maximum_parts
-                    || logical_bytes > maximum_part_bytes
+                    || self
+                        .maximum_parts
+                        .is_some_and(|maximum| part_number > maximum)
+                    || self
+                        .maximum_part_bytes
+                        .is_some_and(|maximum| logical_bytes > maximum)
                 {
                     return Err(MultipartDecodeError::Malformed);
                 }
@@ -354,15 +391,13 @@ fn decode_multipart(
             }
             3 => {
                 let count = cursor.u32()?;
-                if count == 0 || count > maximum_parts {
+                if count == 0 || self.maximum_parts.is_some_and(|maximum| count > maximum) {
                     return Err(MultipartDecodeError::Malformed);
                 }
-                if count as usize
-                    > record
-                        .len()
-                        .checked_sub(cursor.offset)
-                        .ok_or(MultipartDecodeError::Malformed)?
-                        / 36
+                if usize::try_from(count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(36))
+                    != Some(cursor.bytes.len() - cursor.offset)
                 {
                     return Err(MultipartDecodeError::Malformed);
                 }
@@ -374,7 +409,7 @@ fn decode_multipart(
                     ));
                 }
                 cursor.finish()?;
-                terminal = Some(MultipartTerminal::Completing(selected));
+                *terminal = Some(MultipartTerminal::Completing(selected));
             }
             4 => {
                 let generation =
@@ -384,24 +419,31 @@ fn decode_multipart(
                 if !matches!(terminal, Some(MultipartTerminal::Completing(_))) {
                     return Err(MultipartDecodeError::Malformed);
                 }
-                terminal = Some(MultipartTerminal::Completed(generation));
+                *terminal = Some(MultipartTerminal::Completed(generation));
             }
             5 => {
                 cursor.finish()?;
-                terminal = Some(MultipartTerminal::Aborted);
+                *terminal = Some(MultipartTerminal::Aborted);
             }
             _ => return Err(MultipartDecodeError::Malformed),
         }
+        Ok(())
     }
-    Ok(MultipartSnapshot {
-        key,
-        tail,
-        minimum_part_bytes,
-        parts,
-        operations,
-        terminal,
-        work: crate::WorkCounters::default(),
-    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn decode_multipart(
+    records: Vec<acyclic_stream::OwnedBytes>,
+    tail: u64,
+    limits: FilesystemS3Limits,
+) -> MultipartDecodeResult<MultipartSnapshot> {
+    let mut records = records.into_iter();
+    let created = records.next().ok_or(MultipartDecodeError::NoSuchUpload)?;
+    let mut replay = MultipartReplay::new(&created, tail, limits)?;
+    for record in records {
+        replay.push(&record)?;
+    }
+    Ok(replay.snapshot)
 }
 
 struct RecordCursor<'a> {

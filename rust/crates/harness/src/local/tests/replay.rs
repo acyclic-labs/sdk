@@ -78,7 +78,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
     let client = Conversation::open(harness.connect().await?)?;
     for input in inputs {
         client.send(input, input).await?;
-        super::agents::settled(&agents, &root).await?;
+        super::agents::settled(&harness, &agents, &root).await?;
     }
     client.recording().await
 }

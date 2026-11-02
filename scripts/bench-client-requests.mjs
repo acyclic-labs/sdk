@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./process-capture.mjs";
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -33,9 +33,9 @@ export function measurements(output) {
   });
 }
 
-/** @param {typeof spawnSync} [run] */
-export function benchClientRequests(run = spawnSync) {
-  const result = run("cargo", cargoArgs, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+/** @param {typeof captureCommand} [run] */
+export function benchClientRequests(run = captureCommand) {
+  const result = run("cargo", cargoArgs, { encoding: "utf8", });
   process.stdout.write(result.stdout ?? "");
   process.stderr.write(result.stderr ?? "");
   if (result.error) throw result.error;

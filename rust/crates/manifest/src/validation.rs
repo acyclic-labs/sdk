@@ -31,39 +31,24 @@ fn require(condition: bool, path: &str, rule: &str) -> Result<(), ManifestError>
     }
 }
 pub(crate) fn bound_json(value: &serde_json::Value) -> Result<usize, ManifestError> {
-    fn visit(
-        value: &serde_json::Value,
-        work: &mut usize,
-        nodes: &mut usize,
-    ) -> Result<(), ManifestError> {
-        *nodes += 1;
-        *work += 1;
-        require(*nodes <= MAX_NODES, "$", "node-limit")?;
+    // Iterate instead of recursively walking caller-owned JSON. Work scales
+    // with the submitted document, without declaration or whole-value caps.
+    let mut pending = vec![value];
+    let mut work = 0usize;
+    while let Some(value) = pending.pop() {
+        work = work.saturating_add(1);
         match value {
-            serde_json::Value::Array(items) => {
-                require(items.len() <= MAX_ITEMS, "$", "collection-limit")?;
-                for item in items {
-                    visit(item, work, nodes)?;
-                }
-            }
+            serde_json::Value::Array(items) => pending.extend(items),
             serde_json::Value::Object(fields) => {
-                require(fields.len() <= MAX_ITEMS, "$", "field-limit")?;
                 for (key, value) in fields {
-                    require(key.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-                    *work += key.len();
-                    visit(value, work, nodes)?;
+                    work = work.saturating_add(key.len());
+                    pending.push(value);
                 }
             }
-            serde_json::Value::String(text) => {
-                require(text.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-                *work += text.len();
-            }
+            serde_json::Value::String(text) => work = work.saturating_add(text.len()),
             _ => {}
         }
-        Ok(())
     }
-    let mut work = 0;
-    visit(value, &mut work, &mut 0)?;
     Ok(work)
 }
 fn identifier(value: &str) -> bool {
@@ -107,7 +92,6 @@ fn index<'a, T>(
     name: impl Fn(&T) -> &str,
     location: &str,
 ) -> Result<HashMap<&'a str, &'a T>, ManifestError> {
-    require(items.len() <= MAX_ITEMS, location, "collection-limit")?;
     let mut result = HashMap::new();
     for item in items {
         require(
@@ -179,13 +163,10 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
         "unsupported-version",
     )?;
     require(
-        !manifest.environments.is_empty() && manifest.environments.len() <= MAX_ENVIRONMENTS,
+        !manifest.environments.is_empty(),
         "$.environments",
-        "environment-limit",
+        "environments-empty",
     )?;
-    // Check native collection/string bounds before descriptor adapters can clone values.
-    native_bounds(manifest)?;
-    encoded_budget(manifest)?;
     let mut work = bound_json(&serde_json::to_value(manifest).map_err(ManifestError::json)?)?;
     let mut environments = HashSet::new();
     let mut routes = HashSet::new();
@@ -702,163 +683,6 @@ fn lower_actor_unchecked(
         ..Default::default()
     })
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
-}
-
-#[derive(Default)]
-struct NativeBudget {
-    bytes: usize,
-    items: usize,
-}
-impl NativeBudget {
-    fn text(&mut self, text: &str) -> Result<(), ManifestError> {
-        require(text.len() <= MAX_STRING_BYTES, "$", "string-limit")?;
-        // Exact quoted string cost, before any descriptor adapter clones strings.
-        self.bytes += 2 + text
-            .bytes()
-            .map(|b| match b {
-                b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
-                0..=31 => 6,
-                _ => 1,
-            })
-            .sum::<usize>();
-        require(self.bytes <= MAX_JSON_BYTES, "$", "json-size")
-    }
-    fn list<T>(&mut self, items: &[T]) -> Result<(), ManifestError> {
-        require(items.len() <= MAX_ITEMS, "$", "collection-limit")?;
-        self.items += items.len();
-        require(self.items <= MAX_NODES, "$", "node-limit")
-    }
-}
-
-// Stream exact JSON into a capped counter, never into a document-sized buffer.
-fn encoded_budget(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    struct Counter {
-        bytes: usize,
-        exceeded: bool,
-    }
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            if bytes.len() > MAX_JSON_BYTES - self.bytes {
-                self.exceeded = true;
-                return Err(std::io::Error::other("json-size"));
-            }
-            self.bytes += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter {
-        bytes: 0,
-        exceeded: false,
-    };
-    let result = serde_json::to_writer(&mut counter, manifest);
-    if counter.exceeded {
-        return Err(ManifestError::invalid("$", "json-size"));
-    }
-    result.map_err(ManifestError::json)
-}
-
-fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
-    let mut budget = NativeBudget::default();
-    for env in &manifest.environments {
-        budget.text(&env.name)?;
-        budget.list(&env.entries)?;
-        budget.list(&env.bindings)?;
-        budget.list(&env.grants)?;
-        budget.list(&env.secrets)?;
-        budget.list(&env.crons)?;
-        budget.list(&env.assets)?;
-        budget.list(&env.routes)?;
-        budget.list(&env.worker_routes)?;
-        for binding in &env.bindings {
-            budget.text(binding.name())?;
-            budget.text(binding.capability())?;
-            budget.text(binding.resource())?;
-        }
-        for grant in &env.grants {
-            budget.text(&grant.name)?;
-            budget.text(&grant.grant.resource.name)?;
-            budget.list(&grant.grant.actions)?;
-            for action in &grant.grant.actions {
-                budget.text(action)?;
-            }
-        }
-        for secret in &env.secrets {
-            budget.text(secret.name())?;
-            budget.text(secret.reference().scope())?;
-            budget.text(secret.reference().name())?;
-        }
-        for entry in &env.entries {
-            if let EntryRuntime::ActorNamespace {
-                timer_inbox: Some(inbox),
-                ..
-            } = &entry.runtime
-            {
-                budget.text(&inbox.binding)?;
-                budget.text(&inbox.stream.name)?;
-            }
-            budget.text(&entry.name)?;
-            budget.text(&entry.module)?;
-            budget.text(&entry.artifact_sha256)?;
-            budget.list(&entry.assets)?;
-            for asset in &entry.assets {
-                budget.text(&asset.path)?;
-                budget.text(&asset.sha256)?;
-                budget.text(&asset.media_type)?;
-            }
-            budget.list(&entry.bindings)?;
-            budget.list(&entry.secrets)?;
-            for name in entry.bindings.iter().chain(&entry.secrets) {
-                budget.text(name)?;
-            }
-            if let Some(fetch) = &entry.fetch {
-                budget.text(&fetch.name)?;
-                budget.list(&fetch.egress)?;
-                for rule in &fetch.egress {
-                    budget.text(&rule.host)?;
-                }
-            }
-            if let EntryRuntime::ActorNamespace {
-                jurisdiction,
-                subscriptions,
-                ..
-            } = &entry.runtime
-            {
-                budget.text(jurisdiction)?;
-                budget.list(subscriptions)?;
-                for sub in subscriptions {
-                    budget.text(sub.subscription_id())?;
-                    budget.text(sub.stream_path())?;
-                }
-            }
-        }
-        for cron in &env.crons {
-            budget.text(&cron.name)?;
-            budget.text(&cron.schedule)?;
-            budget.text(&cron.entry)?;
-            budget.text(&cron.inbox_binding)?;
-            budget.text(&cron.inbox.name)?;
-        }
-        for asset in &env.assets {
-            budget.text(&asset.entry)?;
-            budget.text(&asset.binding)?;
-            budget.text(&asset.bundle_sha256)?;
-        }
-        for route in &env.routes {
-            budget.text(&route.host)?;
-            budget.text(&route.path_prefix)?;
-            budget.text(&route.entry)?;
-        }
-        for route in &env.worker_routes {
-            budget.text(&route.pattern)?;
-            if let Some(entry) = &route.entry {
-                budget.text(entry)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Admit a deployable artifact against its validated manifest: the entry bytes match

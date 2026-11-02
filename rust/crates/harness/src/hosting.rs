@@ -994,7 +994,7 @@ fn children_cursor(version: &CommitId, after: &AgentPath) -> String {
 }
 
 fn page_json_bytes(value: &impl serde::Serialize) -> Result<u64, Error> {
-    crate::executor::json::json_byte_length(value, u64::MAX, &mut None)
+    crate::executor::json::json_byte_length(value, None, &mut None)
         .map_err(|_| Error::Record("agent page encoding failed"))
 }
 

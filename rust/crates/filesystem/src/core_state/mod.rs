@@ -322,26 +322,18 @@ impl LocalCoreStateStore {
                     backend_read_operations,
                     ..crate::WorkCounters::UNCHARGED
                 };
-                // The lock, then the claim check: its record and the probes
-                // of the owner it names.
-                work.admit(reads(
-                    1 + acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
-                ))?;
-                // Every buffer the check may allocate, held across it.
-                let check_allocation = work.claim(
-                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES,
-                    acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
-                    crate::WorkCounters::UNCHARGED,
-                )?;
-                let mut spent = 1;
-                let acquired = FileLock::try_acquire(lock, FileLockMode::Shared).and_then(|lock| {
+                // The lock is this operation's own read. Claim inspection
+                // admits its actual buffers and physical probes on this same
+                // original ledger, rather than a fixed worst-case bundle.
+                let lock_read = work.reserve_work(reads(1))?;
+                let acquired = FileLock::try_acquire(lock, FileLockMode::Shared);
+                lock_read.record_completed(reads(1))?;
+                let acquired = acquired.and_then(|lock| {
                     // A claim names its owner inside the lock file instead of
                     // holding the lock, so a free lock alone does not admit.
-                    let checked = acyclic_native_runtime::StoreClaim::check(&lock);
-                    // A failed check made at most every read it may make.
-                    spent += checked.as_ref().map_or(
-                        acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
-                        |check| check.read_operations,
+                    let checked = acyclic_native_runtime::StoreClaim::check_metered(
+                        &lock,
+                        &work.runtime_meter(),
                     );
                     // Refused, the lock unlocks as it drops.
                     match checked {
@@ -350,8 +342,6 @@ impl LocalCoreStateStore {
                         Err(error) => Err(error),
                     }
                 });
-                drop(check_allocation);
-                work.spent(reads(spent))?;
                 match acquired {
                     Ok(owner_lock) => Admission::Shared { _lock: owner_lock },
                     Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
@@ -361,7 +351,7 @@ impl LocalCoreStateStore {
                             ),
                         ));
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(work.runtime_error(error).into()),
                 }
             }
             (Ownership::Shared, None) => Admission::Shared {

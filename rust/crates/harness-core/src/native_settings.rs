@@ -21,7 +21,7 @@ pub struct SettingsConfig {
     codex_home: PathBuf,
     trust_project_hooks: bool,
     trust_project_mcp: bool,
-    maximum_file_bytes: u64,
+    maximum_file_bytes: Option<u64>,
     #[doc(hidden)]
     pub load_mcp: bool,
     #[cfg(any(test, feature = "test-support"))]
@@ -66,7 +66,7 @@ impl SettingsConfig {
             codex_home,
             trust_project_hooks: false,
             trust_project_mcp: false,
-            maximum_file_bytes: 1_048_576,
+            maximum_file_bytes: None,
             load_mcp: true,
             #[cfg(any(test, feature = "test-support"))]
             _test_home: None,
@@ -111,11 +111,39 @@ impl SettingsConfig {
         self
     }
 
-    /// Replaces the positive per-file read bound.
+    /// Selects an optional positive per-file byte policy.
     #[must_use]
-    pub fn maximum_file_bytes(mut self, maximum: u64) -> Self {
-        self.maximum_file_bytes = maximum;
+    pub fn maximum_file_bytes(mut self, maximum: impl Into<Option<u64>>) -> Self {
+        self.maximum_file_bytes = maximum.into();
         self
+    }
+
+    fn validate(&self) -> Result<()> {
+        if matches!(self.maximum_file_bytes, Some(0 | u64::MAX)) {
+            return Err(Error::Invalid(
+                "settings byte policy must be finite and positive".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_file(&self, mut file: std::fs::File) -> Result<Vec<u8>> {
+        self.validate()?;
+        let mut bytes = Vec::new();
+        match self.maximum_file_bytes {
+            Some(maximum) => file.take(maximum + 1).read_to_end(&mut bytes),
+            None => file.read_to_end(&mut bytes),
+        }
+        .map_err(Error::process_io)?;
+        if self
+            .maximum_file_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
+            return Err(Error::Invalid(
+                "settings file exceeds its read bound".into(),
+            ));
+        }
+        Ok(bytes)
     }
 }
 
@@ -174,11 +202,7 @@ impl NativeSettings {
         load_mcp: bool,
         load_hooks: bool,
     ) -> Result<Self> {
-        if config.maximum_file_bytes == 0 || config.maximum_file_bytes == u64::MAX {
-            return Err(Error::Invalid(
-                "settings require a finite positive byte bound".into(),
-            ));
-        }
+        config.validate()?;
         acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
         acyclic_native_runtime::run_blocking_io(
             move || Self::read(&config, load_mcp, load_hooks),
@@ -312,17 +336,7 @@ impl NativeSettings {
         let mut unique: Vec<_> = unique.into_iter().collect();
         unique.sort_unstable_by_key(|(_, policy)| policy.order);
         for (path, source) in unique {
-            let mut bytes = Vec::new();
-            std::fs::File::open(&path)
-                .map_err(Error::process_io)?
-                .take(config.maximum_file_bytes + 1)
-                .read_to_end(&mut bytes)
-                .map_err(Error::process_io)?;
-            if bytes.len() as u64 > config.maximum_file_bytes {
-                return Err(Error::Invalid(
-                    "settings file exceeds its read bound".into(),
-                ));
-            }
+            let bytes = config.read_file(std::fs::File::open(&path).map_err(Error::process_io)?)?;
             let mut document: BTreeMap<String, Value> = parse(&bytes, source.toml)?;
             #[cfg(feature = "hooks")]
             if let Some(order) = source.hook_order {

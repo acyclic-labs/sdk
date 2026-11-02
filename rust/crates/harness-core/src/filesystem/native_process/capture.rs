@@ -314,7 +314,7 @@ fn result(
                     std::io::ErrorKind::Interrupted => NativeProcessStopKind::ControlStopped,
                     _ => NativeProcessStopKind::CaptureFailed,
                 },
-                message: failure.error.to_string().chars().take(128).collect(),
+                message: failure.error.to_string(),
                 cleanup_completed: failure.cleanup_completed,
             }),
         },
