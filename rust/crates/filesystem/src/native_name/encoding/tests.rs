@@ -12,7 +12,7 @@ proptest! {
     ) {
         for encoding in [NameEncoding::Utf8, NameEncoding::PosixBytes] {
             let text = if separator { format!("{text}\\sibling") } else { text.clone() };
-            let name = crate::kernel::LogicalName::new(encoding, text.as_bytes().to_vec(), 1_024).unwrap();
+            let name = crate::kernel::LogicalName::new(encoding, text.as_bytes().to_vec()).unwrap();
             let result = crate::native_name::windows_name_units(&name);
             if separator {
                 // Encoding the text directly would silently introduce a sibling path.
@@ -31,10 +31,9 @@ proptest! {
         let name = crate::kernel::LogicalName::new(
             NameEncoding::WindowsUtf16Le,
             units.iter().copied().flat_map(u16::to_le_bytes).collect(),
-            1_024,
         ).unwrap();
         prop_assert_eq!(crate::native_name::windows_name_units(&name).unwrap().collect::<Vec<_>>(), units);
-        let opaque = crate::kernel::LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 1_024).unwrap();
+        let opaque = crate::kernel::LogicalName::new(NameEncoding::PosixBytes, vec![0xff]).unwrap();
         prop_assert!(crate::native_name::windows_name_units(&opaque).is_none());
     }
 }
