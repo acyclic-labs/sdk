@@ -120,7 +120,8 @@ retains observer overhead. Each row reports diagnostic completed native attempt
 deltas in `[ok, err, incomplete]` order. The final bounded projection includes
 setup and selected operation families, with base-two syscall latency buckets;
 these are not per-operation latency quantiles. Counter snapshots occur outside
-the timestamp pair and their cloning is excluded from allocation diagnostics.
+the timestamp pair. Their fixed outcome totals borrow the original query value
+without cloning its operation name or histogram.
 The same collector projects typed syscall/outcome totals and missing-field
 counts into fixed-size arrays. Unknown APIs retain their own row; missing
 descriptor, parent or native error evidence is reported explicitly. Saturated
