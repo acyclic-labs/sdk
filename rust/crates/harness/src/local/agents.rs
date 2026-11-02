@@ -322,6 +322,7 @@ impl LocalHarness {
                         (self.limits, self.compaction.clone()),
                         Arc::new(LocalContext(Arc::downgrade(self))),
                     )
+                    .with_agent_tools(&self.agent_tools)
                     .with_profiles(crate::profile::Profiles::builtin()),
             ),
             None => Arc::new(NativeHost),

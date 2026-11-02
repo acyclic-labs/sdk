@@ -95,8 +95,7 @@ fn executors_with_render_bytes(
     render_bytes: Option<u64>,
 ) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
-    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
-    preset.tools.clear();
+    let preset = acyclic_harness_core::preset::Preset::graphcoder();
     let mut base = acyclic_harness_core::conversation::Limits::default();
     if let Some(render_bytes) = render_bytes {
         base.render_bytes = render_bytes;
@@ -117,12 +116,16 @@ fn executors_with_render_bytes(
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(preset.executors(
-        (selection, model),
-        ToolRegistry::default(),
-        (base, CompactionPolicy::Disabled),
-        Arc::new(Tasks(bindings)),
-    )))
+    Ok(Arc::new(
+        preset
+            .executors(
+                (selection, model),
+                ToolRegistry::default(),
+                (base, CompactionPolicy::Disabled),
+                Arc::new(Tasks(bindings)),
+            )
+            .with_agent_tools(&[]),
+    ))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -138,6 +141,14 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
 #[test]
 fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
     let preset = acyclic_harness_core::preset::Preset::graphcoder();
+    for (field, value) in [
+        ("tools", serde_json::json!(["fs"])),
+        ("web_tools", serde_json::json!(false)),
+    ] {
+        let mut restored = serde_json::to_value(&preset)?;
+        restored[field] = value;
+        assert!(serde_json::from_value::<acyclic_harness_core::preset::Preset>(restored).is_err());
+    }
     let shell = preset.tools(|name| name == "shell", Vec::new())?;
     let all = preset.tools(|_| true, Vec::new())?;
     let selected = shell.definitions(None)?;
@@ -152,6 +163,14 @@ fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
         .capability();
     assert!(!preset.tool_grants(&shell)?.contains(&fs));
     assert!(preset.tool_grants(&all)?.contains(&fs));
+    let selected = acyclic_harness_core::tools::call_grants(&shell, std::iter::empty())?;
+    assert!(!selected.iter().any(|grant| grant == "tool:call:spawn"));
+    assert!(
+        preset
+            .tool_grants(&shell)?
+            .iter()
+            .any(|grant| grant == "tool:call:spawn")
+    );
     Ok(())
 }
 
