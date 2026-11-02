@@ -72,6 +72,10 @@ pub enum SpawnOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentState {
+    /// Own resource totals in research builds. Inherited conversation remains
+    /// shared history, not newly performed work.
+    #[cfg(feature = "research")]
+    pub resources: Option<super::resources::AgentResourceState>,
     /// This agent.
     pub path: AgentPath,
     /// Spawning agent.
@@ -186,6 +190,8 @@ impl AgentState {
             .transpose()
             .map_err(|error| Error::Turn(Box::new(error)))?;
         Ok(Self {
+            #[cfg(feature = "research")]
+            resources: None,
             path,
             parent: adopted.parent.clone(),
             profile: adopted.profile.clone(),
@@ -482,6 +488,9 @@ pub enum Alarm {
 
 /// One committed step: new state, ordered effects, desired alarm.
 pub struct Step {
+    /// Immutable placement fact, only when this step changes its identity.
+    #[cfg(feature = "research")]
+    pub resource_placement: Option<super::resources::ResourcePlacement>,
     /// Next state.
     pub state: AgentState,
     /// Effects, lowered into the same commit as the checkpoint.
@@ -523,7 +532,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
     Ok(
-        prepare_step(driver, path, state, cursor, wake, cancellation)
+        prepare_step(driver, path, state, cursor, wake, cancellation, None)
             .await?
             .step,
     )
@@ -536,7 +545,10 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     cursor: u64,
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
+    placement: Option<&super::resources::ObservedResourcePlacement>,
 ) -> Result<PreparedStep, Error> {
+    #[cfg(not(feature = "research"))]
+    let _ = placement;
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
     // Consuming a non-waking stream event never advances the model driver,
@@ -631,7 +643,11 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         outs.len(),
         state.pending_notices.clone(),
     );
+    #[cfg(feature = "research")]
+    let prior_resources = state.resources;
     let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+    #[cfg(feature = "research")]
+    bind_resource_placement(&mut step, placement);
     let mut bytes = checkpoint::encode(&step.state)?;
     // Check the exact final tails, then retain these same bytes for commit.
     // Only a state that must shed its growing input is encoded again.
@@ -647,9 +663,16 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         state.checkpoint = completion.1;
         state.roster = completion.2;
         state.pending_notices = completion.4;
+        // Discarded preparation is not another committed step.
+        #[cfg(feature = "research")]
+        {
+            state.resources = prior_resources;
+        }
         outs.truncate(completion.3);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
         step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+        #[cfg(feature = "research")]
+        bind_resource_placement(&mut step, placement);
         bytes = checkpoint::encode(&step.state)?;
     }
     Ok(PreparedStep {
@@ -698,9 +721,19 @@ fn finalize_step(
         }
     }
     let mut sequence = state.conversation_tail;
+    #[cfg(feature = "research")]
+    let mut conversation_bytes = 0_u64;
     for out in &outs {
         match out {
-            Out::Conversation(_) => {
+            Out::Conversation(record) => {
+                #[cfg(not(feature = "research"))]
+                let _ = record;
+                #[cfg(feature = "research")]
+                {
+                    conversation_bytes = conversation_bytes
+                        .checked_add(record.len() as u64)
+                        .ok_or(Error::Record("agent resource conversation bytes overflow"))?;
+                }
                 sequence = sequence
                     .checked_add(1)
                     .ok_or(Error::Record("agent conversation tail overflow"))?;
@@ -731,12 +764,39 @@ fn finalize_step(
         .status_tail
         .checked_add(u64::from(status.is_some()))
         .ok_or(Error::Record("agent status tail overflow"))?;
+    #[cfg(feature = "research")]
+    {
+        let previous = state.resources;
+        state.resources = Some(super::resources::AgentResourceState {
+            counters: previous
+                .map(|state| state.counters)
+                .unwrap_or_default()
+                .step(appended, conversation_bytes)?,
+            placement: previous.and_then(|state| state.placement),
+        });
+    }
     Ok(Step {
+        #[cfg(feature = "research")]
+        resource_placement: None,
         state,
         outs,
         status,
         alarm,
     })
+}
+
+#[cfg(feature = "research")]
+fn bind_resource_placement(
+    step: &mut Step,
+    placement: Option<&super::resources::ObservedResourcePlacement>,
+) {
+    if let Some(state) = step.state.resources.as_mut() {
+        let digest = placement.map(|placement| placement.digest());
+        if state.placement != digest {
+            state.placement = digest;
+            step.resource_placement = placement.map(|placement| placement.fact());
+        }
+    }
 }
 
 /// The phase a status publishes: an idle agent still holding input runs it
