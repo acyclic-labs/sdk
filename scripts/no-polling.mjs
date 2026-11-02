@@ -125,6 +125,7 @@ function nativeTokens(source, file) {
  const powershell = file.endsWith('.ps1');
  const shell = file.endsWith('.sh');
  const yaml = /\.ya?ml$/.test(file);
+ const whitespace = yaml ? /^[ \t\r\n]+/ : /^\s+/;
  const wordComments = powershell || shell;
  const escape = powershell ? '`' : shell ? '\\' : undefined;
  const continuation = powershell ? '`\n' : '\\\n';
@@ -142,6 +143,7 @@ function nativeTokens(source, file) {
  const out = [];
  let at = 0;
  let line = 1;
+ let yamlFlow = 0;
  let wordBoundary = true;
  const malformed = message => new Error(`${file}:${line}: ${message}`);
  const emit = (end, kind, spelling) => {
@@ -157,10 +159,9 @@ function nativeTokens(source, file) {
  };
  while (at < source.length) {
   const tail = source.slice(at);
-  if (/^\s/.test(tail)) { emit(at + tail.match(/^\s+/)[0].length); continue; }
-  // YAML plain scalars retain unseparated hashes, including URL fragments.
-  if (hashComments && tail.startsWith('#')
-   && (wordComments ? wordBoundary : !yaml || at === 0 || /\s/.test(source[at - 1]))) {
+  const blank = tail.match(whitespace);
+  if (blank) { emit(at + blank[0].length); continue; }
+  if (hashComments && tail.startsWith('#') && (!wordComments || wordBoundary)) {
    emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue;
   }
   if (slashComments && tail.startsWith('//')) { emit(source.indexOf('\n', at) < 0 ? source.length : source.indexOf('\n', at)); continue; }
@@ -191,6 +192,22 @@ function nativeTokens(source, file) {
    emit(end.index + end[0].length, 'literal'); continue;
   }
   const quote = tail[0];
+  if (yaml && !'[]{} ,#&*!|>\'"%@`'.includes(quote) && !/^[-?:](?:[ \t\r\n]|$)/.test(tail)) {
+   // Quotes and unseparated hashes inside plain scalars are data. Only YAML
+   // separation or a flow delimiter returns control to the quoted scanner.
+   let end = at;
+   while (end < source.length) {
+    const character = source[end];
+    const next = source[end + 1];
+    if (character === '\n' || character === '\r' || (yamlFlow && ',[]{}'.includes(character))
+     || (character === '#' && end > at && /[ \t]/.test(source[end - 1]))
+     || (character === ':' && (next === undefined || /[ \t\r\n]/.test(next) || (yamlFlow && ',[]{}'.includes(next))))) break;
+    end++;
+   }
+   if (end > at) { emit(end, 'literal'); continue; }
+  }
+  if (yaml && (quote === '[' || quote === '{')) yamlFlow++;
+  if (yaml && (quote === ']' || quote === '}')) yamlFlow--;
   if (python && (tail.startsWith('"""') || tail.startsWith("'''"))) {
    const delimiter = tail.slice(0, 3);
    let end = at + 3;
@@ -203,9 +220,10 @@ function nativeTokens(source, file) {
   if (quote === '"' || (!rust && quote === "'")) {
    let end = at + 1;
    while (end < source.length) {
-    if (powershell && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
+    if ((powershell || (yaml && quote === "'")) && source[end] === quote && source[end + 1] === quote) { end += 2; continue; }
     if (source[end] === quote) break;
-    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1) : (source[end] === '\\' ? 2 : 1);
+    end += powershell ? (quote === '"' && source[end] === '`' ? 2 : 1)
+     : yaml && quote === "'" ? 1 : (source[end] === '\\' ? 2 : 1);
    }
    if (end >= source.length) throw malformed('unterminated quoted string');
    emit(end + 1, 'literal'); continue;
