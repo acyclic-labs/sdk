@@ -23,14 +23,21 @@ fn former(body: &Request<'_>) -> Value {
     let mut messages = serde_json::to_value(&body.messages).unwrap();
     if let Some(instruction) = &body.summary {
         let instruction = instruction.as_ref();
-        messages
-            .as_array_mut()
-            .unwrap()
-            .push(if body.target.family == Adapter::Gemini {
+        let contents = messages.as_array_mut().unwrap();
+        if body.target.family == Adapter::Gemini
+            && contents.last().is_some_and(|last| last["role"] == "user")
+        {
+            contents.last_mut().unwrap()["parts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"text":instruction}));
+        } else {
+            contents.push(if body.target.family == Adapter::Gemini {
                 json!({"role":"user","parts":[{"text":instruction}]})
             } else {
                 json!({"role":"user","content":instruction})
             });
+        }
         let (key, value) = match body.target.family {
             Adapter::Gemini => (
                 "toolConfig",
@@ -274,4 +281,86 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn gemini_summary_extends_admitted_user_and_tool_result_sources() -> acyclic_harness_core::Result<()>
+{
+    use acyclic_harness_core::model::{ModelContentPart, ToolCall, ToolResultContent};
+    let (provider, transport) = crate::tests::provider(Adapter::Gemini, 200);
+    let (prepared, _) = crate::tests::request(&provider)?;
+    for tool_result in [false, true] {
+        let mut request = prepared.request().clone();
+        request.summary = true;
+        if tool_result {
+            request.tools.push(
+                acyclic_harness_core::tools::catalog()
+                    .find(|tool| tool.name == "code")
+                    .unwrap()
+                    .definition()?,
+            );
+            request.messages.extend([
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+                        "call".into(),
+                        "code".into(),
+                        json!({"code":"42"}),
+                    ))),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name: "code".into(),
+                        content: ToolResultContent::Json { value: json!(42) },
+                    }),
+                },
+            ]);
+        }
+        request.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("Summarize \"猫\".".into()),
+        });
+        let prepared = PreparedModelRequest::prepare(request, Default::default(), None)?;
+        let request = prepared.request();
+        let names = crate::tool_names::Names::new(request);
+        let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+        let body = super::super::body_named(
+            &provider,
+            request,
+            &names,
+            &origin,
+            &mut crate::files::FileText::default(),
+        )?;
+        let observed = super::super::cache::encode(&body, &provider, &origin)?;
+        let bytes = body.encode()?;
+        assert_eq!(bytes, observed.bytes);
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value, former(&body));
+        assert!(crate::validate_input(Adapter::Gemini, &value).is_empty());
+        let contents = value["contents"].as_array().unwrap();
+        assert!(
+            contents
+                .windows(2)
+                .all(|pair| pair[0]["role"] != pair[1]["role"])
+        );
+        assert_eq!(contents.len(), body.messages.len());
+        let parts = contents.last().unwrap()["parts"].as_array().unwrap();
+        assert_eq!(
+            parts.last().unwrap(),
+            &json!({"text": body.summary.as_deref().unwrap()})
+        );
+        if tool_result {
+            assert!(parts[0].get("functionResponse").is_some());
+        } else {
+            assert_eq!(parts[0], json!({"text":"user"}));
+        }
+        assert_eq!(
+            request.messages.last().unwrap().content,
+            ModelContent::Text("Summarize \"猫\".".into())
+        );
+    }
+    assert!(transport.sent.lock().unwrap().is_empty());
+    Ok(())
 }

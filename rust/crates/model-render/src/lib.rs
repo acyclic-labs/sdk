@@ -28,12 +28,13 @@ pub use item::{Family, ItemKind, Provenance, WireItem};
 pub use notice::{Notice, PendingNotices, notice_block};
 pub use profile::{Cache, Effort, Reasoning};
 pub use render::{
-    Header, RenderError, Segment, Tail, json_error, render, render_summary, seg, summary_artifact,
+    Header, RenderError, Segment, Tail, gemini_summary, json_error, render, render_summary, seg,
+    summary_artifact,
 };
 pub use tools::{ToolDeclaration, ToolDeclarations};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
-pub const RENDERER_VERSION: u32 = 3;
+pub const RENDERER_VERSION: u32 = 4;
 
 #[cfg(test)]
 mod notice_tests;
