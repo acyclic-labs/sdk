@@ -1,6 +1,15 @@
 //! Generated settings exercise the original evaluator and its original cache.
 use super::*;
 use serde_json::json;
+use std::cell::Cell;
+
+thread_local! {
+    static VM_ENTRIES: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn entered() {
+    VM_ENTRIES.set(VM_ENTRIES.get().wrapping_add(1));
+}
 
 struct Files(Vec<u8>);
 
@@ -150,9 +159,15 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
             {
                 return Err("a non-scalar throw retained a native address".into());
             }
+            // Files::read is immediately ready, so this synchronous cache/VM
+            // sequence cannot yield to another evaluation on the same thread.
+            let entries = VM_ENTRIES.get();
             let warm = observed(
                 evaluate_cached("agent.ts", source.as_bytes(), &tree, &base, surface, &cache).await,
             );
+            if VM_ENTRIES.get() != entries {
+                return Err("warm cache re-entered QuickJS".into());
+            }
             let fresh = observed(
                 evaluate_cached(
                     "agent.ts",
@@ -164,6 +179,9 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 )
                 .await,
             );
+            if VM_ENTRIES.get() != entries.wrapping_add(1) {
+                return Err("fresh evaluation did not enter QuickJS exactly once".into());
+            }
             if cold != warm || warm != fresh {
                 return Err(format!(
                     "cache/fresh determinism: cold={cold:?}, warm={warm:?}, fresh={fresh:?}"

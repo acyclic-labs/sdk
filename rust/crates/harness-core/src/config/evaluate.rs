@@ -369,6 +369,8 @@ fn run(
 ) -> std::result::Result<(Value, Form), String> {
     use rquickjs::{CaughtError, Context, Function, Object, Runtime};
     let engine = |error: rquickjs::Error| error.to_string();
+    #[cfg(any(test, feature = "test-support"))]
+    model::entered();
     let runtime = Runtime::new().map_err(engine)?;
     runtime.set_memory_limit(crate::executor::ENGINE_MEMORY);
     let fuel = Arc::new(AtomicU64::new(FUEL));
