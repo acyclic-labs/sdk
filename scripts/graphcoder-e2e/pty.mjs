@@ -54,19 +54,22 @@ export async function pty(processes, binary, fixture, input, capture) {
     let index = 0, command, failure, errors;
     const snapshots = [];
     function frame() {
-      if (failure || index >= input.actions.length || !frames.ready()) return;
+      if (failure || !frames.ready()) return;
       try {
         const visible = screenText(screen);
         const action = input.actions[index];
+        if (raw.has(OVERFLOW) || failures.unexpected(visible, action?.when)) {
+          const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_frame_failed";
+          throw error;
+        }
+        if (!action) return;
         const unavailable = command && `${command} is not available in this view`;
         if (unavailable && visible.includes(unavailable)
             && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
           const error = new Error(`command_unavailable: ${unavailable}`);
           error.code = "command_unavailable";
           throw error;
-        }
-        if (raw.has(OVERFLOW) || failures.unexpected(visible, action.when)) {
-          throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
         if (!matches(screen, raw, action.when)) return;
@@ -111,7 +114,10 @@ export async function pty(processes, binary, fixture, input, capture) {
       });
     }
     assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
-    if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
+    if (!input.killed) {
+      assert.ok(frames.ready(), `step=admit completed terminal transaction; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+      assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
+    }
     else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
     for (const text of input.settled_contains ?? []) {
       assert.ok(snapshots.at(-1)?.visible.includes(text), `settled screen missing ${text}`);

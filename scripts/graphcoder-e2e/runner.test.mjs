@@ -73,6 +73,39 @@ test("terminal setup rejection releases parser and screen resources before retur
   }
 });
 
+test("terminal completion admits the final frame after its last input action", async () => {
+  // Exercise the real child, screen parser and action driver over stdio. Native
+  // PTY adapters are qualified separately; these are internal frame controls.
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
+  }
+  const root = mkdtempSync(join(tmpdir(), "terminal-completion-"));
+  try {
+    const tails = ["clean completion", "task 00000000-0000-0000-0000-000000000001 failed: cancelled",
+      "has overflowed its stack", "\x1b[?2026huncommitted frame"];
+    for (const [tail, killed] of [...tails.map(tail => [tail, false]), [tails.at(-1), true]]) {
+      const processes = new TerminalProcess();
+      let capture;
+      try {
+        const running = pty(processes, process.execPath, {
+          id: "terminal-completion", workspace: root,
+          args: ["-e", `process.stdout.write('ready');process.stdin.once('data',()=>{process.stdout.write(${JSON.stringify("\n" + tail)},()=>{${killed ? "process.kill(process.pid,'SIGTERM')" : "process.stdin.destroy()"}})})`],
+          onRequest() { return () => {}; },
+        }, { actions: [{ when: { contains: ["ready"] }, send: "finish\n" }], killed }, result => { capture = result; });
+        if (tail === tails[0] || killed) {
+          const result = await running;
+          assert.equal(Boolean(result.signal || result.code !== 0), killed);
+        }
+        else await assert.rejects(running, tail === tails.at(-1)
+          ? /admit completed terminal transaction/ : error => error.code === "terminal_frame_failed");
+        assert.equal(capture.actions, 1, "the original input action must complete before the tail");
+        assert.ok(capture.stdout.endsWith(tail), "retain the original final bytes before admission");
+        assert.equal(processes.children.size, 0, "terminal admission follows original child retirement");
+      } finally { await processes.close(); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
+
 test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
   const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
   for (let cut = 0; cut <= bytes.length; cut++) {
