@@ -86,21 +86,13 @@ fn sync_file_impl(
                 .and_then(|()| meter.check());
         }
     }
-    let operation = obs::span!(
-        DEBUG,
-        "acyclic.runtime.sync_file",
-        outcome = obs::Empty,
-        error.kind = obs::Empty
-    );
-    operation.in_scope(|| {
-        operation.finish(with_file_admission(file, || {
-            crate::persistence_syscall(|| {
-                #[cfg(target_vendor = "apple")]
-                return apple::sync_once(file, durability, held, || Ok(()));
-                #[cfg(not(target_vendor = "apple"))]
-                sync_file_unsequenced(file, durability)
-            })
-        }))
+    with_file_admission(file, || {
+        crate::persistence_syscall(|| {
+            #[cfg(target_vendor = "apple")]
+            return apple::sync_once(file, durability, held, || Ok(()));
+            #[cfg(not(target_vendor = "apple"))]
+            sync_file_unsequenced(file, durability)
+        })
     })
 }
 
@@ -168,31 +160,23 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
 }
 
 fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
-    let operation = obs::span!(
-        DEBUG,
-        "acyclic.runtime.sync_data",
-        outcome = obs::Empty,
-        error.kind = obs::Empty
-    );
-    operation.in_scope(|| {
-        operation.finish(with_file_admission(file, || {
-            crate::persistence_syscall(|| {
-                #[cfg(target_vendor = "apple")]
-                return apple::sync_once(file, durability, None, || Ok(()));
-                #[cfg(windows)]
-                return sync_file_unsequenced(file, durability);
-                #[cfg(target_os = "linux")]
-                {
-                    use std::os::fd::AsFd as _;
-                    return crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability);
-                }
-                #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-                {
-                    let _ = durability;
-                    file.sync_data()
-                }
-            })
-        }))
+    with_file_admission(file, || {
+        crate::persistence_syscall(|| {
+            #[cfg(target_vendor = "apple")]
+            return apple::sync_once(file, durability, None, || Ok(()));
+            #[cfg(windows)]
+            return sync_file_unsequenced(file, durability);
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::fd::AsFd as _;
+                return crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability);
+            }
+            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            {
+                let _ = durability;
+                file.sync_data()
+            }
+        })
     })
 }
 

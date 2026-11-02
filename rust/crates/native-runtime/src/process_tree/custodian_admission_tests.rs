@@ -4,6 +4,17 @@ use super::*;
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 
+fn decode(text: &str) -> Option<Secret> {
+    let mut secret = [0; 16];
+    if text.len() != 32 {
+        return None;
+    }
+    for (byte, pair) in secret.iter_mut().zip(text.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(secret)
+}
+
 /// Asks the custodian at `address` to admit `pid` into `tree`.
 fn admit(address: &str, pid: u32, tree: u64, secret: &Secret) -> bool {
     let mut stream = TcpStream::connect(address).expect("connect");
@@ -45,6 +56,31 @@ fn only_a_holder_of_the_trees_secret_is_admitted() {
             .expect("tree"),
         parts.next().and_then(decode).expect("secret"),
     );
+    let (encoded, [before, after]) = acyclic_test_support::differential(
+        || {
+            format!(
+                "{address}/{id}/{}",
+                secret
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+        },
+        || {
+            super::endpoint(
+                address,
+                usize::try_from(id).expect("tree identity"),
+                &secret,
+            )
+        },
+    );
+    assert_eq!(
+        after.count_total, 1,
+        "only the returned endpoint may allocate"
+    );
+    assert_eq!(after.bytes_total, encoded.len() as u64);
+    assert!(before.count_total > after.count_total);
+    let secret = encoded.rsplit('/').next().and_then(decode).expect("secret");
     let pid = tree.child.as_ref().expect("child").id();
     // Negative control: the right tree and a member, but a foreign secret.
     let mut foreign = secret;
