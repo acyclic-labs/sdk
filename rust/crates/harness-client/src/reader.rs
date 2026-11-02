@@ -1366,10 +1366,6 @@ impl Reader {
         }
     }
 
-    fn refuse(&mut self, key: OpKey) {
-        self.refused.insert(key);
-    }
-
     fn fail(&mut self, failure: Failure, now: u64) {
         self.failures = self.failures.saturating_add(1);
         self.since.get_or_insert(now);
