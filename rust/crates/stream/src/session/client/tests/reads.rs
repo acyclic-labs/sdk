@@ -729,11 +729,6 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         });
         let capability =
             acyclic_auth::verify::verify(&credential, &signed::Snapshot::default(), signed::NOW)?;
-        assert!(
-            crate::session::testing::authority()
-                .permits(&capability, "streams/read", "streams:/tree/a/status", 1)
-                .is_ok()
-        );
         let filter = crate::FollowFilter::authorized(Default::default(), &capability)?;
         if start == "b" {
             assert!(filter.matches(&change.headers));
@@ -792,12 +787,12 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
                     commit_id: change.commit_id,
                 });
             }
-            let observed = client.heads(selected.clone(), 2).await;
-            if complete {
-                assert_eq!(observed?, provider.heads(selected).await?);
-            } else {
-                assert_eq!(observed, Err(StreamError::AccessDenied));
-            }
+            // Exact read admission still requires record facts, even when
+            // the complete record would pass its independently checked filter.
+            assert_eq!(
+                client.heads(selected, 2).await,
+                Err(StreamError::AccessDenied)
+            );
         }
     }
     // Even one named denial refuses the whole view; absence cannot hide it.
