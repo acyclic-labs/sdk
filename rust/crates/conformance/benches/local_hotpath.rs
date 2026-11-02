@@ -144,8 +144,8 @@ impl Options {
                 _ => return Err(format!("unknown option {argument}").into()),
             }
         }
-        if !proofs && samples < 100 {
-            return Err("p99 requires at least 100 observations".into());
+        if !proofs && samples == 0 {
+            return Err("measurement requires at least one observation".into());
         }
         // Report growth checks require increasing cohorts. Normalize before
         // calibration or any population preparation can consume resources.
@@ -283,6 +283,7 @@ fn run() -> Result {
             "task_rows": ["persistence", "blocking_io"],
             "task_boolean_columns": ["unknown", "false", "true"],
             "task_terminal_columns": ["unknown", "ok", "io_error", "panic", "missing"],
+            "first_os_error_scope": "first observed original OS error per syscall/task row; diagnostic only, not authenticated operation identity or error order; absent remains unknown",
             "task_scope": "terminal samples only; queued=false means inline execution; outcome and panic are independent; absent admission, queue delay, physical owner/group, active tasks and final backing retirement remain unknown; not Worker execution coverage",
         }))?;
     }

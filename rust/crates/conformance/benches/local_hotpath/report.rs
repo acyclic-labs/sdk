@@ -58,6 +58,10 @@ pub(super) fn check_observations() -> Result {
     if quantiles.p50_ns != 50.0 || quantiles.p99_ns != 99.0 {
         return Err("nearest-rank quantiles changed".into());
     }
+    let small = Quantiles::new(&mut [5.0, 1.0, 4.0, 2.0, 3.0])?;
+    if small.samples != 5 || small.p50_ns != 3.0 || small.p99_ns != 5.0 {
+        return Err("small-cohort quantiles changed".into());
+    }
     // A timestamp pair can occupy one clock tick. Preserve that observation
     // rather than fabricating a positive elapsed duration.
     let zero = Quantiles::new(&mut [0.0; 100])?;

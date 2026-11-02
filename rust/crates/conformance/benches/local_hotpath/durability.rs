@@ -3,12 +3,13 @@ use acyclic_native_runtime::obs::{DurabilitySyscall, NativeTaskTerminal, Outcome
 use serde::Serialize;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
 #[derive(Default)]
 struct Fields {
     calls: [[AtomicU64; 3]; 7],
+    first_os_errors: [FirstOsError; 7],
     missing: [AtomicU64; 5],
     tasks: [TaskFields; 2],
 }
@@ -22,6 +23,32 @@ struct TaskFields {
     outcome: [AtomicU64; 3],
     missing_parent: AtomicU64,
     missing_io_error: AtomicU64,
+    first_os_error: FirstOsError,
+}
+
+struct FirstOsError(AtomicI64);
+
+impl Default for FirstOsError {
+    fn default() -> Self {
+        Self(AtomicI64::new(i64::MIN))
+    }
+}
+
+impl FirstOsError {
+    fn record(&self, error: Option<i32>) {
+        if let Some(error) = error {
+            let _ = self.0.compare_exchange(
+                i64::MIN,
+                i64::from(error),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    fn get(&self) -> Option<i32> {
+        i32::try_from(self.0.load(Ordering::Relaxed)).ok()
+    }
 }
 
 /// A sink on the one collector, without a new operation owner or field parser.
@@ -31,6 +58,7 @@ pub(super) struct Projection(Arc<Fields>);
 #[derive(Serialize)]
 pub(super) struct Snapshot {
     pub(super) calls: [[Option<u64>; 3]; 7],
+    pub(super) first_os_errors: [Option<i32>; 7],
     pub(super) missing: [Option<u64>; 5],
     pub(super) tasks: [TaskSnapshot; 2],
 }
@@ -44,6 +72,7 @@ pub(super) struct TaskSnapshot {
     outcome: [Option<u64>; 3],
     missing_parent: Option<u64>,
     missing_io_error: Option<u64>,
+    first_os_error: Option<i32>,
 }
 
 fn outcome_index(outcome: Outcome) -> usize {
@@ -94,6 +123,7 @@ impl Sink for Projection {
             increment(&counters.started[boolean_index(task.started)]);
             increment(&counters.panicked[boolean_index(task.panicked)]);
             increment(&counters.outcome[outcome_index(sample.outcome)]);
+            counters.first_os_error.record(task.os_error);
             let terminal = match task.terminal {
                 None => 0,
                 Some(NativeTaskTerminal::Ok) => 1,
@@ -125,6 +155,7 @@ impl Sink for Projection {
         };
         let outcome = outcome_index(sample.outcome);
         increment(&self.0.calls[syscall][outcome]);
+        self.0.first_os_errors[syscall].record(fields.os_error);
         for (index, missing) in [
             fields.requested.is_none(),
             fields.syscall.is_none(),
@@ -147,6 +178,7 @@ impl Projection {
         // Individual atomic observations, never a concurrent transactional cut.
         Snapshot {
             calls: std::array::from_fn(|syscall| counts(&self.0.calls[syscall])),
+            first_os_errors: std::array::from_fn(|syscall| self.0.first_os_errors[syscall].get()),
             missing: counts(&self.0.missing),
             tasks: std::array::from_fn(|index| {
                 let task = &self.0.tasks[index];
@@ -158,6 +190,7 @@ impl Projection {
                     outcome: counts(&task.outcome),
                     missing_parent: count(&task.missing_parent),
                     missing_io_error: count(&task.missing_io_error),
+                    first_os_error: task.first_os_error.get(),
                 }
             }),
         }
@@ -201,6 +234,7 @@ mod tests {
             assert_eq!(before.panicked, [Some(0), Some(1), Some(0)]);
             assert_eq!(before.outcome, [Some(1), Some(0), Some(0)]);
             assert_eq!(before.missing_parent, Some(0));
+            assert_eq!(before.first_os_error, None);
 
             // This is the real unsubmitted job, whose original span closes
             // without queue transfer, closure entry or terminal publication.
@@ -215,6 +249,21 @@ mod tests {
             );
             assert_eq!(after.panicked, [Some(1), Some(1), Some(0)]);
             assert_eq!(after.outcome, [Some(1), Some(0), Some(1)]);
+            assert_eq!(after.first_os_error, None);
+
+            let _inline = InlineBlocking::enter();
+            let missing = read(directory.path().join("missing")).unwrap_err();
+            let original_code = missing.raw_os_error().expect("original OS failure code");
+            let different = read(directory.path().to_path_buf()).unwrap_err();
+            assert_ne!(different.raw_os_error(), Some(original_code));
+            // Generic host closures return application data, including an
+            // inner Result. Their successful native terminal cannot invent
+            // an I/O failure or extract a cause from that opaque payload.
+            assert_eq!(projection.snapshot().tasks[1].first_os_error, None);
+            assert_eq!(
+                projection.snapshot().tasks[1].outcome,
+                [Some(3), Some(0), Some(1)]
+            );
 
             // Losing numeric precision cannot turn a later real terminal into
             // zero work. The same fixed counter retires as unknown.
@@ -231,6 +280,38 @@ mod tests {
                     .flatten()
                     .all(|count| *count == Some(0))
             );
+
+            // A pipe reader cannot be flushed to stable storage. Preserve
+            // this actual syscall's cause, independently of task outcomes.
+            let (reader, _writer) = std::io::pipe()?;
+            #[cfg(unix)]
+            use std::os::fd::AsFd as _;
+            #[cfg(windows)]
+            use std::os::windows::io::AsHandle as _;
+            #[cfg(unix)]
+            let descriptor = reader.as_fd();
+            #[cfg(windows)]
+            let descriptor = reader.as_handle();
+            let error = acyclic_native_runtime::order_descriptor_once(descriptor).unwrap_err();
+            let code = error
+                .raw_os_error()
+                .expect("original flush OS failure code");
+            let observed = projection.snapshot();
+            assert_eq!(
+                observed
+                    .calls
+                    .iter()
+                    .map(|row| row[1].unwrap())
+                    .sum::<u64>(),
+                1
+            );
+            let row = observed
+                .calls
+                .iter()
+                .position(|row| row[1] == Some(1))
+                .unwrap();
+            assert_eq!(observed.first_os_errors[row], Some(code));
+            assert_eq!(observed.missing[4], Some(0));
             Ok(())
         })
     }
