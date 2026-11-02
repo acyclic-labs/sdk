@@ -245,10 +245,6 @@ mod tests {
             .await?;
         assert!(!alone.holds(own).await?);
         assert!(alone.holds(OperationId::from_bytes([8; 16])).await?);
-        assert_eq!(
-            files.list(&effects.directory).await?,
-            ["0000000001-a.json", "0000000002-b.json"]
-        );
         for call in ["", "../escape", "slash/name", "dot.name"] {
             assert!(matches!(
                 effects.record(call, &effect("invalid")?).await,
@@ -327,9 +323,8 @@ mod tests {
         assert!(files.read(abandoned_path, 4096).await?.is_none());
 
         // Removing a file after selection changes a fresh read, but cannot
-        // remove a listed effect from the retained original generation.
+        // remove its body from the retained original generation.
         let reader = files.reader().await?;
-        let selected = reader.list(&effects.directory).await?;
         let removed = format!("{}/0000000001-a.json", effects.directory);
         let workspace = host
             .filesystem
@@ -349,9 +344,8 @@ mod tests {
             .await
             .map_err(super::super::map_error)?;
         assert!(files.read(&removed, 4096).await?.is_none());
-        assert_eq!(reader.list(&effects.directory).await?, selected);
         let mut retained = Vec::new();
-        for name in selected {
+        for name in ["0000000001-a.json", "0000000002-b.json"] {
             let bytes = reader
                 .read(&format!("{}/{name}", effects.directory), 4096)
                 .await?

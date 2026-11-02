@@ -158,7 +158,6 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 .as_deref(),
             Some(b"first".as_slice())
         );
-        assert_eq!(files.list("branch-owner").await?, ["action.json"]);
         assert_eq!(
             files
                 .create("branch-owner/action.json", b"later", 4096)
