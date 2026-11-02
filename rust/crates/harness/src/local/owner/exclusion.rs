@@ -2,6 +2,8 @@
 use super::*;
 use acyclic_fs::{DemandError, HeldRoot, SearchRoot};
 
+mod rules;
+
 pub(in crate::local) struct Exclusion {
     common: HeldRoot,
     patterns: Vec<Vec<u8>>,
@@ -65,56 +67,13 @@ fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
 /// whether the file ends at a line boundary. Git applies the last matching
 /// rule and only a negation (`!`) can re-include a path, so a rule followed by
 /// any negation may be undone and is reasserted after it.
-fn contains(mut file: &fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
+fn contains(file: &fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
     let length = file.metadata()?.len();
-    let mut remaining = length;
-    let mut buffer = [0; 8192];
-    let (mut index, mut valid, mut carriage_return) = (0, true, false);
-    let (mut start, mut negation, mut effective) = (true, false, false);
-    let mut last = None;
-    while remaining != 0 {
-        let count = (&mut file).take(remaining).read(&mut buffer)?;
-        if count == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Git exclusions changed during read",
-            ));
-        }
-        remaining -= u64::try_from(count).map_err(std::io::Error::other)?;
-        for byte in buffer.iter().take(count) {
-            last = Some(*byte);
-            if *byte == b'\n' {
-                effective = settled(effective, negation, valid && index == pattern.len());
-                (index, valid, carriage_return) = (0, true, false);
-                (start, negation) = (true, false);
-                continue;
-            }
-            if start {
-                (start, negation) = (false, *byte == b'!');
-            }
-            if valid {
-                if !carriage_return && pattern.get(index) == Some(byte) {
-                    index += 1;
-                } else if !carriage_return && index == pattern.len() && *byte == b'\r' {
-                    carriage_return = true;
-                } else {
-                    valid = false;
-                }
-            }
-        }
-    }
+    let result = rules::contains(file, length, pattern)?;
     if file.metadata()?.len() != length {
         return Err(std::io::Error::other("Git exclusions changed during read"));
     }
-    Ok((
-        settled(effective, negation, valid && index == pattern.len()),
-        last.is_none_or(|byte| byte == b'\n'),
-    ))
-}
-
-/// The rule's effect after one complete line.
-fn settled(effective: bool, negation: bool, rule: bool) -> bool {
-    !negation && (effective || rule)
+    Ok(result)
 }
 
 /// What a Git metadata pointer names.
@@ -355,32 +314,14 @@ impl Exclusion {
 /// The anchored Git exclusion rule for `path`, as raw filename bytes: Git
 /// matches paths as bytes on Unix, and records them as UTF-8 on Windows.
 pub(in crate::local) fn pattern(path: &Path) -> Result<Vec<u8>> {
-    let mut result = Vec::new();
-    for part in path.components() {
-        let std::path::Component::Normal(part) = part else {
-            return Err(Error::Invalid("checkout exclusion must be relative".into()));
-        };
-        #[cfg(unix)]
-        let name = Some(std::os::unix::ffi::OsStrExt::as_bytes(part));
-        #[cfg(not(unix))]
-        let name = part.to_str().map(str::as_bytes);
-        // A rule is one line, so a name with a line break has no exact rule.
-        let name = name
-            .filter(|name| !name.iter().any(|byte| matches!(byte, b'\r' | b'\n' | 0)))
-            .ok_or_else(|| {
-                Error::Unsupported("checkout path cannot be represented in Git exclusions".into())
-            })?;
-        result.push(b'/');
-        for &byte in name {
-            if matches!(byte, b'*' | b'?' | b'[' | b'\\' | b'!' | b'#')
-                || byte.is_ascii_whitespace()
-            {
-                result.push(b'\\');
-            }
-            result.push(byte);
+    rules::pattern(path).map_err(|error| match error {
+        rules::PatternError::NotRelative => {
+            Error::Invalid("checkout exclusion must be relative".into())
         }
-    }
-    Ok(result)
+        rules::PatternError::Unrepresentable => {
+            Error::Unsupported("checkout path cannot be represented in Git exclusions".into())
+        }
+    })
 }
 
 #[cfg(test)]
