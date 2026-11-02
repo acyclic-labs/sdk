@@ -183,15 +183,23 @@ pub(super) mod linux {
         raw.make_raw();
         tcsetattr(&stdin, OptionalActions::Now, &raw)?;
         let mut control = UnixStream::connect(root.join("control"))?;
-        let mut begin = [0];
-        control.read_exact(&mut begin)?;
-        if begin == *b"S" {
+        let mut header = [0; 9];
+        control.read_exact(&mut header)?;
+        let begin = header[0];
+        let length = u64::from_le_bytes(header[1..].try_into().unwrap());
+        if begin == b'S' {
             let mut resized = [0];
             stdin.lock().read_exact(&mut resized)?;
             assert_eq!(resized, *b"G", "screen resize command completed");
         }
         let mut output = io::stdout().lock();
-        output.write_all(&std::fs::read(root.join("frame.bin"))?)?;
+        let copied = io::copy(&mut Read::take(&mut control, length), &mut output)?;
+        if copied != length {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "original frame producer closed before its declared bytes; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+            ));
+        }
         output.write_all(b"\x1b[6n")?;
         output.flush()?;
         let mut reply = Vec::new();
@@ -203,7 +211,7 @@ pub(super) mod linux {
             ));
         }
         control.write_all(b"R")?;
-        if begin == *b"S" {
+        if begin == b'S' {
             let mut copied = [0];
             stdin.lock().read_exact(&mut copied)?;
             assert_eq!(copied, *b"H", "screen hardcopy command completed");
@@ -211,7 +219,7 @@ pub(super) mod linux {
         }
         // Hold the screen until its one snapshot has been taken. Dropping the
         // original parent socket releases this wait, including failure paths.
-        assert_eq!(control.read(&mut begin)?, 0);
+        assert_eq!(control.read(&mut [0])?, 0);
         Ok(())
     }
     pub(crate) fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
@@ -223,7 +231,6 @@ pub(super) mod linux {
         let dump = root.join("screen.txt");
         let config = root.join("tmux.conf");
         let socket = root.join("tmux.sock");
-        std::fs::write(root.join("frame.bin"), bytes).unwrap();
         let listener = UnixListener::bind(root.join("control")).unwrap();
         let name = format!(
             "acyclic-region-{}-{}",
@@ -319,9 +326,11 @@ pub(super) mod linux {
                 "stuff G",
             ]));
         }
-        control
-            .write_all(if tool == "screen" { b"S" } else { b"G" })
-            .unwrap();
+        let mut header = [0; 9];
+        header[0] = if tool == "screen" { b'S' } else { b'G' };
+        header[1..].copy_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
+        control.write_all(&header).unwrap();
+        control.write_all(bytes).unwrap();
         session.wait(&control, deadline).unwrap();
         let mut consumed = [0];
         control.read_exact(&mut consumed).unwrap();
