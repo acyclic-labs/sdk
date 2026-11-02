@@ -25,11 +25,20 @@ pub(crate) const GOOGLE_PROFILE: &str = include_str!("../profile/native/google.m
 /// Where the seed's skills live in its tree.
 pub const SKILLS: &str = "skills";
 
+macro_rules! seed_file {
+    ($path:expr) => {
+        seed_file!($path, $path)
+    };
+    ($path:expr, $source:expr) => {
+        ($path, include_bytes!($source))
+    };
+}
+
 macro_rules! skill {
     ($name:literal) => {
-        (
+        seed_file!(
             concat!("skills/", $name, "/SKILL.md"),
-            include_bytes!(concat!("../skills/", $name, "/SKILL.md")),
+            concat!("../skills/", $name, "/SKILL.md")
         )
     };
 }
@@ -37,7 +46,10 @@ macro_rules! skill {
 /// Every embedded seed file by its path in the tree, sorted by path.
 const FILES: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
-    ("agent.ts", include_bytes!("agent.ts")),
+    seed_file!("agent.ts"),
+    seed_file!("plugins/anthropic/provider.ts"),
+    seed_file!("plugins/gemini/provider.ts"),
+    seed_file!("plugins/openai/provider.ts"),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
@@ -45,7 +57,7 @@ const FILES: &[(&str, &[u8])] = &[
     skill!("fresh-context-review"),
     skill!("verify-before-done"),
     skill!("writing-skills"),
-    ("sys/kernel.md", include_bytes!("kernel.md")),
+    seed_file!("sys/kernel.md", "kernel.md"),
     (
         "sys/native/anthropic/profile.md",
         ANTHROPIC_PROFILE.as_bytes(),

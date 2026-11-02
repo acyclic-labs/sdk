@@ -22,6 +22,75 @@ const TREE: Files = Files(&[
     ("loop/b.ts", "import './a.ts'; export default 2;"),
 ]);
 
+#[tokio::test]
+async fn provider_layers_replace_native_data_without_changing_the_base() -> Result<()> {
+    use crate::config::{SummaryHeader, provider};
+
+    for (plugin, family) in [
+        ("anthropic", "anthropic"),
+        ("openai", "openai"),
+        ("gemini", "google"),
+    ] {
+        let path = format!("plugins/{plugin}/provider.ts");
+        let source = crate::seed::file(&format!("sys/native/{family}/tools.json")).unwrap();
+        let declarations: Vec<Value> = serde_json::from_slice(source).unwrap();
+        let tools: Vec<Value> = declarations
+            .into_iter()
+            .map(|definition| json!({"name": definition["name"], "definition": definition}))
+            .collect();
+        let base = json!({
+            "tools": tools,
+            "cache": {"breakpoints": ["header", "segments"], "ttl": "5m"},
+            "compaction": "native-when-available",
+            "summaryHeader": "keep",
+            "effort": {"low": {}, "medium": {}, "high": {}},
+            "sampling": {"temperature": null, "topP": null, "maxOutputTokens": null},
+        });
+        let original = crate::contract::canonical_json_bytes(&base)?;
+        let seed = Layer {
+            name: "seed",
+            generation: "seed-source",
+            bytes: crate::seed::file(&path),
+        };
+        let (value, _) = compose(&path, &[seed], &TREE, base.clone()).await?;
+        let inherited = provider::decode(value)?;
+        assert_eq!(inherited.tools, provider::decode(base.clone())?.tools);
+        assert_eq!(
+            inherited.summary_header,
+            SummaryHeader::StripExecutableBuiltins
+        );
+
+        // A user-authored module edits a real trained declaration. This changes
+        // input data only; it does not request or widen executable authority.
+        let home = b"export default (base) => ({ ...base, tools: base.tools.map((tool, i) => i ? tool : ({ ...tool, definition: { ...tool.definition, description: 'A deliberate user edit' } })), sampling: { ...base.sampling, temperature: 0.2 } });";
+        let layers = [
+            seed,
+            Layer {
+                name: "home",
+                generation: "edited-source",
+                bytes: Some(home),
+            },
+        ];
+        let (edited, chain) = compose(&path, &layers, &TREE, base.clone()).await?;
+        let edited = provider::decode(edited)?;
+        assert_ne!(edited.tools[0].definition, inherited.tools[0].definition);
+        assert_eq!(edited.tools[0].name, inherited.tools[0].name);
+        assert_eq!(edited.tools[1..], inherited.tools[1..]);
+        assert_eq!(edited.sampling.temperature, Some(0.2));
+        assert_eq!(chain.len(), 2);
+        assert_ne!(chain[0].module_digest, chain[1].module_digest);
+        assert_eq!(crate::contract::canonical_json_bytes(&base)?, original);
+
+        let mut unknown = serde_json::to_value(&edited).unwrap();
+        unknown["guidedDeny"] = json!(true);
+        assert!(provider::decode(unknown).is_err());
+        let mut malformed = serde_json::to_value(&edited).unwrap();
+        malformed["tools"][0]["definition"] = json!(false);
+        assert!(provider::decode(malformed).is_err());
+    }
+    Ok(())
+}
+
 async fn error(source: &str, surface: Surface) -> String {
     match evaluate("agent.ts", source.as_bytes(), &TREE, &json!({}), surface).await {
         Err(Error::Invalid(message)) => message,

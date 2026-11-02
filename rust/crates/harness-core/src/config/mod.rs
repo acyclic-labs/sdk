@@ -13,8 +13,13 @@
 //! failure is cached under the digest of everything it read, so identical
 //! stacks evaluate once per process.
 pub mod policy;
+pub mod provider;
 mod types;
 
+pub use provider::{
+    CacheBreakpoint, CacheTtl, Compaction, NativeTool, ProviderCache, ProviderEffort,
+    ProviderProfile, ProviderSampling, SummaryHeader,
+};
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
     Sampling, utc,
@@ -93,7 +98,16 @@ pub fn typescript() -> &'static str {
             Admission,
             AdmissionStatus,
             Link,
-            Form
+            Form,
+            ProviderProfile,
+            NativeTool,
+            ProviderCache,
+            CacheBreakpoint,
+            CacheTtl,
+            Compaction,
+            SummaryHeader,
+            ProviderEffort,
+            ProviderSampling
         );
         text
     })
