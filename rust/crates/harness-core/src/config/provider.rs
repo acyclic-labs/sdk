@@ -112,6 +112,22 @@ pub struct ProviderSampling {
     pub max_output_tokens: Option<u32>,
 }
 
+/// Fold provider settings with the shared evaluator and admit the result.
+/// The returned links are the evaluator's original settings provenance.
+///
+/// # Errors
+/// A module evaluation or provider settings admission refusal.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn admit(
+    path: &str,
+    layers: &[crate::layers::Layer<'_>],
+    tree: &dyn super::Tree,
+    base: Value,
+) -> Result<(ProviderProfile, Vec<super::Link>)> {
+    let (value, links) = super::compose(path, layers, tree, base).await?;
+    Ok((decode(value)?, links))
+}
+
 /// Decode the shared evaluator's result once, at settings admission.
 ///
 /// # Errors

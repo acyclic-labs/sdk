@@ -52,8 +52,7 @@ async fn provider_layers_replace_native_data_without_changing_the_base() -> Resu
             generation: "seed-source",
             bytes: crate::seed::file(&path),
         };
-        let (value, _) = compose(&path, &[seed], &TREE, base.clone()).await?;
-        let inherited = provider::decode(value)?;
+        let (inherited, _) = provider::admit(&path, &[seed], &TREE, base.clone()).await?;
         assert_eq!(inherited.tools, provider::decode(base.clone())?.tools);
         assert_eq!(
             inherited.summary_header,
@@ -71,8 +70,7 @@ async fn provider_layers_replace_native_data_without_changing_the_base() -> Resu
                 bytes: Some(home),
             },
         ];
-        let (edited, chain) = compose(&path, &layers, &TREE, base.clone()).await?;
-        let edited = provider::decode(edited)?;
+        let (edited, chain) = provider::admit(&path, &layers, &TREE, base.clone()).await?;
         assert_ne!(edited.tools[0].definition, inherited.tools[0].definition);
         assert_eq!(edited.tools[0].name, inherited.tools[0].name);
         assert_eq!(edited.tools[1..], inherited.tools[1..]);
