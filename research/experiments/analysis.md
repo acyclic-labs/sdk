@@ -1,8 +1,9 @@
 # Offline paired experiment analysis
 
-`acyclic_harness::experiments` analyzes scored observations independently of the
-execution engine. Input rows and reports are version 1. The module provides
-paired differences, ordinary paired standard errors, intercept-only CR1
+`acyclic_harness::experiments` analyzes trial observations independently of the
+execution engine. Observation rows are version 2; reports, scorers and decisions
+remain version 1. The module provides paired differences, ordinary paired
+standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
 integer scorer and assigned-trial summaries for organism probes.
 
@@ -13,15 +14,21 @@ explicitly unrun; the recipes introduce no execution mechanism.
 ## Pair and cluster identity
 
 An observation binds a 32-byte population identity, replicate number, numeric
-arm, finite score and optional measured cost. The population identity names the
-admitted comparison and common source cut; keep its arm-name table and original
-output/accounting references alongside it. Use `Observation::new` or decode a
+arm, optional finite score and optional complete measured cost. The population
+identity names the admitted comparison and common source cut; keep its arm-name
+table and original output/accounting references alongside it. Use `Observation::new` or decode a
 complete JSON object through `Observation::decode`. Admission checks its version,
-finite score and finite nonnegative cost once. Missing cost remains unknown.
+finite score and finite nonnegative cost once. Score and cost are independent:
+an unscored output can retain its fully accounted cost. Missing values remain
+unknown; the decoder rejects other versions without a migration path.
 
 `treatment.difference(&baseline)` requires equal population and replicate and
-different arms. Pairing uses fixed-width identities, takes constant work and
-allocates nothing. Subtraction overflow is a typed refusal.
+different arms. It returns `None` if either score is missing.
+`treatment.cost_difference(&baseline)` uses the same identity check and returns
+`None` if either cost is missing, regardless of score validity. Identity checks
+still reject mismatched rows when values are missing. Pairing uses fixed-width
+identities, takes constant work and allocates nothing. Score subtraction overflow
+is a typed refusal; finite nonnegative costs cannot overflow on subtraction.
 
 One independent problem/source cut is one cluster. Every replicate and graph
 condition sharing that cut belongs to that cluster. Group its paired differences
@@ -38,10 +45,12 @@ use acyclic_harness::experiments::{Observation, stats::{Cluster, PairedStats}};
 # fn example() -> Result<(), acyclic_harness::experiments::Error> {
 let mut report = PairedStats::default();
 for (source, baseline_score, treatment_score) in [(1, 1.0, 2.0), (2, 1.0, 4.0)] {
-    let baseline = Observation::new([source; 32], 0, 0, baseline_score, None)?;
-    let treatment = Observation::new([source; 32], 0, 1, treatment_score, None)?;
+    let baseline = Observation::new([source; 32], 0, 0, Some(baseline_score), None)?;
+    let treatment = Observation::new([source; 32], 0, 1, Some(treatment_score), None)?;
     let mut cluster = Cluster::default();
-    cluster.push(treatment.difference(&baseline)?)?;
+    if let Some(difference) = treatment.difference(&baseline)? {
+        cluster.push(difference)?;
+    }
     report.push(cluster)?;
 }
 let estimate = report.estimate()?;
@@ -100,7 +109,12 @@ is `None`. The version-1 report includes the number and sum of fully priced
 trials; total and cost per assigned trial remain unknown unless every trial is
 fully priced. Priced-call coverage stays with the original accounting records.
 These arm totals are descriptive; use matched pairs and independent clusters
-for uncertainty.
+for uncertainty. Feed known `cost_difference` values into a separate
+`stats::Cluster`/`stats::PairedStats` accumulator, including fully priced trials
+whose outputs were unscored. Report fully priced matched-pair coverage alongside
+the estimate. Unknown costs are never zero, and uncertainty over a measured
+subset does not describe all assigned trials. Score-pair coverage is separate;
+the assigned-trial report retains the primary correctness denominator.
 
 ## Execution and cost boundary
 
@@ -127,15 +141,19 @@ either returns its value or a typed refusal; no producer event is awaited here.
 Rejected statistics and trial-summary updates leave their accumulators unchanged.
 Trial summaries retain six scalar fields, with no rows, maps or repeated scoring.
 
-Controls cover mismatched pairs, malformed/ambiguous objects, nonfinite inputs,
-overflow, false independence, unequal cluster sizes and large common offsets.
+Controls cover mismatched pairs even with missing values, unscored but fully
+priced trials, unknown versus zero costs, malformed/ambiguous objects, nonfinite
+inputs, overflow, false independence, unequal cluster sizes and large common offsets.
 The power-planning negative control rejects NaN intermediates before applying
 its minimum. A bounded proof source checks that objective correctness and planted
-adoption are mutually exclusive. Focused contributor commands:
+adoption are mutually exclusive; another checks that admitted paired costs stay
+finite even without scores. Focused contributor commands:
 
 ```sh
 cargo check --locked -p acyclic-harness-core --lib
 cargo test --locked -p acyclic-harness-core --lib experiments::stats::tests::clustered_estimate_matches_direct_residuals_with_unequal_clusters
 cargo test --locked -p acyclic-harness-core --lib experiments::reports::tests::unscored_trials_and_unknown_cost_remain_in_assigned_denominators
+cargo test --locked -p acyclic-harness-core --lib experiments::tests::paired_cost_retains_unscored_trials_without_imputing_unknown_values
 cargo kani -p acyclic-harness-core --harness objective_success_and_injection_adoption_are_exclusive
+cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_even_without_scores
 ```
