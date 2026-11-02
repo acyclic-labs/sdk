@@ -16,8 +16,42 @@ impl FileTool {
             return super::directory::read(context, &input.0, after.as_deref(), *limit, work, io)
                 .await;
         }
+        let mut original = input
+            .0
+            .version
+            .as_deref()
+            .map(|version| {
+                if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
+                    super::version::decode_selection(version, work)
+                } else {
+                    super::version::decode_tool_version(Some(context), &input.0.path, version, work)
+                }
+            })
+            .transpose()?;
         if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
-            let layer = context.effective_tool_path(&input.0.path, io).await?;
+            let layer = if let Some((source, _)) = &original {
+                context.effective_tool_layer(
+                    &input.0.path,
+                    Some((source.volume(), source.path())),
+                    io,
+                )?
+            } else {
+                let (layer, selected, custody) =
+                    context.effective_tool_path(&input.0.path, io).await?;
+                if let Some(selected) = selected {
+                    original = Some((
+                        super::version::SelectedVersion::Authored(
+                            crate::conversation::PathSelection {
+                                volume: selected.volume,
+                                path: selected.path,
+                                generation: selected.generation,
+                            },
+                        ),
+                        custody,
+                    ));
+                }
+                layer
+            };
             input.0.path = layer.into_owned();
         }
         if input.0.range.is_some() && input.0.selection.is_some() {
@@ -26,23 +60,44 @@ impl FileTool {
             ));
         }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
-            return super::lines::read(context, &input.0, offset, limit, work, io).await;
+            return super::lines::read(context, &input.0, original, offset, limit, work, io).await;
         }
         if let Some(ReadSelection::Cells { offset, limit }) = input.0.selection {
-            return super::notebook_read::read(context, &input.0, offset, limit, work, io).await;
+            return super::notebook_read::read(
+                context, &input.0, original, offset, limit, work, io,
+            )
+            .await;
         }
         if input.0.selection.is_none()
             && input.0.range.is_none()
             && input.0.path.ends_with(".ipynb")
         {
-            return super::notebook_read::read(context, &input.0, 0, None, work, io).await;
+            return super::notebook_read::read(context, &input.0, original, 0, None, work, io)
+                .await;
         }
         if input.0.selection.is_none() || input.0.selection == Some(ReadSelection::Text) {
-            return self.read_path_range(context, &input.0, work, io).await;
+            return self
+                .read_path_range(context, &input.0, original, work, io)
+                .await;
         }
-        let source = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
-            .await?;
+        let _source_hold;
+        let source = match original {
+            Some((super::version::SelectedVersion::Content(file), hold)) => {
+                _source_hold = hold;
+                return self.media_result(file, input.0.selection.clone(), work);
+            }
+            Some((super::version::SelectedVersion::Authored(selected), hold)) => {
+                _source_hold = hold;
+                super::executor::Source::read(
+                    context,
+                    &input.0.path,
+                    Some(&selected.generation),
+                    io,
+                )
+                .await?
+            }
+            None => super::executor::Source::read(context, &input.0.path, None, io).await?,
+        };
         self.media_result(source.file, input.0.selection.clone(), work)
     }
 
@@ -50,6 +105,7 @@ impl FileTool {
         &self,
         context: &ToolContext,
         input: &ReadFileInput,
+        original: Option<(super::version::SelectedVersion, crate::NativeCustody)>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
@@ -70,6 +126,7 @@ impl FileTool {
         let window = super::window::Window::first(
             context,
             input,
+            original,
             acyclic_fs::ByteRange {
                 offset: start,
                 length: count.min(window).max(1),

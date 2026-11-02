@@ -71,6 +71,7 @@ impl Lines {
 pub(super) async fn read(
     context: &ToolContext,
     input: &ReadFileInput,
+    original: Option<(super::version::SelectedVersion, crate::NativeCustody)>,
     offset: u64,
     limit: Option<u64>,
     work: crate::NativeWork<'_>,
@@ -90,6 +91,7 @@ pub(super) async fn read(
     let mut window = super::window::Window::first(
         context,
         input,
+        original,
         acyclic_fs::ByteRange {
             offset: 0,
             length: if destination.is_some() && offset != 0 {

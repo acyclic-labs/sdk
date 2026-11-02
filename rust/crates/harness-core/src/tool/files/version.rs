@@ -69,6 +69,12 @@ pub(super) fn decode_tool_version(
     let io = owned_io.as_ref();
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let io = None;
+    if path.starts_with(crate::layers::EFFECTIVE_PATH) {
+        let (file, custody) = decode_selection(version, work)?;
+        let layer = context.effective_tool_layer(path, Some((file.volume(), file.path())), io)?;
+        context.authorize_tool_path_read(&layer, io)?;
+        return Ok((file, custody));
+    }
     let (volume, relative) = context.tool_path_selection(path, io)?;
     let (file, custody) = decode_version(&relative, version, work)?;
     if file.volume() != volume {

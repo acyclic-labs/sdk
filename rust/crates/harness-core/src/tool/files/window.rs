@@ -25,18 +25,12 @@ impl Window {
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
+        original: Option<(super::version::SelectedVersion, crate::NativeCustody)>,
         range: acyclic_fs::ByteRange,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         let source_hold;
-        let original = input
-            .version
-            .as_deref()
-            .map(|version| {
-                super::version::decode_tool_version(Some(context), &input.path, version, work)
-            })
-            .transpose()?;
         let original = match original {
             Some((super::version::SelectedVersion::Content(file), hold)) => {
                 source_hold = hold;

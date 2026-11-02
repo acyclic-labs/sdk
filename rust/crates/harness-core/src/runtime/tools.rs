@@ -994,17 +994,21 @@ impl ToolContext {
     /// The layer path a read of `path` selects. A path under
     /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
     /// over the seed (`sys/` only from the seed), so the read returns that
-    /// layer's own pinned file; other paths are returned unchanged. A home
+    /// layer's own pinned file and its original custody; other paths are returned unchanged. A home
     /// file holding only `off: true` hides the seed's. A composed settings
     /// file reads as its highest module; its value is the evaluated fold.
     pub(crate) async fn effective_tool_path<'a>(
         &self,
         path: &'a str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<std::borrow::Cow<'a, str>> {
+    ) -> Result<(
+        std::borrow::Cow<'a, str>,
+        Option<crate::conversation::FilePathSelection>,
+        crate::NativeCustody,
+    )> {
         use crate::layers::{WHY_SUFFIX, is_off, layered};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
-            return Ok(std::borrow::Cow::Borrowed(path));
+            return Ok((std::borrow::Cow::Borrowed(path), None, None));
         };
         let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
         if relative.ends_with(WHY_SUFFIX) {
@@ -1013,38 +1017,95 @@ impl ToolContext {
             ))
             .tool_input());
         }
-        let seed = format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
+        let seed = || {
+            crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{SEED_PATH}{relative}"), history)
+            })
+        };
         if !layered(relative) {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed()?.into(), None, None))
             } else {
                 Err(missing())
             };
         }
-        let home = format!("{HOME_PATH}{relative}");
+        let home = crate::executor::with_history_io(io, |history| {
+            crate::executor::preparation_format(format_args!("{HOME_PATH}{relative}"), history)
+        })?;
         // An `off` marker is a few bytes; a longer file is never one.
         let probe = acyclic_fs::ByteRange {
             offset: 0,
             length: 32,
         };
         let held = |result: Result<_>| match result {
-            Ok((selected, bytes, _)) => Ok(Some((selected, bytes))),
+            Ok(read) => Ok(Some(read)),
             Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         };
+        let hold;
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let Some((selected, bytes)) = mine else {
+        let Some((selected, bytes, retained)) = mine else {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed()?.into(), None, None))
             } else {
                 Err(missing())
             };
         };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            hold = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        {
+            let _ = retained;
+            hold = None;
+        }
         if selected.byte_length <= probe.length && is_off(&bytes) {
             return Err(missing());
         }
-        Ok(home.into())
+        Ok((home.into(), Some(selected), hold))
+    }
+
+    /// Maps an original effective-file selection back to its mounted layer.
+    /// The token selects a cut; ordinary read grants still authorize it.
+    pub(crate) fn effective_tool_layer<'a>(
+        &self,
+        path: &'a str,
+        source: Option<(&VolumeRef, &str)>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<std::borrow::Cow<'a, str>> {
+        let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
+            return Ok(path.into());
+        };
+        if relative.ends_with(crate::layers::WHY_SUFFIX) {
+            return Err(
+                Error::Unsupported("derived provenance requires its module reader".into())
+                    .tool_input(),
+            );
+        }
+        let prefixes = if crate::layers::layered(relative) {
+            &[HOME_PATH, SEED_PATH][..]
+        } else {
+            &[SEED_PATH][..]
+        };
+        for prefix in prefixes {
+            if *prefix == SEED_PATH && self.task().harness.seed.is_none() {
+                continue;
+            }
+            let layer = crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
+            })?;
+            let (volume, selected) = self.tool_path_selection(&layer, io)?;
+            if source.is_none_or(|(original, original_path)| {
+                original == volume && original_path == selected
+            }) {
+                return Ok(layer.into());
+            }
+        }
+        Err(Error::tool_rejected(
+            "file version belongs to another effective path or layer",
+        ))
     }
 
     /// Checks original directory authority for the selected mounted path.

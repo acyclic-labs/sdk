@@ -1,6 +1,191 @@
 use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn effective_reads_retain_the_original_layer_and_generation() -> Result<()> {
+    use crate::{
+        conversation::VolumeOperation,
+        runtime::{Bindings, TaskContext},
+    };
+
+    async fn read_at(task: Arc<TaskContext>, arguments: Value) -> Result<ReadFileResult> {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "layer-read".into(),
+            name: "read".into(),
+            arguments,
+        };
+        let context = ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+        let result = read()?.executor.execute(invocation, Some(context)).await?;
+        serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
+    }
+
+    let seed = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let home = crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65536).await?;
+    let mut grants = vec!["tool:call:read".into()];
+    for storage in [&seed, &home] {
+        grants.push(
+            storage
+                .volume()
+                .capability(VolumeOperation::Read, &mut None)?,
+        );
+    }
+    let task = Arc::new(
+        Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new(grants),
+                Limits {
+                    file_bytes: 65536,
+                    render_bytes: 4096,
+                    ..Limits::default()
+                },
+            )?,
+            content: Some(seed.content_bindings()),
+            artifacts: Some(home.content_bindings()),
+            seed: Some(seed.volume().clone()),
+            ..Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), home.content_bindings())?,
+    );
+
+    seed.stage(
+        OperationId::new(),
+        "shared.md",
+        b"seed\n",
+        "text/plain",
+        "shared.md",
+    )
+    .await?;
+    home.stage(
+        OperationId::new(),
+        "mine.md",
+        b"first\nsecond\n",
+        "text/plain",
+        "mine.md",
+    )
+    .await?;
+    let effective = ".volumes/effective/mine.md";
+    let original = read_at(task.clone(), json!({"path": effective})).await?;
+    assert_eq!(original.text, "first\nsecond\n");
+    let version = super::version::encode_source(&original.file, None)?.0;
+    home.stage(
+        OperationId::new(),
+        "mine.md",
+        b"off: true",
+        "text/plain",
+        "mine.md",
+    )
+    .await?;
+    assert_eq!(
+        read_at(task.clone(), json!({"path":effective}))
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::NotFound
+    );
+    // A resumed byte or line projection must not re-resolve today's off marker.
+    for selection in [
+        json!({"kind":"text"}),
+        json!({"kind":"lines","offset":1,"limit":1}),
+    ] {
+        let result = read_at(
+            task.clone(),
+            json!({"path":effective,"version":version,"selection":selection}),
+        )
+        .await?;
+        assert_eq!(result.file, original.file);
+        assert_eq!(
+            result.text,
+            if selection["kind"] == "lines" {
+                "second\n"
+            } else {
+                "first\nsecond\n"
+            }
+        );
+    }
+
+    let shared = ".volumes/effective/shared.md";
+    let original_seed = read_at(task.clone(), json!({"path":shared})).await?;
+    assert_eq!(original_seed.text, "seed\n");
+    let seed_version = super::version::encode_source(&original_seed.file, None)?.0;
+    home.stage(
+        OperationId::new(),
+        "shared.md",
+        b"home\n",
+        "text/plain",
+        "shared.md",
+    )
+    .await?;
+    assert_eq!(
+        read_at(task.clone(), json!({"path":shared})).await?.text,
+        "home\n"
+    );
+    let retained = read_at(task.clone(), json!({"path":shared,"version":seed_version})).await?;
+    assert_eq!(retained, original_seed);
+    assert!(
+        read_at(task.clone(), json!({"path":shared,"version":version}))
+            .await
+            .is_err()
+    );
+    let denied =
+        Arc::new(task.scoped(Capabilities::new(["tool:call:read"]), task.scope().limits())?);
+    assert_eq!(
+        read_at(denied, json!({"path":effective,"version":version}))
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+
+    // The first projection also keeps the probe's cut when home advances before it reads.
+    let context = ToolContext::new(task, OperationId::new(), "retained-probe")?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(100_000, 16_000_000),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    let (layer, selected, hold) = context.effective_tool_path(shared, Some(&io)).await?;
+    let selected = selected.expect("home supplied the original selection");
+    home.stage(
+        OperationId::new(),
+        "shared.md",
+        b"later\n",
+        "text/plain",
+        "shared.md",
+    )
+    .await?;
+    let input = ReadFileInput {
+        path: layer.into_owned(),
+        version: None,
+        range: None,
+        selection: None,
+    };
+    let window = super::window::Window::first(
+        &context,
+        &input,
+        Some((
+            super::version::SelectedVersion::Authored(crate::conversation::PathSelection {
+                volume: selected.volume,
+                path: selected.path,
+                generation: selected.generation,
+            }),
+            hold,
+        )),
+        acyclic_fs::ByteRange {
+            offset: 0,
+            length: 32,
+        },
+        Some(&work),
+        Some(&io),
+    )
+    .await?;
+    assert_eq!(&*window.bytes, b"home\n");
+    Ok(())
+}
+
 #[test]
 fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let file = crate::tool::tests::file(b"exact")?;

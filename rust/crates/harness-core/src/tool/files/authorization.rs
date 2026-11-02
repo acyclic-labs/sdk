@@ -259,6 +259,13 @@ impl FileTool {
                 "file path exceeds original task bound",
             ));
         }
+        if version.is_none() && path.starts_with(crate::layers::EFFECTIVE_PATH) {
+            let context = context.ok_or_else(|| {
+                super::executor::rejection(work, "effective read requires its admitted context")
+            })?;
+            let layer = context.effective_tool_layer(path, None, io)?;
+            context.authorize_tool_path_read(&layer, io)?;
+        }
         version.map_or(Ok((None, None)), |version| {
             let (file, custody) =
                 super::version::decode_tool_version(context, path, version, work)?;
