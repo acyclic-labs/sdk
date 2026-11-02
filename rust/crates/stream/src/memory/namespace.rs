@@ -3,6 +3,7 @@
 struct NamespaceReserve {
     nodes: Vec<Arc<NamespaceNode>>,
     branches: Vec<Arc<Branch>>,
+    frames: Vec<NamespaceFrame>,
     _allocation: Allocation,
 }
 struct NamespaceBuilder<'a> {
@@ -15,6 +16,32 @@ impl<'a> NamespaceBuilder<'a> {
             allocate,
             reserve: None,
         }
+    }
+    fn with_frames<T>(
+        &mut self,
+        depth: usize,
+        operation: impl FnOnce(&mut Self, &mut Vec<NamespaceFrame>) -> Result<T, StreamError>,
+    ) -> Result<T, StreamError> {
+        let (mut frames, _allocation) = if let Some(pool) = &mut self.reserve {
+            if pool.frames.capacity() < depth {
+                return Err(StreamError::Capacity);
+            }
+            (std::mem::take(&mut pool.frames), None)
+        } else {
+            let allocation =
+                (self.allocate)(depth.saturating_mul(std::mem::size_of::<NamespaceFrame>()))?;
+            let mut frames = Vec::new();
+            frames
+                .try_reserve_exact(depth)
+                .map_err(|_| StreamError::Capacity)?;
+            (frames, allocation)
+        };
+        let result = operation(self, &mut frames);
+        frames.clear();
+        if let Some(pool) = &mut self.reserve {
+            pool.frames = frames;
+        }
+        result
     }
     fn node(
         &mut self,
@@ -30,9 +57,7 @@ impl<'a> NamespaceBuilder<'a> {
             slot.origin = origin;
             Ok(node)
         } else {
-            let allocation = (self.allocate)(
-                std::mem::size_of::<NamespaceNode>() + 2 * std::mem::size_of::<usize>(),
-            )?;
+            let allocation = (self.allocate)(namespace_owned_bytes::<NamespaceNode>())?;
             Ok(Arc::new(NamespaceNode {
                 data,
                 children,
@@ -59,7 +84,9 @@ impl MemoryStream {
             high = next;
         }
         let depth = path.as_str().split('/').count();
-        let (mut nodes, mut allocation) = self.vector(depth)?;
+        let (frames, mut allocation) = self.vector(depth)?;
+        let (mut nodes, claim) = self.vector(depth)?;
+        self.absorb(&mut allocation, claim)?;
         let (mut branches, claim) = self.vector(depth.saturating_mul(height))?;
         self.absorb(&mut allocation, claim)?;
         let claim = |bytes| self.allocate(bytes);
@@ -87,6 +114,7 @@ impl MemoryStream {
         Ok(NamespaceReserve {
             nodes,
             branches,
+            frames,
             _allocation: allocation,
         })
     }
@@ -118,19 +146,92 @@ struct NamespaceNode {
     origin: Option<ForkMarker>,
     _allocation: Allocation,
 }
+// Each owner prepays the geometric work-buffer capacity for its outgoing
+// edges and retained funding. Charges stay in the buffer until it is freed,
+// including after the original node allocation has been released.
+fn namespace_owned_bytes<T>() -> usize {
+    std::mem::size_of::<T>()
+        + 2 * std::mem::size_of::<usize>()
+        + 8 * std::mem::size_of::<NamespaceRetirement>()
+}
+enum NamespaceRetirement {
+    Node(Arc<NamespaceNode>),
+    Branch(Arc<Branch>),
+    Funding { _allocation: Allocation },
+}
+fn retire_namespace(initial: [Option<NamespaceRetirement>; 3], allocation: &mut Allocation) {
+    fn retire(item: NamespaceRetirement, work: &mut Vec<NamespaceRetirement>) -> Allocation {
+        match item {
+            NamespaceRetirement::Node(node) => {
+                if let Some(mut node) = Arc::into_inner(node) {
+                    let allocation = node._allocation.take();
+                    node.retire_edges(work);
+                    return allocation;
+                }
+            }
+            NamespaceRetirement::Branch(edge) => {
+                if let Some(mut edge) = Arc::into_inner(edge) {
+                    let allocation = edge._allocation.take();
+                    edge.retire_edges(work);
+                    return allocation;
+                }
+            }
+            NamespaceRetirement::Funding { _allocation } => return _allocation,
+        }
+        None
+    }
+    // Releasing only shared edges needs no scratch allocation. into_inner,
+    // rather than a uniqueness probe, also handles racing last owners.
+    let mut work = Vec::new();
+    for item in initial.into_iter().flatten() {
+        let funding = retire(item, &mut work);
+        if funding.is_some() {
+            work.push(NamespaceRetirement::Funding {
+                _allocation: funding,
+            });
+        }
+    }
+    if work.is_empty() {
+        return;
+    }
+    work.push(NamespaceRetirement::Funding {
+        _allocation: allocation.take(),
+    });
+    let mut cursor = 0;
+    while cursor < work.len() {
+        let item = std::mem::replace(
+            &mut work[cursor],
+            NamespaceRetirement::Funding { _allocation: None },
+        );
+        work[cursor] = NamespaceRetirement::Funding {
+            _allocation: retire(item, &mut work),
+        };
+        cursor += 1;
+    }
+}
+impl NamespaceNode {
+    fn retire_edges(&mut self, work: &mut Vec<NamespaceRetirement>) {
+        if let Some(children) = self.children.take() {
+            work.push(NamespaceRetirement::Branch(children));
+        }
+        if let Some(origin) = self.origin.take() {
+            work.push(NamespaceRetirement::Node(origin.snapshot));
+        }
+    }
+}
 impl Drop for NamespaceNode {
     fn drop(&mut self) {
-        // Fork snapshots chain through earlier destinations without bound.
-        // into_inner keeps concurrent last-owner retirement iterative too:
-        // a losing claim never implicitly drops the node. Children stay
-        // bounded by path depth.
-        let mut cursor = self.origin.take().map(|origin| origin.snapshot);
-        while let Some(node) = cursor {
-            let Some(mut node) = Arc::into_inner(node) else {
-                break;
-            };
-            cursor = node.origin.take().map(|origin| origin.snapshot);
+        if self.children.is_none() && self.origin.is_none() {
+            return;
         }
+        let initial = [
+            self.children.take().map(NamespaceRetirement::Branch),
+            self.origin
+                .take()
+                .map(|origin| NamespaceRetirement::Node(origin.snapshot)),
+            None,
+        ];
+        retire_namespace(initial, &mut self._allocation);
     }
 }
 #[derive(Clone)]
@@ -145,7 +246,7 @@ struct ForkMarker {
 }
 struct Branch {
     name: Segment,
-    node: Arc<NamespaceNode>,
+    node: Option<Arc<NamespaceNode>>,
     left: Index,
     right: Index,
     height: u8,
@@ -153,6 +254,40 @@ struct Branch {
     bytes: usize,
     depth: usize,
     _allocation: Allocation,
+}
+impl Branch {
+    fn node(&self) -> &Arc<NamespaceNode> {
+        self.node.as_ref().expect("published namespace edge")
+    }
+    fn retire_edges(&mut self, work: &mut Vec<NamespaceRetirement>) {
+        if let Some(node) = self.node.take() {
+            work.push(NamespaceRetirement::Node(node));
+        }
+        if let Some(left) = self.left.take() {
+            work.push(NamespaceRetirement::Branch(left));
+        }
+        if let Some(right) = self.right.take() {
+            work.push(NamespaceRetirement::Branch(right));
+        }
+    }
+}
+impl Drop for Branch {
+    fn drop(&mut self) {
+        if self.node.is_none() && self.left.is_none() && self.right.is_none() {
+            return;
+        }
+        let initial = [
+            self.node.take().map(NamespaceRetirement::Node),
+            self.left.take().map(NamespaceRetirement::Branch),
+            self.right.take().map(NamespaceRetirement::Branch),
+        ];
+        retire_namespace(initial, &mut self._allocation);
+    }
+}
+struct NamespaceFrame {
+    index: Index,
+    name: Segment,
+    parent: Option<Arc<NamespaceNode>>,
 }
 #[derive(Clone, Default)]
 struct Namespace {
@@ -200,11 +335,11 @@ fn branch(
             ._allocation
             .take()
     } else {
-        (build.allocate)(std::mem::size_of::<Branch>() + 2 * std::mem::size_of::<usize>())?
+        (build.allocate)(namespace_owned_bytes::<Branch>())?
     };
     let value = Branch {
         name,
-        node,
+        node: Some(node),
         height: 1 + height(&left).max(height(&right)),
         left,
         right,
@@ -233,7 +368,7 @@ fn balance(
             let r = branch(name, node, l.right.clone(), right, build)?;
             return branch(
                 l.name.clone(),
-                l.node.clone(),
+                l.node().clone(),
                 l.left.clone(),
                 Some(r),
                 build,
@@ -242,7 +377,7 @@ fn balance(
         let middle = l.right.as_ref().ok_or(StreamError::Unavailable)?;
         let l2 = branch(
             l.name.clone(),
-            l.node.clone(),
+            l.node().clone(),
             l.left.clone(),
             middle.left.clone(),
             build,
@@ -250,7 +385,7 @@ fn balance(
         let r2 = branch(name, node, middle.right.clone(), right, build)?;
         return branch(
             middle.name.clone(),
-            middle.node.clone(),
+            middle.node().clone(),
             Some(l2),
             Some(r2),
             build,
@@ -262,7 +397,7 @@ fn balance(
             let l = branch(name, node, left, r.left.clone(), build)?;
             return branch(
                 r.name.clone(),
-                r.node.clone(),
+                r.node().clone(),
                 Some(l),
                 r.right.clone(),
                 build,
@@ -272,14 +407,14 @@ fn balance(
         let l2 = branch(name, node, left, middle.left.clone(), build)?;
         let r2 = branch(
             r.name.clone(),
-            r.node.clone(),
+            r.node().clone(),
             middle.right.clone(),
             r.right.clone(),
             build,
         )?;
         return branch(
             middle.name.clone(),
-            middle.node.clone(),
+            middle.node().clone(),
             Some(l2),
             Some(r2),
             build,
@@ -302,7 +437,7 @@ fn lookup<'a>(mut index: &'a Index, name: &str) -> Option<&'a Arc<NamespaceNode>
         match name.cmp(n.name.text.as_str()) {
             std::cmp::Ordering::Less => index = &n.left,
             std::cmp::Ordering::Greater => index = &n.right,
-            std::cmp::Ordering::Equal => return Some(&n.node),
+            std::cmp::Ordering::Equal => return Some(n.node()),
         }
     }
     None
@@ -334,14 +469,14 @@ fn index_put(
                 successor = next;
             }
             let name = successor.name.clone();
-            let node = successor.node.clone();
+            let node = successor.node().clone();
             right = index_put(&right, name.clone(), None, build)?;
             return balance(name, node, left, right, build).map(Some);
         }
     }
     balance(
         current.name.clone(),
-        current.node.clone(),
+        current.node().clone(),
         left,
         right,
         build,
@@ -375,27 +510,42 @@ impl Namespace {
         node: Arc<NamespaceNode>,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
-        fn put(
-            index: &Index,
-            mut parts: std::str::Split<'_, char>,
-            node: Arc<NamespaceNode>,
-            build: &mut NamespaceBuilder<'_>,
-        ) -> Result<Index, StreamError> {
-            let name = parts.next().ok_or(StreamError::InvalidArgument)?;
-            let existing = lookup(index, name);
-            let next = if parts.clone().next().is_none() {
-                node
-            } else {
-                let parent = existing.ok_or(StreamError::Unavailable)?;
-                let children = put(&parent.children, parts, node, build)?;
-                build.node(parent.data.clone(), children, parent.origin.clone())?
-            };
-            // Share existing segment text; charge a fresh segment with its edge.
-            let name = segment(index, name).map_or_else(|| SegmentText::new(name, build), Ok)?;
-            index_put(index, name, Some(next), build)
-        }
-        self.roots = put(&self.roots, path.as_str().split('/'), node, build)?;
-        Ok(())
+        build.with_frames(path.as_str().split('/').count(), |build, frames| {
+            let mut index = &self.roots;
+            let mut parts = path.as_str().split('/').peekable();
+            while let Some(text) = parts.next() {
+                let name =
+                    segment(index, text).map_or_else(|| SegmentText::new(text, build), Ok)?;
+                let parent = if parts.peek().is_some() {
+                    Some(lookup(index, text).ok_or(StreamError::Unavailable)?.clone())
+                } else {
+                    None
+                };
+                frames.push(NamespaceFrame {
+                    index: index.clone(),
+                    name,
+                    parent,
+                });
+                if parts.peek().is_some() {
+                    index = &lookup(index, text)
+                        .ok_or(StreamError::Unavailable)?
+                        .children;
+                }
+            }
+            let mut next = node;
+            let mut root = None;
+            while let Some(frame) = frames.pop() {
+                root = index_put(&frame.index, frame.name, Some(next), build)?;
+                if let Some(frame) = frames.last() {
+                    let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
+                    next = build.node(parent.data.clone(), root.take(), parent.origin.clone())?;
+                } else {
+                    break;
+                }
+            }
+            self.roots = root;
+            Ok(())
+        })
     }
     #[cfg(test)]
     fn insert(&mut self, path: &StreamPath, data: PathState) {
@@ -420,50 +570,48 @@ impl Namespace {
         excludes: &[crate::RelativePath],
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<Arc<NamespaceNode>, StreamError> {
-        fn remove(
-            node: &Arc<NamespaceNode>,
-            mut parts: std::str::Split<'_, char>,
-            build: &mut NamespaceBuilder<'_>,
-        ) -> Result<Arc<NamespaceNode>, StreamError> {
-            let name = parts.next().ok_or(StreamError::InvalidArgument)?;
-            let Some(child) = lookup(&node.children, name) else {
-                return Ok(node.clone());
-            };
-            let child = if parts.clone().next().is_none() {
-                None
-            } else {
-                Some(remove(child, parts, build)?)
-            };
-            let children = index_put(
-                &node.children,
-                segment(&node.children, name).ok_or(StreamError::Unavailable)?,
-                child,
-                build,
-            )?;
-            build.node(node.data.clone(), children, node.origin.clone())
-        }
-        let mut node = node.clone();
+        let mut result = node.clone();
         for exclude in excludes {
-            node = remove(&node, exclude.as_str().split('/'), build)?;
+            result = build.with_frames(exclude.as_str().split('/').count(), |build, frames| {
+                let mut cursor = &result;
+                for text in exclude.as_str().split('/') {
+                    let Some(child) = lookup(&cursor.children, text) else {
+                        return Ok(result.clone());
+                    };
+                    frames.push(NamespaceFrame {
+                        index: cursor.children.clone(),
+                        name: segment(&cursor.children, text).ok_or(StreamError::Unavailable)?,
+                        parent: Some(cursor.clone()),
+                    });
+                    cursor = child;
+                }
+                let mut child = None;
+                while let Some(frame) = frames.pop() {
+                    let children = index_put(&frame.index, frame.name, child, build)?;
+                    let parent = frame.parent.ok_or(StreamError::Unavailable)?;
+                    child =
+                        Some(build.node(parent.data.clone(), children, parent.origin.clone())?);
+                }
+                child.ok_or(StreamError::InvalidArgument)
+            })?;
         }
-        Ok(node)
+        Ok(result)
     }
     fn entries(&self) -> Vec<(String, &PathState)> {
-        fn walk<'a>(prefix: &str, index: &'a Index, out: &mut Vec<(String, &'a PathState)>) {
-            if let Some(edge) = index {
-                walk(prefix, &edge.left, out);
-                let name = if prefix.is_empty() {
-                    edge.name.text.to_string()
-                } else {
-                    format!("{prefix}/{}", edge.name.text)
-                };
-                out.push((name.clone(), &edge.node.data));
-                walk(&name, &edge.node.children, out);
-                walk(prefix, &edge.right, out);
-            }
-        }
         let mut out = Vec::with_capacity(self.len());
-        walk("", &self.roots, &mut out);
+        let mut pending = vec![(String::new(), &self.roots)];
+        while let Some((prefix, index)) = pending.pop() {
+            let Some(edge) = index else { continue };
+            let name = if prefix.is_empty() {
+                edge.name.text.to_string()
+            } else {
+                format!("{prefix}/{}", edge.name.text)
+            };
+            out.push((name.clone(), &edge.node().data));
+            pending.push((prefix.clone(), &edge.right));
+            pending.push((name, &edge.node().children));
+            pending.push((prefix, &edge.left));
+        }
         out.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
         out
     }

@@ -376,8 +376,8 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                         idempotency_key: IdempotencyKey::new(b"chain-seed".as_slice())?,
                     })
                     .await?;
-                for index in 1..20_000 {
-                    let destination = StreamPath::new(format!("c{index:05}"))?;
+                for index in 1..4096 {
+                    let destination = StreamPath::new(format!("c{index:05}/a"))?;
                     provider
                         .fork(ForkRequest {
                             exclude: Vec::new(),
@@ -389,8 +389,21 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                             )?,
                         })
                         .await?;
-                    source = destination;
+                    source = StreamPath::new(format!("c{index:05}"))?;
                 }
+                // Each real fork adds a nested segment by sharing its source.
+                // Mutating the deepest inherited leaf exercises the same
+                // publication path as an ordinary append, on this small stack.
+                let deepest = StreamPath::new(format!("{}{}", source.as_str(), "/a".repeat(4095)))?;
+                provider
+                    .append(AppendRequest {
+                        path: deepest.clone(),
+                        records: vec![Bytes::from_static(b"deep").into()],
+                        if_tail: Some(1),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                assert_eq!(provider.tail(deepest.clone()).await?, 2);
                 let (latest, previous) = {
                     let state = provider.state.read().await;
                     (
@@ -401,7 +414,7 @@ fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::E
                             .ok_or(StreamError::Unavailable)?,
                         state
                             .paths
-                            .node("c19998")
+                            .node("c04094")
                             .cloned()
                             .ok_or(StreamError::Unavailable)?,
                     )
