@@ -229,7 +229,7 @@ impl Store {
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
         private_file::validate_destination(&self.path)?;
-        let bytes = private_file::read(&self.path, u64::MAX - 1).map_err(|error| {
+        let bytes = private_file::read(&self.path, None).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 Error::new("login_required", "run acyclic-plugin login first")
             } else {
@@ -256,7 +256,7 @@ impl Store {
             return Ok(None);
         }
         private_file::validate_destination(&self.path)?;
-        let bytes = private_file::read(&self.path, u64::MAX - 1)?;
+        let bytes = private_file::read(&self.path, None)?;
         let value: Value = serde_json::from_slice(&bytes.0).map_err(|_| {
             Error::new(
                 "credential_error",
@@ -374,7 +374,7 @@ impl Store {
         private_file::validate_destination(&self.path)?;
         if self.path.exists() {
             let mut credentials: Credentials =
-                serde_json::from_slice(&private_file::read(&self.path, u64::MAX - 1)?.0)
+                serde_json::from_slice(&private_file::read(&self.path, None)?.0)
                     .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
             if credentials.agent.is_some() {
                 credentials.session = None;

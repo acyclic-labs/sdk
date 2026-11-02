@@ -509,9 +509,13 @@ pub fn validate_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Read a bounded complete private record into secret storage. Metered hosts use
+/// Read a complete private record with an optional caller-selected byte policy.
+/// Metered hosts use
 /// `read_with` to admit the allocation to their own ledger before allocating it.
-pub fn read(path: &Path, maximum: u64) -> io::Result<crate::owner_record::SecretBytes> {
+pub fn read(
+    path: &Path,
+    maximum: impl Into<Option<u64>>,
+) -> io::Result<crate::owner_record::SecretBytes> {
     use std::io::Read as _;
     read_with(path, maximum, |file, length| {
         let mut bytes = crate::owner_record::SecretBytes(Vec::new());
