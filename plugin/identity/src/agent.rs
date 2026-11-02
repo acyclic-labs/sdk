@@ -9,6 +9,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use zeroize::Zeroizing;
 
 // Blocking workers outlive the future awaiting them.
 struct ProofCancellation(Arc<AtomicBool>);
@@ -58,13 +59,18 @@ impl Agent {
         let private_key = match self {
             Self::Pending { private_key } | Self::Active { private_key, .. } => private_key,
         };
-        let bytes = URL_SAFE_NO_PAD
-            .decode(private_key)
-            .map_err(|_| Error::new("credential_error", "invalid agent private key"))?;
-        let key = Ed25519KeyPair::from_pkcs8(&bytes)
-            .map_err(|_| Error::new("credential_error", "invalid agent private key"))?;
+        let key = signing_key(private_key)?;
         Ok(URL_SAFE_NO_PAD.encode(key.sign(message.as_bytes()).as_ref()))
     }
+}
+
+fn signing_key(private_key: &str) -> Result<Ed25519KeyPair, Error> {
+    let invalid_key = || Error::new("credential_error", "invalid agent private key");
+    let mut bytes = Zeroizing::new(Vec::new());
+    URL_SAFE_NO_PAD
+        .decode_vec(private_key, &mut bytes)
+        .map_err(|_| invalid_key())?;
+    Ed25519KeyPair::from_pkcs8(&bytes).map_err(|_| invalid_key())
 }
 
 #[derive(Deserialize)]
@@ -128,13 +134,7 @@ impl Identity {
 
     pub(super) async fn signup(&self, store: &Arc<Store>) -> Result<Value, Error> {
         let existing = store
-            .at_endpoint(&self.endpoint, |store, endpoint| {
-                if store.path.exists() {
-                    store.credentials(endpoint).map(Some)
-                } else {
-                    Ok(None)
-                }
-            })
+            .at_endpoint(&self.endpoint, Store::optional_credentials)
             .await?;
         let (private_key, session) = if let Some(credentials) = existing {
             match credentials.agent {
@@ -151,11 +151,7 @@ impl Identity {
                 .map_err(|_| Error::new("key_error", "cannot generate agent key"))?;
             (URL_SAFE_NO_PAD.encode(document.as_ref()), None)
         };
-        let bytes = URL_SAFE_NO_PAD
-            .decode(&private_key)
-            .map_err(|_| Error::new("credential_error", "invalid agent private key"))?;
-        let key = Ed25519KeyPair::from_pkcs8(&bytes)
-            .map_err(|_| Error::new("credential_error", "invalid agent private key"))?;
+        let key = signing_key(&private_key)?;
         let challenge = self.agent_challenge().await?;
         let public_key = URL_SAFE_NO_PAD.encode(key.public_key().as_ref());
         let cancellation = ProofCancellation(Arc::new(AtomicBool::new(false)));
@@ -290,6 +286,37 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_signing_authenticates_messages_and_refuses_invalid_private_keys() -> Result<(), Error>
+    {
+        let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+            .map_err(|_| Error::new("key_error", "cannot generate agent key"))?;
+        let private_key = URL_SAFE_NO_PAD.encode(document.as_ref());
+        let key = signing_key(&private_key)?;
+        let agent = Agent::Pending { private_key };
+        let signature = URL_SAFE_NO_PAD
+            .decode(agent.sign("original message")?)
+            .map_err(|_| Error::new("signature_error", "invalid signature encoding"))?;
+        let verifier = ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            key.public_key().as_ref(),
+        );
+        assert!(verifier.verify(b"original message", &signature).is_ok());
+        assert!(verifier.verify(b"changed message", &signature).is_err());
+        for private_key in [
+            "".to_owned(),
+            URL_SAFE_NO_PAD.encode(b"invalid PKCS8"),
+            format!("{}!", URL_SAFE_NO_PAD.encode(document.as_ref())),
+        ] {
+            assert!(
+                Agent::Pending { private_key }
+                    .sign("original message")
+                    .is_err_and(|error| error.code == "credential_error")
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn proof_uses_server_sha256_format_and_most_significant_bits() {

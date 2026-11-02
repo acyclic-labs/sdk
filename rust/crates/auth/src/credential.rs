@@ -291,9 +291,43 @@ pub fn capability_text(capability: &[u8]) -> String {
 /// [`CredentialError::Invalid`] for anything else.
 pub fn capability_from_text(text: &str) -> Result<Vec<u8>, CredentialError> {
     use base64::Engine as _;
+    let mut decoded = Zeroizing::new(Vec::new());
     base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .map_err(|_| CredentialError::Invalid)
+        .decode_vec(text, &mut decoded)
+        .map_err(|_| CredentialError::Invalid)?;
+    Ok(std::mem::take(&mut *decoded))
+}
+
+/// Serde adapter for capability bytes using the same text form as
+/// [`capability_text`]. Use `#[serde(with = "acyclic_auth::credential::capability_serde")]`
+/// on an owned byte field. The protobuf carrier remains bytes.
+///
+/// Serialization writes directly into the original serializer. Deserialization
+/// protects temporary text and partially decoded bytes on failure; the resulting
+/// bytes retain the field owner's custody. Decoding authenticates nothing: the
+/// original verifier must still admit the capability before use.
+pub mod capability_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize capability bytes without a temporary encoded string.
+    ///
+    /// # Errors
+    /// The serializer's typed error if its original sink refuses the text.
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&base64::display::Base64Display::new(
+            bytes,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ))
+    }
+
+    /// Decode only canonical unpadded base64url, preserving failure cleanup.
+    ///
+    /// # Errors
+    /// The deserializer's typed error for a non-string or invalid capability text.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let encoded = super::Zeroizing::new(String::deserialize(deserializer)?);
+        super::capability_from_text(&encoded).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Encode bearer metadata in one exactly sized buffer. This does not admit a

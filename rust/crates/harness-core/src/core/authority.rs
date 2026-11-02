@@ -118,7 +118,7 @@ pub struct Scope {
     pub(in crate::core) proof: Box<[u8; 32]>,
     /// Ed25519 workload chain with a restricted append tip or a public seal.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    #[serde(with = "super::capability_bytes")]
+    #[serde(with = "acyclic_auth::credential::capability_serde")]
     #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
     pub(in crate::core) workload: Vec<u8>,
 }

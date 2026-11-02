@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod authority;
-mod capability_bytes;
 mod copying;
 #[cfg(test)]
 mod element_sizes;

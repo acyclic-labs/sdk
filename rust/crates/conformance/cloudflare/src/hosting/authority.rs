@@ -70,14 +70,11 @@ fn authenticate(
     scope: &Scope,
     root: &AuthorityRoot,
 ) -> Result<acyclic_auth::verify::VerifiedCapability, JsValue> {
-    use base64::Engine as _;
     let value = serde_json::to_value(scope).map_err(error)?;
     let encoded = value["workload"]
         .as_str()
         .ok_or_else(|| error("missing workload"))?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(error)?;
+    let bytes = acyclic_auth::credential::capability_from_text(encoded).map_err(error)?;
     use acyclic_stream::UnixMillisClock as _;
     acyclic_auth::verify::verify(
         &bytes,
