@@ -414,7 +414,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                                 .link_count
                                 .checked_add(1)
                                 .ok_or(WorkspaceError::JoinLimit)?;
-                            selected.add_binding(id, &entry.name, limits, accounting)?;
+                            selected.add_binding(id, &entry.name, accounting)?;
                             continue;
                         }
                         let original = self
@@ -433,7 +433,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             |work| original.select_bindings_with_accounting(work),
                         )?;
                         selected.record.link_count = 1;
-                        selected.add_binding(id, &entry.name, limits, accounting)?;
+                        selected.add_binding(id, &entry.name, accounting)?;
                         record_count += 1;
                         if original.kind == FileKind::Directory {
                             selection_push(&mut pending, entry.file_id, accounting)?;
