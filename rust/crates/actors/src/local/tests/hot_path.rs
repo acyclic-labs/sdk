@@ -50,6 +50,18 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     resident_work().await?;
     borrowed_read_guards().await?;
     observation_work().await?;
+    alarm_replacement().await?;
+    alarm_publication_wakes().await?;
+    futures::try_join!(
+        publication_and_reopen(),
+        physical_loss(0),
+        physical_loss(1),
+        physical_loss(2)
+    )?;
+    Ok(())
+}
+
+async fn publication_and_reopen() -> TestResult {
     let directory = tempfile::tempdir()?;
     let address = actor("hot-path")?;
     {
@@ -283,9 +295,6 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         binding.read_journal(0, 1).await?.first().map(AsRef::as_ref),
         Some(b"journal".as_slice())
     );
-    alarm_replacement().await?;
-    alarm_publication_wakes().await?;
-    futures::try_join!(physical_loss(0), physical_loss(1), physical_loss(2))?;
     Ok(())
 }
 
