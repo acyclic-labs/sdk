@@ -120,7 +120,7 @@ test("queued body failure preserves the original response cause", async () => {
 });
 
 test("response failure survives a throwing close callback", async () => {
-  for (const boundary of ["body", "consumer", "terminal", "pre-abort", "abort", "null-abort"]) {
+  for (const boundary of ["body", "consumer", "terminal", "pre-abort", "abort", "null-abort", "locked"]) {
     const terminal = Promise.withResolvers();
     const signal = new AbortController();
     const failure = boundary === "null-abort" ? null : new Error(`${boundary} producer failed`);
@@ -130,6 +130,7 @@ test("response failure survives a throwing close callback", async () => {
       start(source) { controller = source; },
       cancel(cause) { cancellation = cause; },
     });
+    const originalReader = boundary === "locked" ? body.getReader() : undefined;
     if (boundary === "pre-abort") signal.abort(failure);
     let response;
     assert.doesNotThrow(() => {
@@ -139,17 +140,20 @@ test("response failure survives a throwing close callback", async () => {
       },signal.signal);
     });
     const frames = response.frames[Symbol.asyncIterator]();
-    const sameCause = cause => cause === failure;
+    const sameCause = boundary === "locked"
+      ? cause => cause instanceof TypeError && cause.code === "ERR_INVALID_STATE"
+      : cause => cause === failure;
     const pending = assert.rejects(frames.next(),sameCause);
     let thrown;
     if (boundary === "body") controller.error(failure);
     else if (boundary === "terminal") terminal.reject(failure);
     else if (boundary === "consumer") thrown = assert.rejects(frames.throw(failure),sameCause);
-    else if (boundary !== "pre-abort") signal.abort(failure);
+    else if (boundary !== "pre-abort" && boundary !== "locked") signal.abort(failure);
     await Promise.all([pending,thrown]);
     assert.equal(closes,1);
-    assert.equal(body.locked,false);
-    if (boundary !== "body") assert.equal(cancellation,failure);
+    assert.equal(body.locked,Boolean(originalReader));
+    if (originalReader) originalReader.releaseLock();
+    else if (boundary !== "body") assert.equal(cancellation,failure);
     response.close();
     assert.equal(closes,1);
   }
