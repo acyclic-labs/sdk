@@ -48,7 +48,7 @@ fn measured(
     values: Vec<f64>,
     bytes: Option<u32>,
     operations_per_observation: u32,
-) -> Result<f64> {
+) -> Result<Quantiles> {
     let quantiles = Quantiles::new(&mut values.clone())?;
     if name != "C_timer" && quantiles.p50_ns == 0.0 {
         return Err(format!(
@@ -67,7 +67,7 @@ fn measured(
         },
         "bytes_per_ns": bytes.map(|bytes| f64::from(bytes) / quantiles.p50_ns),
     }))?;
-    Ok(quantiles.p50_ns)
+    Ok(quantiles)
 }
 
 #[inline(never)]
@@ -146,14 +146,13 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
         creation.push(ns(start.elapsed()));
     }
     measured("F_create_write_flush_directory", creation, Some(1024), 1)?;
-    let timer_quantiles = Quantiles::new(&mut timer.clone())?;
     let minimum_positive_timer_ns = timer
         .iter()
         .copied()
         .filter(|value| *value > 0.0)
         .min_by(f64::total_cmp)
         .ok_or("all timer-only samples were below timestamp resolution")?;
-    measured("C_timer", timer, None, 1)?;
+    let timer_quantiles = measured("C_timer", timer, None, 1)?;
     emit(serde_json::json!({
         "schema": 1, "kind": "negative_control",
         "control": "timer-only observation without product work",
@@ -162,12 +161,12 @@ pub(super) fn run(root: &Path, samples: usize) -> Result<Floors> {
     Ok(Floors {
         timer: timer_quantiles,
         minimum_positive_timer_ns,
-        flush: measured("F_flush", flush, None, 1)?,
-        wake: measured("W_wake", wake, None, 1)?,
-        call: measured("C_call", calls, None, CALL_BATCH)?,
-        copy_per_byte: measured("B_copy", copy, Some(1024), COPY_BATCH)? / 1024.0,
-        hash_per_byte: measured("B_hash", hash, Some(1024), HASH_BATCH)? / 1024.0,
-        read: measured("R_sys", read, Some(1024), 1)?,
+        flush: measured("F_flush", flush, None, 1)?.p50_ns,
+        wake: measured("W_wake", wake, None, 1)?.p50_ns,
+        call: measured("C_call", calls, None, CALL_BATCH)?.p50_ns,
+        copy_per_byte: measured("B_copy", copy, Some(1024), COPY_BATCH)?.p50_ns / 1024.0,
+        hash_per_byte: measured("B_hash", hash, Some(1024), HASH_BATCH)?.p50_ns / 1024.0,
+        read: measured("R_sys", read, Some(1024), 1)?.p50_ns,
     })
 }
 
