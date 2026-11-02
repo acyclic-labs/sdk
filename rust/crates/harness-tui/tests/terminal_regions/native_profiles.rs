@@ -160,6 +160,11 @@ pub(super) mod linux {
         let mut control = UnixStream::connect(root.join("control"))?;
         let mut begin = [0];
         control.read_exact(&mut begin)?;
+        if begin == *b"S" {
+            let mut resized = [0];
+            stdin.lock().read_exact(&mut resized)?;
+            assert_eq!(resized, *b"G", "screen resize command completed");
+        }
         let mut output = io::stdout().lock();
         output.write_all(&std::fs::read(root.join("frame.bin"))?)?;
         output.write_all(b"\x1b[6n")?;
@@ -173,6 +178,12 @@ pub(super) mod linux {
             ));
         }
         control.write_all(b"R")?;
+        if begin == *b"S" {
+            let mut copied = [0];
+            stdin.lock().read_exact(&mut copied)?;
+            assert_eq!(copied, *b"H", "screen hardcopy command completed");
+            control.write_all(b"H")?;
+        }
         // Hold the screen until its one snapshot has been taken. Dropping the
         // original parent socket releases this wait, including failure paths.
         assert_eq!(control.read(&mut begin)?, 0);
@@ -233,9 +244,11 @@ pub(super) mod linux {
         session.wait(&listener, deadline).unwrap();
         let (mut control, _) = listener.accept().unwrap();
         if tool == "screen" {
-            checked(Command::new(tool).args(["-S", &name, "-X", "width", "24", "8"]));
+            checked(Command::new(tool).args(["-S", &name, "-X", "eval", "width 24 8", "stuff G"]));
         }
-        control.write_all(b"G").unwrap();
+        control
+            .write_all(if tool == "screen" { b"S" } else { b"G" })
+            .unwrap();
         session.wait(&control, deadline).unwrap();
         let mut consumed = [0];
         control.read_exact(&mut consumed).unwrap();
@@ -254,13 +267,14 @@ pub(super) mod linux {
             ])))
             .unwrap()
         } else {
-            checked(Command::new(tool).args([
-                "-S",
-                &name,
-                "-X",
-                "hardcopy",
-                dump.to_str().unwrap(),
-            ]));
+            let hardcopy = format!("hardcopy {}", shell_words::quote(dump.to_str().unwrap()));
+            checked(Command::new(tool).args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]));
+            session.wait(&control, deadline).unwrap();
+            control.read_exact(&mut consumed).unwrap();
+            assert_eq!(
+                consumed, *b"H",
+                "hardcopy completed before its one file read"
+            );
             std::fs::read_to_string(&dump).unwrap()
         };
         text.lines()
