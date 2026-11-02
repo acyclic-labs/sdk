@@ -25,6 +25,12 @@ test("namespace get is local, references are scoped, and stub calls stay ordered
   expect(namespace.newUniqueId().toString()).toMatch(/^[a-f0-9]{32}$/);
   expect(() => namespace.idFromReference(new ActorReference(bytes("account"), bytes("ClassTwo"), bytes("same")))).toThrow();
   expect(() => namespace.idFromReference(new ActorReference(bytes("other"), bytes("ClassOne"), bytes("same")))).toThrow();
+  const substituted = reference(), foreign = new ActorReference(bytes("other"), bytes("ClassOne"), bytes("same"));
+  substituted.encode = () => foreign.encode();
+  expect(() => namespace.idFromReference(substituted)).toThrow();
+  const selected = named.reference;
+  let referenceReads = 0;
+  Object.defineProperty(named, "reference", {get() { return ++referenceReads === 1 ? selected : foreign; }});
   const fields = ["account", "namespace"] as const;
   const descriptors = fields.map(field => Object.getOwnPropertyDescriptor(ActorReference.prototype,field)!);
   const projections = {account:0,namespace:0};
@@ -41,7 +47,8 @@ test("namespace get is local, references are scoped, and stub calls stay ordered
       return hintReads++ === 0 ? "weur" : "wrong" as "weur";
     }});
     expect(hintReads).toBe(1);
-    // Only the stub projects its new reference; the namespace retains its scope.
+    expect(referenceReads).toBe(0);
+    // Only the stub projects its canonical fields; the namespace retains its scope.
     expect(projections).toEqual({account:1,namespace:1});
   } finally {
     for (const [index,field] of fields.entries()) Object.defineProperty(ActorReference.prototype,field,descriptors[index]!);

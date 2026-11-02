@@ -16,11 +16,15 @@ export interface ActorForkOptions extends ActorsCallOptions {
   readonly idempotencyKey?: string;
 }
 
+// Internal admission borrows the canonical owner; public references remain copies.
+let namespaceReference: (id: NamespaceActorId) => ActorReference;
+
 /** Plain ID scoped to its namespace. A saved reference carries no transport. */
 export class NamespaceActorId {
   readonly #reference: ActorReference;
   readonly #text: string;
   readonly #name: string | undefined;
+  static { namespaceReference = id => id.#reference; }
   constructor(reference: ActorReference, name?: string) {
     this.#reference = ActorReference.decode(reference.encode());
     this.#text = decoder.decode(this.#reference.id);
@@ -60,11 +64,12 @@ export class ActorNamespaceBinding {
     if (!reference.equals(expected)) throw new TypeError("actor reference is outside namespace binding");
   }
   idFromReference(reference: ActorReference): NamespaceActorId {
-    this.#assertScope(reference);
-    return new NamespaceActorId(reference);
+    const id = new NamespaceActorId(reference);
+    this.#assertScope(namespaceReference(id));
+    return id;
   }
   get(id: NamespaceActorId, options: ActorGetOptions = {}): ActorStub {
-    this.#assertScope(id.reference);
+    this.#assertScope(namespaceReference(id));
     return new ActorStub(id, this.#transport, this.#binding, options.locationHint);
   }
   getByName(name: string, options: ActorGetOptions = {}): ActorStub { return this.get(this.idFromName(name), options); }
@@ -99,7 +104,7 @@ export class ActorStub {
     if (hint !== undefined) actorLocationHint(hint);
     this.#id = id; this.#transport = transport; this.#binding = binding; this.#hint = hint;
     this.#invoke = transport.invokeActor.bind(transport);
-    const reference = id.reference;
+    const reference = namespaceReference(id);
     this.#actor = decoder.decode(reference.id) as Semantic.ActorId;
     this.#account = reference.account;
     this.#namespace = decoder.decode(reference.namespace) as Semantic.ActorNamespace;
@@ -201,22 +206,24 @@ export class ActorStub {
    */
   async fork(child: NamespaceActorId, subscriptions: readonly Semantic.SubscriptionSpec[], options: ActorForkOptions = {}): Promise<ActorReference> {
     if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
+    const target = namespaceReference(child);
+    const childId = target.id;
+    const reference = new ActorReference(this.#account, encoder.encode(this.#namespace), childId);
+    if (!target.equals(reference)) throw new TypeError("fork child is outside this actor's namespace");
+    if (target.equals(namespaceReference(this.#id))) throw new TypeError("an actor cannot fork into itself");
+    const selectedSubscriptions = structuredClone(subscriptions);
     const fork = this.#transport.forkActor;
     if (fork === undefined) throw new TypeError("this binding's transport cannot fork actors");
-    const reference = this.reference;
-    const target = child.reference;
-    if (!target.equals(new ActorReference(reference.account, reference.namespace, target.id))) throw new TypeError("fork child is outside this actor's namespace");
-    if (target.equals(reference)) throw new TypeError("an actor cannot fork into itself");
-    const childActorId = decoder.decode(target.id) as Semantic.ActorId;
+    const childActorId = decoder.decode(childId) as Semantic.ActorId;
     const { idempotencyKey = randomId(), ...callOptions } = options;
     const signal = callOptions.signal ? AbortSignal.any([callOptions.signal, this.#lifetime.signal]) : this.#lifetime.signal;
     await this.#waitPending(signal);
     if (this.#broken) throw new Error("actor stub is broken; obtain a new stub");
     signal.throwIfAborted();
     await fork.call(this.#transport, { actorId: this.#actor, childActorId,
-      namespace: this.#namespace, accountId: reference.account,
-      subscriptions: [...subscriptions], idempotencyKey }, {...callOptions,signal});
-    return target;
+      namespace: this.#namespace, accountId: this.#account.slice(),
+      subscriptions: selectedSubscriptions, idempotencyKey }, {...callOptions,signal});
+    return reference;
   }
   /** Named RPC payload bytes use the same namespace binding, never a public HTTP credential. */
   async rpc(method: string, payload: Uint8Array, options?: ActorsCallOptions): Promise<Uint8Array> {

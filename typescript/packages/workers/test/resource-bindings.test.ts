@@ -95,7 +95,11 @@ for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machi
 
 test("unsupported and malformed resource selections refuse before any host producer runs", async () => {
   let effects = 0;
-  const authority = { ...transports, objects(): never { effects++; throw new Error("unexpected producer"); } };
+  const authority = {
+    ...transports,
+    namespace(): never { effects++; throw new Error("unexpected namespace producer"); },
+    objects(): never { effects++; throw new Error("unexpected Objects producer"); },
+  };
   const valid = { ...base, capability: "grant", resource: "objects:/" };
   const invalid: semantic.Binding[] = [
     { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects-other:/child" }, { ...valid, resource: "streams-other:/child" },
@@ -104,5 +108,34 @@ test("unsupported and malformed resource selections refuse before any host produ
     { ...valid, targetAccount: new Uint8Array([1]) }, { ...valid, guestAdmission: "unknown" },
   ];
   for (const binding of invalid) await expect(materializeBindings([valid, { ...binding, name: "invalid" }], authority)).rejects.toBeDefined();
+  const account = new TextEncoder().encode("account");
+  const namespace = { ...valid, resource: "actors:/ClassOne", targetAccount: account, actorNamespace: "ClassOne" };
+  const factories: [string, semantic.Binding][] = [
+    ["namespace", namespace],
+    ["service", { ...valid, resource: "workers:/worker", targetAccount: account, workerService: "worker" }],
+    ["objects", valid],
+    ["machinesWorkspace", { ...valid, resource: "machines:/harness" }],
+    ["streams", { ...valid, resource: "streams:/harness" }],
+  ];
+  for (const [producer, binding] of factories) {
+    for (const malformed of [undefined, null, {}, true]) {
+      const supplied = { ...authority };
+      Reflect.set(supplied, producer, malformed);
+      // Select a different valid producer first: preflight must refuse before its effects.
+      const earlier = producer === "objects" ? namespace : valid;
+      const reason = malformed === undefined || malformed === null ? "missing" : "non-callable";
+      await expect(materializeBindings([earlier, { ...binding, name: "invalid" }], supplied))
+        .rejects.toThrow(`${reason} ${producer} producer; recovery: supply the original admitted host producer before guest entry`);
+    }
+  }
+  for (const [producer, binding] of [
+    ["stateTransaction", { ...base, stateTransaction: true }],
+    ["guestAdmission", { ...base, guestAdmission: "hostAccess" }],
+  ] as const) {
+    const supplied = { ...authority };
+    Reflect.set(supplied, producer, null);
+    await expect(materializeBindings([valid, { ...binding, name: "invalid" }], supplied))
+      .rejects.toThrow(`missing ${producer} producer; recovery: supply the original admitted host producer before guest entry`);
+  }
   expect(effects).toBe(0);
 });
