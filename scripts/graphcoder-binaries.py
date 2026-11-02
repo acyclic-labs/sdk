@@ -6,7 +6,7 @@ import shlex
 import sys
 
 
-def binaries(manifest, names=("graphcoder", "harness-mock-model")):
+def binaries(manifest, names=("acyclic", "harness-mock-model")):
     found = {name: set() for name in names}
     for line in Path(manifest).read_text(encoding="utf-8").splitlines():
         row = json.loads(line)
@@ -29,6 +29,6 @@ def binaries(manifest, names=("graphcoder", "harness-mock-model")):
 
 
 if __name__ == "__main__":
-    for name, path in binaries(sys.argv[1], sys.argv[2:] or ("graphcoder", "harness-mock-model")).items():
-        variable = "SESSIONS_GRAPHCODER_BINARY" if name == "graphcoder" else "SESSIONS_MOCK_BINARY"
+    for name, path in binaries(sys.argv[1], sys.argv[2:] or ("acyclic", "harness-mock-model")).items():
+        variable = "SESSIONS_ACYCLIC_BINARY" if name == "acyclic" else "SESSIONS_MOCK_BINARY"
         print(f"export {variable}={shlex.quote(path)}")

@@ -1,4 +1,4 @@
-//! `graphcoder` through injected server seams: the managed-host shape of the
+//! The acyclic frontend through injected server seams: the managed-host shape of the
 //! one harness server. Its verifier is this binary's own, and it reports on
 //! stderr when the server consults it, so a test can tell the seam was
 //! consulted and was the only thing that differed.

@@ -1,6 +1,6 @@
 """Linux, no models: native-process fixture plus the real Codex sandbox.
 
-Run on Linux: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER lifecycle|recursive|resume.
+Run on Linux: python3 managed-session.py ACYCLIC CODEX_0_164_OR_LATER lifecycle|recursive|resume.
 Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
@@ -8,10 +8,10 @@ import json, os, pathlib, selectors, signal, socket, subprocess, sys, tempfile, 
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
-if len(sys.argv) != 5:
+if len(sys.argv) != 4:
  raise SystemExit(__doc__)
-acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
-scenario=sys.argv[4]
+acyclic, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:3])
+scenario=sys.argv[3]
 assert scenario in ('lifecycle','recursive','resume')
 fixture_path, native_session_id = native_event_fixture('codex')
 started=time.monotonic()
@@ -22,7 +22,7 @@ signal.signal(signal.SIGTERM,interrupted)
 with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary, socket.socket() as barrier:
  try:barrier.bind(('127.0.0.1',0));barrier.listen()
  except OSError as error:
-  raise RuntimeError(f'step=arm native readiness: {error}; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX {scenario}') from error
+  raise RuntimeError(f'step=arm native readiness: {error}; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX {scenario}') from error
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
  env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied'),'FIXTURE_HOST_SUPPORT':str(pathlib.Path(__file__).resolve().parent)})
  env['FIXTURE_BARRIER']=str(barrier.getsockname()[1])
@@ -58,8 +58,8 @@ def hold_for_cancel():
    gate.sendall((json.dumps({'cwd':str(cwd)})+'\\n').encode())
    gate.recv(1)
  except OSError as error:
-  raise RuntimeError('step=hold native fixture: '+str(error)+'; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX lifecycle') from error
- raise RuntimeError('step=hold native fixture: readiness owner closed or sent unexpected input; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX lifecycle')
+  raise RuntimeError('step=hold native fixture: '+str(error)+'; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX lifecycle') from error
+ raise RuntimeError('step=hold native fixture: readiness owner closed or sent unexpected input; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX lifecycle')
 if first=='B':
  hold_for_cancel()
 prompt=first+sys.stdin.read()
@@ -77,7 +77,7 @@ assert checked.returncode==(17 if prompt=='failed' else 0),checked.stderr
 if prompt=='recursive':
  nested=subprocess.Popen([os.environ['FIXTURE_ACYCLIC'],'__mcp','codex'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
  try:
-  mcp=McpClient(nested,'python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX recursive')
+  mcp=McpClient(nested,'python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX recursive')
   grandchild=mcp.call('spawn','nested','first');finished=mcp.call('wait','nested')
   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
   merged=subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],capture_output=True,text=True)
@@ -102,7 +102,7 @@ if prompt=='resumed':
  def start_owner():
   global owner
   with (root/'owner.log').open('w+') as log:
-   owner=start_workspace_owner(graphcoder,workspace,state,root,env,log)
+   owner=start_workspace_owner(acyclic,workspace,state,root,env,log)
  def client(action):
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
@@ -110,13 +110,13 @@ if prompt=='resumed':
   global bridge,mcp
   inherited=json.loads((workspace/'root-launch.json').read_text())['args']
   bridge=subprocess.Popen([acyclic,'__mcp','codex'],cwd=workspace,env={**env,'ACYCLIC_HOST_ARGS':json.dumps(inherited),'ACYCLIC_WORKSPACE':str(workspace),'ACYCLIC_TASK':task},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'bridge.log').open('w+'))
-  mcp=McpClient(bridge,'python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario)
+  mcp=McpClient(bridge,'python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX '+scenario)
  def submit(name,reference,prompt=None):
   return mcp.submit(name,reference,prompt)
  def response(identifier):return mcp.result(identifier)
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
  def native_ready(view,waiter):
-  recovery='python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario
+  recovery='python3 plugin/tests/hosts/managed-session.py ACYCLIC CODEX '+scenario
   try:
    with selectors.DefaultSelector() as ready:
     ready.register(barrier,selectors.EVENT_READ,'ready')

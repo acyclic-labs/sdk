@@ -11,7 +11,7 @@ tool preset and approval defaults as GraphCoder. The returned
 configuration methods. An explicit selection wins over native settings, which
 win over the catalog's `default_model`.
 
-The [embedded example](../../rust/crates/harness/src/bin/graphcoder/examples/embedded.rs)
+The [embedded example](../../plugin/examples/embedded.rs)
 uses that constructor and the original conversation's send, reply and event
 stream. It takes a workspace, catalog, state directory, operation identity and
 prompt. Use a new operation for a new prompt; reuse the operation and unchanged
@@ -19,7 +19,7 @@ prompt to recover its original answer. It uses the catalog default without ambie
 settings and refuses interactive approval requests. Its model and tools execute through the harness:
 
 ```sh
-cargo run --locked -p graphcoder --example embedded -- WORKSPACE CATALOG STATE OPERATION PROMPT
+cargo run --locked -p acyclic-plugin --example embedded -- WORKSPACE CATALOG STATE OPERATION PROMPT
 ```
 
 `acyclic-conformance::inference` exercises streaming, immediate response release

@@ -47,7 +47,7 @@ export async function qualification(processes, input, fixture, capture) {
       "step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable");
     for (const [name, path] of [["GraphCoder", fixture.binary], ["E2E_CODEX", codex]])
       if (path !== undefined) assert.ok(isAbsolute(path), `step=admit ${name}; recovery=set ${name} to its matching prebuilt absolute executable`);
-    const scenario = scriptedScenario({ artifacts: { acyclic: { path: plugin }, graphcoder: { path: fixture.binary } } }, codex, input.scenario);
+    const scenario = scriptedScenario({ artifacts: { acyclic: { path: plugin } } }, codex, input.scenario);
     const receipt = await runScriptedScenario({ scenario, processes, directory: fixture.output,
       env: fixture.env, cwd: fixture.workspace });
     capture({ ...receipt, log: await readFile(join(fixture.output, scenario.name + ".log"), "utf8") });

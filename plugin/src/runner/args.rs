@@ -24,6 +24,7 @@ pub enum Template {
 
 #[derive(Debug, Parser)]
 #[command(
+    name = "acyclic",
     version,
     about = "Coding agent on the local harness's agents or an endpoint's"
 )]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-cargo test -p graphcoder --features acyclic-harness/grpc,acyclic-harness/search-http --bin graphcoder
-cargo test -p graphcoder --features acyclic-harness/grpc,acyclic-harness/search-http --test cli
+cargo test -p acyclic-plugin --features acyclic-harness/grpc,acyclic-harness/search-http --lib runner::
+cargo test -p acyclic-plugin --features acyclic-harness/grpc,acyclic-harness/search-http --test cli
 cargo test -p acyclic-harness-tui --features tui --test main screen::
 # Retain Cargo's exact native artifact across the separate instrumented build.
 native_artifact=$(mktemp "$artifact_dir/graphcoder-native.XXXXXX.jsonl")
@@ -21,17 +21,17 @@ python3 scripts/qualify-graphcoder-artifact.py \
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 
-cargo build --locked -p graphcoder --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .sessions-shipping.jsonl
-python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl graphcoder > .sessions-binaries.env
+cargo build --locked -p acyclic-plugin --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl acyclic > .sessions-binaries.env
 source .sessions-binaries.env
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY"
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive-prompt
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY"
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" command-recovery
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" uncertain
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" typeahead
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel-preparation
+node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY"
+node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY" interactive-prompt
+node scripts/test-graphcoder-resume.mjs "$SESSIONS_ACYCLIC_BINARY" interactive
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY"
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY" command-recovery
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY" uncertain
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY" typeahead
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY" cancel
+node scripts/test-graphcoder-pty.mjs "$SESSIONS_ACYCLIC_BINARY" cancel-preparation
 
 bash scripts/qualify-graphcoder-client.sh

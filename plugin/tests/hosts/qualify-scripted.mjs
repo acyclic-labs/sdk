@@ -24,13 +24,12 @@ export function scriptedScenario(artifacts,codex,selection){
  if(name==='bounded-framing')return {name,selection,
   args:[join(here,'mcp-framing.py'),binary],
   accepts:run=>JSON.parse(run.stdout).cases.length===21};
- const graphcoder=artifacts.artifacts.graphcoder.path;
  if(kind==='scale')return {name,selection,
-  args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],
+  args:[join(here,'shared-mount-scale.py'),binary,name],
   accepts:run=>run.stdout.includes('"sessions_alive_at_both_samples": true')};
  assert.ok(codex,'step=admit managed sandbox executable; recovery: supply Codex 0.164 or later for '+selection);
  return {name,selection,
-  args:[join(here,'managed-session.py'),binary,graphcoder,resolve(codex),name],
+  args:[join(here,'managed-session.py'),binary,resolve(codex),name],
   accepts:run=>run.stdout.includes('"suite": "managed-native-session-'+name+'"')};
 }
 
@@ -60,7 +59,7 @@ async function main(){
   'step=admit managed sandbox executable; recovery: '+recovery);
  const directory=resolve(output);await mkdir(directory);
  const records=await readFile(cargo,'utf8');
- const binaries=selections.every(name=>name==='managed:bounded-framing')?['acyclic']:['acyclic','graphcoder'];
+ const binaries=['acyclic'];
  const artifacts=await stageArtifacts(binaries.map(name=>({
    name,target:name,test:false,records,
  })),join(directory,'bin'));

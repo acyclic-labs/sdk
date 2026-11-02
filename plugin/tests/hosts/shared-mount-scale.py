@@ -1,9 +1,9 @@
 """Probe-only scale proof through each production MCP host adapter.
 
-Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
+Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
-the separate real-host suite owns the real sandbox/model matrix. GraphCoder
-must enable test-support for the shared resource sampler/oracle request.
+the separate real-host suite owns the real sandbox/model matrix. The acyclic executable
+must enable acyclic-harness/test-support for the shared resource sampler/oracle request.
 """
 import json
 import os
@@ -21,15 +21,15 @@ from native_fixture import fixture_environment, start_workspace_owner, stop_work
 
 def interrupted(signum, frame):
     traceback.print_stack(frame)
-    raise SystemExit('step=shared native scale interrupted; recovery: python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER HOST')
+    raise SystemExit('step=shared native scale interrupted; recovery: python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC HOST')
 
 
 signal.signal(signal.SIGTERM, interrupted)
 
 
 def main():
-    binary, graphcoder = (str(pathlib.Path(p).resolve()) for p in sys.argv[1:3])
-    host = sys.argv[3]
+    binary = str(pathlib.Path(sys.argv[1]).resolve())
+    host = sys.argv[2]
     policies = {
         'codex': ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
         'claude-code': ['--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false}}',
@@ -86,7 +86,7 @@ sys.exit(17)
 ''')
         executable.chmod(0o755)
         with (root / 'owner.log').open('w+') as owner_log, (root / 'bridge.log').open('w+') as bridge_log:
-            owner = start_workspace_owner(graphcoder, workspace, root / 'state', root, env, owner_log)
+            owner = start_workspace_owner(binary, workspace, root / 'state', root, env, owner_log)
             bridge = None
             gates = []
             try:
@@ -200,6 +200,6 @@ sys.exit(17)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 3:
         raise SystemExit(__doc__)
     main()
