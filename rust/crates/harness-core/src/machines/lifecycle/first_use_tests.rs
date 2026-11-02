@@ -64,6 +64,7 @@ forward! {
         destroy_machine(machine: MachineId, key: MachinesKey) -> MutationOutcome;
         destroy_checkpoint(checkpoint: CheckpointId, key: MachinesKey) -> MutationOutcome;
         events(machine: MachineId, after_sequence: Option<u64>, limit: u32) -> EventPage;
+        follow_events(machine: MachineId, after_sequence: Option<u64>) -> EventStream;
         usage(machine: MachineId, start_unix_ms: u64, end_unix_ms: u64) -> UsageReceipt;
         recover(key: MachinesKey) -> MutationOutcome;
         recover_operation(key: MachinesKey) -> MachinesOperationId;

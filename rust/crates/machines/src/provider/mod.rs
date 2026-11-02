@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod events;
+
 /// Public provider interface shared by deterministic and managed implementations.
 /// Native providers retain thread-safe futures; browser providers retain their
 /// original event-loop ownership through the shared primitive platform bound.
@@ -118,6 +120,14 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError>;
+    /// Replays retained events after `after_sequence`, then waits on the
+    /// original publication producer. No inspections or periodic requests.
+    /// A cursor past the retained tail or already past Destroyed is refused.
+    async fn follow_events(
+        &self,
+        machine: MachineId,
+        after_sequence: Option<u64>,
+    ) -> Result<EventStream, ProviderError>;
     async fn usage(
         &self,
         machine: MachineId,

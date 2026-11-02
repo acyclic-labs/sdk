@@ -9,6 +9,11 @@ use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 
 #[derive(Clone)]
 enum WatchReply {
+    Events {
+        machine: MachineId,
+        after: Option<u64>,
+        events: Arc<std::sync::Mutex<Option<EventStream>>>,
+    },
     Reject(Code),
     Items(Vec<WatchItem>),
     Gated(
@@ -285,6 +290,29 @@ operation_service! {
                     Ok(Some((response, (input, guest))))
                 }))))
         }
+    type FollowEventsStream = Pin<Box<dyn Stream<Item = Result<wire::MachineEvent, Status>> + Send>>;
+
+    async fn follow_events(
+        &self,
+        request: Request<wire::FollowEventsRequest>,
+    ) -> Result<Response<Self::FollowEventsStream>, Status> {
+        let WatchReply::Events { machine, after, events } = &self.watch else {
+            return Err(Status::unimplemented("follow_events"));
+        };
+        let request = request.into_inner();
+        if request.machine != Some(encode_machine(*machine))
+            || request.after_sequence != after.unwrap_or(0)
+            || request.protocol != Some(protocol())
+        {
+            return Err(Status::invalid_argument("event cursor or identity was substituted"));
+        }
+        let events = events.lock().expect("original events").take()
+            .ok_or_else(|| Status::failed_precondition("original events already taken"))?;
+        Ok(Response::new(Box::pin(events.map(|event| {
+            event.map(event_follow::encode_event).map_err(|_| Status::unavailable("original event producer lost"))
+        }))))
+    }
+
     type WatchOperationStream = Pin<
         Box<dyn futures::Stream<Item = Result<wire::OperationState, Status>> + Send + 'static>,
     >;
@@ -315,7 +343,7 @@ operation_service! {
                 });
                 Ok(Response::new(Box::pin(stream::iter(items))))
             }
-            WatchReply::Script(_) => Err(Status::internal("nested observation script")),
+            WatchReply::Script(_) | WatchReply::Events { .. } => Err(Status::internal("unexpected observation script")),
             WatchReply::Gated(value, release) => {
                 let release = release.lock().expect("watch release").take()
                     .ok_or_else(|| Status::internal("watch release already consumed"))?;
@@ -494,4 +522,5 @@ mod operations;
 mod recovery;
 mod transport;
 
+mod event_follow;
 mod guest_io;
