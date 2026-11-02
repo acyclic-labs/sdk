@@ -207,8 +207,8 @@ impl FileTool {
         }
         if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
             // An alias has no volume authority. The async read resolves it once;
-            // Window then validates its version and the original directory grant
-            // against that exact layer before fetching any result bytes.
+            // The resolved read validates its version and original directory
+            // grant before returning any projection, even metadata-only media.
             return Ok((None, None));
         }
         version.map_or(Ok((None, None)), |version| {

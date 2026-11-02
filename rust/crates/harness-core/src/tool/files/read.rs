@@ -41,6 +41,9 @@ impl FileTool {
             if let Some((selected, custody)) = selected {
                 original = Some((FileReadSource::Authored(selected), custody));
             }
+            if let Some((FileReadSource::Content(file), _)) = &original {
+                context.authorize_tool_file_read(&input.0.path, file, io)?;
+            }
         }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
             return super::lines::read(context, &input.0, original, offset, limit, work, io).await;

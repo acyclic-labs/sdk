@@ -1058,6 +1058,30 @@ impl ToolContext {
         Ok((volume, relative))
     }
 
+    /// A supplied content reference preserves identity, not mounted authority.
+    /// Check both the resolved directory and metadata before returning any
+    /// projection, including projections that do not fetch content bytes.
+    pub(crate) fn authorize_tool_file_read(
+        &self,
+        path: &str,
+        file: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.authorize_tool_path_read(path, io)?;
+        self.task()
+            .authorize_file_read(
+                file,
+                self.effective_scope(),
+                self.effective_scope().grants(),
+                Some(acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                }),
+                io,
+            )
+            .map(|_| ())
+    }
+
     /// Resolves and reads one current workspace path through its original bound
     /// reader, without broadening this invocation's effective grants.
     pub(crate) async fn read_tool_path(
