@@ -38,10 +38,13 @@ pub fn check(bytes: &[u8]) -> Result<()> {
             continue;
         };
         let mut original = Hooks::default();
-        if original
-            .add_document(crate::hooks::imports::Document { hooks })
-            .is_err()
-        {
+        let original_admitted = original.add_document(crate::hooks::imports::Document { hooks });
+        if admitted.is_ok() != original_admitted.is_ok() {
+            return Err(Error::Invalid(
+                "native and public settings imports disagree on admission".into(),
+            ));
+        }
+        if original_admitted.is_err() {
             if !original.is_empty() {
                 return Err(Error::Invalid(
                     "refused settings retained partial hook rules".into(),
@@ -49,10 +52,8 @@ pub fn check(bytes: &[u8]) -> Result<()> {
             }
             continue;
         }
-        if admitted.is_ok()
-            && serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?
-                != serde_json::to_value(&imported)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
+        if serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?
+            != serde_json::to_value(&imported).map_err(|error| Error::Invalid(error.to_string()))?
         {
             return Err(Error::Invalid(
                 "native and public settings imports changed admitted rules".into(),
