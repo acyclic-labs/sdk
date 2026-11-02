@@ -59,6 +59,7 @@ struct State<A: 'static, O: 'static> {
     conflict_count: usize,
     clean_ready: bool,
     conflict_ready: bool,
+    rows_started: bool,
     failed: bool,
 }
 
@@ -74,6 +75,7 @@ impl<A, O> State<A, O> {
             conflict_count: 0,
             clean_ready: false,
             conflict_ready: false,
+            rows_started: false,
             failed: false,
         }
     }
@@ -383,6 +385,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
         let (state, mut accounting) = self.owner.borrow();
         let result = (|| -> Result<_, WorkspaceError> {
             state.prepare_conflict(&mut accounting)?;
+            state.rows_started = true;
             state.failed = true;
             let Some(conflicts) = state.conflicts.as_mut() else {
                 state.failed = false;
@@ -443,6 +446,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPrevie
 
     pub(super) fn cancellation(&mut self) -> CancellationToken {
         self.owner.borrow().1.cancellation().clone()
+    }
+
+    pub(super) fn ensure_directory_start(&mut self) -> Result<(), WorkspaceError> {
+        let (state, accounting) = self.owner.borrow();
+        accounting.check()?;
+        if state.failed || state.rows_started {
+            return Err(WorkspaceError::InvalidMergeResolution);
+        }
+        Ok(())
     }
 
     /// Selected scalar record reads share preparation's original credit. A
@@ -548,6 +560,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bool, WorkspaceError> {
         self.begin(accounting)?;
+        self.rows_started = true;
         if self.clean_ready {
             self.failed = false;
             return Ok(true);

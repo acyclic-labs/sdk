@@ -82,25 +82,32 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let staging = unbounded!(fs, create_workspace("directory-staging"))?;
     // Adopting an advanced cursor would silently omit its earlier rows while
     // plan.json still advertised the original complete conflict count.
-    for clean in [false, true] {
+    for cursor in 0..3 {
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut advanced = value!(
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
                 .await
         )?;
-        if clean {
-            advanced
-                .clean_step()
-                .await
-                .map_err(|failure| failure.error)?;
-        } else {
-            assert!(
+        match cursor {
+            0 => assert!(
                 advanced
                     .next_conflict()
                     .map_err(|failure| failure.error)?
                     .value
                     .is_some()
-            );
+            ),
+            1 => {
+                advanced
+                    .clean_step()
+                    .await
+                    .map_err(|failure| failure.error)?;
+            }
+            _ => {
+                advanced
+                    .peek_clean()
+                    .await
+                    .map_err(|failure| failure.error)?;
+            }
         }
         assert!(matches!(
             advanced.directory(staging.clone(), IdempotencyKey::new().operation_id()),
@@ -609,6 +616,20 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     let foreign_fs = Fs::memory();
     let foreign_staging = unbounded!(foreign_fs, create_workspace("directory-staging"))?;
     assert_eq!(foreign_staging.id(), staging.id());
+    {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        assert!(matches!(
+            preview.directory(
+                foreign_staging.clone(),
+                IdempotencyKey::new().operation_id()
+            ),
+            Err(WorkspaceError::IncompatibleWorkspace)
+        ));
+    }
     {
         let mut transaction =
             unbounded!(foreign_staging, begin_transaction(IdempotencyKey::new()))?;

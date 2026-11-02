@@ -225,13 +225,19 @@ pub struct MergeDirectory<A: 'static, O: 'static> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPreview<A, O> {
     /// Places this preview under `merge/<id>/` in a separate staging volume.
     /// Constructing the projection performs no directory or changed-path scan.
+    /// Clean traversal and conflict consumption must not have started; otherwise
+    /// the directory could omit rows while advertising the original totals.
     pub fn directory(
         mut self,
         staging: Workspace<A, O>,
         id: OperationId,
     ) -> Result<MergeDirectory<A, O>, WorkspaceError> {
+        self.ensure_directory_start()?;
         let plan = self.plan();
-        if staging.id() == plan.source().id() || staging.id() == plan.target().id() {
+        if staging.id() == plan.source().id()
+            || staging.id() == plan.target().id()
+            || !staging.volume.fs.same_deployment(&plan.target().volume.fs)
+        {
             return Err(WorkspaceError::IncompatibleWorkspace);
         }
         let (base, ours, theirs) = (
@@ -276,7 +282,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     ) -> Result<MergeResolution, DrivenJoinError> {
         let cancellation = self.preview.cancellation();
         cancellation.check().map_err(WorkspaceError::from)?;
-        if self.failed || !self.plan.complete || generation.workspace.id() != self.staging.id() {
+        if self.failed
+            || !self.plan.complete
+            || generation.workspace.id() != self.staging.id()
+            || !self.staging.volume.fs.owns_workspace(&generation.workspace)
+        {
             return Err(DrivenJoinError::StaleCandidate);
         }
         let conflict = kernel_conflict(

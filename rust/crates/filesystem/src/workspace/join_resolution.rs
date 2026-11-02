@@ -357,11 +357,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             .value
             .unicode_text_with_accounting(accounting, cancellation);
         path.retire(accounting)?;
-        text.map(|(text, allocation)| {
-            let bytes = crate::foundation::usize_to_u64(text.capacity());
-            Some(Owned::new(text, allocation, bytes))
-        })
-        .map_err(Into::into)
+        match text {
+            Ok((text, allocation)) => {
+                let bytes = crate::foundation::usize_to_u64(text.capacity());
+                Ok(Some(Owned::new(text, allocation, bytes)))
+            }
+            // The path is optional presentation. Exact native identity remains
+            // in the original key/references; budget and cancellation failures
+            // still refuse the operation instead of becoming a missing path.
+            Err(FsError::Path(crate::kernel::PathLookupError::NamespacePath(
+                crate::kernel::NamespacePathError::NonUnicodeProjection,
+            ))) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn regular_conflict_view(
