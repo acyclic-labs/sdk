@@ -107,12 +107,21 @@ pub(super) enum InputReleased {
     Stopped(wire::SessionChannel),
 }
 
+/// Original receive credit retained by one call input fragment.
+///
+/// Only the admitted Session producer constructs this owner. Its public name
+/// lets downstream bodies declare `BodyChunk<CallInputCredit>` as their data
+/// type without exposing or replacing the original credit-return mechanism.
+pub struct CallInputCredit {
+    _original: signal::Guard<InputReleased>,
+}
+
 /// One original admitted call's input. Data retains its original receive
 /// credit; EOF is successful only after the explicit input terminal. Losing
 /// the session or its producer returns the original typed cause, or
 /// `Unavailable` when the producer disappeared without a terminal.
 pub struct CallInput {
-    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<signal::Guard<InputReleased>>>,
+    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<CallInputCredit>>,
     terminal: Option<oneshot::Receiver<Result<wire::SessionInputEnd, StreamError>>>,
     end: Option<wire::SessionInputEnd>,
     failed: bool,
@@ -134,7 +143,7 @@ impl CallInput {
     /// Consume one original input fragment without returning its capacity.
     pub async fn next_chunk(
         &mut self,
-    ) -> Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError> {
+    ) -> Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError> {
         future::poll_fn(|cx| self.poll_chunk(cx)).await
     }
 
@@ -146,8 +155,7 @@ impl CallInput {
     pub fn poll_chunk(
         &mut self,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError>>
-    {
+    ) -> std::task::Poll<Result<Option<crate::body::BodyChunk<CallInputCredit>>, StreamError>> {
         use std::{future::Future as _, pin::Pin, task::Poll};
         if self.failed {
             return Poll::Ready(Ok(None));
@@ -182,7 +190,7 @@ impl CallInput {
 }
 
 pub(super) struct InputProducer {
-    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<signal::Guard<InputReleased>>>>,
+    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<CallInputCredit>>>,
     terminal: Option<oneshot::Sender<Result<wire::SessionInputEnd, StreamError>>>,
     pub credit: wire::SessionWindow,
     pub next: u64,
@@ -223,13 +231,15 @@ impl InputProducer {
         length: u64,
         released: sync::Arc<signal::Signal<InputReleased>>,
     ) -> Result<(), StreamError> {
-        let credit = signal::Guard::new(
-            released,
-            InputReleased::Credit {
-                identity,
-                bytes: length,
-            },
-        );
+        let credit = CallInputCredit {
+            _original: signal::Guard::new(
+                released,
+                InputReleased::Credit {
+                    identity,
+                    bytes: length,
+                },
+            ),
+        };
         let next = wire_codec::session::input_sequence(self.next, &input)?;
         let Some(Item::ActorCall(bytes)) = input.item else {
             return Err(StreamError::InvalidArgument);

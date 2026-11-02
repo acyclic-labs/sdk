@@ -33,7 +33,7 @@ mod calls;
 mod pages;
 mod resources;
 mod sockets;
-pub use calls::{CallAuthorization, CallInput, CallProvider, CallTarget};
+pub use calls::{CallAuthorization, CallInput, CallInputCredit, CallProvider, CallTarget};
 pub use resources::{
     ResourceAuthorization, ResourceFollowRequest, ResourceProvider, ResourceRevalidation,
     ResourceSubscription,
