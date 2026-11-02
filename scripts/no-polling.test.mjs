@@ -256,6 +256,8 @@ test('host language sources cannot hide a wait behind a non-comment slash', () =
   ['scripts/control.cs', 'class Control { void Wait() { System.Threading.Thread.Sleep(1); } }'],
   ['scripts/control.cs', 'class Control { async Task Run() { await System.Threading.Tasks.Task.Delay(1000); } }'],
   ['scripts/control.c', 'void run(void) { clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0); }'],
+  ['scripts/control.cpp', 'void run() { std::this_thread::sleep_for(std::chrono::seconds(1)); }'],
+  ['scripts/control.c', 'void run(void) { thrd_sleep(&duration, 0); }'],
   ['scripts/control.cs', '/* outer /* inner */ class Control { void Wait() { System.Threading.Thread.Sleep(1); } } // */'],
   ['scripts/control.c', '/* outer /* inner */ void wait(void) { sleep(1); } // */'],
  ]) {
@@ -270,6 +272,8 @@ test('quoted host programs and native wait deadlines require exact review', () =
   ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { Thread.Sleep(1); } }\''],
   ['scripts/control.ps1', 'Add-Type \'class Control { async Task Run() { await Task.Delay(1000); } }\''],
   [rust, 'fn child() { command.arg(r#"clock_nanosleep(CLOCK_MONOTONIC, 0, &duration, 0);"#); }'],
+  [rust, 'fn child() { command.arg(r#"std::this_thread::sleep_for(std::chrono::seconds(1));"#); }'],
+  [script, 'runHost("thrd_sleep(&duration, 0);");'],
   ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { ready.WaitOne(25); } }\''],
   ['scripts/control.cs', 'void Run() { Compile("WaitForSingleObject(handle, 1000)"); }'],
   [script, 'runHost("SpinWait.SpinUntil(ready, 100)");'],
