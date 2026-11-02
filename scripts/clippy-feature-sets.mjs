@@ -7,11 +7,11 @@
 // set includes the in-memory backend the test suites run on: a Cargo test
 // build unifies dev-dependency features, so only a library-only run proves
 // that the library itself builds without them.
-import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localCargoPackages } from "./publish-cargo-crates.mjs";
 import { selectCargoFeatures, cargoFeatureArguments } from "./cargo-feature-selection.mjs";
+import { runCommand } from "./run-command.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,13 +86,9 @@ async function main() {
     const env = index === 0 ? process.env : { ...process.env, CARGO_TARGET_DIR: target };
     for (let set = sets.shift(); set && !failed; set = sets.shift()) {
       const command = ["clippy", ...cargoFeatureArguments(set.selection, { targets: set.targets }), "--locked", "--", "-D", "warnings"];
-      const child = spawn("cargo", command, { cwd: root, env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-      let output = "";
-      child.stdout.on("data", chunk => (output += chunk));
-      child.stderr.on("data", chunk => (output += chunk));
-      const status = await new Promise((resolve, reject) => child.on("error", reject).on("close", resolve));
-      process.stderr.write(`cargo ${command.join(" ")}\n${output}`);
-      if (status !== 0) failed ||= status ?? 1;
+      process.stderr.write(`cargo ${command.join(" ")}\n`);
+      const status = await runCommand("cargo", command, { cwd: root, env });
+      if (status !== 0) failed ||= status;
     }
   }
 
