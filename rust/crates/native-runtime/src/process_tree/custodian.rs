@@ -1205,10 +1205,12 @@ mod handoff_tests {
                 assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
                 assert_eq!(error.raw_os_error(), None);
             }
-            // No false admission ACK survives either producer failure.
-            assert_eq!(first.read(&mut [0])?, 0);
-            if let Some(mut second) = second {
-                assert_eq!(second.read(&mut [0])?, 0);
+            // Dropping a queued reply may send a refusal before service exit.
+            // Neither that refusal nor EOF may become an admission ACK.
+            for mut peer in [Some(first), second].into_iter().flatten() {
+                let mut reply = [1];
+                let count = peer.read(&mut reply)?;
+                assert!(count == 0 || reply == [0]);
             }
         }
         Ok(())
