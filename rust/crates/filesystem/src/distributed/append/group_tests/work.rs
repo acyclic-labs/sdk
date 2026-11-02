@@ -33,7 +33,10 @@ impl AuthorityGuard for OriginalWork {
                 items_examined: 17,
                 ..WorkCounters::UNCHARGED
             })?;
-            self.retained = Some(RetainedAllocation::claim(64, 1, &mut work.accounting())?);
+            self.retained = Some(
+                RetainedAllocation::claim(64, 1, &mut work.accounting())
+                    .map_err(crate::async_storage::authority_error)?,
+            );
             work.hold_opaque(31)?;
             self.observed_items = Some(work.spent().items_examined);
         }
