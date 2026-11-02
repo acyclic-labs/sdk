@@ -175,8 +175,7 @@ impl StockExecution<'_> {
                     stock_retire_text(text, io)?;
                     text = completed;
                 }
-                event @ ModelEvent::ToolCall(_) => {
-                    stock_retire_event(event, io)?;
+                ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Invalid,
