@@ -155,7 +155,11 @@ export class Processes {
           observe?.("closed");
           if (progressFailure) { reject(progressFailure); return; }
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (report?.termination) result.termination = report.termination;
+          if (report) {
+            result.report_capability = report.capability;
+            const termination = report.termination;
+            if (termination) result.termination = termination;
+          }
           resolve(result);
         }, reject);
       });
