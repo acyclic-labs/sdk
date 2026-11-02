@@ -33,8 +33,11 @@ pub(super) fn after_decode<E>(
             observe(ReadAllocationStep::Item)?;
         }
         4 => {
-            observe(ReadAllocationStep::BeforeCopy(1))?;
-            observe(ReadAllocationStep::Copied(1))?;
+            if let Some(record) = records.first() {
+                observe(ReadAllocationStep::BeforeCopy(16))?;
+                std::hint::black_box(record.file_id.into_bytes());
+                observe(ReadAllocationStep::Copied(16))?;
+            }
         }
         _ => (),
     }
