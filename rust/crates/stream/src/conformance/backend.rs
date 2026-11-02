@@ -62,6 +62,9 @@ pub fn injected(port: wasm_bindgen::JsValue) -> Result<impl Backend, StreamError
 /// A provider failure, named history violation or steady-state request excess.
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
+    /// Every independently runnable case is attempted; names retain original errors.
+    #[error("Stream conformance cases failed: {0:?}")]
+    Cases(Vec<(&'static str, Failure)>),
     /// Original provider error.
     #[error(transparent)]
     Provider(#[from] StreamError),
@@ -104,11 +107,89 @@ macro_rules! stream_conformance_suite {
 /// One public entry point for the complete contract, every named key/subtree
 /// history, and append/read/follow zero-control request budgets.
 pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
-    verify_contract(backend.provider()).await?;
-    histories::wave1::verify(backend.provider(), &StreamPath::new("wave1")?).await?;
-    super::atomic::verify(backend.provider()).await?;
-    workload(backend, 3, "budget").await?;
-    Ok(())
+    let provider = backend.provider();
+    let mut failures = Vec::new();
+    record(
+        &mut failures,
+        "absence",
+        super::absence::verify(provider).await,
+    );
+    record(
+        &mut failures,
+        "selected_child_tails",
+        super::views::selected_child_tails(provider).await,
+    );
+    record(&mut failures, "views", super::views::verify(provider).await);
+    record(
+        &mut failures,
+        "selected",
+        super::selected::verify(provider).await,
+    );
+    record(
+        &mut failures,
+        "key_seek",
+        super::key_seek::verify(provider).await,
+    );
+    record(&mut failures, "soft", super::soft::verify(provider).await);
+    record(&mut failures, "contract", verify_contract(provider).await);
+    record(
+        &mut failures,
+        "unspent_conflicts",
+        super::verify_unspent_conflicts(provider).await,
+    );
+    record(
+        &mut failures,
+        "subtree_fork",
+        super::verify_subtree_fork(provider).await,
+    );
+    record(
+        &mut failures,
+        "page_tails",
+        super::verify_page_tails(provider).await,
+    );
+    record(
+        &mut failures,
+        "page_tail_bytes",
+        super::verify_page_tail_bytes(provider).await,
+    );
+    let namespace = StreamPath::new("wave1")?;
+    for case in wave1::Case::ALL {
+        record(
+            &mut failures,
+            case.name(),
+            histories::wave1::verify_case(provider, &namespace, case).await,
+        );
+    }
+    record(
+        &mut failures,
+        "atomic",
+        super::atomic::verify(provider).await,
+    );
+    record(
+        &mut failures,
+        "deadline",
+        super::atomic::deadline(provider).await,
+    );
+    record(
+        &mut failures,
+        "budget",
+        workload(backend, 3, "budget").await,
+    );
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::Cases(failures))
+    }
+}
+
+fn record<T>(
+    failures: &mut Vec<(&'static str, Failure)>,
+    case: &'static str,
+    result: Result<T, impl Into<Failure>>,
+) {
+    if let Err(error) = result {
+        failures.push((case, error.into()));
+    }
 }
 
 /// A checked workload shared by every backend's on-demand benchmark.

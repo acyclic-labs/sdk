@@ -37,11 +37,24 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 })
                 .await?;
         }
+        if progress
+            && !matches!(
+                follow.next().await,
+                Some(Ok(crate::FollowUpdate::Opening { tail: 0 }))
+            )
+        {
+            return Err(StreamError::Unavailable);
+        }
         for sequence in 0..2 {
             let Some(Ok(crate::FollowUpdate::Record(record))) = follow.next().await else {
                 return Err(StreamError::Unavailable);
             };
-            if record.sequence != sequence {
+            let expected = if sequence == 0 {
+                b"created".as_slice()
+            } else {
+                b"appended"
+            };
+            if record.sequence != sequence || record.value.as_ref() != expected {
                 return Err(StreamError::Unavailable);
             }
         }
