@@ -206,7 +206,7 @@ impl Projection {
         let event = self.state.event(delivery);
         output.event(&event).await?;
         let cursor = event.after;
-        self.accepted_source(delivery.resource.clone(), cursor)
+        self.accepted_source(&delivery.resource, cursor)
     }
 
     async fn defer(
@@ -225,7 +225,7 @@ impl Projection {
 
     fn accepted_source(
         &mut self,
-        resource: String,
+        resource: &str,
         cursor: Option<acyclic_harness::client::EventCursor>,
     ) -> Result<(), Failure> {
         if self.state.accepted(resource, cursor) {
@@ -464,7 +464,7 @@ impl ApprovalExport {
         if self.offset != length {
             return Ok(false);
         }
-        projection.accepted_source(self.delivery.resource.clone(), Some(after))?;
+        projection.accepted_source(&self.delivery.resource, Some(after))?;
         Ok(true)
     }
 }
