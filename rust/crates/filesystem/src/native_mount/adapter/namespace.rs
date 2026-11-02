@@ -63,12 +63,3 @@ fn profile_is_native(profile: FilesystemProfile) -> bool {
         _ => false,
     }
 }
-
-fn profile_name(profile: FilesystemProfile) -> &'static str {
-    match profile {
-        FilesystemProfile::Portable => "portable",
-        FilesystemProfile::Posix => "posix",
-        FilesystemProfile::Windows => "windows",
-        FilesystemProfile::Browser => "browser",
-    }
-}

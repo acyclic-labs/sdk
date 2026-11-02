@@ -485,7 +485,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         }
         if !profile_is_native(config.profile) {
             return Err(NativeMountError::ProfileUnavailable {
-                profile: profile_name(config.profile),
+                profile: config.profile.as_str(),
                 platform: std::env::consts::OS,
             });
         }
