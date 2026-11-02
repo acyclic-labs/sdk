@@ -130,6 +130,29 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     assert!(Arc::ptr_eq(&original.buffers, &buffers));
     assert_eq!(std::fs::read(&marker)?, cwd.to_string_lossy().as_bytes());
     std::fs::remove_file(marker)?;
+    // Exercise the shipped spawn boundary against the OS, rather than a
+    // callback that constructs an error before native process admission.
+    let absent = cwd.join(format!("acyclic-absent-{}", Uuid::new_v4()));
+    let mut failed_spawn = local
+        .exec(
+            ExecCommand::new(vec![absent.to_str().unwrap().into()], None)?,
+            handler(),
+            None,
+        )
+        .await;
+    let failure = failed_spawn.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.classification(),
+        &ProviderError::CommandIndeterminate(machine)
+    );
+    let original = std::error::Error::source(&failure)
+        .and_then(|cause| cause.downcast_ref::<io::Error>())
+        .expect("native spawn failure erased the original OS error");
+    assert_eq!(original.kind(), io::ErrorKind::NotFound);
+    assert!(original.raw_os_error().is_some());
+    assert!(failure.to_string().contains(&original.to_string()));
+    assert!(failed_spawn.next().await.is_none());
+    assert!(Arc::ptr_eq(&failed_spawn.finish().await?.buffers, &buffers));
     let mut lost = local
         .exec(
             command(),
