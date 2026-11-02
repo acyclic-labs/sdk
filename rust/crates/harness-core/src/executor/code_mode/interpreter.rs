@@ -268,9 +268,16 @@ mod tests {
                 Action::Write,
                 Action::Delete,
             ],
-        )
-        .to_scope_label()
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        );
+        let write_only = Capability::whole_volume(None, &[Action::Create, Action::Write]);
+        let write_only = filesystem
+            .clone()
+            .attenuate(write_only.layers.into_iter().flatten().collect(), None)
+            .to_scope_label()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let filesystem = filesystem
+            .to_scope_label()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         let grants = Capabilities::new([
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
@@ -457,18 +464,7 @@ mod tests {
                                     publisher
                                         .volume()
                                         .capability(VolumeOperation::Write, &mut None)?,
-                                    Capability::whole_volume(
-                                        None,
-                                        &[
-                                            Action::List,
-                                            Action::Read,
-                                            Action::ReadHistory,
-                                            Action::Create,
-                                            Action::Write,
-                                        ],
-                                    )
-                                    .to_scope_label()
-                                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                                    write_only.clone(),
                                     "tool:call:remove".into(),
                                 ]),
                                 task.scope().limits(),
