@@ -26,7 +26,7 @@ fn rooted_directory_buffer_uses_the_original_allocation_and_operation_credits() 
 
     // The identical rooted native open without the allocation ceiling is the
     // negative control. This exercises real kernel resolution, not a mock.
-    match open_beneath(&parent, Path::new("nested")) {
+    match open_beneath(&parent, Path::new("nested"), None) {
         Ok(file) => assert!(file.metadata().unwrap().is_dir()),
         Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
         Err(error) => panic!("rooted directory negative control failed: {error}"),
