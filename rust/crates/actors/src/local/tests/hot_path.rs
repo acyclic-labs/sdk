@@ -520,6 +520,7 @@ async fn resident_work() -> TestResult {
         assert_eq!(provider.requests().since(before).data(), 0);
         assert_eq!(provider.requests().since(before).control(), 0);
 
+        projected_positions(&mut binding)?;
         binding.transaction(|state| {
             state.append_journal(0, vec![Bytes::from_static(b"accepted"); population])
         })?;
@@ -564,6 +565,94 @@ async fn resident_work() -> TestResult {
             reads.count_total, cloned.count_total
         );
     }
+    Ok(())
+}
+
+fn projected_positions<P: StreamProvider>(
+    binding: &mut super::super::ActorStateBinding<'_, P>,
+) -> TestResult {
+    use crate::guest::{ActorMetadataWrite, ActorStateAlarm, ActorStateCommit};
+
+    // Validate actual guest packets against the retained state, including a
+    // refusal after supplied writes. Neither field may allocate a formatted
+    // number or make the transaction stage payload that it must then undo.
+    for invalid in ["", "+1", "01", "1 ", "-1", "18446744073709551616", "１"] {
+        for bad_position in [false, true] {
+            let packet = ActorStateCommit {
+                writes: vec![ActorMetadataWrite {
+                    key: "key-000000".into(),
+                    value: Bytes::from_static(b"refused"),
+                }],
+                journal_from: if bad_position { invalid } else { "0" }.into(),
+                journal: vec![Bytes::from_static(b"refused")],
+                alarm: ActorStateAlarm::Set {
+                    deadline: if bad_position { "42" } else { invalid }.into(),
+                },
+            };
+            let refused = acyclic_test_support::measure(|| {
+                assert!(matches!(binding.apply(packet), Err(Error::Invalid(_))));
+            });
+            assert_eq!(
+                refused.count_total, 0,
+                "{invalid:?}, position={bad_position}"
+            );
+            assert_eq!(refused.bytes_total, 0);
+        }
+    }
+    // A canonical zero is still an invalid alarm, and a stale journal position
+    // is still a conflict. Refuse both before touching the supplied payload.
+    for (position, deadline, conflict) in [("0", "0", false), ("1", "42", true)] {
+        let packet = ActorStateCommit {
+            writes: vec![ActorMetadataWrite {
+                key: "key-000000".into(),
+                value: Bytes::from_static(b"refused"),
+            }],
+            journal_from: position.into(),
+            journal: vec![Bytes::from_static(b"refused")],
+            alarm: ActorStateAlarm::Set {
+                deadline: deadline.into(),
+            },
+        };
+        let refused = acyclic_test_support::measure(|| match binding.apply(packet) {
+            Err(Error::Conflict) if conflict => {}
+            Err(Error::Invalid("alarm deadline is zero")) if !conflict => {}
+            outcome => panic!("wrong state admission refusal: {outcome:?}"),
+        });
+        assert_eq!(refused.count_total, 0);
+        assert_eq!(refused.bytes_total, 0);
+    }
+    binding.transaction(|state| {
+        assert_eq!(
+            state.get("key-000000").map(Bytes::as_ref),
+            Some(b"untouched".as_slice())
+        );
+        assert_eq!(state.journal_tail(), 0);
+        assert_eq!(state.escrow()?.remaining(), Some(2));
+        Ok(())
+    })?;
+    for deadline in ["1", "42", "18446744073709551615"] {
+        let packet = ActorStateCommit {
+            writes: Vec::new(),
+            journal_from: "0".into(),
+            journal: Vec::new(),
+            alarm: ActorStateAlarm::Set {
+                deadline: deadline.into(),
+            },
+        };
+        let accepted = acyclic_test_support::measure(|| binding.apply(packet).unwrap());
+        assert_eq!(accepted.count_total, 0);
+        assert_eq!(accepted.bytes_total, 0);
+    }
+    // Negative cost control executes the former canonicality check.
+    let formatted = acyclic_test_support::measure(|| {
+        std::hint::black_box(0_u64.to_string());
+        std::hint::black_box(42_u64.to_string());
+    });
+    assert_eq!(formatted.count_total, 2);
+    println!(
+        "state_position_allocations=0 late_refusal_allocations=0 format_allocations={}",
+        formatted.count_total
+    );
     Ok(())
 }
 

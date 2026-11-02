@@ -200,26 +200,29 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     /// Apply the public JavaScript projection's values through the SAME native
     /// transaction path. The packet supplies no actor, epoch, stream or
     /// publication identity; its metadata keys remain actor-local.
+    /// Scalar validation precedes staging metadata or journal payloads.
     /// The host then calls flush once under its retained invocation identity.
     pub fn apply(&mut self, commit: crate::guest::ActorStateCommit) -> Result<(), Error> {
         let from = decimal(&commit.journal_from)?;
+        let alarm = match commit.alarm {
+            crate::guest::ActorStateAlarm::Keep => AlarmChange::Keep,
+            crate::guest::ActorStateAlarm::Clear => AlarmChange::Clear,
+            crate::guest::ActorStateAlarm::Set { deadline } => AlarmChange::Set {
+                deadline_unix_ms: decimal(&deadline)?,
+            },
+        };
         self.transaction(|state| {
             if state.journal_tail() != from {
                 return Err(Error::Conflict);
             }
+            change_alarm(&mut state.state.alarm, alarm)?;
             for write in commit.writes {
                 state.put(write.key, write.value);
             }
             if !commit.journal.is_empty() {
                 state.append_journal(from, commit.journal)?;
             }
-            match commit.alarm {
-                crate::guest::ActorStateAlarm::Keep => Ok(()),
-                crate::guest::ActorStateAlarm::Clear => state.alarm(None),
-                crate::guest::ActorStateAlarm::Set { deadline } => {
-                    state.alarm(Some(decimal(&deadline)?))
-                }
-            }
+            Ok(())
         })
     }
 
@@ -423,7 +426,10 @@ fn decimal(value: &str) -> Result<u64, Error> {
     let parsed = value
         .parse::<u64>()
         .map_err(|_| Error::Invalid("invalid actor state position"))?;
-    if parsed.to_string() != value {
+    // Successful u64 parsing permits only two alternate decimal spellings:
+    // a leading plus or redundant leading zeroes. Check those borrowed bytes
+    // instead of allocating and formatting the parsed value again.
+    if value.starts_with('+') || value.len() > 1 && value.starts_with('0') {
         return Err(Error::Invalid("noncanonical actor state position"));
     }
     Ok(parsed)
