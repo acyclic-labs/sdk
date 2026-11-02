@@ -16,6 +16,8 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
+mod input;
+pub use input::CallInputSender;
 mod data;
 mod socket;
 use admissions::Admissions;
@@ -60,7 +62,7 @@ type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
 type Response = transport::Responses;
 type Read = BoxProviderFuture<'static, (String, u64, Response, Option<Result<Frame, StreamError>>)>;
-const QUEUE: usize = 2;
+const QUEUE: usize = RECEIVE_FRAMES;
 const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 
 /// Shared pool owning one bidirectional Streams session per authenticated node.
@@ -195,6 +197,12 @@ enum Command {
         frame: Bytes,
         sent: oneshot::Sender<Result<(), StreamError>>,
     },
+    Input {
+        id: u64,
+        frame: wire::SessionFrame,
+        credit: Option<input::Credit>,
+        sent: oneshot::Sender<Result<(), StreamError>>,
+    },
 }
 struct OpenCommand {
     id: u64,
@@ -209,6 +217,7 @@ struct OpenCommand {
     records: mpsc::Sender<Result<Delivery, StreamError>>,
     ready: oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>,
     observation: super::runtime::OperationSpan,
+    input: Option<input::Owner>,
 }
 
 struct Route {
@@ -233,6 +242,7 @@ struct Route {
     records: mpsc::Sender<Result<Delivery, StreamError>>,
     ready: Option<oneshot::Sender<Result<(u64, Option<wire::SessionOpened>), StreamError>>>,
     observation: super::runtime::OperationSpan,
+    input: Option<input::Owner>,
 }
 struct Link {
     opening_subscription: Option<wire::SessionChannel>,
@@ -248,6 +258,7 @@ struct Link {
     /// Revisions this node has served on an open; it has applied them, so
     /// later opens on this session need not carry them.
     served: crate::RevisionCut,
+    input: Arc<input::Window>,
 }
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
@@ -293,6 +304,7 @@ impl Route {
 }
 impl Drop for Link {
     fn drop(&mut self) {
+        self.input.close();
         let _ = self.sender.close();
         if let Some(observation) = &mut self.observation {
             observation.finish(None);
@@ -763,6 +775,9 @@ impl Client {
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
         let mut cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
+        let input = matches!(&kind, Kind::ActorCall(call) if call.input)
+            .then(|| Arc::new(input::State::new()));
+        cursor.input = input.clone();
         if !matches!(&kind, Kind::Follow(_)) {
             cursor.primitive = "session-reply";
         }
@@ -783,6 +798,7 @@ impl Client {
                     records,
                     ready,
                     observation: operation.clone(),
+                    input: input.map(input::Owner),
                 })))
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
@@ -831,11 +847,13 @@ impl Client {
             receiver,
             pending: None,
             opened: None,
+            input: None,
         })
     }
 }
 struct Cursor {
     opened: Option<wire::SessionOpened>,
+    input: Option<Arc<input::State>>,
     pending: Option<Delivery>,
     observation: Observation,
     /// Names this cursor's deliveries in wait reports.

@@ -59,6 +59,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         records,
                         ready,
                         observation,
+                        input: None,
                     })),
                     opened,
                 )
@@ -169,6 +170,7 @@ pub fn verify_pool_lifetime(fault: u8) {
                 records,
                 ready,
                 observation: cursor.observation.operation.clone(),
+                input: None,
             }));
             (cursor, command, opened)
         };
@@ -412,6 +414,7 @@ pub fn verify_link_isolation(broken: bool) {
             records,
             ready,
             observation: crate::obs::OperationSpan::new(tracing::Span::none()),
+            input: None,
         })))
         .unwrap();
         assert!(pool.receive_frame(

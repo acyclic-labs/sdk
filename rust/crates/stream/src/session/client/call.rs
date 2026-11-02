@@ -16,7 +16,10 @@ impl Client {
     ) -> Result<Bytes, StreamError> {
         validate_call(invocation, maximum_reply_bytes)?;
         self.reply(
-            Kind::ActorCall(invocation.clone()),
+            Kind::ActorCall(wire::SessionCall {
+                invocation: invocation.clone(),
+                input: false,
+            }),
             credential,
             maximum_reply_bytes,
         )
@@ -45,11 +48,58 @@ impl Client {
     > {
         validate_call(invocation, maximum_reply_bytes)?;
         self.reply_chunks(
-            Kind::ActorCall(invocation.clone()),
+            Kind::ActorCall(wire::SessionCall {
+                invocation: invocation.clone(),
+                input: false,
+            }),
             credential,
             maximum_reply_bytes,
         )
         .await
+    }
+
+    /// Admit the canonical product header on the original call, returning its
+    /// credited input sender and the SAME reply projection as a finite call.
+    /// The handler may consume input and reply before EOF. No body collector,
+    /// automatic replay or second authenticated connection is created.
+    pub async fn actor_call_input(
+        &self,
+        invocation: &Bytes,
+        credential: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<
+        (
+            CallInputSender,
+            impl futures::Stream<
+                Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
+            >
+            + 'static
+            + use<>,
+        ),
+        StreamError,
+    > {
+        validate_call(invocation, maximum_reply_bytes)?;
+        let cursor = self
+            .open_cursor(
+                Kind::ActorCall(wire::SessionCall {
+                    invocation: invocation.clone(),
+                    input: true,
+                }),
+                cursor(0),
+                false,
+                false,
+                None,
+                credential,
+            )
+            .await?;
+        let sender = CallInputSender {
+            client: self.clone(),
+            id: cursor.id,
+            state: cursor.input.clone().ok_or(StreamError::Unavailable)?,
+            next: 0,
+            finished: false,
+        };
+        Ok((sender, Self::reply_cursor(cursor, maximum_reply_bytes)))
     }
 
     /// Reads one page of direct children on the shared session, with the
@@ -144,8 +194,17 @@ impl Client {
         let cursor = self
             .open_cursor(kind, cursor(0), false, false, None, credential)
             .await?;
+        Ok(Self::reply_cursor(cursor, maximum_reply_bytes))
+    }
+
+    fn reply_cursor(
+        cursor: Cursor,
+        maximum_reply_bytes: usize,
+    ) -> impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
+    + 'static
+    + use<> {
         let operation = cursor.observation.operation.clone();
-        Ok(operation.scope(stream::try_unfold(
+        operation.scope(stream::try_unfold(
             (cursor, None, 0_usize, false),
             move |(mut cursor, total, received, complete)| async move {
                 if complete {
@@ -177,7 +236,7 @@ impl Client {
                     (cursor, Some(length), received, received == length),
                 )))
             },
-        )))
+        ))
     }
 }
 

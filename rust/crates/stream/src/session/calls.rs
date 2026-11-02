@@ -61,18 +61,215 @@ pub trait CallProvider: crate::ProviderPlatform + 'static {
         invocation: Bytes,
         authorization: CallAuthorization,
     ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>>;
+
+    /// Dispatch a canonical request header before its input reaches EOF.
+    /// The same verified authorization and original input owner reach the
+    /// product. A product without streaming input refuses before dispatch;
+    /// it must never collect the input and silently call the buffered API.
+    fn call_input(
+        &self,
+        _invocation: Bytes,
+        _authorization: CallAuthorization,
+        _input: CallInput,
+    ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+        Box::pin(future::ready(Err(StreamError::Unsupported)))
+    }
+}
+
+pub(super) enum InputReleased {
+    Credit {
+        identity: wire::SessionChannel,
+        bytes: u64,
+    },
+    Stopped(wire::SessionChannel),
+}
+
+/// One original admitted call's input. Data retains its original receive
+/// credit; EOF is successful only after the explicit input terminal. Losing
+/// the session or its producer returns the original typed cause, or
+/// `Unavailable` when the producer disappeared without a terminal.
+pub struct CallInput {
+    data: tokio::sync::mpsc::Receiver<crate::body::BodyChunk<signal::Guard<InputReleased>>>,
+    terminal: Option<oneshot::Receiver<Result<wire::SessionInputEnd, StreamError>>>,
+    end: Option<wire::SessionInputEnd>,
+    failed: bool,
+    identity: wire::SessionChannel,
+    released: sync::Arc<signal::Signal<InputReleased>>,
+}
+
+impl Drop for CallInput {
+    fn drop(&mut self) {
+        if !self.failed && self.end.is_none() {
+            // Consumer loss must wake an upload blocked on escaped data
+            // owners. It cannot wait for those owners to return their credit.
+            let _ = self.released.send(InputReleased::Stopped(self.identity));
+        }
+    }
+}
+
+impl CallInput {
+    /// Consume one original input fragment without returning its capacity.
+    pub async fn next_chunk(
+        &mut self,
+    ) -> Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError> {
+        if self.failed {
+            return Ok(None);
+        }
+        loop {
+            let Some(terminal) = self.terminal.as_mut() else {
+                return Ok(self.data.recv().await);
+            };
+            let event = {
+                let data = self.data.recv();
+                futures::pin_mut!(data);
+                match future::select(terminal, data).await {
+                    future::Either::Left((terminal, _)) => future::Either::Left(terminal),
+                    future::Either::Right((data, _)) => future::Either::Right(data),
+                }
+            };
+            match event {
+                future::Either::Left(terminal) => {
+                    self.terminal = None;
+                    match terminal.unwrap_or(Err(StreamError::Unavailable)) {
+                        Ok(end) => self.end = Some(end),
+                        Err(error) => {
+                            self.failed = true;
+                            self.data.close();
+                            while self.data.try_recv().is_ok() {}
+                            return Err(error);
+                        }
+                    }
+                }
+                future::Either::Right(Some(data)) => return Ok(Some(data)),
+                future::Either::Right(None) => {
+                    // The terminal and data producers are the same owner.
+                    // Dropping it settles the terminal even with credit held.
+                    let result = self
+                        .terminal
+                        .take()
+                        .ok_or(StreamError::Unavailable)?
+                        .await
+                        .unwrap_or(Err(StreamError::Unavailable));
+                    match result {
+                        Ok(end) => self.end = Some(end),
+                        Err(error) => {
+                            self.failed = true;
+                            return Err(error);
+                        }
+                    }
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    /// Ordered metadata once the original input terminal has been observed.
+    #[must_use]
+    pub fn trailers(&self) -> Option<&[wire::SessionHeader]> {
+        self.end.as_ref().map(|end| end.trailers.as_slice())
+    }
+}
+
+pub(super) struct InputProducer {
+    sender: Option<tokio::sync::mpsc::Sender<crate::body::BodyChunk<signal::Guard<InputReleased>>>>,
+    terminal: Option<oneshot::Sender<Result<wire::SessionInputEnd, StreamError>>>,
+    pub credit: wire::SessionWindow,
+    pub next: u64,
+}
+
+impl InputProducer {
+    pub fn new(
+        identity: wire::SessionChannel,
+        released: sync::Arc<signal::Signal<InputReleased>>,
+    ) -> (Self, CallInput) {
+        let (sender, data) = tokio::sync::mpsc::channel(RECEIVE_FRAMES);
+        let (terminal, receiver) = oneshot::channel();
+        (
+            Self {
+                sender: Some(sender),
+                terminal: Some(terminal),
+                credit: wire::SessionWindow {
+                    frames: RECEIVE_FRAMES as u32,
+                    bytes: RECEIVE_FRAMES as u64 * DATA_FRAME_BYTES as u64,
+                },
+                next: 0,
+            },
+            CallInput {
+                data,
+                terminal: Some(receiver),
+                end: None,
+                failed: false,
+                identity,
+                released,
+            },
+        )
+    }
+
+    pub fn receive(
+        &mut self,
+        identity: wire::SessionChannel,
+        input: wire::SessionData,
+        length: u64,
+        released: sync::Arc<signal::Signal<InputReleased>>,
+    ) -> Result<(), StreamError> {
+        let credit = signal::Guard::new(
+            released,
+            InputReleased::Credit {
+                identity,
+                bytes: length,
+            },
+        );
+        let next = wire_codec::session::input_sequence(self.next, &input)?;
+        let Some(Item::ActorCall(bytes)) = input.item else {
+            return Err(StreamError::InvalidArgument);
+        };
+        let chunk = crate::body::BodyChunk::new(bytes, credit);
+        self.sender
+            .as_ref()
+            .ok_or(StreamError::InvalidArgument)?
+            .try_send(chunk)
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
+            })?;
+        self.next = next;
+        Ok(())
+    }
+
+    pub fn finish(
+        &mut self,
+        result: Result<wire::SessionInputEnd, StreamError>,
+    ) -> Result<(), StreamError> {
+        let terminal = self.terminal.take().ok_or(StreamError::InvalidArgument)?;
+        self.sender.take();
+        let _ = terminal.send(result);
+        Ok(())
+    }
+    pub fn is_open(&self) -> bool {
+        self.terminal.is_some()
+    }
 }
 
 pub(super) fn source(
     provider: Arc<dyn CallProvider>,
-    invocation: Bytes,
+    invocation: wire::SessionCall,
     authorization: CallAuthorization,
     identity: wire::SessionChannel,
+    input: Option<CallInput>,
 ) -> Source {
     reply(
         identity,
         Item::ActorCall,
-        Box::pin(async move { provider.call(invocation, authorization).await }),
+        Box::pin(async move {
+            match input {
+                Some(input) => {
+                    provider
+                        .call_input(invocation.invocation, authorization, input)
+                        .await
+                }
+                None => provider.call(invocation.invocation, authorization).await,
+            }
+        }),
     )
 }
 

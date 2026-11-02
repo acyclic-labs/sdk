@@ -86,6 +86,7 @@ pub(in crate::session::client) fn fixture(
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
                 served: crate::RevisionCut::default(),
+                input: Arc::new(input::Window::new()),
             },
         );
     }
@@ -149,6 +150,7 @@ pub(in crate::session::client) fn route(
         records,
         ready: None,
         observation: crate::obs::OperationSpan::new(tracing::Span::none()),
+        input: None,
     }
 }
 

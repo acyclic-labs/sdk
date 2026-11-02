@@ -615,6 +615,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         identity: wire::SessionChannel,
         reason: Rejection,
     ) -> Result<(), StreamError> {
+        if let Some(channel) = self.channels.get_mut(&identity.channel_id)
+            && let Some(input) = &mut channel.input
+        {
+            let _ = input.finish(Err(StreamError::from_session_close(reason.code())));
+        }
         self.remove(identity.channel_id)?;
         self.controls
             .retain(|frame| frame.channel_id != identity.channel_id);

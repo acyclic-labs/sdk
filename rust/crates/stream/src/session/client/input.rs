@@ -1,0 +1,296 @@
+//! Input credit and terminal ownership on the original admitted call.
+use super::*;
+use tokio::sync::Semaphore;
+
+pub(super) struct Window {
+    // Includes reservations until their frame is queued. Only the pool grants
+    // and debits; cancellation returns reservations without inventing credit.
+    balance: Mutex<wire::SessionWindow>,
+    frames: Semaphore,
+    bytes: Semaphore,
+}
+
+impl Window {
+    pub(super) fn new() -> Self {
+        Self {
+            balance: Mutex::new(Default::default()),
+            frames: Semaphore::new(0),
+            bytes: Semaphore::new(0),
+        }
+    }
+
+    pub(super) fn grant(&self, grant: &wire::SessionWindow) -> Result<(), StreamError> {
+        let mut balance = self.balance.lock().map_err(|_| StreamError::Unavailable)?;
+        let mut next = *balance;
+        wire_codec::session::grant_credit(&mut next, grant)?;
+        if !usize::try_from(next.bytes).is_ok_and(|bytes| bytes <= Semaphore::MAX_PERMITS)
+            || next.frames as usize > Semaphore::MAX_PERMITS
+        {
+            return Err(StreamError::Capacity);
+        }
+        *balance = next;
+        drop(balance);
+        self.bytes.add_permits(grant.bytes as usize);
+        self.frames.add_permits(grant.frames as usize);
+        Ok(())
+    }
+
+    async fn reserve(self: &Arc<Self>, length: u32) -> Result<Reservation, StreamError> {
+        let frames = self
+            .frames
+            .acquire()
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        let bytes = self
+            .bytes
+            .acquire_many(length)
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        frames.forget();
+        bytes.forget();
+        Ok(Reservation {
+            window: self.clone(),
+            length,
+            debited: false,
+            accepted: false,
+        })
+    }
+
+    pub(super) fn close(&self) {
+        self.frames.close();
+        self.bytes.close();
+    }
+}
+
+pub(super) struct Reservation {
+    window: Arc<Window>,
+    length: u32,
+    debited: bool,
+    accepted: bool,
+}
+
+impl Reservation {
+    // Both debits and the queue admission run in the same pool turn, with no
+    // await or peer grant between them. Refusal retires that link before refund.
+    fn debit(&mut self) -> Result<(), StreamError> {
+        let mut balance = self
+            .window
+            .balance
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let bytes = balance
+            .bytes
+            .checked_sub(u64::from(self.length))
+            .ok_or(StreamError::Capacity)?;
+        let frames = balance.frames.checked_sub(1).ok_or(StreamError::Capacity)?;
+        *balance = wire::SessionWindow { bytes, frames };
+        self.debited = true;
+        Ok(())
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if self.accepted {
+            return;
+        }
+        if self.debited {
+            if let Ok(mut balance) = self.window.balance.lock() {
+                balance.bytes += u64::from(self.length);
+                balance.frames += 1;
+            } else {
+                self.window.close();
+                return;
+            }
+        }
+        self.window.bytes.add_permits(self.length as usize);
+        self.window.frames.add_permits(1);
+    }
+}
+
+pub(super) struct Credit {
+    channel: Reservation,
+    aggregate: Reservation,
+}
+impl Credit {
+    pub(super) fn debit(&mut self) -> Result<(), StreamError> {
+        self.channel.debit()?;
+        self.aggregate.debit()
+    }
+    pub(super) fn accepted(mut self) {
+        self.channel.accepted = true;
+        self.aggregate.accepted = true;
+    }
+}
+
+pub(super) struct State {
+    pub window: Arc<Window>,
+    connection: Mutex<Option<Arc<Window>>>,
+    terminal: Mutex<Option<StreamError>>,
+    changed: gate::Gate,
+}
+impl State {
+    pub(super) fn new() -> Self {
+        Self {
+            window: Arc::new(Window::new()),
+            connection: Mutex::new(None),
+            terminal: Mutex::new(None),
+            changed: gate::Gate::new(),
+        }
+    }
+    pub(super) fn bind(&self, connection: Arc<Window>) -> Result<(), StreamError> {
+        *self
+            .connection
+            .lock()
+            .map_err(|_| StreamError::Unavailable)? = Some(connection);
+        Ok(())
+    }
+    pub(super) fn close(&self, cause: StreamError) {
+        if let Ok(mut terminal) = self.terminal.lock() {
+            if terminal.is_none() {
+                *terminal = Some(cause);
+            }
+        }
+        self.window.close();
+        let _ = self.changed.set(true);
+    }
+    fn cause(&self) -> StreamError {
+        self.terminal
+            .lock()
+            .ok()
+            .and_then(|terminal| terminal.clone())
+            .unwrap_or(StreamError::Unavailable)
+    }
+    async fn until_closed<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, StreamError>>,
+    ) -> Result<T, StreamError> {
+        let changed = self.changed.changed(false);
+        futures::pin_mut!(operation, changed);
+        match future::select(changed, operation).await {
+            future::Either::Left(_) => Err(self.cause()),
+            future::Either::Right((result, _)) => result,
+        }
+    }
+    async fn reserve(&self, length: u32) -> Result<Credit, StreamError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .clone()
+            .ok_or(StreamError::Unavailable)?;
+        let channel = self.window.reserve(length).await?;
+        let aggregate = connection.reserve(length).await?;
+        Ok(Credit { channel, aggregate })
+    }
+}
+
+pub(super) struct Owner(pub Arc<State>);
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.0.close(StreamError::Unavailable);
+    }
+}
+
+/// Upload half of one admitted canonical call. It uses the same authority,
+/// connection and cancellation as its reply. It cannot clone, reconnect or
+/// replay an upload. Dropping it before `finish` withdraws the original call.
+pub struct CallInputSender {
+    pub(super) client: Client,
+    pub(super) id: u64,
+    pub(super) state: Arc<State>,
+    pub(super) next: u64,
+    pub(super) finished: bool,
+}
+impl CallInputSender {
+    /// Queue one original immutable fragment under channel AND connection
+    /// credit. No input is collected or copied. A cancelled send future must
+    /// not be retried: drop this sender to withdraw the original operation.
+    pub async fn send(&mut self, bytes: Bytes) -> Result<(), StreamError> {
+        if bytes.is_empty() || bytes.len() > crate::MAX_RECORD_BYTES {
+            return Err(StreamError::InvalidArgument);
+        }
+        let next = self.next.checked_add(1).ok_or(StreamError::OutOfRange)?;
+        let value = frame(
+            self.id,
+            1,
+            Body::Data(wire::SessionData {
+                after: Some(cursor(next)),
+                accepted: 0,
+                durable: 0,
+                item: Some(Item::ActorCall(bytes)),
+            }),
+        );
+        let length = u32::try_from(value.encoded_len()).map_err(|_| StreamError::LimitExceeded)?;
+        let mut attempt = Attempt {
+            client: self.client.clone(),
+            id: self.id,
+            accepted: false,
+        };
+        // Sequence is claimed before awaiting. Cancellation cannot reuse the
+        // old position for a frame whose queue verdict was not observed.
+        self.next = next;
+        let result = self
+            .state
+            .until_closed(async {
+                let credit = self.state.reserve(length).await?;
+                self.queue(value, Some(credit)).await
+            })
+            .await;
+        attempt.accepted = result.is_ok();
+        result
+    }
+    /// Send the original ordered EOF/trailers without requiring data credit.
+    pub async fn finish(mut self, trailers: Vec<wire::SessionHeader>) -> Result<(), StreamError> {
+        let value = frame(
+            self.id,
+            1,
+            Body::InputEnd(wire::SessionInputEnd { trailers }),
+        );
+        if value.encoded_len() > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        self.state.until_closed(self.queue(value, None)).await?;
+        self.finished = true;
+        Ok(())
+    }
+    async fn queue(
+        &self,
+        frame: wire::SessionFrame,
+        credit: Option<Credit>,
+    ) -> Result<(), StreamError> {
+        let (sent, result) = oneshot::channel();
+        self.client
+            .pool
+            .commands
+            .send(Command::Input {
+                id: self.id,
+                frame,
+                credit,
+                sent,
+            })
+            .await
+            .map_err(|_| StreamError::Unavailable)?;
+        result.await.map_err(|_| StreamError::Unavailable)?
+    }
+}
+impl Drop for CallInputSender {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.client.pool.removed.send(self.id);
+        }
+    }
+}
+
+struct Attempt {
+    client: Client,
+    id: u64,
+    accepted: bool,
+}
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        if !self.accepted {
+            let _ = self.client.pool.removed.send(self.id);
+        }
+    }
+}
