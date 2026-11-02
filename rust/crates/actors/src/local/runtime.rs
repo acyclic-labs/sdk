@@ -845,17 +845,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )?
                 }
                 Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
-                    let Some(publication) = self.store.prepare_invocation_failure(
+                    let Some(input) = record.as_ref() else {
+                        return Err(Error::Handler(failure));
+                    };
+                    let publication = self.store.prepare_failed_input(
                         &snapshot,
                         epoch,
                         &trigger,
-                        record.as_ref(),
+                        input,
                         &failure,
                         key(&snapshot, "publish")?,
-                    )?
-                    else {
+                    )?;
+                    if publication.call.is_none() {
                         return Err(Error::Handler(failure));
-                    };
+                    }
                     publication
                 }
                 Err(error) => return Err(error),
