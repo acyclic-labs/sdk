@@ -79,9 +79,9 @@ export async function runCase(binary, login, root, name, signal) {
   const hookFile = join(directory, "hooks.jsonl");
   const operation = randomUUID(), captures = [], processes = new Processes();
   const marker = `LIVE_${randomUUID().replaceAll("-", "")}`;
-  let step = "prepare workspace and isolated settings", env, childHooks, begin, hooksAttempted = false;
+  let step = "prepare workspace and isolated settings", env, childHooks, begin, hooksPending = false;
   const invoke = async (prompt, format = "text") => {
-    hooksAttempted = false;
+    hooksPending = true;
     const args = ["--workspace", workspace, "--settings-root", settings,
       "--model", "openai/gpt-6-luna", "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
@@ -91,12 +91,12 @@ export async function runCase(binary, login, root, name, signal) {
     return answer(result, format);
   };
   const hooks = async () => {
-    hooksAttempted = true;
+    hooksPending = false;
     try { return (await readFile(hookFile, "utf8")).trim().split(/\r?\n/).filter(Boolean).map(JSON.parse); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   };
   const collaborate = async (task, followup) => {
-    hooksAttempted = false;
+    hooksPending = true;
     const fixture = { id: name, workspace, env, args: ["--workspace", workspace,
       "--settings-root", settings, "--model", "openai/gpt-6-luna"] };
     await conversation(processes, binary, fixture, { operation, turns: [
@@ -170,7 +170,7 @@ export async function runCase(binary, login, root, name, signal) {
     // The original process and retirement have joined. A rejected answer can
     // precede the tool assertions, but cannot discard their recorded evidence.
     // A failed read is retained separately and is never retried.
-    if (captures.length && !hooksAttempted) {
+    if (hooksPending) {
       try { result.hooks = await hooks(); }
       catch (evidenceError) { result = failedCase(result, failureReport(evidenceError), "hooks", recovery); }
     }

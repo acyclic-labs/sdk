@@ -226,6 +226,17 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     assert.equal(damaged.hooks_failure.step, "case-hooks");
     assert.equal(damaged.phases.at(-1).phase, "retired");
     assert.equal(damaged.phases.at(-1).outcome, "completed");
+    // Native launch/capture rejection is independent of existing recorder
+    // evidence: a missing result object must not suppress the unread log.
+    const missingRoot = join(root, "missing-capture");
+    await mkdir(join(missingRoot, "shell"), { recursive: true });
+    await writeFile(join(missingRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    const missing = await runCase(join(root, "absent-executable"), root, missingRoot, "shell", new AbortController().signal);
+    assert.equal(missing.status, "fail");
+    assert.equal(missing.code, "ENOENT");
+    assert.deepEqual(missing.captures, []);
+    assert.deepEqual(missing.hooks, [original]);
+    assert.match(missing.failure.error, /ENOENT/);
   } finally {
     await processes.close();
     await rm(root, { recursive: true, force: true });
