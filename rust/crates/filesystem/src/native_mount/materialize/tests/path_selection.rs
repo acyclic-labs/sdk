@@ -7,12 +7,8 @@ fn selection_path(components: &[u16]) -> NamespacePath {
         components
             .iter()
             .map(|component| {
-                LogicalName::new(
-                    NameEncoding::Utf8,
-                    format!("{component:04x}").into_bytes(),
-                    limits.maximum_component_bytes,
-                )
-                .unwrap()
+                LogicalName::new(NameEncoding::Utf8, format!("{component:04x}").into_bytes())
+                    .unwrap()
             })
             .collect(),
         limits,
