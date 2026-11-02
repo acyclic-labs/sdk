@@ -143,6 +143,7 @@ test("a real command must publish exact bytes and a successful shell status", as
     const refused = await runCase(process.execPath, root, path, "session", new AbortController().signal);
     assert.equal(refused.status, "fail");
     assert.ok(["ENOTDIR", "EEXIST"].includes(refused.code), refused.error);
+    assert.match(refused.failure.error, new RegExp(refused.code));
     assert.equal(refused.phase, "preparation");
     assert.equal(refused.seconds, undefined);
     assert.deepEqual(refused.captures, []);
@@ -186,6 +187,9 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     // preparation has written its actual settings. No model is launched.
     const result = await runCase(process.execPath, root, root, "session", new AbortController().signal);
     assert.equal(result.status, "fail");
+    assert.deepEqual(result.failure.assertion, {
+      operator: "strictEqual", actual: String(result.captures[0].code), expected: "0",
+    });
     const settings = JSON.parse(await readFile(join(root, "session/settings/.claude/settings.json"), "utf8"));
     const [{ hooks: [hook] }] = settings.hooks.PostToolUse;
     const original = childResults[0].events[0];

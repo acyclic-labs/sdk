@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
-import { publishReport } from "./report.mjs";
+import { failureReport, publishReport } from "./report.mjs";
 import { conversation } from "./conversation.mjs";
 import { fileBytes, toolOutcome } from "./assertions.mjs";
 
@@ -158,6 +158,7 @@ export async function runCase(binary, login, root, name, signal) {
       setup_seconds: receipt.preparation_seconds, total_seconds: receipt.total_seconds, phases, captures, hooks: childHooks };
   } catch (error) {
     return { case: name, platform: process.platform, status: "fail", code: error.code,
+      failure: failureReport(error),
       phase: phases.findLast(phase => phase.outcome === "failed")?.phase ?? (begin === undefined ? "admission" : "run"),
       ...(begin === undefined ? {} : { seconds: (performance.now() - begin) / 1000 }),
       setup_seconds: phases.find(phase => phase.phase === "preparation" && phase.outcome !== "entered")?.seconds ?? 0,
