@@ -73,6 +73,23 @@ captures. Refresh only these original writer seeds with
 The retired Actor timer capture remains historical input; it has no current
 production timer decoder or producer join.
 
+Capture committed Actor failure and disposition records through the original
+local Store and durable Streams adapter with:
+
+```sh
+cargo run --locked --features storage-schedules --example capture -- --only-actor-failures --extend-goldens
+```
+
+This producer injects a deterministic application `Decode` failure, commits
+replay and purge dispositions, closes the provider, and rereads the original
+records after opening the same directory. Only those recovered records enter
+the shared Streams wire encoder and `actor_codecs` oracle. The public trusted
+clock fixes timestamps for byte comparison. This checks in-process durable
+reopen and original publication identity; it does not simulate a process kill,
+remote member, or transport failure. The command preserves unrelated corpus
+and golden rows. Captured bytes and execution evidence remain pending until
+the producer runs.
+
 Capture also writes `corpus/resource-identity-v1.json` from the actual resource
 encoder and cross-language vector inputs. When admitting an identity format,
 copy that output to `../crates/auth/tests/fixtures/resource-identity-v1.json`;

@@ -4,6 +4,10 @@ use prost::Message;
 use sha2::{Digest as _, Sha256};
 use std::{error::Error, path::Path};
 
+#[cfg(feature = "storage-schedules")]
+#[path = "capture/failures.rs"]
+mod failures;
+
 fn json_seed(
     decoder: &acyclic_codec_fuzz::Decoder,
     payload: &[u8],
@@ -170,6 +174,20 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-actor-failures") {
+        #[cfg(feature = "storage-schedules")]
+        {
+            let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+                .lines()
+                .filter(|line| !line.starts_with("actor_codecs/failure-"))
+                .map(|line| format!("{line}\n"))
+                .collect::<String>();
+            capture_actor_failures(&mut manifest)?;
+            return finish(&manifest, "actor_codecs/failure-");
+        }
+        #[cfg(not(feature = "storage-schedules"))]
+        return Err("durable failure capture requires storage-schedules; recovery: cargo run --features storage-schedules --example capture -- --only-actor-failures --extend-goldens".into());
+    }
     if std::env::args().any(|arg| arg == "--only-agents") {
         let prefix = agent_prefix();
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
@@ -325,6 +343,8 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     #[cfg(feature = "storage-schedules")]
     capture_storage(&mut manifest)?;
+    #[cfg(feature = "storage-schedules")]
+    capture_actor_failures(&mut manifest)?;
     #[cfg(not(feature = "storage-schedules"))]
     {
         let previous = match std::fs::read_to_string("corpus/SOURCES.tsv") {
@@ -333,10 +353,9 @@ fn capture() -> Result<(), Box<dyn Error>> {
             Err(error) => return Err(format!("load retained physical corpus provenance failed: {error}; recovery: cargo run --example capture").into()),
         };
         // A syntax-only capture cannot replace physical schedule evidence.
-        for line in previous
-            .lines()
-            .filter(|line| line.starts_with("object_schedule/"))
-        {
+        for line in previous.lines().filter(|line| {
+            line.starts_with("object_schedule/") || line.starts_with("actor_codecs/failure-")
+        }) {
             manifest.push_str(line);
             manifest.push('\n');
         }
@@ -726,6 +745,20 @@ fn capture_protobuf(
             .position(|decoder| decoder.name == *message)
             .ok_or("semantic seed has no generated message decoder")?;
         pair(index, &format!("{message}-{variant}"), payload, true)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "storage-schedules")]
+fn capture_actor_failures(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    for (name, bytes) in failures::capture()? {
+        save(
+            "actor_codecs",
+            &name,
+            &bytes,
+            "Store::prepare_failed_input/prepare_disposition -> submit -> LocalStream ordinary read after durable reopen -> wire_codec::record_wire; public trusted clock fixed at42ms; application Decode cause injected, no remote failure claim",
+            manifest,
+        )?;
     }
     Ok(())
 }
