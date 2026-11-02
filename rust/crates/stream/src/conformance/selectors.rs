@@ -2,6 +2,10 @@
 //! tail, and `children` paging, each with a negative control.
 use super::*;
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod model;
+
 /// Every record of one indexed read, paged `page` at a time through the
 /// shared continuation rule, [`crate::ReadKeySeek::advance`].
 async fn selected<P: StreamProvider + ?Sized>(

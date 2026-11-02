@@ -5,6 +5,9 @@ mod atomic;
 mod backend;
 pub(crate) mod key_seek;
 mod selectors;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use selectors::model as selector_model;
 mod soft;
 mod views;
 #[path = "conformance"]
