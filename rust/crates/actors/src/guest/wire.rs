@@ -16,8 +16,6 @@ use super::{
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
 use bytes::Bytes;
-#[cfg(test)]
-use prost::Message as _;
 
 /// Fixed key of the encoded effect commit; publication supplies its own key.
 const EFFECTS_KEY: &[u8] = b"acyclic.actors.transition.v1";

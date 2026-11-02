@@ -133,6 +133,7 @@ async fn publication_and_reopen() -> TestResult {
                 key: "acyclic.actors.escrow.v1".into(),
                 value: crate::escrow::Escrow::new(None).encode(),
             }],
+            deletions: Vec::new(),
             journal_from: "1".into(),
             journal: Vec::new(),
             alarm: crate::guest::ActorStateAlarm::Keep,
