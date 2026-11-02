@@ -2,6 +2,7 @@ import { create, fromBinary, toBinary, type DescMessage, type MessageInitShape }
 import { SecretPutRequestSchema, SecretListRequestSchema, SecretDeleteRequestSchema,
   SecretMutationReplySchema, SecretListReplySchema } from "../generated/proto/auth/v1/auth_pb.js";
 import { SecretsClient as RustSecretsClient } from "./wasm.js";
+import type { OperationContext } from "./operation.js";
 
 // Inspect the generated descriptor rather than maintaining another request
 // schema. Protobuf create() would silently discard an account selector.
@@ -18,14 +19,17 @@ function admit<Schema extends DescMessage>(schema: Schema, request: MessageInitS
 }
 
 /** Shared Rust client. Generation/version fields stay bigint at the JS boundary.
- * The current embedding has no invocation-context ingress: operations refuse
- * with missing_operation_context before credentials or HTTP until the original
- * host supplies that prerequisite.
+ * The original host supplies one deadline/stop owner for the entire invocation.
+ * This client never starts a replacement timer or extends that deadline.
  */
 export class SecretsClient {
   readonly #inner: RustSecretsClient;
-  constructor(endpoint: string, credential: () => string | Promise<string>) {
-    this.#inner = new RustSecretsClient(endpoint, credential);
+  constructor(endpoint: string, credential: () => string | Promise<string>, operation: OperationContext | undefined) {
+    if (operation && (typeof operation.deadlineUnixMillis !== "bigint"
+      || operation.deadlineUnixMillis < 0n || operation.deadlineUnixMillis > 0xffff_ffff_ffff_ffffn)) {
+      throw new Error("secrets: invalid original deadline");
+    }
+    this.#inner = new RustSecretsClient(endpoint, credential, operation?.deadlineUnixMillis, operation?.stopped);
   }
   async put(request: MessageInitShape<typeof SecretPutRequestSchema>) {
     const bytes = admit(SecretPutRequestSchema, request);

@@ -21,6 +21,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
+/// Bind the process's original console interrupt at CLI ingress. This invocation
+/// has no deadline; it retains one interrupt registration and creates no timer,
+/// clock or task. Registration failure stops the invocation as cancellation.
+/// Hosted callers instead pass their already-owned context to [`run`].
+pub fn interrupt_context() -> acyclic_auth::operation::Context {
+    acyclic_auth::operation::Context::from_stopped(u64::MAX, async {
+        let _ = tokio::signal::ctrl_c().await;
+        acyclic_auth::operation::Stopped::Cancelled
+    })
+}
+
 /// Whether a command is handled by the customer identity service.
 #[must_use]
 pub fn is_command(command: &str) -> bool {
