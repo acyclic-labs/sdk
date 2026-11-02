@@ -68,7 +68,7 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: impl Into<Option<usize>>,
     ) -> Result<
         (
             CallInputSender,
@@ -80,6 +80,7 @@ impl Client {
         ),
         StreamError,
     > {
+        let maximum_reply_bytes = maximum_reply_bytes.into();
         validate_call(invocation, maximum_reply_bytes)?;
         let cursor = self
             .open_cursor(
@@ -193,7 +194,7 @@ impl Client {
 
     fn reply_cursor(
         cursor: Cursor,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
     + 'static
     + use<> {
