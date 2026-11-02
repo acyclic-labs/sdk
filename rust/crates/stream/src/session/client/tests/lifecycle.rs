@@ -5,6 +5,7 @@ fn waiting_client() -> (Client, commands::Receiver) {
     (
         Client {
             pool: PoolHandle {
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 connections: super::super::super::Connections::new(),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
@@ -343,6 +344,6 @@ async fn dispatch_shutdown_wakes_pending_open_credit() -> TestResult {
     drop(commands);
     assert!(matches!(waiting.await, Err(StreamError::Unavailable)));
     assert!(matches!(first.await, Err(StreamError::Unavailable)));
-    assert_eq!(client.active.load(Ordering::Acquire), 0);
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     Ok(())
 }
