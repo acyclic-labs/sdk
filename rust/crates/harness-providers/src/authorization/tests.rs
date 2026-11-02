@@ -271,7 +271,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         "rotation keeps original account scope"
     );
     assert!(
-        provider.count_tokens(&request).await.is_err(),
+        provider.count_tokens(&request, 0).await.is_err(),
         "captured 429 retains bounded count retry semantics"
     );
     let mut api_key = specification(

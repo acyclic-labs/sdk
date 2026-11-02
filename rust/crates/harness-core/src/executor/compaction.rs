@@ -160,8 +160,15 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
+        let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
         let count = if pre_stage {
-            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io).await?
+            stock_count_tokens(
+                self.stock.provider.as_ref(),
+                &canonical_request,
+                ceiling,
+                self.io,
+            )
+            .await?
         } else {
             count
         };
@@ -200,7 +207,7 @@ impl StockExecution<'_> {
             self.io,
         )?;
         let mandatory_count =
-            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, self.io).await?;
+            stock_count_tokens(self.stock.provider.as_ref(), &mandatory, ceiling, self.io).await?;
         let mandatory_count =
             with_history_io(self.io, |work| mandatory_count.validate(&mandatory, work))?;
         if policy.needs_compaction(capacity, mandatory_count, self.output_tokens())? {
@@ -275,7 +282,9 @@ impl StockExecution<'_> {
                 "automatic compaction is disabled",
             ));
         };
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
+        let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
+        let count =
+            stock_count_tokens(self.stock.provider.as_ref(), &request, ceiling, self.io).await?;
         let final_count = with_history_io(self.io, |work| count.validate(&request, work))?;
         if policy.needs_compaction(capacity, final_count, self.output_tokens())? {
             return Err(stock_boundary(

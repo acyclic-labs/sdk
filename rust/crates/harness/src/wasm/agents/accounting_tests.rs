@@ -59,7 +59,7 @@ async fn accounting_callbacks_bind_exact_selection_bytes_and_request() -> Result
         "bytes,digest",
         "const request = JSON.parse(new TextDecoder().decode(bytes)); if(request.model.revision !== 'selected' || request.messages[0].content !== 'canonical input') throw new Error('wrong canonical request'); return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3]};",
     ));
-    let count = provider.count_tokens(&request).await?;
+    let count = provider.count_tokens(&request, 0).await?;
     assert_eq!(count.validate(&request, &mut None)?, 5);
     assert!(count.validate(&prepared("changed")?, &mut None).is_err());
     Ok(())
@@ -73,13 +73,13 @@ async fn asynchronous_count_callbacks_preserve_verified_totals() -> Result<()> {
         "bytes,digest",
         "return Promise.resolve({request_digest:digest, input_tokens:512n, fixed_tokens:1, message_tokens:[1]});",
     ));
-    let count = provider.count_tokens(&request).await?;
+    let count = provider.count_tokens(&request, 0).await?;
     assert_eq!(count.validate(&request, &mut None)?, 512);
     assert_eq!(count.fixed_tokens + count.message_tokens[0], 2);
     provider.count_tokens = Some(Function::new_no_args(
         "return Promise.reject(new Error('private counter detail'));",
     ));
-    let error = provider.count_tokens(&request).await.unwrap_err();
+    let error = provider.count_tokens(&request, 0).await.unwrap_err();
     assert!(!error.to_string().contains("private counter detail"));
     Ok(())
 }
@@ -96,7 +96,7 @@ async fn accounting_rejects_unbound_malformed_results() -> Result<()> {
         "throw new Error('unavailable tokenizer');",
     ] {
         provider.count_tokens = Some(Function::new_with_args("bytes,digest", response));
-        assert!(provider.count_tokens(&request).await.is_err());
+        assert!(provider.count_tokens(&request, 0).await.is_err());
     }
     for response in [
         "return {context_tokens: 0, output_tokens: 1};",
@@ -119,7 +119,7 @@ async fn missing_accounting_remains_explicitly_unsupported() -> Result<()> {
         Err(Error::Unsupported(_))
     ));
     assert!(matches!(
-        provider.count_tokens(&request).await,
+        provider.count_tokens(&request, 0).await,
         Err(Error::Unsupported(_))
     ));
     Ok(())

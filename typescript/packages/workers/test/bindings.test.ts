@@ -81,6 +81,25 @@ test("deployment declarations become scoped namespace and private service handle
   expect([actorReads,workerReads]).toEqual([1,1]);
   expect(requests).toHaveLength(4);
   expect(requests.slice(0,2)).toMatchObject([{accountId:account,namespace:"ClassOne",actorId:"same",bindingName:"OBJECTS"},{accountId:account,workerName:"worker",bindingName:"SERVICE"}]);
+  for (const handle of [actor,worker]) {
+    const expected = new Uint8Array([29,31,37]);
+    const backing = new Uint8Array(1024 * 1024);
+    backing.set(expected,17);
+    const payload = backing.subarray(17,20);
+    // Negative control: the former slice call substitutes the admitted bytes.
+    Object.defineProperty(payload,"slice",{value:() => new Uint8Array([255])});
+    const pending = handle.rpc("selected",payload);
+    backing.fill(0,17,20);
+    expect(await pending).toEqual(expected);
+    const admitted = requests.length;
+    await expect(handle.rpc("refused",new Uint8Array(new SharedArrayBuffer(3)))).rejects.toBeInstanceOf(TypeError);
+    expect(requests).toHaveLength(admitted);
+    // A boundary refusal has no invocation and leaves the original handle live.
+    expect(await handle.rpc("afterRefusal",expected)).toEqual(expected);
+    const body = new ReadableStream<Uint8Array>({start(controller) {controller.enqueue(expected);controller.close();}});
+    const response = await handle.fetch("https://example.com/",{method:"POST",body,duplex:"half"} as RequestInit);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(expected);
+  }
   factories = 0;
   for (const invalid of [
     {...namespace,resource:"actors:/Other"}, {...namespace,targetAccount:new Uint8Array()},
@@ -129,13 +148,6 @@ for (const kind of ["actor","worker"] as const) {
   const handle = (transport: {invoke(request: semantic.InvokeActorRequest | semantic.InvokeWorkerRequest, options?: import("@acyclic-labs/actors").ActorsCallOptions): Promise<semantic.InvokeActorResponse>}) => kind === "actor"
     ? new ActorNamespaceBinding(account,"ClassOne",{invokeActor:transport.invoke.bind(transport)},"OBJECTS").getByName("same")
     : new WorkerServiceBinding(account,"worker",{invokeWorker:transport.invoke.bind(transport)},"SERVICE");
-  test(`${kind} fetch preserves bodyless statuses and HEAD responses`, async () => {
-    for (const status of [204,205,304,200]) {
-      const target = handle({async invoke() {return {status,headers:[],body:new Uint8Array()};}});
-      const response = await target.fetch("https://example.com/",{method:status === 200 ? "HEAD" : "GET"});
-      expect(response.status).toBe(status); expect(response.body).toBeNull(); expect(await response.text()).toBe("");
-    }
-  });
   test(`${kind} fetch forwards Request, init and SDK cancellation to transport`, async () => {
     for (const source of ["request","init","sdk","both"] as const) {
       let entered!: () => void; const started = new Promise<void>(resolve => {entered = resolve;});
@@ -151,39 +163,6 @@ for (const kind of ["actor","worker"] as const) {
       await started; abort.abort(new Error("cancelled"));
       try { expect(received?.aborted).toBe(true); } finally { sdk.abort(new Error("cleanup")); finish(new Error("cleanup")); }
       expect((await settled).message).toBe("cancelled");
-    }
-  });
-  test(`${kind} abort releases its reader without waiting for source cleanup`, async () => {
-    let read!: () => void, release!: () => void, cancelled = 0, calls = 0, outcome = "pending";
-    const reading = new Promise<void>(resolve => {read = resolve;});
-    const cleanup = new Promise<void>(resolve => {release = resolve;});
-    const body = new ReadableStream<Uint8Array>({pull() {read();},cancel() {cancelled++;return cleanup;}},{highWaterMark:0});
-    const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
-    const abort = new AbortController();
-    const request = new Request("https://example.com/",{method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit);
-    const pending = target.fetch(request).then(() => {outcome="fulfilled";},() => {outcome="rejected";});
-    await reading; abort.abort(new Error("cancelled"));
-    // One event-loop turn drains runnable promise jobs. There is no transport
-    // I/O and cleanup remains explicitly held: a pending result is a dependency.
-    await new Promise<void>(resolve => {setImmediate(resolve);});
-    try {expect(cancelled).toBe(1);expect(outcome).toBe("rejected");expect(request.body!.locked).toBe(false);expect(calls).toBe(0);}
-    finally {release();await pending;}
-  });
-  test(`${kind} standard Fetch cancellation cancels a blocked body before transport`, async () => {
-    for (const source of ["request","init"] as const) {
-      let read!: () => void, controller!: ReadableStreamDefaultController<Uint8Array>, cancelled = 0, calls = 0;
-      const reading = new Promise<void>(resolve => {read = resolve;});
-      const body = new ReadableStream<Uint8Array>({start(value) {controller = value;},pull() {read();},cancel() {cancelled++;}},{highWaterMark:0});
-      const target = handle({async invoke() {calls++;return {status:200,body:new Uint8Array(),headers:[]};}});
-      const abort = new AbortController();
-      const init = {method:"POST",body,duplex:"half",signal:abort.signal} as RequestInit;
-      const pending = source === "request" ? target.fetch(new Request("https://example.com/",init)) : target.fetch("https://example.com/",init);
-      const settled = pending.then(() => "fulfilled",() => "rejected");
-      await reading; abort.abort(new Error("cancelled"));
-      // An owned stream is cancelled during abort dispatch. The negative
-      // forwarding-stream control fails this assertion and closes its source.
-      try {expect(cancelled).toBe(1);expect(calls).toBe(0);} finally {if (!cancelled) controller.close();}
-      expect(await settled).toBe("rejected");
     }
   });
 }

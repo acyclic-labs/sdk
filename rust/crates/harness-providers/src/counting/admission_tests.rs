@@ -22,14 +22,14 @@ proptest! {
             let projected = projection::body_named(&provider, prepared.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
             let counted = wire::body(projected, &provider.model.name, adapter).unwrap();
             let actual = counted.len() as u64 + 512;
-            let first = futures::executor::block_on(provider.count_tokens(&prepared)).unwrap();
+            let first = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));
             prop_assert!(first.input_tokens >= actual);
             // Calibration can alter only planning weights, including after resume.
             provider.estimator.observe(1_000, &json!({"usage":{
                 "input_tokens":observed,"prompt_tokens":observed,"promptTokenCount":observed
             }}));
-            let next = futures::executor::block_on(provider.count_tokens(&prepared)).unwrap();
+            let next = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
             prop_assert_eq!(next.input_tokens, first.input_tokens);
             prop_assert_eq!(next.request_digest, prepared.request_digest());
             if observed >= 1_000 {
@@ -44,7 +44,7 @@ proptest! {
 fn calibrated_weight_negative_control_cannot_establish_admission() -> Result<()> {
     let (provider, _) = provider(Adapter::Responses, 200);
     let (request, _) = request(&provider)?;
-    let count = futures::executor::block_on(provider.count_tokens(&request))?;
+    let count = futures::executor::block_on(provider.count_tokens(&request, 0))?;
     let planning = u64::from(count.fixed_tokens)
         + count
             .message_tokens
@@ -110,7 +110,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
-        let error = provider.count_tokens(&request).await.unwrap_err();
+        let error = provider.count_tokens(&request, 0).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
         // Only a refusal carries its bounded body excerpt, as on dispatch.
@@ -134,7 +134,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
-        assert!(provider.count_tokens(&request).await.is_err());
+        assert!(provider.count_tokens(&request, 0).await.is_err());
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = 8;
@@ -147,7 +147,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, _) = request(&provider)?;
-    assert!(provider.count_tokens(&request).await.is_err());
+    assert!(provider.count_tokens(&request, 0).await.is_err());
     let counted = b"{\"input_tokens\":1}";
     Arc::make_mut(&mut provider.config).max_event_bytes = counted.len();
     provider.transport = crate::deadline::Bounded::new(
@@ -158,7 +158,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         }),
         crate::TimeoutSpec::DEFAULT,
     );
-    assert_eq!(provider.count_tokens(&request).await?.input_tokens, 1);
+    assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 1);
     Ok(())
 }
 
@@ -207,7 +207,7 @@ proptest::proptest! {
         });
         provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
-        let result = futures::executor::block_on(provider.count_tokens(&request));
+        let result = futures::executor::block_on(provider.count_tokens(&request, 0));
         let final_failure = definitive || matches!(status, 400 | 413);
         let expected = if final_failure && failures > 0 { 1 } else { (failures + 1).min(usize::from(budget) + 1) };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
@@ -217,4 +217,196 @@ proptest::proptest! {
             proptest::prop_assert_eq!(count.request_digest, request.request_digest());
         }
     }
+}
+
+/// Counts sends; a turn whose bound is within its ceiling must send none.
+struct Sends(std::sync::atomic::AtomicUsize);
+impl HttpTransport for Sends {
+    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, Result<()>> {
+        crate::fixtures::delay(wait)
+    }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
+    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {
+            Ok(HttpResponse {
+                request_id: None,
+                retry_after: None,
+                status: 200,
+                body: Box::pin(futures::stream::iter([Ok(Bytes::from_static(
+                    b"{\"input_tokens\":7}",
+                ))])),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
+    for (adapter, _) in fixtures() {
+        let (mut provider, _) = provider(adapter, 200);
+        let framing = 3;
+        Arc::make_mut(&mut provider.config)
+            .token_counter
+            .as_mut()
+            .unwrap()
+            .framing_tokens = framing;
+        let sends = Arc::new(Sends(std::sync::atomic::AtomicUsize::new(0)));
+        provider.transport =
+            crate::deadline::Bounded::new(sends.clone(), crate::TimeoutSpec::DEFAULT);
+        let sent = || sends.0.load(std::sync::atomic::Ordering::SeqCst);
+        let (prepared, _) = request(&provider)?;
+        let names = crate::tool_names::Names::new(prepared.request());
+        let origin = provider.reasoning_origin(provider.key.as_deref(), None);
+        let projected = projection::body_named(
+            &provider,
+            prepared.request(),
+            &names,
+            &origin,
+            &mut crate::files::FileText::default(),
+        )?;
+        let body = wire::body(projected, &provider.model.name, adapter)?.len() as u64;
+        // Unanchored: the exact body bounds every counted token.
+        let bound = provider.count_tokens(&prepared, u64::MAX).await?;
+        assert_eq!((bound.input_tokens, sent()), (body + u64::from(framing), 0));
+        assert_eq!(bound.request_digest, prepared.request_digest());
+        // Negative control: a ceiling the bound cannot prove sends the verified count.
+        let counted = provider.count_tokens(&prepared, body).await?;
+        assert_eq!((counted.input_tokens, sent()), (7 + u64::from(framing), 1));
+        // Anchored on reported usage, a tighter ceiling is still proven locally.
+        provider.usage.observe(
+            adapter,
+            &prepared,
+            &json!({"usage":{"input_tokens":5,"prompt_tokens":5,"promptTokenCount":5}}),
+        )?;
+        let anchored = provider
+            .count_tokens(&prepared, 5 + u64::from(framing))
+            .await?;
+        assert_eq!((anchored.input_tokens, sent()), (5 + u64::from(framing), 1));
+        if adapter == Adapter::Anthropic {
+            let mut request = prepared.request().clone();
+            request.messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::Notices {
+                    notices: vec![acyclic_model_render::Notice {
+                        source: "files".into(),
+                        kind: "files.changed".into(),
+                        body: json!({"paths":["&'".repeat(128)]}),
+                        wake: false,
+                        coalesce_key: None,
+                    }],
+                }),
+            });
+            for as_parts in [false, true] {
+                if as_parts {
+                    let content = &mut request.messages.last_mut().unwrap().content;
+                    *content = ModelContent::Parts(content.parts().to_vec());
+                }
+                // Restore the old semantic-byte calculation as the negative:
+                // it fits this ceiling but omits the renderer's XML expansion.
+                let old_bound = 5
+                    + serde_json::to_vec(request.messages.last().unwrap())
+                        .unwrap()
+                        .len() as u64
+                    + u64::from(framing);
+                let expanded =
+                    PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(expanded.request());
+                let projected = projection::body_named(
+                    &provider,
+                    expanded.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                let expanded_bound = rendered.len() as u64 + u64::from(framing);
+                assert!(expanded_bound > old_bound);
+                let before = sent();
+                let verified = provider.count_tokens(&expanded, old_bound).await?;
+                assert_eq!(
+                    (verified.input_tokens, sent()),
+                    (7 + u64::from(framing), before + 1)
+                );
+                // The exact expanded body still permits zero-HTTP admission.
+                let local = provider.count_tokens(&expanded, expanded_bound).await?;
+                assert_eq!((local.input_tokens, sent()), (expanded_bound, before + 1));
+            }
+            let whitespace = "\t\n ".repeat(4096);
+            for blank in [
+                ModelContent::Text(whitespace.clone()),
+                ModelContent::Part(ModelContentPart::Text {
+                    text: whitespace.clone(),
+                    native: None,
+                }),
+                ModelContent::Parts(vec![ModelContentPart::Text {
+                    text: whitespace.clone(),
+                    native: None,
+                }]),
+            ] {
+                let mut request = prepared.request().clone();
+                request.messages = vec![
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: ModelContent::Text("Question".into()),
+                    },
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text("Answer".into()),
+                    },
+                    ModelMessage {
+                        role: ModelRole::User,
+                        content: blank,
+                    },
+                ];
+                let observed =
+                    PreparedModelRequest::prepare(request.clone(), Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(observed.request());
+                let projected = projection::body_named(
+                    &provider,
+                    observed.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let old_body = wire::body(projected, &provider.model.name, adapter)?;
+                provider
+                    .usage
+                    .observe(adapter, &observed, &json!({"usage":{"input_tokens":5}}))?;
+                let next = ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("Continue".into()),
+                };
+                // The old usage shortcut charges only this new message, although
+                // the same real renderer now restores the old whitespace run.
+                let old_bound =
+                    5 + serde_json::to_vec(&next).unwrap().len() as u64 + u64::from(framing);
+                request.messages.push(next);
+                let restored = PreparedModelRequest::prepare(request, Limits::default(), None)?;
+                let names = crate::tool_names::Names::new(restored.request());
+                let projected = projection::body_named(
+                    &provider,
+                    restored.request(),
+                    &names,
+                    &origin,
+                    &mut crate::files::FileText::default(),
+                )?;
+                let rendered = wire::body(projected, &provider.model.name, adapter)?;
+                assert!(rendered.len() > old_body.len() + whitespace.len());
+                let rendered_bound = rendered.len() as u64 + u64::from(framing);
+                assert!(rendered_bound > old_bound);
+                let before = sent();
+                let verified = provider.count_tokens(&restored, old_bound).await?;
+                assert_eq!(
+                    (verified.input_tokens, sent()),
+                    (7 + u64::from(framing), before + 1)
+                );
+                let local = provider.count_tokens(&restored, rendered_bound).await?;
+                assert_eq!((local.input_tokens, sent()), (rendered_bound, before + 1));
+            }
+        }
+    }
+    Ok(())
 }

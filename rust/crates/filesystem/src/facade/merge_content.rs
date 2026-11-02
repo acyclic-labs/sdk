@@ -91,11 +91,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         record: FileRecord,
     ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
         let logical_bytes = match record.payload {
-            FilePayload::InlineRegular(data) => {
-                return Ok(Some(acyclic_stream::OwnedBytes::from(
-                    data.as_bytes().to_vec(),
-                )));
-            }
+            FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
         };
@@ -104,24 +100,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let cancellation = CancellationToken::new();
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-        crate::kernel::read_file_range_with_accounting(
-            &self.inner.objects,
-            FileRangeRequest {
-                record,
-                range: ByteRange {
-                    offset: 0,
-                    length: logical_bytes,
-                },
-                maximum_spans: workspace.config.limits.maximum_directory_page_entries,
-                limits: DecodeLimits::for_volume(workspace.config),
-                budget: WorkBudget::UNBOUNDED,
+        self.workspace_merge_range_with_accounting(
+            workspace,
+            record,
+            ByteRange {
+                offset: 0,
+                length: logical_bytes,
             },
             &mut accounting,
             &cancellation,
         )
         .await
         .map(|read| Some(read.bytes))
-        .map_err(WorkspaceError::engine)
+    }
+
+    pub(crate) async fn workspace_merge_range_with_accounting(
+        &self,
+        workspace: &Volume<A, O>,
+        record: FileRecord,
+        range: ByteRange,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::FileRangeRead, WorkspaceError> {
+        let mut scope = accounting.allocation_scope()?;
+        scope.check()?;
+        if range.length > workspace.config.limits.maximum_read_bytes {
+            return Err(FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into());
+        }
+        let before = readonly_standalone_live(&scope);
+        let result = crate::kernel::read_file_range_with_accounting(
+            &self.inner.objects,
+            FileRangeRequest {
+                record,
+                range,
+                maximum_spans: workspace.config.limits.maximum_directory_page_entries,
+                limits: DecodeLimits::for_volume(workspace.config),
+                budget: scope.remaining()?,
+            },
+            &mut scope,
+            cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::from);
+        let retained = result.as_ref().map_or(0, |read| read.logical_owned_bytes);
+        readonly_cleanup_standalone(&mut scope, before, retained)?;
+        if result.is_ok() {
+            scope.keep();
+        }
+        result
     }
     pub(crate) async fn same_file_state(
         &self,

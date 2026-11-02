@@ -140,7 +140,7 @@ pub struct ProcessTree {
     custody: Option<custody::Record>,
     /// The direct child's pidfd, opened by its first wait and closed at reap.
     #[cfg(target_os = "linux")]
-    exit_fd: Option<std::os::fd::OwnedFd>,
+    exit_fd: Option<events::OwnedSource<std::os::fd::OwnedFd>>,
     /// Owner of overlapped stdin writes, created by the first write.
     writer: platform::Writer,
     /// Input owned by an incremental native-session supervisor. The writer
@@ -161,10 +161,13 @@ pub struct ProcessTree {
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
 /// It holds no thread and settles once, retaining the original OS wait error
-/// if its shared event producer fails.
+/// if its shared event producer fails. Closing or transferring an original
+/// source cancels a pending observation before releasing that source's claim.
 pub struct ProcessReadiness(events::Wait<'static>);
 
 pub use events::ProcessWaitOutcome;
+#[cfg(unix)]
+pub use events::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 
 impl ProcessReadiness {
     /// Cancels this observation without releasing the original process owner.
@@ -567,7 +570,10 @@ impl ProcessTree {
         if self.queued_stdin.is_some() {
             return None;
         }
-        self.child.as_mut()?.stdin.take()
+        let pipe = self.child.as_mut()?.stdin.take()?;
+        #[cfg(unix)]
+        let pipe = pipe.into_inner();
+        Some(pipe)
     }
 
     /// Queues one literal prompt without transferring the pipe or starting a
@@ -621,12 +627,18 @@ impl ProcessTree {
 
     /// Transfers stdout to a host-owned reader, which owns its output bounds.
     pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
-        self.child.as_mut()?.stdout.take()
+        let pipe = self.child.as_mut()?.stdout.take()?;
+        #[cfg(unix)]
+        let pipe = pipe.into_inner();
+        Some(pipe)
     }
 
     /// Transfers stderr to a host-owned reader, which owns its output bounds.
     pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
-        self.child.as_mut()?.stderr.take()
+        let pipe = self.child.as_mut()?.stderr.take()?;
+        #[cfg(unix)]
+        let pipe = pipe.into_inner();
+        Some(pipe)
     }
 
     /// Arms one wait that fires when retained stdout or stderr has data or
@@ -1167,7 +1179,9 @@ impl ProcessTree {
             }
             let fd = std::os::fd::RawFd::try_from(fd).map_err(io::Error::other)?;
             // SAFETY: a successful pidfd_open returns one new owned fd.
-            self.exit_fd = Some(unsafe { std::os::fd::FromRawFd::from_raw_fd(fd) });
+            self.exit_fd = Some(events::OwnedSource::new(unsafe {
+                <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+            }));
         }
         Ok(())
     }

@@ -83,6 +83,73 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         NativeMaterializationWork::accounting_state_bytes()
     );
 
+    let (resident_id, resident) = blob(OwnedBytes::from_static(b"independent resident read"));
+    store
+        .put(
+            resident_id,
+            resident.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    for exit in 0..3 {
+        let caller = CancellationToken::new();
+        let original_token = CancellationToken::new();
+        let original = NativeMaterializationWork::new(native_read_budget(), &original_token)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let before = original.receipt();
+        let mut work = if exit == 0 {
+            AuthorityWork::new(native_read_budget(), &caller)
+        } else {
+            AuthorityWork::native(&original, &caller)
+        };
+        let spill_file = store.spill_io.write().await;
+        let mut future = Box::pin(store.read(id, bytes.len() as u64, &mut work));
+        assert!(futures::poll!(future.as_mut()).is_pending());
+        let mut independent = AuthorityWork::new(native_read_budget(), &token);
+        let mut read = std::pin::pin!(store.read(resident_id, 1024, &mut independent));
+        let std::task::Poll::Ready(result) = futures::poll!(read.as_mut()) else {
+            panic!("a spill lease blocked an independent resident read");
+        };
+        assert_eq!(result?.bytes, resident);
+        if exit == 2 {
+            original_token.cancel();
+        } else {
+            caller.cancel();
+        }
+        // The original lease producer releases this exact queued read.
+        drop(spill_file);
+        let result = future.await;
+        if exit == 2 {
+            assert!(matches!(
+                result,
+                Err(ObjectStoreError::Native(
+                    NativeTreeMaterializationError::Cancelled
+                ))
+            ));
+        } else {
+            assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
+        }
+        let completed = if exit == 0 {
+            work.work
+        } else {
+            original.receipt()
+        };
+        assert_eq!(completed.backend_read_operations, 0);
+        assert_eq!(completed.object_bytes_read, 0);
+        assert_eq!(completed.bytes_hashed, 0);
+        assert_eq!(
+            completed.allocation_operations,
+            if exit == 0 {
+                0
+            } else {
+                before.allocation_operations + 1
+            }
+        );
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
+    }
+
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let spill_file = store.spill_io.write().await;

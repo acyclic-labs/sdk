@@ -1,6 +1,120 @@
 use super::*;
 
 #[tokio::test]
+async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_loss()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inner = Arc::new(MemoryObjectStore::default());
+    let setup = CancellationToken::new();
+    let objects = [object(b"first"), object(b"second")];
+    for (id, bytes) in &objects {
+        object_work!(inner, put(*id, bytes.clone()), B, &setup).await?;
+    }
+    let requests = objects.map(|(object_id, bytes)| ObjectReadRequest {
+        object_id,
+        maximum_bytes: bytes.len() as u64,
+    });
+    let mut first = AuthorityWork::new(B, &setup);
+    drop(
+        inner
+            .read(requests[0].object_id, requests[0].maximum_bytes, &mut first)
+            .await?,
+    );
+    let first = first.spent();
+    for exit in 0..6 {
+        let completed_reads = u64::from(exit >= 4);
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(
+            WorkBudget {
+                allocation_operations: 2,
+                peak_allocation_bytes: 31 + (2 * size_of::<ObjectRead>()) as u64,
+                ..B
+            },
+            &cancellation,
+        );
+        work.charge(WorkCounters {
+            items_examined: 7,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let mut earlier = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut work.accounting())?;
+        earlier.value.extend([7; 31]);
+        let before = work.spent();
+        let live = work.allocations.live_bytes();
+        let (producer, receiver) = futures::channel::oneshot::channel();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let store = GatedStore {
+            reads_before_gate: completed_reads as usize,
+            inner: Arc::clone(&inner),
+            gate: futures::FutureExt::shared(receiver),
+            reads: Arc::clone(&reads),
+        };
+        let mut batch = Box::pin(crate::async_storage::read_many_sequential(
+            &store, &requests, &mut work,
+        ));
+        assert!(futures::poll!(batch.as_mut()).is_pending());
+        assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
+        let mut sibling = AuthorityWork::new(B, &setup);
+        assert!(inner.contains(requests[0].object_id, &mut sibling).await?);
+        match exit {
+            0 => {
+                producer
+                    .send(())
+                    .map_err(|_| "original read receiver closed")?;
+                let (values, allocation) = batch.await?;
+                assert_eq!(values[0].bytes.as_ref(), b"first");
+                assert_eq!(values[1].bytes.as_ref(), b"second");
+                drop(values);
+                drop(allocation);
+            }
+            1 => {
+                drop(producer);
+                assert!(matches!(
+                    batch.await,
+                    Err(ObjectStoreError::Io(error))
+                        if error.kind() == std::io::ErrorKind::BrokenPipe
+                ));
+            }
+            _ => {
+                if exit == 3 || exit == 5 {
+                    cancellation.cancel();
+                }
+                drop(batch);
+                drop(producer);
+            }
+        }
+        let completed = work.spent();
+        // The old outer child frame loses even this admitted prefix on drop.
+        assert_eq!(
+            completed.allocation_operations,
+            before.allocation_operations + 1
+        );
+        assert!(completed.peak_allocation_bytes >= live + (2 * size_of::<ObjectRead>()) as u64);
+        if exit == 0 {
+            assert_eq!(reads.load(Ordering::Acquire), 2);
+            assert_eq!(completed.backend_read_operations, 2);
+            assert_eq!(completed.items_returned, 2);
+        } else {
+            assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
+            assert_eq!(
+                completed.items_examined,
+                before.items_examined + 2 + completed_reads * first.items_examined
+            );
+            assert_eq!(completed.backend_read_operations, completed_reads);
+            assert_eq!(
+                completed.object_bytes_read,
+                completed_reads * first.object_bytes_read
+            );
+            assert_eq!(completed.bytes_hashed, completed_reads * first.bytes_hashed);
+            assert_eq!(completed.items_returned, 0);
+        }
+        assert_eq!(earlier.value, [7; 31]);
+        assert_eq!(work.allocations.live_bytes(), live);
+        earlier.retire(&mut work.accounting())?;
+        assert_eq!(work.allocations.live_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn malformed_backend_batch_cardinality_releases_all_flights()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = Arc::new(MemoryObjectStore::default());

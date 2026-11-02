@@ -5,7 +5,7 @@ import { ObjectsV1Memory, ObjectsV1Request as RustRequest, objects_v1_digest, ve
 import type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
 export type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
-import { snapshotBytes } from "@acyclic-labs/auth";
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { awaitSignal } from "@acyclic-labs/auth/credential";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 

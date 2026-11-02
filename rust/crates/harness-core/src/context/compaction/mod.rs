@@ -78,9 +78,19 @@ impl ThresholdCompaction {
         input_tokens: u64,
         output_tokens: Option<u32>,
     ) -> Result<bool> {
+        Ok(input_tokens > self.input_ceiling(capacity, output_tokens)?)
+    }
+
+    /// The most input admitted without compaction under the response reserve.
+    pub fn input_ceiling(
+        &self,
+        capacity: ModelContextCapacity,
+        output_tokens: Option<u32>,
+    ) -> Result<u64> {
         let output = self.validate(capacity, output_tokens)?;
-        Ok(input_tokens
-            > u64::from(capacity.context_tokens - self.response_reserve_tokens.max(output)))
+        Ok(u64::from(
+            capacity.context_tokens - self.response_reserve_tokens.max(output),
+        ))
     }
 }
 

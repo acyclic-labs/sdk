@@ -117,14 +117,14 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
         })?;
         let baseline = work.live_allocation_bytes();
         let result = provider
-            .count_tokens_with_native_work(&request, &work)?
+            .count_tokens_with_native_work(&request, 0, &work)?
             .await;
         if total == 65_536 {
             let (count, custody) = result?;
             assert!(custody.work().shares_allocation_context(&work));
             assert!(custody.work().shares_ledger(&work));
             assert_eq!(count.request_digest, request.request_digest());
-            assert_eq!(count.input_tokens, provider.codex_count.count(&request)?);
+            assert_eq!(count.input_tokens, provider.usage.codex_estimate(&request)?);
             assert_eq!(work.receipt().items_examined, prior + completed_items);
             drop((count, custody));
         } else {
@@ -175,10 +175,16 @@ async fn stock(broken: bool) -> Result<()> {
         // base_url. Disable the new local choice to expose precisely that route.
         provider.codex_login = None;
         provider.key = Some("fixture-key".into());
-        Arc::make_mut(&mut provider.config).token_counter =
-            crate::catalog::default_catalog()["openai"]
-                .token_counter
-                .clone();
+        let mut counter = crate::catalog::default_catalog()["openai"]
+            .token_counter
+            .clone()
+            .ok_or_else(|| invalid("fixture inherited counter is absent"))?;
+        // Generated counter configuration on the original catalog: framing
+        // alone fills this context, so the byte shortcut cannot admit the
+        // unchanged stock task. It must reach the inherited, absent route.
+        counter.framing_tokens = u32::try_from(provider.capacity.context_tokens)
+            .map_err(|_| invalid("fixture context exceeds counter framing"))?;
+        Arc::make_mut(&mut provider.config).token_counter = Some(counter);
     }
     // This fixture declares an 8192-token context in its catalog. Enable
     // automatic counting with explicit compaction budgets inside that window.

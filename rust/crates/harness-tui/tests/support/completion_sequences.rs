@@ -185,13 +185,11 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
     assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
-    let selected = menu.items().position(|item| item.value == alias);
-    menu.selected = selected.unwrap_or(usize::MAX);
-    assert!(
-        menu.items()
-            .nth(menu.selected)
-            .is_some_and(|item| item.tool)
-    );
+    let selected = menu.items().position(|item| item.value == alias).unwrap();
+    for _ in 0..selected {
+        menu.cycle(false);
+    }
+    assert!(menu.selected().is_some_and(|item| item.tool));
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), format!("/{alias} "));
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;

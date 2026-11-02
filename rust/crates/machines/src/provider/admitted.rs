@@ -717,7 +717,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             "acyclic.machines.cancel",
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async { self.journal.inspect(operation).await }
+            async { self.journal.cancel(operation).await }
         )
     }
     async fn watch_operation(

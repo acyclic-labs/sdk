@@ -342,7 +342,7 @@ proptest! {
                     boxed.unwrap().try_collect::<Vec<_>>().await.unwrap();
                 }
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-                let baseline_count = provider.count_tokens(&request).await.unwrap();
+                let baseline_count = provider.count_tokens(&request, 0).await.unwrap();
                 let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();
                 assert_eq!(baseline_count, count);
                 assert_eq!(baseline_generation.bytes.as_slice(), prepared.generation.as_ref());
@@ -362,7 +362,7 @@ proptest! {
                         acyclic_harness_core::wire::ErrorCode::Unsupported
                     };
                     let before = reader.reads.load(Ordering::SeqCst);
-                    assert_eq!(provider.count_tokens(&request).await.unwrap_err().code(), expected);
+                    assert_eq!(provider.count_tokens(&request, 0).await.unwrap_err().code(), expected);
                     let error = crate::prepared::PreparedInput::new(&provider, request.clone()).await.err().expect("unverified prepared counter admitted");
                     assert_eq!(error.code(), expected);
                     let cancellation = acyclic_fs::CancellationToken::new();
@@ -370,7 +370,7 @@ proptest! {
                         acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
                     ).unwrap();
                     let baseline = work.live_allocation_bytes();
-                    let error = crate::counting::count(&provider, &request, Some(&work)).await.err().expect("unverified native counter admitted");
+                    let error = crate::counting::count(&provider, &request, 0, Some(&work)).await.err().expect("unverified native counter admitted");
                     assert!(matches!(error, Error::NativeBoundary {code, reason} if code == expected && reason == if counter.is_some() {
                         "token counter dialect differs from generation"
                     } else {
@@ -413,7 +413,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                 ModelContentPart::text("last".into()),
             ],
         )?;
-        let count = provider.count_tokens(&prepared).await?;
+        let count = provider.count_tokens(&prepared, 0).await?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         let wire = crate::dispatch::encode(
             &provider,

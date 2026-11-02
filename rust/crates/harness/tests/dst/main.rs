@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 mod clocks;
 mod digest;
 mod driver;
-mod features;
+mod flushes;
 mod recovery;
 mod sources;
 

@@ -65,7 +65,7 @@ async fn maximum_work_one_rejects_images_before_reading_for_every_adapter() -> R
 async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Result<()> {
     let bytes = b"\x89PNG\r\n\x1a\n\xff\x00\x80";
     for (adapter, _) in fixtures() {
-        let (mut provider, _) = provider(adapter, 200);
+        let (mut provider, script) = provider(adapter, 200);
         let reader = Arc::new(Reader {
             data: bytes.to_vec(),
             reads: AtomicUsize::new(0),
@@ -122,6 +122,29 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         assert!(!wire.contains("[file:"));
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         assert_eq!(image.descriptor().media_type(), "image/png");
+        // A native image's compressed wire bytes cannot bound its token cost,
+        // even under an unlimited admission ceiling.
+        let counted = provider.count_tokens(&request, u64::MAX).await?;
+        let count_body = script.counted.lock().unwrap().take().unwrap();
+        assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
+        provider.usage.observe(
+            adapter,
+            &request,
+            &json!({"usage":{"input_tokens":5,"prompt_tokens":5,"promptTokenCount":5}}),
+        )?;
+        let mut appended = request.request().clone();
+        appended.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::File {
+                file: image,
+                policy: policy(bytes.len()),
+            }),
+        });
+        let appended = PreparedModelRequest::prepare(appended, Limits::default(), None)?;
+        assert_eq!(provider.usage.bound(&appended)?, None);
+        let counted = provider.count_tokens(&appended, u64::MAX).await?;
+        let count_body = script.counted.lock().unwrap().take().unwrap();
+        assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
     }
     Ok(())
 }

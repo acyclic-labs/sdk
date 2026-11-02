@@ -11,7 +11,7 @@
 //! The custodian is the owner's own executable, started once, detached from
 //! any console, with [`SWITCH`] set: a CRT initializer runs it before the
 //! host's `main`, in every executable that links this crate, so no host has
-//! to dispatch it. A tree costs the owner one line on the custodian's input
+//! to dispatch it. A tree costs the owner one frame on the custodian's input
 //! and one wait for its acknowledgment, which arrives before the tree's first
 //! instruction runs. Kill-on-close stays on the Job, so a killed custodian
 //! leaves the owner's handle to kill the tree when the owner exits, and the
@@ -315,7 +315,7 @@ impl Custodian {
     /// Where a member admits a suspended process of `tree` it started
     /// itself, with the tree's admission secret.
     pub(super) fn admission(&self, tree: usize, secret: &Secret) -> String {
-        format!("{}/{tree}/{}", self.endpoint, admission::encode(secret))
+        admission::endpoint(&self.endpoint, tree, secret)
     }
 
     /// Hands `tree`'s Job and its suspended first member, `process`, to the
@@ -346,7 +346,7 @@ impl Custodian {
             let mut input = self.input.lock().map_err(|_| poisoned())?;
             let output = input.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
             if let Err(error) = handoff.publish(output, tree, secret) {
-                // A partial line is never followed by another handover. EOF
+                // A partial frame is never followed by another handover. EOF
                 // withdraws that publication; subsequent callers fail closed.
                 drop(input.take());
                 return Err(error);
@@ -406,15 +406,18 @@ impl Handoff {
         if self.count != self.handles.len() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        writeln!(
-            output,
-            "{tree} {} {} {} {} {}",
-            self.handles[0].expose_provenance(),
-            self.handles[1].expose_provenance(),
-            self.handles[2].expose_provenance(),
-            self.handles[3].expose_provenance(),
-            admission::encode(secret)
-        )?;
+        let frame = Opened {
+            tree,
+            job: self.handles[0],
+            process: self.handles[1],
+            ready: self.handles[2],
+            done: self.handles[3],
+            secret: *secret,
+        }
+        .encode();
+        crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
+            output.write(&buffers[0])
+        })?;
         self.count = 0;
         Ok(())
     }
@@ -630,23 +633,51 @@ struct Opened {
 unsafe impl Send for Opened {}
 
 impl Opened {
-    fn parse(line: &str) -> Option<Self> {
-        let mut fields = line.split(' ');
-        let tree = fields.next()?.parse().ok()?;
-        let mut handle = || handle_value(fields.next()?).filter(|handle| !handle.is_null());
-        let opened = Self {
+    /// Version one, five little-endian identities, and the original secret.
+    const SECRET_OFFSET: usize = 1 + 5 * size_of::<u64>();
+    const FRAME_BYTES: usize = Self::SECRET_OFFSET + size_of::<Secret>();
+
+    fn encode(self) -> [u8; Self::FRAME_BYTES] {
+        let mut frame = [0; Self::FRAME_BYTES];
+        frame[0] = 1;
+        for (slot, value) in frame[1..Self::SECRET_OFFSET].chunks_exact_mut(8).zip([
+            self.tree,
+            self.job.expose_provenance(),
+            self.process.expose_provenance(),
+            self.ready.expose_provenance(),
+            self.done.expose_provenance(),
+        ]) {
+            slot.copy_from_slice(&(value as u64).to_le_bytes());
+        }
+        frame[Self::SECRET_OFFSET..].copy_from_slice(&self.secret);
+        frame
+    }
+
+    fn decode(frame: &[u8; Self::FRAME_BYTES]) -> Option<Self> {
+        if frame[0] != 1 {
+            return None;
+        }
+        let mut fields = frame[1..Self::SECRET_OFFSET]
+            .chunks_exact(8)
+            .map(|slot| usize::try_from(u64::from_le_bytes(slot.try_into().ok()?)).ok());
+        let tree = fields.next()??;
+        let mut handle = || {
+            let value = fields.next()??;
+            (value != 0 && value != usize::MAX)
+                .then(|| std::ptr::with_exposed_provenance_mut(value))
+        };
+        Some(Self {
             tree,
             job: handle()?,
             process: handle()?,
             ready: handle()?,
             done: handle()?,
-            secret: admission::decode(fields.next()?)?,
-        };
-        fields.next().is_none().then_some(opened)
+            secret: frame[Self::SECRET_OFFSET..].try_into().ok()?,
+        })
     }
 }
 
-/// Decode the private handover's native handle representation once. Null is
+/// Decode the startup header's native handle representation once. Null is
 /// allowed only for an absent inherited output; required owners reject it at
 /// admission. INVALID_HANDLE_VALUE can never transfer an owned kernel object.
 fn handle_value(value: &str) -> Option<HANDLE> {
@@ -1508,13 +1539,13 @@ mod handoff_tests {
         // A running reader's native framing refusal travels over that SAME
         // original pipe. Active and late Link waiters retain the first cause;
         // neither may mistake process loss for the tree's retirement event.
-        for (bytes, native) in [
-            (
-                b"invalid handover\n".as_slice(),
-                Some(ERROR_INVALID_DATA.cast_signed()),
-            ),
-            (b"\xff\n".as_slice(), None),
-        ] {
+        for truncated in [false, true] {
+            let frame = [0; Opened::FRAME_BYTES];
+            let bytes = if truncated {
+                &frame[..frame.len() - 1]
+            } else {
+                frame.as_slice()
+            };
             let running = Arc::new(launch()?);
             let done = event(true, None)?;
             let active = Link {
@@ -1522,18 +1553,19 @@ mod handoff_tests {
                 done: done.try_clone()?,
             };
             let waiter = std::thread::spawn(move || active.await_members());
-            running
-                .input
-                .lock()
-                .map_err(|_| poisoned())?
-                .as_mut()
-                .ok_or(io::ErrorKind::BrokenPipe)?
-                .write_all(bytes)?;
-            let error = waiter.join().unwrap().unwrap_err();
-            assert_eq!(error.raw_os_error(), native);
-            if native.is_none() {
-                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            {
+                let mut input = running.input.lock().map_err(|_| poisoned())?;
+                input
+                    .as_mut()
+                    .ok_or(io::ErrorKind::BrokenPipe)?
+                    .write_all(bytes)?;
+                if truncated {
+                    // EOF completes the original partial-frame producer.
+                    drop(input.take());
+                }
             }
+            let error = waiter.join().unwrap().unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(ERROR_INVALID_DATA.cast_signed()));
             let late = Link {
                 custodian: Arc::clone(&running),
                 done: done.try_clone()?,

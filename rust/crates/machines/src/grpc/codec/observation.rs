@@ -42,6 +42,88 @@ impl TryFrom<wire::MachineState> for MachineObservation {
     }
 }
 
+impl TryFrom<MachineObservation> for wire::MachineState {
+    type Error = ProviderError;
+
+    fn try_from(value: MachineObservation) -> Result<Self, Self::Error> {
+        let contract = value.contract;
+        let platform = contract.platform;
+        Ok(Self {
+            machine: Some(encode_machine(value.id)),
+            status: (match value.state {
+                MachineState::Starting => wire::MachineStatus::Starting,
+                MachineState::Running => wire::MachineStatus::Running,
+                MachineState::Suspending => wire::MachineStatus::Suspending,
+                MachineState::Suspended => wire::MachineStatus::Suspended,
+                MachineState::Waking => wire::MachineStatus::Waking,
+                MachineState::Destroying => wire::MachineStatus::Destroying,
+                MachineState::Destroyed => wire::MachineStatus::Destroyed,
+                MachineState::Failed => wire::MachineStatus::Failed,
+                MachineState::Indeterminate => wire::MachineStatus::Indeterminate,
+                MachineState::Offline => wire::MachineStatus::Offline,
+            }) as i32,
+            contract: Some(wire::MachineContract {
+                image: Some(encode_image(&contract.image)?),
+                selected_volume_ref: contract.selected_volume_ref,
+                capabilities: contract
+                    .capabilities
+                    .into_iter()
+                    .map(encode_capability)
+                    .collect(),
+                compatibility: Some(encode_compatibility(&contract.compatibility)?),
+                compatibility_revision: contract.compatibility_revision.to_vec(),
+                suspension: Some(encode_suspension(contract.suspension)?),
+                expiration: Some(encode_expiration(contract.expiration)?),
+                network_policy_digest: contract.network_policy_digest.to_vec(),
+                budgets: Some(wire::Budgets {
+                    spend_micros: contract.budgets.spend_micros,
+                    concurrency: contract.budgets.concurrency,
+                }),
+                platform: Some(wire::Platform {
+                    os: (match platform.os {
+                        OperatingSystem::Linux => wire::OperatingSystem::Linux,
+                        OperatingSystem::Macos => wire::OperatingSystem::Macos,
+                        OperatingSystem::Windows => wire::OperatingSystem::Windows,
+                    }) as i32,
+                    arch: (match platform.arch {
+                        Architecture::X64 => wire::Architecture::X64,
+                        Architecture::Arm64 => wire::Architecture::Arm64,
+                    }) as i32,
+                    device_kind: (match platform.device_kind {
+                        DeviceKind::VirtualMachine => wire::DeviceKind::VirtualMachine,
+                        DeviceKind::Container => wire::DeviceKind::Container,
+                        DeviceKind::Desktop => wire::DeviceKind::Desktop,
+                        DeviceKind::Server => wire::DeviceKind::Server,
+                    }) as i32,
+                    shell: (match platform.shell {
+                        Shell::Bash => wire::Shell::Bash,
+                        Shell::PowerShell => wire::Shell::Powershell,
+                    }) as i32,
+                    path_style: (match platform.path_style {
+                        PathStyle::Posix => wire::PathStyle::Posix,
+                        PathStyle::Windows => wire::PathStyle::Windows,
+                    }) as i32,
+                }),
+                lifecycle: (match contract.lifecycle {
+                    LifecycleClass::Provisioned => wire::LifecycleClass::Provisioned,
+                    LifecycleClass::Attached => wire::LifecycleClass::Attached,
+                }) as i32,
+            }),
+            endpoints: value
+                .endpoints
+                .into_iter()
+                .map(|endpoint| wire::Endpoint {
+                    name: endpoint.name,
+                    uri: endpoint.uri,
+                })
+                .collect(),
+            last_checkpoint: value.last_checkpoint.map(encode_checkpoint),
+            created_at_unix_ms: value.created_at_unix_ms,
+            changed_at_unix_ms: value.changed_at_unix_ms,
+        })
+    }
+}
+
 pub(in super::super) fn decode_qualification(
     value: wire::ImageQualification,
     expected: Option<&Image>,

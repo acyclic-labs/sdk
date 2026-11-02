@@ -1,3 +1,5 @@
+import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
+
 /** A host-installed, deployment-selected HTTPS capability.
  * The host retains the original invocation and Request signal through header
  * disclosure and every lazy body pull. Cancelling either lifetime cancels both
@@ -22,12 +24,17 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
     while (true) {
       const {value,done} = await reader.read();
       if (done) break;
-      chunks.push(value.slice()); length += value.byteLength;
+      const owned = snapshotBytes(value);
+      chunks.push(owned); length += owned.byteLength;
     }
     signal.throwIfAborted();
+    if (chunks.length === 1) return chunks[0]!;
     const body = new Uint8Array(length); let offset = 0;
     for (const chunk of chunks) { body.set(chunk,offset); offset += chunk.byteLength; }
     return body;
+  } catch (error) {
+    void reader.cancel(error).catch(() => undefined);
+    throw error;
   } finally {
     signal.removeEventListener("abort",cancel);
     reader.releaseLock();
@@ -35,8 +42,9 @@ export async function readBindingRequestBody(request: Request, signal: AbortSign
 }
 /** One Fetch response boundary, including statuses that forbid a body. */
 export function bindingResponse(result: {readonly body: ArrayLike<number>; readonly status: number; readonly headers: readonly {readonly name:string;readonly value:string}[]}, method: string): Response {
-  const body = method === "HEAD" || [204,205,304].includes(result.status) ? null : Uint8Array.from(result.body);
-  return new Response(body, {status:result.status,headers:result.headers.map(h => [h.name,h.value])});
+  const status = result.status;
+  const body = method === "HEAD" || status === 204 || status === 205 || status === 304 ? null : Uint8Array.from(result.body);
+  return new Response(body, {status,headers:result.headers.map(h => [h.name,h.value])});
 }
 /** Standard Request cancellation and optional SDK cancellation share one signal. */
 export function bindingSignal(request: Request, signal?: AbortSignal): AbortSignal {

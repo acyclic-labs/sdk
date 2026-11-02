@@ -9,12 +9,21 @@ import {fileURLToPath} from 'node:url';
 import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost,nativeProvider} from './native-host.mjs';
+import {nativeHost,nativeProvider,nativeProxy} from './native-host.mjs';
 
 const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
 function nativeFailure(host,code,message,cause) {
  throw Object.assign(new Error('step=validate native '+host+' completion: '+message+
   '; recovery='+completionRecovery,{cause}),{code});
+}
+function nativeObject(host,value,label) {
+ if(!value||typeof value!=='object'||Array.isArray(value))
+  nativeFailure(host,'NATIVE_HOST_EVENT_INVALID',label+' is not a record',value);
+ return value;
+}
+function nativeParts(host,value,label) {
+ if(!Array.isArray(value))nativeFailure(host,'NATIVE_HOST_EVENT_INVALID',label+' is not an array',value);
+ return value;
 }
 
 // Host process success also requires its own successful model-turn terminal.
@@ -26,7 +35,8 @@ export function assertNativeCompletion(host,result,answer,selection) {
   let event;
   try {event=JSON.parse(line);}
   catch(cause) {nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','malformed native JSON event',cause);}
-  if(!event||typeof event!=='object'||Array.isArray(event)||typeof event.type!=='string'||!event.type)
+  nativeObject(host,event,'native event');
+  if(typeof event.type!=='string'||!event.type)
    nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native event is not a typed record',event);
   if(host==='codex') {
    if(event.type==='turn.started') {
@@ -39,7 +49,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    if((event.type==='turn.completed'||(typeof event.type==='string'&&event.type.startsWith('item.')))&&turn!=='active')
     nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex item or terminal outside its active turn',event);
    if(event.type==='item.completed') {
-    const item=event.item;
+    const item=nativeObject(host,event.item,'native Codex item');
     if(item.type==='command_execution'||item.type==='mcp_tool_call') {
      try {
       toolOutcome(item,undefined,completionRecovery);
@@ -69,6 +79,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
     builtinPlugins=0;
     let installedPlugins=0;
     for(const plugin of event.plugins) {
+     nativeObject(host,plugin,'native Claude plugin');
      const bit=plugin.name==='agents-md'?1:plugin.name==='plugin-authoring'?2:0;
      if(bit&&plugin.path==='builtin'&&plugin.source===plugin.name+'@builtin') {
       assert.equal(builtinPlugins&bit,0,'duplicate native Claude builtin plugin');
@@ -81,13 +92,17 @@ export function assertNativeCompletion(host,result,answer,selection) {
     assert.equal(installedPlugins,count,'native Claude plugin set differs from paired mode');
     assert.equal(event.mcp_servers.length,count,'native Claude MCP connections differ from paired mode');
     if(selection.installed) {
+     nativeObject(host,event.mcp_servers[0],'native Claude MCP connection');
      assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
      assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
     }
    }
-   if(event.type==='user'&&Array.isArray(event.message?.content)) {
-    for(const part of event.message.content)if(part.type==='tool_result'&&part.is_error===true) {
-     nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
+   if(event.type==='user') {
+    const message=nativeObject(host,event.message,'native Claude user message');
+    for(const part of nativeParts(host,message.content,'native Claude user content')) {
+     nativeObject(host,part,'native Claude content part');
+     if(part.type==='tool_result'&&part.is_error===true)
+      nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
     }
    }
    if(event.type==='result') {
@@ -102,7 +117,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
     terminal=event;
    }
   } else if(host==='pi') {
-   const message=event.type==='message_end'?event.message:undefined;
+   const message=event.type==='message_end'?nativeObject(host,event.message,'native Pi message'):undefined;
    if(message?.role!=='assistant')continue;
    terminal=message;
    if(message.stopReason==='error') {
@@ -119,7 +134,14 @@ export function assertNativeCompletion(host,result,answer,selection) {
   text=terminal.result;
  } else {
   assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
-  text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
+  text='';
+  for(const part of nativeParts(host,terminal.content,'native Pi content')) {
+   nativeObject(host,part,'native Pi content part');
+   if(part.type==='text') {
+    if(typeof part.text!=='string')nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native Pi text is not a string',part);
+    text+=part.text;
+   }
+  }
  }
  assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
  return builtinPlugins;
@@ -160,8 +182,16 @@ export async function codexInstalled(run,executable,expected) {
 
 export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
  const model=nativeModel(host,live);
+ const proxy=nativeProxy(live);
  if(host==='codex') {
-  const provider=live?['--config','model_provider="openai"','--model',model]
+  if(proxy)env.ACYCLIC_NATIVE_PROXY_TOKEN=proxy.credential;
+  const provider=proxy?['--config','model_provider="acyclic_proxy"','--config','model_providers.acyclic_proxy.name="Authenticated native proxy"',
+   '--config','model_providers.acyclic_proxy.base_url='+JSON.stringify(proxy.baseUrl),
+   '--config','model_providers.acyclic_proxy.wire_api="responses"',
+   '--config','model_providers.acyclic_proxy.requires_openai_auth=false',
+   '--config','model_providers.acyclic_proxy.env_key="ACYCLIC_NATIVE_PROXY_TOKEN"',
+   '--config','shell_environment_policy.filters.ACYCLIC_NATIVE_PROXY_TOKEN="exclude"','--model',model]
+   :live?['--config','model_provider="openai"','--model',model]
    :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model',model];
@@ -170,6 +200,11 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
   return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
+  if(proxy) {
+   for(const key of ['CLAUDE_CODE_USE_FOUNDRY','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX'])delete env[key];
+   Object.assign(env,{ANTHROPIC_BASE_URL:proxy.baseUrl,ANTHROPIC_API_KEY:proxy.credential,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1',CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:'1'});
+  }
   // Foundry's Messages endpoint with its documented gateway mode: no key,
   // token or account header reaches the localhost mock.
   if(!live)Object.assign(env,{CLAUDE_CODE_USE_FOUNDRY:'1',CLAUDE_CODE_SKIP_FOUNDRY_AUTH:'1',
@@ -182,10 +217,12 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
   return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
- if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
+ if(proxy)env.ACYCLIC_NATIVE_PROXY=JSON.stringify(live);
+ else if(!live)env.ACYCLIC_E2E_MODEL_URL=url;
  const policy=live?['--no-extensions',...(installed?['--extension',extension]:[]),
+  ...(proxy?['--extension',fileURLToPath(new URL('./pi-provider.mjs',import.meta.url))]:[]),
   '--provider',live.provider,'--model',model,'--session-dir',join(root,'native-sessions')]
-  :['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model',model];
+  :['--extension',fileURLToPath(new URL('./pi-provider.mjs',import.meta.url)),'--provider','fixture','--model',model];
  return {policy,args:['--mode','json','--print','--no-skills','--no-prompt-templates','--no-themes',...policy,...(input?[]:[prompt])]};
 }
 
@@ -208,7 +245,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
  const {workspace}=fixture,root=dirname(workspace),env={...fixture.env};
- if(fixture.live) {
+ if(fixture.live&&!fixture.live.proxy) {
   // The caller provisions an exclusive authenticated profile outside guest
   // files. Pass its path to the original host; never read or copy credentials.
   try {
@@ -221,7 +258,7 @@ export async function installedHost({host,processes,fixture,capture,tools,native
     '; recovery=provision an existing exclusive native login directory outside the fixture root',{cause}),
    {code:'NATIVE_LOGIN_PROFILE_REFUSED'});
   }
- } else {
+ } else if(!fixture.live) {
   let endpoint;
   try {endpoint=new URL(fixture.url);}
   catch(cause) {throw new Error('step=admit mock endpoint; recovery=run through scripts/graphcoder-e2e/run.mjs',{cause});}
@@ -254,6 +291,9 @@ export async function installedHost({host,processes,fixture,capture,tools,native
    assert.equal(installation.code,0,installation.stderr);
    assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
   }
+  const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
+   extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
+  const {policy,args}=await launchNativeHost(host,configuration);
   step='start shipping workspace owner';
   // The harness approval chain the native permission hook asks: the case's
   // coordination tools only; exhausting it refuses every other one.
@@ -268,15 +308,12 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const configuration={url:fixture.url,live:fixture.live,root,packageRoot,workspace,env,tools,nativePermissions,prompt,
-   extension:fixture.live&&host==='pi'?join(root,'acyclic.ts'):undefined};
-  const {policy,args}=await launchNativeHost(host,configuration);
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
   if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
-  assertNativeCompletion(host,completed,answer,fixture.live&&host==='claude-code'
-   ?{model:fixture.live.model,installed:true}:undefined);
+  assertNativeCompletion(host,completed,answer,host==='claude-code'
+   ?{model:nativeModel(host,fixture.live),installed:true}:undefined);
  } catch(error) {
   throw new Error(`step=${host} ${step}: ${error.message}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`,{cause:error});
  }

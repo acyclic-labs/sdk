@@ -447,9 +447,8 @@ fn start(
         .stdout(ProcessStdio::piped())
         .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
-    let child = tree.child.as_mut().unwrap();
-    let pid = child.id();
-    let input = child.stdin.take().unwrap();
+    let pid = tree.child.as_ref().unwrap().id();
+    let input = tree.take_stdin().unwrap();
     let addresses = Arc::new(Mutex::new(VecDeque::new()));
     let wake = ProcessWake::new()?;
     let output = tree.stream_capture(

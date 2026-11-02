@@ -30,8 +30,12 @@ export default function acyclic(pi: ExtensionAPI) {
     if (!client) {
       if (signal?.aborted) return Promise.reject(new Error("step=dispatch Pi coordination: cancelled; recovery=pi"));
       const location = task();
+      const env = {...process.env, ACYCLIC_WORKSPACE: location.cwd, ACYCLIC_TASK: location.task};
+      // Native provider extensions may retain credentials privately after
+      // removing their bootstrap from the environment of guest commands.
+      pi.events.emit("acyclic:coordination-environment", env);
       bridge = spawn(executable, ["__mcp", "pi"], {cwd: location.cwd, windowsHide: true,
-        env: {...process.env, ACYCLIC_WORKSPACE: location.cwd, ACYCLIC_TASK: location.task}});
+        env});
       bridge.stderr.resume();
       client = new McpClient(bridge, {name: "acyclic-pi", version: "0.2.0", recovery: "pi"});
       ended = client.closed;

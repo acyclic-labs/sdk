@@ -12,7 +12,7 @@ description = "One operation span, latency distribution and outcome ledger for A
 research = []
 
 [dependencies]
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing.workspace = true

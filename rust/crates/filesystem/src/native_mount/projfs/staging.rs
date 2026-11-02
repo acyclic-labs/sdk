@@ -204,9 +204,6 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
     }
     let (offset, length) = (field(8)?, field(10)?);
     let name = data.get(PATH_BUFFER + offset..PATH_BUFFER + offset + length)?;
-    if !name.len().is_multiple_of(2) {
-        return None;
-    }
     let unc = b"\\\0?\0?\0\\\0U\0N\0C\0\\\0";
     let nt = b"\\\0?\0?\0\\\0";
     let (slashes, name) = match name.strip_prefix(unc) {
@@ -214,12 +211,8 @@ pub(super) fn symbolic_link_digest(data: &[u8]) -> Option<u64> {
         None => (0, name.strip_prefix(nt).unwrap_or(name)),
     };
     Some(link_digest(
-        std::iter::repeat_n(u16::from(b'\\'), slashes).chain(
-            name.as_chunks::<2>()
-                .0
-                .iter()
-                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]])),
-        ),
+        std::iter::repeat_n(u16::from(b'\\'), slashes)
+            .chain(crate::kernel::types::utf16le_units(name)?),
     ))
 }
 

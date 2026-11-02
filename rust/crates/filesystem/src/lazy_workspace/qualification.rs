@@ -1,5 +1,9 @@
 use super::*;
 /// Actual SDK publication identity and immutable logical view.
+///
+/// This value identifies a view; it does not pin its authored objects, source
+/// epoch, overlay, shadows or publication proof. Persisting it alone does not
+/// make that view available after collection or source replacement.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativePublicationSnapshot {
@@ -51,8 +55,8 @@ impl NativePublicationSnapshot {
     /// Authenticated immutable authored generation.
     ///
     /// For a source-backed view this is only one component of the cut. Use
-    /// [`Self::lazy_snapshot`] to retain its source identity and epoch, overlay
-    /// and identity shadows. Equal authored generations do not imply equal
+    /// [`Self::lazy_snapshot`] to identify its source epoch, overlay and identity
+    /// shadows. Equal authored generations do not imply equal
     /// source-backed views or an empty complete diff.
     pub const fn generation(&self) -> crate::GenerationId {
         self.generation
@@ -65,12 +69,16 @@ impl NativePublicationSnapshot {
     pub const fn volume_config(&self) -> VolumeConfig {
         self.context.config()
     }
-    /// Whether the view retains source-backed state alongside its authored
+    /// Whether the view identifies source-backed state alongside its authored
     /// generation. This does not certify complete source alias coverage.
     pub const fn is_lazy(&self) -> bool {
         !matches!(self.context, NativeSnapshotContext::Authored { .. })
     }
     /// Projects the immutable lazy cut using the same accounting context.
+    ///
+    /// The projection does not retain storage or carry selected-publication
+    /// input evidence. Preserve the original publication evidence when admitting
+    /// a retained view; this projection cannot replace that proof.
     pub fn lazy_snapshot(
         self,
         ctx: &mut KernelAccounting<'_>,

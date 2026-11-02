@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { fork, spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { test } from "node:test";
 import { McpClient } from "../../shared/mcp-client.mjs";
@@ -7,6 +10,26 @@ import { McpClient } from "../../shared/mcp-client.mjs";
 function beforeFailure(event, failure) {
   return Promise.race([event, failure.then(error => { throw error; })]);
 }
+
+test("native MCP failed process retains the original OS cause and retires queued calls", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mcp-native-failure-"));
+  const child = spawn(join(directory, "absent"), [], {stdio: "pipe", windowsHide: true});
+  let original;
+  child.once("error", error => {original = error;});
+  child.stderr.resume();
+  const client = new McpClient(child, {name: "native-failure", version: "1",
+    recovery: "node --test --test-name-pattern 'native MCP failed process' plugin/tests/hosts/mcp-client.test.mjs"});
+  try {
+    const failed = await client.request("wait", {}).catch(error => error);
+    assert.equal(failed.cause, original, "retain the native exception rather than its message alone");
+    assert.equal(failed.cause.code, "ENOENT");
+    await client.closed;
+    await assert.rejects(client.request("later", {}), error => error === failed);
+  } finally {
+    await client.closed;
+    await rm(directory, {recursive: true});
+  }
+});
 
 test("native MCP cancellation during encoding retains the next request producer", async () => {
   const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });

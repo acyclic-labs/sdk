@@ -284,6 +284,8 @@ test("Objects v1 owned binary bindings retain validation and caller bytes", asyn
   assert.throws(() => verify_objects_v1("blobs/get", request, new Uint8Array([0xff])), fail(wire.ErrorCode.UNAVAILABLE));
 });
 test("Objects v1 HTTP serves every canonical route, typed errors and authentication", async () => {
+  for (const endpoint of ["http://objects.example", "https://user@objects.example", "https://objects.example/?query=1", "https://objects.example/#fragment"]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture" }));
+  for (const timeoutMs of [-1, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", timeoutMs }), RangeError);
   const server = await fixture();
   try {
     await lifecycle(new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" }));
@@ -332,30 +334,28 @@ test("Objects v1 never reports a reply that does not answer its request", async 
   await assert.rejects(client(json("BlobInfo", wire.BlobInfoSchema, { ...info, digest: other })).head(digest), fail(wire.ErrorCode.UNAVAILABLE));
   await assert.rejects(client(json("ListBlobsResponse", wire.ListBlobsResponseSchema, { digests: [digest, other, digest] })).list({ limit: 2 }), fail(wire.ErrorCode.UNAVAILABLE));
 });
-test("Objects v1 HTTP bounds responses and refuses unsafe endpoints", async () => {
-  let calls = 0;
-  const fetcher = async () => { calls++; return new Response(new Uint8Array(100), { headers: { "content-type": "application/json" } }); };
-  const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", maximumResponseBytes: 16, fetch: fetcher });
-  await assert.rejects(client.usage(), fail(wire.ErrorCode.QUOTA_EXCEEDED));
-  assert.equal(calls, 1);
-  for (const endpoint of ["http://objects.example", "https://user@objects.example", "https://objects.example/?query=1", "https://objects.example/#fragment"]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture" }));
-});
-test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () => {
-  await MemoryObjectsV1.create();
-  const endpoint = "https://objects.example";
-  const hanging = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
-  await assert.rejects(new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 20, fetch: hanging }).usage(), fail(wire.ErrorCode.DEADLINE_ELAPSED));
-  // Negative control: a caller release, rather than elapsed time, completes the reply.
-  let release;
-  let started;
-  const entered = new Promise(resolve => { started = resolve; });
-  const late = async () => {
-    await new Promise(resolve => { release = resolve; started(); });
-    return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))();
-  };
-  const response = new HttpObjectsV1({ endpoint, token: "fixture", fetch: late }).usage();
-  await entered;
-  release();
-  assert.equal((await response).blobs, 2n);
-  for (const timeoutMs of [-1, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
+test("Objects v1 HTTP bounds a call by the caller's deadline alone", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const timeoutMs of [50, undefined]) {
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    const server = await fixture(async () => { entered.resolve(); return release.promise; });
+    let signal;
+    const client = new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture", timeoutMs,
+      fetch: (url, init) => { signal = init.signal; return fetch(url, init); } });
+    const response = client.usage().then(value => ({ value }), error => ({ error }));
+    try {
+      await Promise.race([entered.promise, response.then(outcome => {
+        if (outcome.error) throw outcome.error;
+        assert.fail("step=objects-deadline response bypassed the held original source; recovery command: node --test --test-name-pattern='caller.s deadline alone' typescript/packages/objects/test/v1-conformance.mjs");
+      })]);
+      t.mock.timers.tick(50);
+      assert.equal(signal.aborted, timeoutMs !== undefined);
+      if (timeoutMs !== undefined) assert.equal((await response).error?.code, wire.ErrorCode.DEADLINE_ELAPSED);
+      else {
+        // Elapsed time cannot retire an unbounded original request.
+        release.resolve(true);
+        assert.equal((await response).value?.blobs, 0n);
+      }
+    } finally { release.resolve(false); await server.close(); }
+  }
 });

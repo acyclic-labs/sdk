@@ -19,6 +19,11 @@ impl LazySnapshotId {
 }
 
 /// Constant-size reference to an authored generation plus unresolved source state.
+///
+/// This is a logical identity, not a retention lease or read capability. Its
+/// digest does not prove that the source epoch, indexed objects or authored
+/// generation remain available. Historical publication must retain the complete
+/// dependency closure and original proof through the owning commit.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LazySnapshotRef {
     /// Stable logical identity over every represented component.
@@ -40,7 +45,9 @@ impl LazySnapshotRef {
         (LAZY_SNAPSHOT_DOMAIN.len() + 104 + generation.object_id().encoded_len()) as u64
     }
 
-    /// Constructs the identity of a complete immutable lazy cut.
+    /// Constructs the logical identity of the represented lazy cut.
+    ///
+    /// This performs no storage validation, retention or authorization.
     pub fn new(
         workspace_id: WorkspaceId,
         authored_generation: crate::GenerationId,

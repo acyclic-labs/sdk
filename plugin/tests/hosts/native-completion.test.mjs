@@ -2,6 +2,37 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
+import {assertCodexPairTools} from './native-pairs.mjs';
+
+test('Codex pair admission requires original declarations rather than namespace prose',async()=> {
+ const {tool}=JSON.parse(await readFile(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8'));
+ const record=tools=>({body:{tools,input:JSON.stringify(tool)}});
+ assertCodexPairTools([record([tool])],true);
+ assert.throws(()=>assertCodexPairTools([record([])],true));
+ assertCodexPairTools([record([])],false);
+ assert.throws(()=>assertCodexPairTools([record([tool])],false));
+ for(const changed of [{...tool,type:'function'},{...tool,tools:[]},{...tool,tools:null}])
+  assert.throws(()=>assertCodexPairTools([record([changed])],true));
+ assert.throws(()=>assertCodexPairTools([record([tool,tool])],true));
+ assert.throws(()=>assertCodexPairTools([record(null)],false));
+ assert.throws(()=>assertCodexPairTools([record([tool]),record([])],true));
+ assert.throws(()=>assertCodexPairTools([],true));
+});
+
+test('recorded native workflow tool refusals retain their reason before successful parent completion',async()=> {
+ const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-workflow-refusal.json',import.meta.url),'utf8'));
+ const terminal=record.events.at(-1);
+ const result=events=>({code:record.code,stderr:'',stdout:events.map(event=>JSON.stringify(event)).join('\n')+'\n'});
+ assertNativeCompletion(record.host,result([terminal]),record.answer);
+ for(const event of record.events.slice(0,-1)) {
+  const original=event.message.content.find(part=>part.type==='tool_result'&&part.is_error);
+  assert.throws(()=>assertNativeCompletion(record.host,result([event,terminal]),record.answer),error=> {
+   assert.equal(error.code,'NATIVE_HOST_TOOL_FAILED');
+   assert.deepEqual(error.cause,original,'the original native reason and tool call identity must survive');
+   return true;
+  });
+ }
+});
 
 test('Claude failed tool results survive a later successful parent terminal', async()=> {
  const record=JSON.parse(await readFile(new URL('./fixtures/native-claude-tool-terminals.json',import.meta.url),'utf8'));

@@ -52,8 +52,10 @@ impl StockExecution<'_> {
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
+            let ceiling = self.input_ceiling(capacity)?;
             let count =
-                stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
+                stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io)
+                    .await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {

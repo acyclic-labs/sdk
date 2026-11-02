@@ -75,11 +75,14 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
     );
     drop(first);
     let before_retry = journal.0.lock().unwrap().clone();
-    // Dropping the live guard permits reconciliation, but this direct executor
-    // has no retained task fence authorizing another model dispatch.
+    // Dropping the live guard permits reconciliation. Nothing may dispatch
+    // the uncertain request again, so the unreconciled attempt settles.
     assert!(matches!(
         executor.execute(input.clone(), &journal).await,
-        Err(Error::Indeterminate(operation)) if operation == input.operation_id
+        Err(Error::ModelUnavailable {
+            failure: crate::ModelTransportFailure::Interrupted,
+            ..
+        })
     ));
     assert_eq!(*journal.0.lock().unwrap(), before_retry);
     assert_eq!(provider.requests().len(), 2);

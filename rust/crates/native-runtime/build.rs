@@ -58,6 +58,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             "relocation-model=static",
             "-C",
             "target-feature=+crt-static",
+            // The runner supplies _start itself. Musl otherwise injects its
+            // C startup objects even for this no_std/no_main image.
+            "-C",
+            "link-self-contained=no",
         ])
         .args(["-C", "linker-flavor=ld.lld", "-C", "strip=symbols"])
         .arg("-C")

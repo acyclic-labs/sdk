@@ -519,16 +519,19 @@ impl AppendRecord {
     }
 
     /// The same list restricted to the entries `keep` accepts, or `None` when
-    /// it keeps none. Projection re-encodes, so the result stays canonical.
+    /// it keeps none. The predicate borrows the original headers. Keeping every
+    /// entry transfers the original owners; partial projection re-encodes.
     pub(crate) fn retain_changes(
-        &self,
-        mut keep: impl FnMut(&[u8]) -> bool,
+        self,
+        mut keep: impl FnMut(&[u8], &RecordHeaders) -> bool,
     ) -> Result<Option<Self>, StreamError> {
         let mut changes = decode(&self.value, &self.headers)?;
         let before = changes.entries.len();
-        changes.entries.retain(|entry| keep(&entry.key));
+        changes
+            .entries
+            .retain(|entry| keep(&entry.key, &self.headers));
         if changes.entries.len() == before {
-            return Ok(Some(self.clone()));
+            return Ok(Some(self));
         }
         if changes.entries.is_empty() {
             return Ok(None);

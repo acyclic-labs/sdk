@@ -1,18 +1,21 @@
 use crate::{Metrics, Query, QueryError, Slo, SloError, Snapshot, Verdict};
+use std::sync::Arc;
 
 /// A selected SLO file and its live operation evidence. The caller retains the
 /// authorized file reference and follows replacements through its volume query.
 /// This projection has no persistence, background task or transport of its own.
 pub struct SloQuery {
-    slo: Slo,
+    slo: Arc<Slo>,
     query: Query,
 }
 
 /// Serializable live view of the selected SLO file.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SloView {
-    /// Validated contents of the ordinary volume file.
-    pub slo: Slo,
+    /// Validated contents of the ordinary volume file, shared with its query.
+    /// Retaining a view preserves this selection across later query changes or
+    /// replacement without copying its labels.
+    pub slo: Arc<Slo>,
     /// Bounded cumulative evidence from the selected operation.
     pub evidence: Snapshot,
     /// Unknown when the evidence cannot decide the objective.
@@ -28,7 +31,10 @@ impl Metrics {
             Some(rpc) => self.query_rpc(&slo.operation, rpc),
             None => self.query(&slo.operation),
         };
-        Ok(SloQuery { slo, query })
+        Ok(SloQuery {
+            slo: Arc::new(slo),
+            query,
+        })
     }
 }
 
@@ -52,7 +58,7 @@ impl SloQuery {
         // selected series always names this exact operation and RPC method.
         let verdict = self.slo.evaluate_selected(&evidence);
         SloView {
-            slo: self.slo.clone(),
+            slo: Arc::clone(&self.slo),
             evidence,
             verdict,
         }
