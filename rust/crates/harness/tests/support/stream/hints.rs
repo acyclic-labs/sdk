@@ -1,6 +1,6 @@
 use acyclic_stream::{Record, RecordStream, StreamError};
 
-pub(super) fn records(records: Vec<Record>, fault: u8) -> RecordStream {
+pub(super) fn records(opened: RecordStream, records: Vec<Record>, fault: u8) -> RecordStream {
     struct Misreported {
         records: std::vec::IntoIter<Record>,
         upper: Option<usize>,
@@ -14,12 +14,14 @@ pub(super) fn records(records: Vec<Record>, fault: u8) -> RecordStream {
             (0, self.upper)
         }
     }
-    Box::pin(futures::stream::iter(Misreported {
-        records: records.into_iter(),
-        upper: match fault {
-            7 => Some(0),
-            8 => None,
-            _ => Some(usize::MAX),
-        },
-    }))
+    opened.map_cursor(|_| {
+        Box::pin(futures::stream::iter(Misreported {
+            records: records.into_iter(),
+            upper: match fault {
+                7 => Some(0),
+                8 => None,
+                _ => Some(usize::MAX),
+            },
+        }))
+    })
 }
