@@ -286,8 +286,7 @@ impl<'a> Plan<'a> {
             if allow.is_some() || input.is_some() || reason.is_some() {
                 return Err("an ask decision has only `ask` and `to`");
             }
-            choice(to, &["person", "parent", "model", "command"])?
-                .ok_or("an ask decision names `to`")?;
+            choice(to, &["person"])?.ok_or("an ask decision names `to`")?;
             plan.approval = Some(Text::Json(ask));
             return Ok(plan);
         }
@@ -310,7 +309,11 @@ impl<'a> Plan<'a> {
             Some("false") if input.is_none() => {
                 plan.blocked = Some(Text::Json(reason.ok_or("a denial names its `reason`")?));
             }
-            _ => return Err("a hook decision is {allow: true, input?}, {allow: false, reason} or {ask, to}"),
+            _ => {
+                return Err(
+                    "a hook decision is {allow: true, input?}, {allow: false, reason} or {ask, to}",
+                );
+            }
         }
         Ok(plan)
     }

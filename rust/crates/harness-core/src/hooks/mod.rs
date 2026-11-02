@@ -19,8 +19,8 @@ mod spec;
 pub(crate) use spec::HookSite;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, RequestMatch};
 mod chain;
-mod request;
 mod input;
+mod request;
 pub use input::HookInput;
 
 #[cfg(feature = "filesystem")]
@@ -188,12 +188,12 @@ impl Hooks {
         Ok(())
     }
 
-    pub(crate) fn commands<'a, 'input>(
+    fn candidates<'a, 'input>(
         &'a self,
         event: HookEvent,
         input: impl Into<HookInput<'input>>,
         registry: &'a ToolRegistry,
-    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
+    ) -> Result<impl Iterator<Item = (&'a Arc<HookSpec>, Option<&'a Requests>)> + Clone> {
         let input = input.into();
         let subject = input.subject(event);
         #[cfg(any(test, feature = "test-support"))]
@@ -207,21 +207,6 @@ impl Hooks {
         } else {
             None
         };
-        // A plugin matcher reads the normalized request, built once and only
-        // when some hook of this event has a matcher.
-        let request = self
-            .bindings
-            .iter()
-            .filter(|binding| binding.event == event)
-            .flat_map(|binding| &binding.commands)
-            .any(|(_, requests)| requests.is_some())
-            .then(|| {
-                Arc::new(request::request(
-                    subject,
-                    request::capability(subject, tool),
-                    input.tool_input().unwrap_or(&Value::Null),
-                ))
-            });
         Ok(self
             .bindings
             .iter()
@@ -236,13 +221,26 @@ impl Hooks {
                     })
             })
             .flat_map(|binding| &binding.commands)
-            .filter(move |(_, requests)| {
-                requests.as_ref().is_none_or(|requests| {
-                    request
-                        .as_deref()
-                        .is_some_and(|request| requests.matches(request))
-                })
-            })
+            .map(|(hook, requests)| (hook, requests.as_ref())))
+    }
+
+    pub(crate) fn commands<'a, 'input>(
+        &'a self,
+        event: HookEvent,
+        input: impl Into<HookInput<'input>>,
+        registry: &'a ToolRegistry,
+    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
+        let input = input.into();
+        let subject = input.subject(event);
+        let tool = registry.get(subject, None, None)?;
+        let request = Arc::new(request::request(
+            subject,
+            request::capability(subject, tool),
+            input.tool_input().unwrap_or(&Value::Null),
+        ));
+        Ok(self
+            .candidates(event, input, registry)?
+            .filter(move |(_, matcher)| matcher.is_none_or(|matcher| matcher.matches(&request)))
             .map(|(hook, _)| hook))
     }
 
@@ -283,15 +281,29 @@ impl Hooks {
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
         let input = input.into();
-        let commands = self.commands(event, input, registry)?;
-        let count = commands.clone().count();
-        let quota = capture_quota(maximum_bytes, count);
         if event.site() == HookSite::BeforeTool {
-            let hooks: Vec<_> = commands.collect();
+            let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
+            let quota = capture_quota(maximum_bytes, hooks.len());
+            let subject = input.subject(event);
+            let tool = registry.get(subject, None, None)?;
+            let capability = request::capability(subject, tool);
             let original = input.tool_input().unwrap_or(&Value::Null);
-            return chain::judge(&hooks, event, original, (quota, maximum_bytes), &mut execute)
-                .await;
+            return chain::judge(
+                &hooks,
+                event,
+                original,
+                (quota, maximum_bytes),
+                &|matcher, current| {
+                    matcher.is_none_or(|matcher: &Requests| {
+                        matcher.matches(&request::request(subject, capability, current))
+                    })
+                },
+                &mut execute,
+            )
+            .await;
         }
+        let commands = self.commands(event, input, registry)?;
+        let quota = capture_quota(maximum_bytes, commands.clone().count());
         let mut budget = budget::Budget::new(maximum_bytes)?;
         let results = futures::future::join_all(commands.map(|hook| {
             let execution = execute(hook, quota, None);
