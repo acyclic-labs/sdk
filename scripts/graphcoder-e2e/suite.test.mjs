@@ -7,6 +7,57 @@ import { fileURLToPath } from "node:url";
 import { Processes, Spool } from "./process.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { failureReport, finishCase, retainCapture } from "./report.mjs";
+import { conversation } from "./conversation.mjs";
+
+test("conversation rejection retires its original producer and retains independent capture failure", async () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "conversation-failure-"));
+  try {
+    for (const failedObservation of [false, true]) {
+      let ownerAtEof, original;
+      const captures = [], processes = new Processes({ onProgress(event) {
+        if (event.phase === "node-spawn" && failedObservation)
+          readFileSync(join(root, "missing-progress-sink"));
+        if (event.phase === "stdin-finish") {
+          ownerAtEof = processes.stopping;
+          // Independently release a broken implementation too: the negative
+          // control reports lost ownership instead of hanging on the socket.
+          processes.close().catch(() => {});
+        }
+      } });
+      try {
+        const running = conversation(processes, process.execPath, {
+          id: "rejected-conversation", workspace: root, args: ["-e",
+            "const server=require('node:net').createServer();server.listen(0,'127.0.0.1',()=>console.error(JSON.stringify(server.address())));process.stdin.resume()", "--"],
+        }, { operation: "selected-operation", turns: [{ id: "turn", text: "unused" }] }, result => captures.push(result),
+        async (_, active) => {
+          // The actual bound socket keeps the native child alive after EOF.
+          await new Spool(active.child.stderr, active.closed).next(event => event.port > 0);
+          try { readFileSync(join(root, "original-missing-input")); }
+          catch (error) { original = error; throw error; }
+        });
+        await assert.rejects(running, error => {
+          assert.match(error.message, /drive JSONL conversation.*original-missing-input/);
+          if (!failedObservation) assert.equal(error.cause, original);
+          else {
+            assert.ok(error.cause instanceof AggregateError);
+            assert.equal(error.cause.errors[0].cause, original);
+            assert.ok(error.cause.errors.slice(1).every(failure =>
+              failure.name === "ProcessObservationFailed" && failure.cause.code === "ENOENT"));
+            const report = failureReport(error);
+            assert.match(report.cause, /original-missing-input/);
+            assert.match(report.cause, /missing-progress-sink/);
+          }
+          return true;
+        });
+        assert.equal(ownerAtEof, true, "EOF cannot substitute for original process retirement");
+        assert.equal(processes.children.size, 0);
+        assert.equal(captures.length, failedObservation ? 0 : 1);
+      } finally { await processes.close().catch(error => {
+        if (!failedObservation || error.name !== "ProcessObservationFailed") throw error;
+      }); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
 
 test("capture failure preserves the case result and joins every original child", async () => {
   const root = mkdtempSync(join(realpathSync(tmpdir()), "case-capture-"));
