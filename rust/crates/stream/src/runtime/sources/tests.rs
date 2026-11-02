@@ -9,7 +9,7 @@ use futures::StreamExt;
 fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
     use crate::{FollowRequest, RecordStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::{Wake as _, Waker};
+    use std::task::Waker;
 
     struct Parent(AtomicUsize);
     impl std::task::Wake for Parent {
@@ -109,7 +109,7 @@ fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
         assert_eq!(record.value.as_slice(), b"second");
         sources.remove(1);
         // Exhaust the actual immutable provider read through the same owner.
-        let records: Vec<_> = provider
+        let records = provider
             .read(ReadRequest {
                 path: paths[1].clone(),
                 from: 1,
@@ -118,15 +118,13 @@ fn keyed_readers_keep_independent_wakes_and_share_ready_delivery() {
                 at_least: Default::default(),
             })
             .await
-            .unwrap()
-            .collect()
-            .await;
+            .unwrap();
         sources.register(
             wire::SessionChannel {
                 channel_id: 2,
                 generation: 1,
             },
-            Box::pin(futures::stream::iter(records)),
+            records,
         );
         assert!(matches!(
             sources.poll_next(&mut contexts[2]),
