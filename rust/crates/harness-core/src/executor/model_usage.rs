@@ -223,12 +223,8 @@ pub async fn usage_page(
     after: u64,
 ) -> Result<ModelUsagePage> {
     const PAGE: u32 = 32;
-    let ExecutionEventPage {
-        items: records,
-        end,
-        next,
-        ..
-    } = super::event_page::original_page(journal, operation, after, PAGE).await?;
+    let records = journal.replay(operation, after, PAGE, None)?.await?;
+    let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut items = Vec::new();
     for record in records {
         if let Some(usage) = project_record(journal, operation, agent_path, &record).await? {

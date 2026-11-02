@@ -138,26 +138,27 @@ pub async fn event_page(
     operation: OperationId,
     after: u64,
 ) -> Result<ExecutionEventPage> {
-    original_page(journal, operation, after, EXECUTION_EVENT_PAGE_RECORDS).await
-}
-
-// Shared cursor semantics for interactive reads and offline projections. A short
-// page describes only the current tail; no consumer can infer settlement here.
-pub(super) async fn original_page(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    after: u64,
-    maximum: u32,
-) -> Result<ExecutionEventPage> {
-    let items = journal.replay(operation, after, maximum, None)?.await?;
-    let end = after
-        .checked_add(items.len() as u64)
-        .ok_or_else(|| Error::Invalid("journal page cursor overflows; recovery: resume event_page with the original representable source cursor".into()))?;
-    let next = (items.len() == maximum as usize).then_some(end);
+    let items = journal
+        .replay(operation, after, EXECUTION_EVENT_PAGE_RECORDS, None)?
+        .await?;
+    let (end, next) = page_continuation(after, items.len(), EXECUTION_EVENT_PAGE_RECORDS)?;
     Ok(ExecutionEventPage {
         operation: Some(operation),
         items,
         end,
         next,
     })
+}
+
+// One cursor rule, without another asynchronous reader or intermediate page.
+// A short page describes only the current tail, never settlement.
+pub(super) fn page_continuation(
+    after: u64,
+    count: usize,
+    maximum: u32,
+) -> Result<(u64, Option<u64>)> {
+    let end = after.checked_add(count as u64).ok_or_else(|| Error::Invalid(
+        "journal page cursor overflows; recovery: resume event_page with the original representable source cursor".into()
+    ))?;
+    Ok((end, (count == maximum as usize).then_some(end)))
 }

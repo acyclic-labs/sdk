@@ -328,12 +328,8 @@ pub async fn journal_page<'price>(
     price: impl Fn(&super::ModelUsageRecord) -> Option<&'price ModelPriceRecord>,
 ) -> Result<Page> {
     const PAGE: u32 = 32;
-    let super::ExecutionEventPage {
-        items: records,
-        end,
-        next,
-        ..
-    } = super::event_page::original_page(journal, operation, after, PAGE).await?;
+    let records = journal.replay(operation, after, PAGE, None)?.await?;
+    let (end, next) = super::event_page::page_continuation(after, records.len(), PAGE)?;
     let mut turns = Vec::new();
     let mut models = Vec::new();
     let mut tools = Vec::new();

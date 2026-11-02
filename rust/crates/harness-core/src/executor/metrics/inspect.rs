@@ -140,7 +140,7 @@ impl<'a> Call<'a> {
         struct Sample<'a, 'b> {
             id: &'a str,
             epoch: u32,
-            input: Messages<'a>,
+            input: [(); 0],
             target: [(); 0],
             messages: Messages<'a>,
             metadata: Metadata<'a, 'b>,
@@ -174,14 +174,13 @@ impl<'a> Call<'a> {
             samples: [Sample {
                 id: key.as_str(),
                 epoch: 1,
-                input: Messages {
-                    input: &self.request.messages,
-                    response: None,
-                },
+                // A model request does not establish an evaluation dataset's
+                // input. Its actual context belongs in messages, exactly once.
+                input: [],
                 target: [],
                 messages: Messages {
                     input: &self.request.messages,
-                    response: Some(response),
+                    response,
                 },
                 metadata: Metadata {
                     version: 1,
@@ -213,7 +212,7 @@ fn invalid(error: impl std::fmt::Display) -> Error {
 
 struct Messages<'a> {
     input: &'a [ModelMessage],
-    response: Option<&'a ModelContent>,
+    response: &'a ModelContent,
 }
 impl Serialize for Messages<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -224,12 +223,10 @@ impl Serialize for Messages<'_> {
                 content: &message.content,
             })?;
         }
-        if let Some(content) = self.response {
-            seq.serialize_element(&Message {
-                role: ModelRole::Assistant,
-                content,
-            })?;
-        }
+        seq.serialize_element(&Message {
+            role: ModelRole::Assistant,
+            content: self.response,
+        })?;
         seq.end()
     }
 }

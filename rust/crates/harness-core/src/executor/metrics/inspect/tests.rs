@@ -136,6 +136,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
     )?;
     let log: Value = serde_json::from_slice(&output).map_err(invalid)?;
     let sample = &log["samples"][0];
+    assert_eq!(sample["input"], json!([]), "dataset input is unknown");
     let messages = sample["messages"].as_array().expect("message sequence");
     let sdk = reference["samples"][0]["messages"]
         .as_array()

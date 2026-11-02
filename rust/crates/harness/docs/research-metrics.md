@@ -203,6 +203,8 @@ refused. Scope, agent, stream, operation and sequence remain the observation
 identity; the replay key groups equal content across observations.
 
 Each shard contains one sample, with its original context and settled response.
+The request context is written once, in `messages`; evaluation dataset input is
+unknown and remains an empty list.
 Readable text, reasoning and tool pairs use Inspect's native fields. Files,
 notices, configuration, native continuity and structured projections remain in
 message metadata; no media is fetched and no substitute text is invented.
