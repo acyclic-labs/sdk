@@ -55,33 +55,36 @@ pub struct RecordedCall {
 #[derive(Debug, Default, PartialEq)]
 pub struct Recording {
     calls: HashMap<[u8; 32], VecDeque<RecordedCall>>,
+    remaining: usize,
 }
 
 impl Recording {
     /// Adds `call` as the next answer to the request with replay `key`.
     pub fn insert(&mut self, key: [u8; 32], call: RecordedCall) {
         self.calls.entry(key).or_default().push_back(call);
+        self.remaining += 1;
     }
 
     /// Unused recorded calls.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.calls.values().map(VecDeque::len).sum()
+        self.remaining
     }
 
     /// Whether every recorded call has been used.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.calls.is_empty()
+        self.remaining == 0
     }
 
     fn take(&mut self, key: &[u8; 32]) -> Option<RecordedCall> {
         let queue = self.calls.get_mut(key)?;
-        let call = queue.pop_front();
+        let call = queue.pop_front()?;
+        self.remaining -= 1;
         if queue.is_empty() {
             self.calls.remove(key);
         }
-        call
+        Some(call)
     }
 }
 
@@ -322,7 +325,43 @@ fn decode(bytes: &[u8]) -> Result<ModelEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use serde_json::{Value, json};
+
+    proptest! {
+        #[test]
+        fn recorded_call_consumption_preserves_order_and_unused_count(
+            operations in prop::collection::vec((any::<u8>(), any::<bool>()), 0..256),
+        ) {
+            let mut recording = Recording::default();
+            let mut source = Vec::new();
+            for (sequence, (key, insert)) in operations.into_iter().enumerate() {
+                let key = [key; 32];
+                if insert {
+                    // Generated opaque operands, not external provider fixtures.
+                    let call = RecordedCall {
+                        events: vec![sequence.to_le_bytes().to_vec()],
+                        tools: Vec::new(),
+                    };
+                    source.push((key, call.clone()));
+                    recording.insert(key, call);
+                } else {
+                    let expected = source.iter().position(|(candidate, _)| *candidate == key)
+                        .map(|at| source.remove(at).1);
+                    prop_assert_eq!(recording.take(&key), expected);
+                }
+                prop_assert_eq!(recording.len(), source.len());
+                prop_assert_eq!(recording.is_empty(), source.is_empty());
+            }
+            for (key, expected) in source {
+                prop_assert_eq!(recording.take(&key), Some(expected));
+            }
+            prop_assert_eq!(recording.len(), 0);
+            prop_assert!(recording.calls.is_empty());
+            prop_assert!(recording.take(&[0; 32]).is_none());
+            prop_assert_eq!(recording.len(), 0);
+        }
+    }
 
     #[test]
     fn replay_preserves_admitted_nesting_and_owned_identity_rules() -> Result<()> {
