@@ -115,13 +115,9 @@ pub async fn check(bytes: &[u8]) -> Result<(), StreamError> {
         return Err(StreamError::InvalidResponse);
     }
     for sequence in start..start + 2 {
-        // The producer above has committed the exact requested records. A
-        // pending result here is a progress defect, not a timeout to extend.
-        let record = follow
-            .next()
-            .now_or_never()
-            .ok_or(StreamError::Unavailable)?
-            .ok_or(StreamError::Unavailable)??;
+        // Await the original committed delivery, including scheduler yields;
+        // a closed delivery source is an explicit progress refusal.
+        let record = follow.next().await.ok_or(StreamError::Unavailable)??;
         if record.sequence != sequence || record.value.as_ref() != sequence.to_be_bytes() {
             return Err(StreamError::InvalidResponse);
         }
