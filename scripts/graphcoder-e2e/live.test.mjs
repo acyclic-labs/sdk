@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
 import { fileBytes, requests } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
@@ -157,6 +158,18 @@ test("a real command must publish exact bytes and a successful shell status", as
     assert.deepEqual(stopped.phases.map(phase => [phase.phase, phase.outcome]),
       [["retired", "entered"], ["retired", "completed"]]);
     assert.deepEqual(stopped.captures, []);
+    // Invalid campaign admission is a real CLI refusal, before a binary or
+    // model can run, and keeps the same shared diagnostic as failed attempts.
+    const rejectedCli = await processes.run(process.execPath,
+      [fileURLToPath(new URL("./live.mjs", import.meta.url)), process.execPath, join(root, "unadmitted"), "0"]);
+    assert.equal(rejectedCli.code, 1, rejectedCli.stderr);
+    assert.equal(rejectedCli.stdout, "");
+    const diagnostic = JSON.parse(rejectedCli.stderr);
+    assert.equal(diagnostic.step, "live admission or publication");
+    assert.match(diagnostic.error, /AssertionError.*admit explicit positive sample count/);
+    assert.equal(diagnostic.assertion.actual, "false");
+    assert.equal(diagnostic.assertion.expected, "true");
+    assert.match(diagnostic.recovery, /node scripts\/graphcoder-e2e\/live.mjs/);
     // Original OS completion supplies these SDK ToolResult fields; the two
     // mutations require each status field to reject failure independently.
     const status = { success: result.code === 0, exit_code: result.code, stop: null };

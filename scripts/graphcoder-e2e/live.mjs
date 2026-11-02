@@ -222,5 +222,8 @@ async function campaign(signal) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await main(); }
-  catch (error) { console.error(`step=live admission or publication: ${error.message}; recovery=${recovery}`); process.exitCode = 1; }
+  catch (error) {
+    console.error(JSON.stringify({ ...failureReport(error), step: "live admission or publication", recovery }));
+    process.exitCode = 1;
+  }
 }
