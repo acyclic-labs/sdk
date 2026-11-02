@@ -39,11 +39,11 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(mut args: Vec<String>) -> Result<()> {
-    let Some(command) = args.first().cloned() else {
+fn run(args: Vec<String>) -> Result<()> {
+    let Some(command) = args.first() else {
         return help();
     };
-    if acyclic_plugin_identity::is_command(&command) {
+    if acyclic_plugin_identity::is_command(command) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?
@@ -56,31 +56,36 @@ fn run(mut args: Vec<String>) -> Result<()> {
     if internal(&args)? {
         return Ok(());
     }
-    let task = if args.first().map(String::as_str) == Some("--task") {
-        if args.len() < 3 {
-            return Err("--task requires ID COMMAND".into());
+    let (selected, arguments) = match args.as_slice() {
+        [flag, task, rest @ ..] if flag == "--task" && !rest.is_empty() => (Some(task), rest),
+        [flag, ..] if flag == "--task" => {
+            return Err("step=admit native command: --task requires ID COMMAND; recovery: run acyclic --help".into());
         }
-        let id = args.get(1).ok_or("--task requires ID COMMAND")?;
-        let task = parse_task(id)?;
-        args.drain(..2);
-        task
-    } else if let Ok(task) = env::var("ACYCLIC_TASK") {
-        parse_task(&task)?
-    } else {
-        serde_json::from_value(
-            host_files::request(
-                &env::current_dir()?,
-                HostAction::Locate {
-                    cwd: env::current_dir()?,
-                },
-            )?
-            .get("task")
-            .cloned()
-            .ok_or("harness omitted task identity")?,
-        )?
+        _ => (None, args.as_slice()),
     };
-    let action = action(task, &args)?;
-    let value = host_files::request(&env::current_dir()?, action)?;
+    let mut directory = None;
+    let action = acyclic_plugin::ingress::workspace_action(arguments, || {
+        if let Some(task) = selected {
+            return parse_task(task);
+        }
+        if let Ok(task) = env::var("ACYCLIC_TASK") {
+            return parse_task(&task);
+        }
+        let cwd = env::current_dir()?;
+        let response = host_files::request(&cwd, HostAction::Locate { cwd: cwd.clone() })?;
+        directory = Some(cwd);
+        Ok(serde_json::from_value(
+            response
+                .get("task")
+                .cloned()
+                .ok_or("harness omitted task identity")?,
+        )?)
+    })?;
+    let directory = match directory {
+        Some(directory) => directory,
+        None => env::current_dir()?,
+    };
+    let value = host_files::request(&directory, action)?;
     if let Some(stdout) = value.get("stdout").and_then(Value::as_str) {
         print!("{stdout}");
     } else {
@@ -216,32 +221,6 @@ fn verify_certification(
             "step=verify native mount release certification: {error}; recovery argv: {recovery}"
         )
         .into()
-    })
-}
-
-fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
-    Ok(match args.first().map(String::as_str) {
-        Some("fs" | "discard") => HostAction::Fs {
-            task,
-            command: args
-                .iter()
-                .skip(usize::from(args.first().map(String::as_str) == Some("fs")))
-                .map(|arg| format!("'{}'", arg.replace('\'', "'\"'\"'")))
-                .collect::<Vec<_>>()
-                .join(" "),
-        },
-        Some("agents") => HostAction::Agents { task },
-        Some("log") => HostAction::Fs {
-            task,
-            command: "log".into(),
-        },
-        Some("reopen") if args.len() == 2 => HostAction::Reopen {
-            task: parse_task(args.get(1).ok_or("missing task ID")?)?,
-        },
-        Some("capture") => HostAction::Capture { task },
-        _ => {
-            return Err("use fs, discard, agents, log, capture or reopen; see --help".into());
-        }
     })
 }
 

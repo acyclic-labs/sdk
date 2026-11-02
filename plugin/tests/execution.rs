@@ -40,15 +40,70 @@ fn execution_dispatch_precedes_workspace_lookup() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-#[cfg(unix)]
+#[test]
+fn execution_native_admission_precedes_agent_resolution() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    for args in [
+        vec!["unknown-command"],
+        vec!["agents", "unexpected"],
+        vec!["log", "unexpected"],
+        vec!["capture", "unexpected"],
+        vec!["fs"],
+        vec!["discard"],
+        vec!["reopen"],
+        vec!["reopen", "invalid"],
+        vec!["reopen", "invalid", "unexpected"],
+        vec!["--task"],
+        vec!["--task", "invalid"],
+        vec!["--task", "invalid", "unknown-command"],
+    ] {
+        let output = std::process::Command::new(binary::acyclic())
+            .args(&args)
+            .env_clear()
+            .env("ACYCLIC_TASK", "invalid")
+            .current_dir(directory.path())
+            .output()?;
+        assert!(!output.status.success(), "accepted {args:?}");
+        assert!(output.stdout.is_empty(), "stdout for {args:?}");
+        let error = String::from_utf8(output.stderr)?;
+        assert!(
+            error.contains("step=admit native command:"),
+            "{args:?}: {error}"
+        );
+        assert!(error.contains("recovery: run acyclic"), "{args:?}: {error}");
+    }
+    // A valid operation must reach the original selection path. The invalid
+    // environment value is a negative control against refusing every command.
+    let output = std::process::Command::new(binary::acyclic())
+        .arg("agents")
+        .env_clear()
+        .env("ACYCLIC_TASK", "invalid")
+        .current_dir(directory.path())
+        .output()?;
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr)?;
+    assert!(!error.contains("step=admit native command:"), "{error}");
+    assert_eq!(std::fs::read_dir(directory.path())?.count(), 0);
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn execution_invalid_native_argument_is_refused_before_workspace_lookup()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt as _;
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStringExt as _;
+    #[cfg(unix)]
+    let argument = std::ffi::OsString::from_vec(vec![0xff]);
+    #[cfg(windows)]
+    let argument = std::ffi::OsString::from_wide(&[0xd800]);
     let directory = tempfile::tempdir()?;
     let output = std::process::Command::new(binary::acyclic())
         .arg("doctor")
-        .arg(std::ffi::OsString::from_vec(vec![0xff]))
+        .arg(argument)
         .env_clear()
         .current_dir(directory.path())
         .output()?;
