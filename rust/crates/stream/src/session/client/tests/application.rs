@@ -110,6 +110,63 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
 
 #[tokio::test]
 async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> TestResult {
+    let prepare = |length, delivery| wire::SessionFollow {
+        resource: wire_codec::session::stream_resource("events"),
+        key: Some(wire::ReadKeySeek {
+            key: vec![b'a'; length].into(),
+            before: 4,
+        }),
+        read_limit: 3,
+        until: 4,
+        delivery: delivery as i32,
+        ..Default::default()
+    };
+    for (length, delivery, expected) in [
+        (0, wire::SessionDelivery::All, Ok(())),
+        (1, wire::SessionDelivery::All, Ok(())),
+        (
+            crate::MAX_RECORD_KEY_BYTES,
+            wire::SessionDelivery::All,
+            Ok(()),
+        ),
+        (
+            crate::MAX_RECORD_KEY_BYTES + 1,
+            wire::SessionDelivery::All,
+            Err(StreamError::LimitExceeded),
+        ),
+        (
+            crate::MAX_RECORD_KEY_BYTES + 1,
+            wire::SessionDelivery::Latest,
+            Err(StreamError::LimitExceeded),
+        ),
+        (
+            1,
+            wire::SessionDelivery::Latest,
+            Err(StreamError::InvalidArgument),
+        ),
+    ] {
+        // Independent owners expose the former first-clone allocation; a
+        // shared fixture would hide it by promoting the same Bytes twice.
+        let owned = prepare(length, delivery);
+        let borrowed = prepare(length, delivery);
+        let resume = cursor(0);
+        let (result, [temporary, direct]) = acyclic_test_support::differential(
+            || {
+                // Restore the original unused owner as the negative control.
+                wire_codec::read_key_from_wire(owned.key.clone())?;
+                wire_codec::session::validate_follow(&owned, &resume)
+            },
+            || wire_codec::session::validate_follow(&borrowed, &resume),
+        );
+        assert_eq!(result, expected);
+        assert_eq!(direct.count_total, 0);
+        assert_eq!(direct.bytes_total, 0);
+        assert_eq!(temporary.count_total, u64::from(length != 0));
+        eprintln!(
+            "key length={length} delivery={delivery:?} allocations: temporary={} borrowed={}",
+            temporary.count_total, direct.count_total
+        );
+    }
     let provider = Arc::new(MemoryStream::default());
     crate::conformance::key_seek::verify(&*provider).await?;
     let client = Client::in_process(

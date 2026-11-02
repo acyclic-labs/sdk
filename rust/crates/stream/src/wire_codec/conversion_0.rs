@@ -310,12 +310,11 @@ pub fn read_key_from_wire(
 ) -> Result<Option<crate::ReadKeySeek>, StreamError> {
     value
         .map(|value| {
-            let key = crate::ReadKeySeek {
+            crate::ReadKeySeek::validate_key(&value.key)?;
+            Ok(crate::ReadKeySeek {
                 key: value.key.into(),
                 before: value.before,
-            };
-            key.validate()?;
-            Ok(key)
+            })
         })
         .transpose()
 }
