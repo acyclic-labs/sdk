@@ -215,7 +215,6 @@ impl Table {
                 ("request_sequence", UInt64),
                 ("request_commit_id", Utf8),
                 ("terminal_sequence", UInt64),
-                ("fence", Utf8),
                 ("logical_value_bytes", UInt64),
                 ("coverage", Utf8),
             ],
@@ -325,7 +324,7 @@ columns! {
         profile_prefix_digest, cache_ttl, cache_prefix_digest, cache_parent_digest,
         source_account, source_origin, source_commit_id, coverage,
         machine, forked_from, physical_host, region, scope_path,
-        caller, call_log, outcome, request_commit_id, fence]
+        caller, call_log, outcome, request_commit_id]
 }
 
 impl<'a> Row<'a> {
@@ -849,6 +848,99 @@ pub fn write<W: Write + Send>(batch: &Batch, writer: W, format: Format) -> Resul
 mod tests {
     use super::*;
     use arrow_array::{Array, StringArray, UInt64Array};
+
+    #[test]
+    fn adoption_preserves_the_original_template_reference() -> Result<()> {
+        use crate::conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef};
+
+        let agent = crate::AgentId::from_bytes([5; 16]);
+        let path = agent::AgentPath::root(&agent);
+        for version in [None, Some("first-cut"), Some("later-cut")] {
+            let template = version
+                .map(|version| {
+                    FileRef::new(
+                        VolumeRef::new(
+                            crate::resources::ProviderRef::new(
+                                "acyclic".into(),
+                                "filesystem".into(),
+                                "2".into(),
+                                &mut None,
+                            )?,
+                            "templates".into(),
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(agent),
+                            &mut None,
+                        )?,
+                        "worker.md".into(),
+                        version.into(),
+                        FileDescriptor::from_bytes(
+                            b"original template",
+                            "text/markdown",
+                            &mut None,
+                        )?,
+                        "worker.md".into(),
+                        &mut None,
+                    )
+                })
+                .transpose()?;
+            let record = agent::InboxRecord::ForkAdopted(agent::ForkAdopted {
+                agent,
+                parent: None,
+                profile: Some(agent::CreationConfig {
+                    context: agent::SpawnContext::TopLevel,
+                    template: template.clone(),
+                }),
+                forked_at: 0,
+                conversation_tail: 0,
+                checkpoint: None,
+                volumes: Vec::new(),
+                brief: None,
+                policy: None,
+            });
+            let projected = inbox(path.as_str(), 0, &record)?;
+            let column = projected[0]
+                .data
+                .column_by_name("artifact")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            if let Some(template) = &template {
+                assert_eq!(
+                    serde_json::from_str::<FileRef>(column.value(0)).map_err(export_error)?,
+                    *template
+                );
+            } else {
+                assert!(
+                    column.is_null(0),
+                    "absent templates cannot acquire an inferred reference"
+                );
+            }
+            #[cfg(feature = "provenance-export")]
+            {
+                let mut bytes = Vec::new();
+                provenance::write(&projected[0], &mut bytes)?;
+                let triples = oxttl::NTriplesParser::new()
+                    .for_reader(bytes.as_slice())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(export_error)?;
+                let references: Vec<_> = triples
+                    .iter()
+                    .filter(|triple| {
+                        triple.predicate.as_str() == "urn:acyclic:research:fileReference"
+                    })
+                    .collect();
+                if let Some(template) = &template {
+                    assert_eq!(references.len(), 1);
+                    assert!(matches!(&references[0].object, oxrdf::Term::Literal(value)
+                        if value.value() == artifact(template)?));
+                } else {
+                    assert!(references.is_empty());
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn shards_roundtrip_known_and_unknown_values_and_refuse_foreign_schemas() -> Result<()> {

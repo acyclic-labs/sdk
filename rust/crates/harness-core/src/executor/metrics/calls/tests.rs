@@ -119,7 +119,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
             digest(*record.commit_id.as_bytes())
         );
         assert_eq!(text(&row, "source_origin"), record.origin.as_str());
-        for unknown in ["agent_path", "operation_id", "fence", "artifact"] {
+        for unknown in ["agent_path", "operation_id", "artifact"] {
             assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
         }
         assert_eq!(
@@ -248,12 +248,7 @@ async fn original_session_loss_requires_the_call_terminal() -> Result<()> {
         assert_eq!(text(&row, "coverage"), "original_call_terminal");
         assert_eq!(text(&row, "source_stream"), call.log().as_str());
         assert_eq!(number(&row, "terminal_sequence"), 1);
-        for unknown in [
-            "fence",
-            "request_sequence",
-            "request_commit_id",
-            "agent_path",
-        ] {
+        for unknown in ["request_sequence", "request_commit_id", "agent_path"] {
             assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
         }
         assert!(project(source(), &journal, &call, &fence, &original_fence).is_err());
