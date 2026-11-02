@@ -359,12 +359,6 @@ impl LocalHarnessConfig {
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
         self.default_tools.clone_from(&preset.tools);
         self.max_children = preset.max_children;
-        self.limits.model_steps = self
-            .limits
-            .model_steps
-            .into_iter()
-            .chain(preset.max_steps)
-            .min();
         #[cfg(feature = "search-http")]
         {
             self.web_tools = preset.web_tools;
@@ -376,7 +370,6 @@ impl LocalHarnessConfig {
     pub(super) fn preset_value(&self) -> crate::preset::Preset {
         crate::preset::Preset {
             tools: self.default_tools.clone(),
-            max_steps: self.limits.model_steps,
             max_children: self.max_children,
             #[cfg(feature = "search-http")]
             web_tools: self.web_tools,
