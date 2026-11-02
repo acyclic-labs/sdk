@@ -517,6 +517,9 @@ fn exercise(host: &str, cwd: &Path) -> Result {
             failure.starts_with("No API key for provider: fixture"),
             "native semantic refusal was lost: {failure}"
         );
+        let file: crate::conversation::FileRef =
+            serde_json::from_value(completed["events"].clone())?;
+        file.descriptor().verify(events.as_bytes(), &mut None)?;
     }
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
     host_files::request(

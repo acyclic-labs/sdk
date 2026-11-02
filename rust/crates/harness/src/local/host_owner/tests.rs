@@ -147,8 +147,31 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         std::fs::read(view.join("instructions.md")).map_err(storage)?,
         b"discovered in child view"
     );
-    // The turn's custodied event log names its resume id; settlement derives
-    // it, so the running turn spends no exchange on it.
+    // Replay unchanged installed-host output, including the original usage
+    // and refusal fields. Settlement must retain more than the answer text.
+    let captures: Value = serde_json::from_str(include_str!(
+        "../../../../../../plugin/tests/hosts/fixtures/native-completion.json"
+    ))
+    .map_err(storage)?;
+    let (events, resume) = match host {
+        "codex" => (
+            captures["records"][0]["stdout"].as_str(),
+            Some("01a193eb-fb8f-77c3-bf63-f2cb89618c45"),
+        ),
+        "claude-code" => (
+            captures["records"][1]["stdout"].as_str(),
+            Some("a14f2590-4397-48a1-a076-1f2dac2d5349"),
+        ),
+        _ => (
+            Some(include_str!(
+                "../host_process/fixtures/pi-assistant-error.jsonl"
+            )),
+            None,
+        ),
+    };
+    let events = events.ok_or_else(|| Error::Invalid(
+        "step=read native lifecycle capture: stdout absent; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib native_session_lifecycle".into()
+    ))?.as_bytes();
     let custody = fixture
         .checkout
         .path()
@@ -157,10 +180,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     std::fs::create_dir_all(&custody).map_err(storage)?;
     std::fs::write(
         custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
-        b"{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
-{\"thread_id\":\"opaque-native-resume-id\"}
-not json naming a session_id
-",
+        events,
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
@@ -176,6 +196,15 @@ not json naming a session_id
         )
         .await?;
     assert_eq!(failed.pointer("/status/settled"), Some(&json!(true)));
+    let file: crate::conversation::FileRef =
+        serde_json::from_value(failed["events"].clone()).map_err(storage)?;
+    let (state, _) = fixture.owner.native.session(&child).await?;
+    assert_eq!(fixture.owner.native.read(&state, &file).await?, events);
+    assert!(
+        !custody
+            .join(format!("events-{}.jsonl", claim(&first)?.operation))
+            .exists()
+    );
     // A new owner over the same harness reopens the same agent and view.
     let local = Arc::clone(&fixture.owner.local);
     let previous = std::mem::replace(&mut fixture.owner, HostWorkspaceOwner::new(local)?);
@@ -189,13 +218,13 @@ not json naming a session_id
             },
         )
         .await?;
+    let (state, reopened) = fixture.owner.native.session(&child).await?;
+    assert_eq!(reopened.events.as_ref(), Some(&file));
+    assert_eq!(fixture.owner.native.read(&state, &file).await?, events);
     let next = fixture.session("child", SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
-    assert_eq!(
-        next.pointer("/session/id"),
-        Some(&json!("opaque-native-resume-id"))
-    );
+    assert_eq!(next.pointer("/session/id").and_then(Value::as_str), resume);
     assert_eq!(
         std::fs::read(cwd(&next)?.join("child.txt")).map_err(storage)?,
         b"native"
@@ -249,8 +278,12 @@ not json naming a session_id
                 input: json!({"task": child}),
             },
         )
-        .await?;
-    assert_eq!(session["id"], "opaque-native-resume-id");
+        .await;
+    if let Some(resume) = resume {
+        assert_eq!(session?["id"], resume);
+    } else {
+        assert!(matches!(session, Err(Error::NotFound(_))));
+    }
     assert!(
         !fixture.owner.views()?.contains_key(&child),
         "reading committed session metadata must not reattach its retired view"
