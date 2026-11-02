@@ -206,23 +206,15 @@ impl GrpcObjects {
             Err(status) => (status.metadata().clone(), Err(error_from_status(&status))),
         };
         let revision = issued(&metadata)?;
-        // A server that ignored the minimum reports no revision; its read
-        // proves nothing about the floor.
-        if outcome.is_ok() && revision.is_none() && floor.is_some_and(|floor| !floor.is_empty()) {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
-        if let Some(revision) = &revision {
-            // Only a reply that served a read can be stale; a refused wait
-            // reports its own failure.
-            if outcome.is_ok()
-                && floor
-                    .and_then(|floor| floor.get(&revision.scope))
-                    .is_some_and(|minimum| {
-                        minimum.same_authority(revision) && minimum.index > revision.index
-                    })
-            {
-                return Err(wire::ErrorCode::Unavailable.into());
-            }
+        if outcome.is_ok()
+            && let Some(floor) = floor
+        {
+            self.revisions
+                .served(floor, revision.as_ref())
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+        } else if let Some(revision) = &revision {
+            // A refused wait reports its own failure, without claiming to
+            // prove the minimum. Writes only observe their issued revision.
             self.revisions.observe(revision);
         }
         outcome.map(|value| (value, revision))
