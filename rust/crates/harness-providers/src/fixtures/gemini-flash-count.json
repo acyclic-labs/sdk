@@ -1,0 +1,9 @@
+{
+  "totalTokens": 7484,
+  "promptTokensDetails": [
+    {
+      "modality": "TEXT",
+      "tokenCount": 7484
+    }
+  ]
+}

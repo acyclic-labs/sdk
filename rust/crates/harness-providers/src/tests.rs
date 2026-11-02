@@ -19,6 +19,9 @@ use std::{
 mod admission_tests;
 #[path = "alloy_tests.rs"]
 mod alloy_tests;
+#[cfg(target_os = "linux")]
+#[path = "anonymous_continuity_tests.rs"]
+mod anonymous_continuity_tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "api_key_tests.rs"]
 mod api_key_tests;
