@@ -259,7 +259,13 @@ async fn the_listener_yields_only_verified_connections_without_stalling() -> Out
         });
         assert!(futures::poll!(pending.as_mut()).is_pending());
         tokio::time::advance(HANDSHAKE).await;
-        assert_eq!(pending.as_mut().now_or_never(), protected.then_some(true));
+        if protected {
+            // Await the original timer event: advancing the clock does not
+            // imply the runtime has delivered its timer-wheel notification.
+            assert!(pending.as_mut().await);
+        } else {
+            assert!(pending.as_mut().now_or_never().is_none());
+        }
         drop(pending);
         tokio::time::resume();
         assert_eq!(tokio::io::AsyncReadExt::read(&mut peer, &mut [0]).await?, 0);
