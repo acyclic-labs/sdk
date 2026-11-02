@@ -253,7 +253,7 @@ fn final_input_and_context_share_one_output_reservation() -> Result<()> {
     let result = fold(
         [(&hook, Ok((Some(0), b"{\"allow\":true}".to_vec(), vec![])))],
         HookEvent::PreToolUse,
-        512,
+        Some(512),
         Some(input),
     );
     assert!(matches!(
@@ -280,7 +280,7 @@ fn report_only_context_overflow_cannot_discard_checked_arguments_and_allow() -> 
             Ok((Some(0), context.to_string().into_bytes(), vec![])),
         )],
         HookEvent::PreToolUse,
-        512,
+        Some(512),
         Some(json!({"command": "checked"})),
     )?;
     assert!(output.blocks());

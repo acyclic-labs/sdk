@@ -60,7 +60,7 @@ impl<'a> StockText<'a> {
     pub(in crate::executor) fn push(
         &mut self,
         suffix: &str,
-        maximum: u64,
+        maximum: Option<u64>,
         reason: &'static str,
     ) -> Result<()> {
         #[cfg(feature = "filesystem")]
