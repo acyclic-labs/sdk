@@ -65,6 +65,10 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let mut remote = connection.clone();
     remote._host = None;
     let mut remote_observer = Observer::open(&remote, 0, 0)?;
+    let mut projected = Observer::replay(
+        &connection,
+        &acyclic_harness_client::EventProjection::new("provider-failure".into()),
+    )?;
     let stream = harness
         .agent_stream
         .as_ref()
@@ -103,6 +107,16 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     assert!(
         observed.contains(&cause),
         "observation lost original provider cause: {observed}"
+    );
+    let projected = loop {
+        match projected.next_projected().await {
+            Err(error) | Ok((Err(error), _)) => break message(error),
+            Ok(_) => {}
+        }
+    };
+    assert!(
+        projected.contains(&cause),
+        "projected observation lost original provider cause: {projected}"
     );
     let command = message(
         remote
