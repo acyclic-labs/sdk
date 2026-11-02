@@ -1,7 +1,9 @@
 //! Generated decisions use the shipping dispatcher, decoder and final check.
 use super::*;
 use serde_json::json;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll, Wake, Waker};
 
 pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec {
     HookSpec {
@@ -24,6 +26,16 @@ pub(super) fn instance(hook: &HookSpec) -> &str {
     }
 }
 
+fn configured(hooks: Vec<HookSpec>) -> Result<Hooks> {
+    let mut configured = Hooks::default();
+    configured.add_rules([HookRule {
+        on: HookEvent::PreToolUse,
+        matcher: String::new(),
+        hooks,
+    }])?;
+    Ok(configured)
+}
+
 /// Own protocol decisions, not captured external process results: the callback
 /// supplies the hook function while the original dispatcher owns the schedule.
 pub(super) async fn judge(
@@ -31,12 +43,7 @@ pub(super) async fn judge(
     command: &str,
     decide: impl Fn(&str, &str) -> Value,
 ) -> Result<(HookOutput, Vec<(String, String)>)> {
-    let mut configured = Hooks::default();
-    configured.add_rules([HookRule {
-        on: HookEvent::PreToolUse,
-        matcher: String::new(),
-        hooks,
-    }])?;
+    let configured = configured(hooks)?;
     let original = json!({"tool_name":"shell","tool_input":{"command":command}});
     let runs = RefCell::new(Vec::new());
     let output = configured
@@ -58,8 +65,96 @@ pub(super) async fn judge(
     Ok((output, runs.into_inner()))
 }
 
+/// Step the original future across producer withdrawal, before or after its
+/// first suspension. A registered result wait must wake and retain its cause.
+/// Two explicit transition polls make a lost wake or terminal fail without a hang.
+fn withdrawn(bytes: &[u8]) -> Result<()> {
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    const CLOSED: &str = "hook result producer closed";
+    let report = bytes.first().is_some_and(|byte| byte & 1 != 0);
+    let mut source = plugin("source", None);
+    if report {
+        source.failure = HookFailure::Report;
+    }
+    let configured = configured(vec![source, plugin("allow", None)])?;
+    let original = json!({"tool_name":"shell","tool_input":{"command":"checked"}});
+    let registry = crate::tool::ToolRegistry::default();
+    let (producer, receiver) = futures::channel::oneshot::channel::<()>();
+    let mut receiver = Some(receiver);
+    let visits = Cell::new(0);
+    let run = configured.run_commands(
+        HookEvent::PreToolUse,
+        &original,
+        &registry,
+        u64::MAX,
+        |hook, _, _| {
+            visits.set(visits.get() + 1);
+            let result = (instance(hook) == "source").then(|| receiver.take());
+            async move {
+                if let Some(result) = result {
+                    let receiver =
+                        result.ok_or_else(|| Error::Invalid("hook dispatched twice".into()))?;
+                    receiver.await.map_err(|_| Error::Invalid(CLOSED.into()))?;
+                    return Err(Error::Invalid("withdrawn producer returned success".into()));
+                }
+                Ok((Some(0), br#"{"allow":true}"#.to_vec(), Vec::new()))
+            }
+        },
+    );
+    let mut run = std::pin::pin!(run);
+    let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut context = Context::from_waker(&waker);
+    if bytes.get(1).is_some_and(|byte| byte & 1 != 0) {
+        if run.as_mut().poll(&mut context).is_ready() || visits.get() != 2 {
+            return Err(Error::Invalid(
+                "hook did not wait on its result producer".into(),
+            ));
+        }
+        drop(producer);
+        if wakes.0.load(Ordering::Relaxed) != 1 {
+            return Err(Error::Invalid(
+                "hook result withdrawal lost its wake".into(),
+            ));
+        }
+    } else {
+        drop(producer);
+    }
+    let Poll::Ready(output) = run.as_mut().poll(&mut context) else {
+        return Err(Error::Invalid(
+            "hook result withdrawal lost its terminal".into(),
+        ));
+    };
+    let output = output?;
+    if visits.get() != 2
+        || output.blocks() == report
+        || output.updated_input.is_some()
+        || !matches!(
+            output.diagnostics.as_slice(),
+            [HookDiagnostic {
+                cause: crate::ProcessError::InvalidOutput { exit_code: None, message },
+                blocking,
+            }] if message == CLOSED && *blocking != report
+        )
+    {
+        return Err(Error::Invalid(
+            "hook withdrawal lost its cause, policy or dispatch count".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Strictness is independent of configuration order. Rewriters must compose in
 /// that order, then every sibling must have checked the exact final input.
+/// Result-producer withdrawal must wake the chain and retain its failure policy.
 pub async fn check(bytes: &[u8]) -> Result<()> {
     let decisions: Vec<_> = bytes
         .iter()
@@ -154,7 +249,7 @@ pub async fn check(bytes: &[u8]) -> Result<()> {
             "siblings did not approve the exact final input".into(),
         ));
     }
-    Ok(())
+    withdrawn(bytes)
 }
 
 #[cfg(test)]
