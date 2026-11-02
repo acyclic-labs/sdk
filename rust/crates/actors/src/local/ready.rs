@@ -378,8 +378,7 @@ impl<K> Registration<K> {
             return Err(super::Error::Conflict);
         }
         let due = alarm
-            .deadline_unix_ms
-            .filter(|_| alarm.delivered_generation != Some(alarm.generation))
+            .pending()
             .map(|deadline| (deadline, self.id, alarm.generation));
         if &entry.alarm == alarm && entry.due == due {
             return Ok(());
