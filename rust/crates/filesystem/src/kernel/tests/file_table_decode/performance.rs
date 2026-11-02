@@ -32,19 +32,32 @@ pub(super) fn after_decode<E>(
             observe(ReadAllocationStep::BeforeItem)?;
             observe(ReadAllocationStep::Item)?;
         }
+        4 => {
+            observe(ReadAllocationStep::BeforeCopy(1))?;
+            observe(ReadAllocationStep::Copied(1))?;
+        }
         _ => (),
     }
     Ok(())
 }
 
-fn check(count: u8, fault: u8) -> Result<(), &'static str> {
+fn check(count: u8, bindings: bool, sealed: bool, fault: u8) -> Result<(), &'static str> {
+    let object = |kind, key| ObjectId {
+        kind,
+        digest: crate::foundation::Digest::from_bytes([key; 32]),
+        storage: sealed.then_some(crate::ObjectStorage {
+            locator: crate::foundation::Digest::from_bytes([key; 32]),
+            root_file_id: FileId::from_bytes([key; 16]),
+            origin_generation: crate::foundation::Digest::from_bytes([key; 32]),
+        }),
+    };
     let records = (1..=count)
         .map(|key| FileRecord {
-            bindings: None,
+            bindings: bindings.then(|| object(ObjectKind::BindingPage, key)),
             file_id: FileId::from_bytes([key; 16]),
             kind: FileKind::Fifo,
             link_count: 1,
-            metadata: digest_object(ObjectKind::Metadata, [key; 32]),
+            metadata: object(ObjectKind::Metadata, key),
             payload: FilePayload::Empty,
         })
         .collect();
@@ -55,6 +68,9 @@ fn check(count: u8, fault: u8) -> Result<(), &'static str> {
         |_| CanonicalDecodeError::AllocationFailed,
     )
     .unwrap();
+    // The parser compares the domain in place and copies each remaining wire
+    // byte once, including optional binding and sealed-reference fields.
+    let copied_bytes = u64::try_from(bytes.len() - DOMAIN.len()).unwrap();
     let cancellation = crate::CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
@@ -101,7 +117,7 @@ fn check(count: u8, fault: u8) -> Result<(), &'static str> {
     let expected = before
         .checked_add(WorkCounters {
             items_examined: u64::from(count),
-            bytes_copied: 7 + 59 * u64::from(count),
+            bytes_copied: copied_bytes,
             allocation_operations: operations,
             peak_allocation_bytes: live + bytes,
             ..WorkCounters::UNCHARGED
@@ -122,16 +138,25 @@ fn check(count: u8, fault: u8) -> Result<(), &'static str> {
 
 #[test]
 fn production_decode_reaches_exact_validation_allocation_and_work_bounds() {
-    for count in [0, 1, 8, 64] {
-        check(count, 0).unwrap();
+    for bindings in [false, true] {
+        for sealed in [false, true] {
+            for count in [0, 1, 8, 64] {
+                check(count, bindings, sealed, 0).unwrap();
+            }
+        }
     }
 }
 
 #[test]
 fn redundant_production_validation_and_allocation_break_the_same_bounds() {
-    for count in [1, 8, 64] {
-        assert_eq!(check(count, 1), Err("validation count"));
-        assert_eq!(check(count, 2), Err("allocation bound"));
-        assert_eq!(check(count, 3), Err("work bound"));
+    for bindings in [false, true] {
+        for sealed in [false, true] {
+            for count in [1, 8, 64] {
+                assert_eq!(check(count, bindings, sealed, 1), Err("validation count"));
+                assert_eq!(check(count, bindings, sealed, 2), Err("allocation bound"));
+                assert_eq!(check(count, bindings, sealed, 3), Err("work bound"));
+                assert_eq!(check(count, bindings, sealed, 4), Err("work bound"));
+            }
+        }
     }
 }
