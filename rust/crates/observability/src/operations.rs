@@ -200,8 +200,11 @@ pub struct Sample<'a> {
     pub metadata: &'static tracing::Metadata<'static>,
     /// RPC method declared by the operation factory, never a resource label.
     pub rpc: Option<&'a str>,
-    /// Wall time from creation to explicit completion, or incomplete close.
+    /// Monotonic elapsed time to explicit completion, or incomplete close.
     pub elapsed: Duration,
+    /// Original interval, only for an explicitly requested research observation.
+    #[cfg(feature = "research")]
+    pub interval: Option<crate::OperationInterval>,
     /// Explicit result or incomplete close.
     pub outcome: Outcome,
     /// First recorded static, path-free failure category, when requested by a
@@ -236,6 +239,9 @@ pub struct OwnedSample {
     pub error_kind: Option<Box<str>>,
     /// Original elapsed operation time.
     pub elapsed: Duration,
+    /// Original research interval; retains no span, operation or clock source.
+    #[cfg(feature = "research")]
+    pub interval: Option<crate::OperationInterval>,
     /// Original terminal disposition.
     pub outcome: Outcome,
 }
@@ -256,6 +262,8 @@ impl OwnedSample {
             rpc: self.rpc.as_deref(),
             error_kind: self.error_kind.as_deref(),
             elapsed: self.elapsed,
+            #[cfg(feature = "research")]
+            interval: self.interval,
             outcome: self.outcome,
         }
     }
@@ -271,6 +279,12 @@ pub trait Sink: Clone + Send + Sync + 'static {
     /// by default; output adapters can transfer ownership instead of copying.
     fn record_owned(&self, sample: OwnedSample) {
         self.record(&sample.sample());
+    }
+    /// Opt into the original monotonic interval for research. This performs no
+    /// additional clock read; ordinary builds contain no interval fields.
+    #[cfg(feature = "research")]
+    fn interval_details(&self) -> bool {
+        false
     }
     /// Opt into retaining one original static failure category per operation.
     /// Metrics alone require no failure-string allocation.
@@ -969,6 +983,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             attributes.record(&mut FirstCause(&mut operation.error_kind));
         }
         if let Some(outcome) = terminal.outcome {
+            let finished = Instant::now();
             self.0.record_owned(OwnedSample {
                 span_id: id.clone(),
                 parent_id: operation.parent_id.take(),
@@ -980,7 +995,15 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 binding: binding.clone(),
                 metadata,
                 rpc: operation.rpc.take(),
-                elapsed: operation.started.elapsed(),
+                elapsed: finished.saturating_duration_since(operation.started),
+                #[cfg(feature = "research")]
+                interval: self
+                    .0
+                    .interval_details()
+                    .then_some(crate::OperationInterval {
+                        started: operation.started,
+                        finished,
+                    }),
                 outcome,
                 error_kind: operation.error_kind.take(),
             });
@@ -1054,6 +1077,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         let started = operation.started;
         let error_kind = operation.error_kind.take();
         drop(extensions);
+        let finished = Instant::now();
         // Notification may run arbitrary wakers. Never call them while holding
         // the registry's extension lock.
         self.0.record_owned(OwnedSample {
@@ -1067,7 +1091,12 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
             binding,
             metadata,
             rpc,
-            elapsed: started.elapsed(),
+            elapsed: finished.saturating_duration_since(started),
+            #[cfg(feature = "research")]
+            interval: self
+                .0
+                .interval_details()
+                .then_some(crate::OperationInterval { started, finished }),
             outcome,
             error_kind,
         });
@@ -1084,6 +1113,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         }) = state
             && !operation.completed
         {
+            let finished = Instant::now();
             self.0.record_owned(OwnedSample {
                 span_id: id,
                 parent_id: operation.parent_id,
@@ -1095,7 +1125,15 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
                 binding: self.0.binding_details().then_some(binding).flatten(),
                 metadata: operation.metadata,
                 rpc: operation.rpc,
-                elapsed: operation.started.elapsed(),
+                elapsed: finished.saturating_duration_since(operation.started),
+                #[cfg(feature = "research")]
+                interval: self
+                    .0
+                    .interval_details()
+                    .then_some(crate::OperationInterval {
+                        started: operation.started,
+                        finished,
+                    }),
                 outcome: Outcome::Incomplete,
                 error_kind: operation.error_kind,
             });
