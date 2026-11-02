@@ -341,6 +341,16 @@ fn real_protoc_accepts_compiler_linked_schema_and_all_stream_shapes()
     assert_eq!(set.file.len(), 1);
     let file = set.file.first().ok_or("missing file descriptor")?;
     assert_eq!(file.package.as_deref(), Some(TestFile::PACKAGE));
+    for value in &file
+        .enum_type
+        .first()
+        .ok_or("missing enum descriptor")?
+        .value
+    {
+        let state = State::try_from(value.number.ok_or("missing enum number")?)
+            .map_err(|_| "unknown descriptor enum value")?;
+        assert_eq!(Some(state.as_str_name()), value.name.as_deref());
+    }
     assert_eq!(
         file.message_type
             .iter()

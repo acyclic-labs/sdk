@@ -106,3 +106,26 @@ pub fn error_detail(status: &Status) -> Option<wire::Error> {
     let detail = wire::Error::decode(status.details()).ok()?;
     (wire::ErrorCode::try_from(detail.code).ok()? != wire::ErrorCode::Unspecified).then_some(detail)
 }
+
+/// Encodes a published Actors service error with its canonical status, name
+/// and protobuf detail. Host policy selects the semantic error; this projection
+/// carries no provider diagnostics or customer exception text.
+#[must_use]
+pub fn error_status(error: wire::ErrorCode) -> Status {
+    use wire::ErrorCode as E;
+    let code = match error {
+        E::InvalidArgument => tonic::Code::InvalidArgument,
+        E::CapabilityDenied | E::AdmissionDenied => tonic::Code::PermissionDenied,
+        E::CapabilityExpired => tonic::Code::Unauthenticated,
+        E::ActorNotFound | E::SubscriptionNotFound => tonic::Code::NotFound,
+        E::IdempotencyMismatch | E::Conflict => tonic::Code::FailedPrecondition,
+        E::CheckpointFailed => tonic::Code::Aborted,
+        E::DependencyUnavailable => tonic::Code::Unavailable,
+        E::Unspecified => tonic::Code::Internal,
+    };
+    let detail = wire::Error {
+        code: error as i32,
+        message: error.as_str_name().into(),
+    };
+    Status::with_details(code, error.as_str_name(), detail.encode_to_vec().into())
+}

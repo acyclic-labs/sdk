@@ -20,6 +20,29 @@ const BUF_ACTORS_DESCRIPTOR: &[u8] = include_bytes!("fixtures/actors/v1/actors-b
 const ADVERSARIAL_DESCRIPTOR: &[u8] =
     include_bytes!("fixtures/actors/v1/adversarial_unknown_option.bin");
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn canonical_service_error_projection_matches_published_descriptor() {
+    let pool = DescriptorPool::decode(BUF_ACTORS_DESCRIPTOR)
+        .expect("retained public descriptor must decode");
+    let errors = pool
+        .get_enum_by_name("acyclic.actors.v1.ErrorCode")
+        .expect("published ErrorCode must exist");
+    for value in errors.values() {
+        let error = acyclic_actors::wire::ErrorCode::try_from(value.number())
+            .expect("every published service error must be represented");
+        let response = acyclic_actors::grpc::error_status(error).into_http::<()>();
+        let returned = tonic::Status::from_header_map(response.headers())
+            .expect("canonical refusal must carry its terminal gRPC status");
+        let detail = acyclic_actors::wire::Error::decode(returned.details())
+            .expect("canonical refusal must carry the published detail");
+        assert_eq!(returned.message(), value.name());
+        assert_eq!(detail.message, value.name());
+        assert_eq!(detail.code, value.number());
+        assert_ne!(returned.code(), tonic::Code::Ok);
+    }
+}
+
 fn descriptor_set_message() -> prost_reflect::MessageDescriptor {
     DescriptorPool::global()
         .get_message_by_name("google.protobuf.FileDescriptorSet")

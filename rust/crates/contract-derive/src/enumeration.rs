@@ -23,6 +23,7 @@ pub fn expand(input: &syn::ItemEnum, options: Options) -> syn::Result<TokenStrea
     let mut schema = format!("enum {wire_name} {{\n");
     let mut seen = std::collections::BTreeSet::new();
     let mut cases = Vec::new();
+    let mut names = Vec::new();
     let mut default = None;
     for variant in &input.variants {
         if !matches!(variant.fields, syn::Fields::Unit) {
@@ -58,11 +59,13 @@ pub fn expand(input: &syn::ItemEnum, options: Options) -> syn::Result<TokenStrea
         }
         let ident = &variant.ident;
         cases.push(quote!(#value => Ok(Self::#ident)));
-        schema.push_str(&format!(
-            "  {}_{} = {value};\n",
+        let variant_name = format!(
+            "{}_{}",
             wire_name.to_shouty_snake_case(),
             crate::options::identifier(ident).to_shouty_snake_case()
-        ));
+        );
+        names.push(quote!(Self::#ident => #variant_name));
+        schema.push_str(&format!("  {variant_name} = {value};\n"));
     }
     let default =
         default.ok_or_else(|| syn::Error::new_spanned(name, "contract enum must not be empty"))?;
@@ -74,6 +77,8 @@ pub fn expand(input: &syn::ItemEnum, options: Options) -> syn::Result<TokenStrea
         impl #name {
             #[doc = "The protobuf name of this semantic enum."]
             pub const PROTO_NAME: &'static str = #wire_name;
+            #[doc = "The protobuf variant name generated from this declaration."]
+            pub const fn as_str_name(&self) -> &'static str { match self { #(#names,)* } }
             #[doc = "Protobuf declaration derived from semantic cases."]
             pub fn schema() -> String { #schema.to_owned() }
         }
