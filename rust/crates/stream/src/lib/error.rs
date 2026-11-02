@@ -1,4 +1,6 @@
 /// Stable public failures. CAS and absence conflicts are values instead.
+/// With `serde`, failures use their canonical [`Self::code`] string; unknown
+/// codes are refused rather than replaced with another cause.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
     /// Peer violated the response contract; retrying the connection cannot repair it.
@@ -49,6 +51,32 @@ pub enum StreamError {
     /// A minimum revision names another authority scope or incarnation.
     #[error("stream revision belongs to another authority or incarnation")]
     RevisionForeign,
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for StreamError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for StreamError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FailureCode;
+        impl serde::de::Visitor<'_> for FailureCode {
+            type Value = StreamError;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a canonical stream failure code")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, code: &str) -> Result<Self::Value, E> {
+                StreamError::from_code(code).ok_or_else(|| E::custom("unknown stream failure code"))
+            }
+        }
+        deserializer.deserialize_str(FailureCode)
+    }
 }
 
 impl StreamError {

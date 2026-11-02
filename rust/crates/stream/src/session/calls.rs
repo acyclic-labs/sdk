@@ -1,4 +1,4 @@
-//! Owning Actors dispatch on the same authority and credit boundaries as follows.
+//! Product dispatch on the same original authority and credit boundaries as follows.
 use super::*;
 use futures::TryStreamExt as _;
 

@@ -27,9 +27,28 @@ mod error_code_tests {
             ]
         );
         for error in StreamError::ALL {
-            assert_eq!(StreamError::from_code(error.code()), Some(error));
+            assert_eq!(StreamError::from_code(error.code()), Some(error.clone()));
+            #[cfg(feature = "serde")]
+            {
+                let encoded = serde_json::to_value(&error).unwrap();
+                assert_eq!(encoded, error.code());
+                // An owning envelope is not necessarily a borrowed JSON slice.
+                assert_eq!(
+                    serde_json::from_value::<StreamError>(encoded).unwrap(),
+                    error
+                );
+            }
         }
         assert_eq!(StreamError::from_code("stream_not_found"), None);
+        #[cfg(feature = "serde")]
+        for invalid in [
+            serde_json::json!("stream_not_found"),
+            serde_json::json!("unknown"),
+            serde_json::json!({ "code": "unavailable" }),
+            serde_json::json!(12),
+        ] {
+            assert!(serde_json::from_value::<StreamError>(invalid).is_err());
+        }
     }
 
     #[test]
