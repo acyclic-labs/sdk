@@ -1093,10 +1093,12 @@ mod tests {
     #[tokio::test]
     async fn blocked_output_still_reads_login_cancellation() {
         let _clock = crate::tests::poll_clock::Clock::start();
-        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = Arc::clone(&polls);
+        let (started, consumed) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
         let router = axum::Router::new().fallback(move || {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(started) = started.lock().expect("exchange entry").take() {
+                let _ = started.send(());
+            }
             async {
                 (
                     StatusCode::BAD_REQUEST,
@@ -1118,8 +1120,13 @@ mod tests {
         let output = Output::default();
         let mut client = connect(server, &output, None);
         client.reply().await;
-        output.pause(true);
         client.send(&call(1, "identity_login_complete"));
+        tokio::select! {
+            biased;
+            reply = client.replies.recv() => panic!("login ended before HTTP entry: {reply:?}"),
+            entered = consumed => entered.expect("original login exchange entered"),
+        }
+        output.pause(true);
         client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
         tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
             .await
@@ -1128,25 +1135,12 @@ mod tests {
             &json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
             "params": {"requestId": 1}}),
         );
-        // The poll stops although no reply can be written: the count settles.
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let mut last = (
-            polls.load(std::sync::atomic::Ordering::SeqCst),
-            std::time::Instant::now(),
-        );
-        loop {
-            tokio::task::yield_now().await;
-            let count = polls.load(std::sync::atomic::Ordering::SeqCst);
-            if count != last.0 {
-                last = (count, std::time::Instant::now());
-            } else if last.1.elapsed() >= Duration::from_millis(300) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "login polling continued after cancellation behind blocked output"
-            );
-        }
+        // The original exchange owns this mutex through operation completion.
+        // Cancellation must release it while output remains blocked.
+        let completed = client.server.lock().await;
+        assert!(completed.pending.is_some(), "cancellation retains approval");
+        drop(completed);
+        assert!(!client.served.is_finished());
         client.close();
         output.pause(false);
         let mut replies = Vec::new();
