@@ -257,7 +257,9 @@ fn log(agent: &AgentPath, op: OperationId) -> Result<StreamPath> {
 fn journal_event(record: &acyclic_stream::Record) -> Result<serde_json::Value> {
     use acyclic_actors::call::{Entry, Outcome};
     let event = match Entry::decode(record)? {
-        Entry::Request(_) => return Err("a device call journal has no request".into()),
+        Entry::Request(_) | Entry::Hold(_) => {
+            return Err("a device call journal has no request".into());
+        }
         Entry::Accepted(_) => serde_json::json!({"started": {}}),
         Entry::Chunk(chunk) => {
             let (stderr, data) = acyclic_harness_core::devices::chunk_output(&chunk)?;
@@ -1197,7 +1199,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             );
             let recovered = recovery_target
                 .executor
-                .reconcile(invocation.clone(), Some(context))
+                .reconcile(invocation.clone(), Some(context.clone()))
                 .await;
             if let Some(exit) = expected_exit {
                 let result = recovered
@@ -1221,6 +1223,21 @@ async fn committed_handover(refused_close: bool) -> Result {
                 assert!(
                     matches!(recovered, Err(acyclic_harness_core::Error::Indeterminate(id)) if id == operation)
                 );
+                let call = acyclic_harness_core::devices::call(&run.agent, operation)?;
+                let head = provider.head(call.log().clone()).await?;
+                let terminal = head.last.ok_or("accepted loss has no durable terminal")?;
+                assert!(matches!(
+                    acyclic_actors::call::Entry::decode(&terminal)?,
+                    acyclic_actors::call::Entry::Terminal(_)
+                ));
+                assert_eq!(provider.head(call.settled().clone()).await?.tail, 1);
+                // Reconciliation is observation of the same terminal, even
+                // when the original Close was refused. No second Run or
+                // terminal may be published by another recovery attempt.
+                assert!(
+                    matches!(recovery_target.executor.reconcile(invocation.clone(), Some(context.clone())).await, Err(acyclic_harness_core::Error::Indeterminate(id)) if id == operation)
+                );
+                assert_eq!(provider.head(call.log().clone()).await?.tail, head.tail);
             }
             let mut records = provider
                 .follow(FollowRequest::new(log(&run.agent, operation)?, 0))

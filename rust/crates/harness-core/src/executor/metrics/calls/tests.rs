@@ -71,8 +71,11 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         if accepted {
             publish(
                 &provider,
-                call.request(OwnedBytes::from("request"))
-                    .map_err(export_error)?,
+                call.request(
+                    OwnedBytes::from("request"),
+                    acyclic_actors::escrow::Escrow::new(Some(1)),
+                )
+                .map_err(export_error)?,
             )
             .await?;
             publish(
@@ -90,7 +93,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
         }
         publish(&provider, call.cancel("stop").map_err(export_error)?).await?;
         let mut journal = Journal::default();
-        let last = if accepted { 2 } else { 0 };
+        let last = if accepted { 3 } else { 0 };
         for sequence in 0..=last {
             journal
                 .apply(&at(&provider, call.log(), sequence).await?)
@@ -188,7 +191,7 @@ async fn original_call_fold_preserves_scope_and_cancellation_disposition() -> Re
 }
 
 #[tokio::test]
-async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
+async fn original_session_loss_requires_the_call_terminal() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;
     let account = AccountId::new(b"original").map_err(export_error)?;
     let source = || Source {
@@ -198,10 +201,10 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
         account: &account,
     };
     let provider = Arc::new(MemoryStream::default());
-    let call = CallPath::new(&scope, "lost").map_err(export_error)?;
-    let sibling = CallPath::new(&scope, "also-lost").map_err(export_error)?;
     let fence = StreamPath::new("executor/session/ended").map_err(export_error)?;
-    for call in [&call, &sibling] {
+    let mut observations = Vec::new();
+    for id in ["lost", "also-lost"] {
+        let call = CallPath::new(&scope, id).map_err(export_error)?;
         publish(
             &provider,
             call.accept(
@@ -214,93 +217,60 @@ async fn original_session_fence_has_no_invented_terminal() -> Result<()> {
             .map_err(export_error)?,
         )
         .await?;
+        let mut journal = Journal::default();
+        journal
+            .apply(&at(&provider, call.log(), 0).await?)
+            .map_err(export_error)?;
+        observations.push((call, journal));
     }
-    let mut journal = Journal::default();
-    journal
-        .apply(&at(&provider, call.log(), 0).await?)
-        .map_err(export_error)?;
     Stream::new(provider.clone(), fence.as_str())
         .map_err(export_error)?
         .append("ended", IdempotencyKey::unique())
         .await
         .map_err(export_error)?;
     let original_fence = at(&provider, &fence, 0).await?;
-    journal.fenced("original session ended");
-    let row = project(source(), &journal, &call, &fence, &original_fence)?;
-    // Existence of the first record closed the session. A later append to
-    // that same path is not another observation of the original settlement.
-    Stream::new(provider.clone(), fence.as_str())
-        .map_err(export_error)?
-        .append("later", IdempotencyKey::unique())
-        .await
-        .map_err(export_error)?;
-    let later_fence = at(&provider, &fence, 1).await?;
-    assert_ne!(later_fence.commit_id, original_fence.commit_id);
-    assert!(project(source(), &journal, &call, &fence, &later_fence).is_err());
-    assert_eq!(text(&row, "outcome"), "indeterminate");
-    assert_eq!(text(&row, "coverage"), "original_call_fence");
-    assert_eq!(text(&row, "fence"), fence.as_str());
-    assert_eq!(text(&row, "source_stream"), fence.as_str());
-    for unknown in [
-        "terminal_sequence",
-        "request_sequence",
-        "request_commit_id",
-        "agent_path",
-    ] {
-        assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
-    }
-    assert!(project(source(), &journal, &call, call.log(), &original_fence).is_err());
-    assert!(
-        project(
-            source(),
-            &Journal::default(),
-            &call,
-            &fence,
-            &original_fence
+    let mut commits = Vec::new();
+    for (call, mut journal) in observations {
+        assert!(journal.receipt_ref(call.log()).is_none());
+        assert!(project(source(), &journal, &call, &fence, &original_fence).is_err());
+        publish(
+            &provider,
+            journal
+                .recover(&call, "original session ended")
+                .map_err(export_error)?
+                .ok_or_else(|| export_error("missing original recovery"))?,
         )
-        .is_err()
-    );
-    #[cfg(feature = "provenance-export")]
-    {
-        let mut sibling_journal = Journal::default();
-        sibling_journal
-            .apply(&at(&provider, sibling.log(), 0).await?)
-            .map_err(export_error)?;
-        sibling_journal.fenced("original session ended");
-        let sibling_row = project(
-            source(),
-            &sibling_journal,
-            &sibling,
-            &fence,
-            &original_fence,
-        )?;
-        assert_eq!(
-            text(&row, "source_commit_id"),
-            text(&sibling_row, "source_commit_id")
+        .await?;
+        let terminal = at(&provider, call.log(), 1).await?;
+        journal.apply(&terminal).map_err(export_error)?;
+        let row = project(source(), &journal, &call, call.log(), &terminal)?;
+        assert_eq!(text(&row, "outcome"), "indeterminate");
+        assert_eq!(text(&row, "coverage"), "original_call_terminal");
+        assert_eq!(text(&row, "source_stream"), call.log().as_str());
+        assert_eq!(number(&row, "terminal_sequence"), 1);
+        for unknown in [
+            "fence",
+            "request_sequence",
+            "request_commit_id",
+            "agent_path",
+        ] {
+            assert!(row.data.column_by_name(unknown).unwrap().is_null(0));
+        }
+        assert!(project(source(), &journal, &call, &fence, &original_fence).is_err());
+        assert!(
+            journal
+                .recover(&call, "lost again")
+                .map_err(export_error)?
+                .is_none()
         );
-        let subject = |batch: &Batch| -> Result<String> {
-            let mut encoded = Vec::new();
-            super::super::provenance::write(batch, &mut encoded)?;
-            let triples = oxttl::NTriplesParser::new()
-                .for_reader(encoded.as_slice())
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(export_error)?;
-            Ok(triples
-                .into_iter()
-                .find(|triple| triple.predicate.as_str() == "urn:acyclic:research:callLog")
-                .expect("original call observation")
-                .subject
-                .to_string())
-        };
-        assert_ne!(
-            subject(&row)?,
-            subject(&sibling_row)?,
-            "one original session fence must not merge distinct call observations"
-        );
+        commits.push(terminal.commit_id);
     }
+    assert_ne!(
+        commits[0], commits[1],
+        "one session fence cannot replace distinct call terminals"
+    );
     Ok(())
 }
-
 #[tokio::test]
 async fn receipt_projection_neither_copies_nor_scans_opaque_results() -> Result<()> {
     let scope = StreamPath::new("research/scope").map_err(export_error)?;

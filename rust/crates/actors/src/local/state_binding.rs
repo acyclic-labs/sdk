@@ -50,6 +50,14 @@ impl ActorStateTransaction<'_> {
         self.state.escrow = Some(escrow);
         Ok(())
     }
+    /// Transfer this actor's funding to one call. Publish its request and hold
+    /// with this transaction's debit; a discarded candidate spends nothing.
+    pub fn hold_escrow(&mut self, units: Option<u64>) -> Result<crate::escrow::Escrow, Error> {
+        let mut escrow = self.escrow()?;
+        let hold = escrow.hold(units)?;
+        self.state.escrow = Some(escrow);
+        Ok(hold)
+    }
     /// Read this transaction's own writes and its original committed cut.
     pub fn get(&self, key: &str) -> Option<&Bytes> {
         self.state.metadata.get(key)

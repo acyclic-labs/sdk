@@ -415,8 +415,11 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
                 socket_end = None;
                 let tail = self.accepted_tail(&call, invocation.operation_id).await?;
-                if tail == 0 { return Err(Error::Indeterminate(invocation.operation_id)); }
-                closed_at = Some(tail);
+                if tail == 0 {
+                    cancel_call(&*self.provider, &call, invocation.operation_id, "device session ended").await?;
+                } else {
+                    closed_at = Some(tail);
+                }
                 opening.await?
             }
         };
@@ -425,7 +428,20 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         let mut journal = Journal::default();
         loop {
             if closed_at.is_some_and(|tail| journal.next() >= tail) {
-                return Err(Error::Indeterminate(invocation.operation_id));
+                // The original producer ended without a terminal in its cut.
+                // The caller publishes cancellation once, then reads whichever
+                // terminal wins. An accepted call remains indeterminate and its
+                // hold stays with the original executor host for reconciliation.
+                cancel_call(
+                    &*self.provider,
+                    &call,
+                    invocation.operation_id,
+                    "device session ended",
+                )
+                .await?;
+                closed_at = None;
+                socket_end = None;
+                ended = None;
             }
             let update = tokio::select! {
                 biased;
@@ -444,8 +460,8 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                     if let FollowUpdate::Record(_) = end {
                         // The fence exists: drain only the journal prefix
                         // committed before it. A terminal within that cut
-                        // still wins; exhaustion is `indeterminate` and never
-                        // waits for another incarnation.
+                        // still wins; exhaustion publishes the same original
+                        // cancellation terminal, never another incarnation.
                         closed_at = Some(self.provider.head(call.log().clone()).await?.tail);
                         ended = None;
                     }
@@ -456,9 +472,6 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
             let FollowUpdate::Record(record) = update? else {
                 continue;
             };
-            if closed_at.is_some_and(|tail| record.sequence >= tail) {
-                return Err(Error::Indeterminate(invocation.operation_id));
-            }
             match journal.apply(&record).map_err(protocol)? {
                 Entry::Accepted(accepted) => {
                     if closed_at.is_some() {
@@ -517,7 +530,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
                     return output.finish(self.terminal(outcome, invocation)?);
                 }
                 // A device call's request is the Run on the device's queue.
-                Entry::Request(_) => {
+                Entry::Request(_) | Entry::Hold(_) => {
                     return Err(Error::Invalid("device call journal has a request".into()));
                 }
             }
@@ -551,6 +564,37 @@ fn protocol(error: acyclic_actors::call::Error) -> Error {
     Error::Invalid(error.to_string())
 }
 
+/// Both explicit cancellation and producer loss settle on the caller's one
+/// journal. A lost reply retains the same publication identity on recovery;
+/// neither path dispatches a new Run or releases the accepted hold.
+async fn cancel_call<P: StreamProvider + ?Sized>(
+    provider: &P,
+    call: &CallPath,
+    operation: crate::OperationId,
+    reason: &str,
+) -> Result<()> {
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"acyclic.harness.device.cancel.v2\0");
+    identity.update(call.log().as_str().as_bytes());
+    identity.update(b"\0");
+    identity.update(reason.as_bytes());
+    let key = IdempotencyKey::new(identity.finalize().as_bytes().to_vec())?;
+    let request = call.cancel(reason).map_err(protocol)?.request(key);
+    // Conflict means the original terminal already won. Uncertain publication
+    // stays indeterminate; the original request identity is reused on recovery.
+    crate::executor::phase::claim(async {
+        provider.commit(request).await.map_err(|error| {
+            if error.uncertain() {
+                Error::Indeterminate(operation)
+            } else {
+                error.into()
+            }
+        })
+    })
+    .await?;
+    Ok(())
+}
+
 impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
     fn cancellation(
         &self,
@@ -563,28 +607,7 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         let provider = Arc::clone(&self.provider);
         let operation = invocation.operation_id;
         Ok(Some(Box::pin(async move {
-            let mut identity = blake3::Hasher::new();
-            identity.update(b"acyclic.harness.device.cancel.v1\0");
-            identity.update(call.log().as_str().as_bytes());
-            let key = IdempotencyKey::new(identity.finalize().as_bytes().to_vec())?;
-            let request = call
-                .cancel("caller cancelled")
-                .map_err(protocol)?
-                .request(key);
-            // Conflict means the original terminal already won. In either
-            // case the same journal reader determines the outcome; a lost
-            // publication reply leaves the original call indeterminate.
-            crate::executor::phase::claim(async {
-                provider.commit(request).await.map_err(|error| {
-                    if error.uncertain() {
-                        Error::Indeterminate(operation)
-                    } else {
-                        error.into()
-                    }
-                })
-            })
-            .await?;
-            Ok(())
+            cancel_call(&*provider, &call, operation, "caller cancelled").await
         })))
     }
 

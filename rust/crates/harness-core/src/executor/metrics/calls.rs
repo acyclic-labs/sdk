@@ -21,18 +21,17 @@ pub struct Source<'a> {
 
 /// Projects the borrowed receipt of the original `call::Journal` into outcomes.
 ///
-/// Supply its original terminal record, or the first original fence record
-/// when its terminal is absent. Source position/commit/path are checked
+/// Supply its original terminal record. Source position/commit/path are checked
 /// against that receipt. The caller supplies already-authorized source evidence:
 /// this function cannot certify fabricated source records or a forged account.
 /// It neither refolds a journal nor interprets opaque result bytes as model
 /// content, read coverage or physical work. Cancellation disposition remains
 /// the original reader's: cancellation after acceptance is indeterminate.
 ///
-/// A fenced receipt has no terminal sequence. Request origin is unknown here;
+/// Request origin is unknown here;
 /// its recorded sequence/commit must not be mislabeled as an original origin.
-/// `logical_value_bytes` measures this source record, including the fence marker
-/// in a fenced row; it does not measure callee output or physical storage.
+/// `logical_value_bytes` measures this terminal record; it does not measure
+/// callee output or physical storage.
 /// Execution operation IDs, agent ownership and timing are never derived from
 /// the call path. The projection copies metadata only, with no payload hash,
 /// buffer, read, wait, publication or state that grows with history or chunks.
@@ -45,7 +44,7 @@ pub fn project(
 ) -> Result<Batch> {
     let refuse = |reason| {
         export_error(format_args!(
-            "call receipt {reason}; recovery: supply the original call::Journal receipt and its authorized terminal or fence record"
+            "call receipt {reason}; recovery: supply the original call::Journal receipt and its authorized terminal record"
         ))
     };
     let receipt = journal
@@ -63,24 +62,12 @@ pub fn project(
     {
         return Err(refuse("has a foreign caller"));
     }
-    let coverage = if let Some(terminal) = &receipt.terminal {
-        if selected != receipt.log
-            || receipt.fence.is_some()
-            || record.sequence != terminal.sequence
-            || record.commit_id != terminal.commit_id
-        {
-            return Err(refuse("differs from its original terminal"));
-        }
-        "original_call_terminal"
-    } else {
-        if receipt.fence != Some(selected)
-            || record.sequence != 0
-            || !matches!(receipt.outcome, Outcome::Indeterminate(_))
-        {
-            return Err(refuse("has no original terminal or settling fence"));
-        }
-        "original_call_fence"
-    };
+    if selected != receipt.log
+        || record.sequence != receipt.terminal.sequence
+        || record.commit_id != receipt.terminal.commit_id
+    {
+        return Err(refuse("differs from its original terminal"));
+    }
     let mut row = Row::stream(
         source.agent.map(AgentPath::as_str),
         source.account,
@@ -105,10 +92,9 @@ pub fn project(
         .request
         .as_ref()
         .map(|request| digest(*request.commit_id.as_bytes()));
-    row.terminal_sequence = receipt.terminal.as_ref().map(|terminal| terminal.sequence);
-    row.fence = receipt.fence.map(|fence| fence.as_str().into());
+    row.terminal_sequence = Some(receipt.terminal.sequence);
     row.logical_value_bytes = Some(record.value.len() as u64);
-    row.coverage = Some(coverage.into());
+    row.coverage = Some("original_call_terminal".into());
     batch(Table::Outcomes, &[row])
 }
 

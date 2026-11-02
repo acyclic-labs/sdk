@@ -9,8 +9,8 @@
 //! outcome a reader observes, once present, must never change. Cancellation
 //! commits in its one step or finds the call already ended, and the call is
 //! settled right after it (it never waits). Independent controls remove
-//! settlement guards, session guards or the original retry identity, or
-//! incorrectly fence cancellation behind the executor's ended session.
+//! acceptance guards, settlement guards, session guards or the original retry
+//! identity. Recovery publishes the original call's sole terminal.
 use super::*;
 use acyclic_stream::{
     CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
@@ -36,7 +36,7 @@ enum Fault {
     Fence,
     Retry,
     Producer,
-    Cancel,
+    Acceptance,
 }
 
 struct Model {
@@ -89,6 +89,7 @@ impl Model {
         commit.conditions.retain(|condition| match condition {
             CommitCondition::Absent { path } => {
                 !(self.fault == Fault::Settlement && path == self.call.settled()
+                    || self.fault == Fault::Acceptance && path == self.call.accepted()
                     || self.fault == Fault::Fence && path == &self.fence)
             }
             _ => true,
@@ -142,7 +143,10 @@ impl Model {
                 if self
                     .publish(
                         self.call
-                            .request(OwnedBytes::from(&b"run"[..]))
+                            .request(
+                                OwnedBytes::from(&b"run"[..]),
+                                crate::escrow::Escrow::new(Some(5)),
+                            )
                             .map_err(|error| error.to_string())?,
                     )
                     .await?
@@ -205,15 +209,10 @@ impl Model {
                 }
             }
             Hop::Cancel => {
-                let mut commit = self
+                let commit = self
                     .call
                     .cancel("stop")
                     .map_err(|error| error.to_string())?;
-                if self.fault == Fault::Cancel {
-                    commit.conditions.push(CommitCondition::Absent {
-                        path: self.fence.clone(),
-                    });
-                }
                 let commit = self.guard(commit);
                 if self.publish(commit).await? && self.expected.is_none() {
                     self.expected = Some(if self.accepted {
@@ -294,6 +293,26 @@ impl Model {
         if self.chunks != self.read_chunks {
             return Err("a chunk was duplicated or lost".into());
         }
+        if self.ended
+            && let Some(recovery) = self
+                .journal
+                .recover(&self.call, "lost")
+                .map_err(|error| error.to_string())?
+        {
+            if !self.publish(recovery).await? {
+                return Err("original lost-session recovery did not settle".into());
+            }
+            for record in self.records(self.call.log(), self.journal.next()).await? {
+                if matches!(
+                    self.journal
+                        .apply(&record)
+                        .map_err(|error| error.to_string())?,
+                    Entry::Terminal(_)
+                ) {
+                    self.terminals += 1;
+                }
+            }
+        }
         let markers = self.tail(self.call.settled()).await?;
         if markers != self.terminals {
             return Err(format!(
@@ -301,22 +320,14 @@ impl Model {
                 self.terminals
             ));
         }
-        // Keep the raw record cursor across steps. A later explicit cancel
-        // can materialize an already observed virtual fence terminal.
-        let mut journal = self.journal.clone();
-        if self.ended {
-            journal.fenced("lost");
-        }
-        if let Some(receipt) = journal.receipt(self.call.log()) {
+        if let Some(receipt) = self.journal.receipt(self.call.log()) {
             // The receipt is the committed request plus the one terminal
-            // record, or the fence that settled the accepted call.
-            if receipt.request.is_some() != self.request
-                || receipt.terminal.is_none() == receipt.fence.is_none()
-            {
+            // record, including the original session-loss terminal.
+            if receipt.request.is_some() != self.request {
                 return Err(format!("incomplete receipt {receipt:?}"));
             }
         }
-        let outcome = journal.outcome().cloned();
+        let outcome = self.journal.outcome().cloned();
         if match (&self.expected, &outcome) {
             (Some(expected), Some(actual)) => !same(expected, actual),
             (None, None) => false,
@@ -479,7 +490,7 @@ async fn terminal_sessions() -> Result<(), String> {
                         journal
                             .receipt(model.call.log())
                             .map(|receipt| receipt.terminal),
-                        Some(Some(Committed::of(record)))
+                        Some(Committed::of(record))
                     );
                 } else {
                     // Removing only the terminal's session check admits this real
@@ -619,6 +630,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     assert_eq!(explore(Fault::None).await?, 0);
     terminal_sessions().await?;
     terminal_reasons().await?;
+    claim_recovery().await?;
     // Preserve the owning acceptance control: only its settled guard is
     // removed from the original requestless, already cancelled call.
     let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
@@ -639,6 +651,7 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     assert!(model.publish(acceptance).await?);
     assert!(model.check(Hop::Rival).await.is_err());
     for fault in [
+        Fault::Acceptance,
         Fault::Settlement,
         Fault::Fence,
         Fault::Retry,
@@ -646,22 +659,111 @@ async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), 
     ] {
         assert!(explore(fault).await? > 0);
     }
-    // A virtual fence outcome alone must not satisfy cancellation's durable
-    // terminal guarantee. Wrongly tying cancel to the executor's session
-    // refuses this commit even though that virtual outcome is already known.
-    let mut model = Model::new(Fault::Cancel, Outcome::Ok(OwnedBytes::from(&b"done"[..])));
-    for hop in [Hop::Request, Hop::Executor, Hop::Fence] {
-        model.step(hop).await?;
-    }
-    assert_eq!(
-        model.step(Hop::Cancel).await.unwrap_err(),
-        "cancel did not retain exactly one terminal record"
-    );
     // Select each terminal kind independently of the schedule. Acceptance,
     // multiple chunks, settlement and a later replay/cancel/fence all use the
     // same generated entry point as arbitrary fuzz inputs.
     for terminal in [6, 13, 20, 27] {
         check(&[terminal, 0, 1, 5, 1, 1, 6, 3, 4]).await?;
+    }
+    Ok(())
+}
+
+/// Original committed holds survive acceptance reply loss, cancellation and
+/// session loss. Recovery is tied to that acceptance and never redispatches.
+#[cfg(test)]
+async fn claim_recovery() -> Result<(), String> {
+    for requested in [false, true] {
+        for cancel in [false, true] {
+            let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+            model.requested = requested;
+            assert!(
+                model
+                    .journal
+                    .recover(&model.call, "lost")
+                    .map_err(|e| e.to_string())?
+                    .is_none()
+            );
+            if requested {
+                model.step(Hop::Request).await?;
+            }
+            model.step(Hop::Executor).await?;
+            assert_eq!(
+                model.journal.hold(),
+                requested.then_some(crate::escrow::Escrow::new(Some(5)))
+            );
+            let hold = model.journal.hold();
+            model.replay().await?;
+            assert_eq!(model.tail(model.call.accepted()).await?, 1);
+            let recovery = model
+                .journal
+                .recover(&model.call, "lost")
+                .map_err(|e| e.to_string())?
+                .ok_or("missing accepted recovery")?;
+            assert!(
+                !model.publish(recovery).await?,
+                "a live session cannot be recovered"
+            );
+            if cancel {
+                model.step(Hop::Cancel).await?;
+            }
+            model.step(Hop::Fence).await?;
+            assert_eq!(
+                model.journal.hold(),
+                hold,
+                "terminal released the original hold"
+            );
+            assert!(matches!(
+                model.journal.outcome(),
+                Some(Outcome::Indeterminate(_))
+            ));
+            let receipt = model
+                .journal
+                .receipt(model.call.log())
+                .ok_or("missing committed terminal")?;
+            let terminal = model
+                .records(model.call.log(), receipt.terminal.sequence)
+                .await?;
+            assert_eq!(terminal.len(), 1);
+            assert_eq!(receipt.terminal.commit_id, terminal[0].commit_id);
+            model.replay().await?;
+            model.step(Hop::Rival).await?;
+            assert_eq!(model.tail(model.call.accepted()).await?, 1);
+            assert_eq!(model.tail(model.call.settled()).await?, 1);
+        }
+    }
+    for missing_fence in [false, true] {
+        let mut model = Model::new(Fault::None, Outcome::Ok(OwnedBytes::from("done")));
+        model.step(Hop::Request).await?;
+        model.step(Hop::Executor).await?;
+        let mut journal = model.journal.clone();
+        if !missing_fence {
+            model
+                .publish(Commit {
+                    conditions: Vec::new(),
+                    mutations: vec![append(&model.fence, AppendRecord::from("lost"))],
+                })
+                .await?;
+            // A reader handed another acceptance's commit cannot recover this
+            // call. Removing its head guard admits the same wrong evidence.
+            journal
+                .acceptance
+                .as_mut()
+                .ok_or("missing acceptance")?
+                .commit_id = CommitId::from_bytes([99; 32]);
+        }
+        let mut recovery = journal
+            .recover(&model.call, "lost")
+            .map_err(|e| e.to_string())?
+            .ok_or("missing recovery")?;
+        assert!(!model.publish(recovery.clone()).await?);
+        recovery.conditions.retain(|condition| {
+            !matches!(condition, CommitCondition::Present { path } if missing_fence && path == &model.fence)
+                && !matches!(condition, CommitCondition::Head { path, .. } if !missing_fence && path == model.call.accepted())
+        });
+        assert!(
+            model.publish(recovery).await?,
+            "negative control did not remove the required guard"
+        );
     }
     Ok(())
 }

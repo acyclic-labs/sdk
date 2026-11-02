@@ -384,7 +384,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         committed.receipt().call().log,
         *invocation.call(before.path())?.log()
     );
-    for name in ["acyclic.call.v1", "acyclic.call.v1.fence"] {
+    for name in ["acyclic.call.v2", "acyclic.call.v2.fence"] {
         assert!(matches!(
             invocation.call(before.path())?.settle_with_attributes(
                 None,
