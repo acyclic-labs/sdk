@@ -7,7 +7,7 @@ import { readFile } from "node:fs/promises";
 export function executionSucceeded(result) {
   assert.equal(result.termination?.startup_rejection ?? result.termination?.execution_failure,
     undefined, "selected native execution reported failure");
-  assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
+  if (result.code !== 0) assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
   assert.equal(result.signal, null, "executable was interrupted");
 }
 
