@@ -4,7 +4,6 @@ import { appendFileSync, close as fsClose, createWriteStream, mkdirSync, mkdtemp
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
-import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
@@ -330,8 +329,9 @@ test("expected interrupted recovery still requires its retained transcript and e
   screen.dispose();
 });
 
-test("real children are killed and reaped on scope cleanup", { timeout: 5000 }, async () => {
+test("real children are killed and reaped on scope cleanup", async t => {
   const processes = new Processes();
+  t.after(() => processes.close());
   const running = processes.start(process.execPath, ["-e", "process.stdout.write(JSON.stringify({event:'ready'})+'\\n');process.stdin.resume()"]);
   const events = new Spool(running.child.stdout, running.closed);
   await events.next(event => event.event === "ready");
@@ -340,18 +340,29 @@ test("real children are killed and reaped on scope cleanup", { timeout: 5000 }, 
   assert.throws(() => processes.start(process.execPath, []), /scope is closed/);
 });
 
-test("real process captures preserve UTF-8 at every byte boundary", { timeout: 5000 }, async () => {
+test("real process captures preserve UTF-8 at every byte boundary", async t => {
   const processes = new Processes();
+  t.after(() => processes.close());
   const child = processes.start(process.execPath, ["-e", "require('node:readline').createInterface({input:process.stdin}).on('line',line=>process.stdout.write(Buffer.from(line,'hex')))"]);
   const text = "hé λ 🙂", bytes = Buffer.from(text);
+  const output = child.child.stdout.iterator({ destroyOnReturn: false });
   try {
     for (let cut = 0; cut <= bytes.length; cut++) for (const fragment of [bytes.subarray(0, cut), bytes.subarray(cut)]) {
       if (!fragment.length) continue;
-      const received = once(child.child.stdout, "data");
+      let received = output.next();
       child.child.stdin.write(fragment.toString("hex") + "\n");
-      await received;
+      for (let remaining = fragment.length; remaining > 0;) {
+        const next = await received;
+        assert.equal(next.done, false, "original child output ended before the selected fragment");
+        remaining -= next.value.length;
+        assert.ok(remaining >= 0, "original child output exceeded the selected fragment");
+        if (remaining) received = output.next();
+      }
     }
+    const ended = output.next();
     child.child.stdin.end();
+    assert.equal((await ended).done, true, "original child output must reach EOF");
+    assert.equal((await output.next()).done, true, "late reads retain original EOF");
     assert.equal((await child.closed).stdout, text.repeat(bytes.length + 1));
-  } finally { await processes.close(); }
+  } finally { await output.return(); }
 });
