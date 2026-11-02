@@ -260,11 +260,11 @@ async fn unreadable_settings_entries_refuse_before_seed_fallback_on_reopen() -> 
         write(&harness, path, "export default {}; ").await?;
         drop(harness);
         match open(directory.path()).await {
-            Err(Error::ToolRejected {
-                code: crate::wire::ErrorCode::Invalid,
-                ..
-            }) => {}
-            Err(error) => panic!("{path}: original entry read refusal required: {error}"),
+            Err(error) => assert_eq!(
+                error.code(),
+                crate::wire::ErrorCode::Invalid,
+                "{path}: original entry read refusal required: {error}"
+            ),
             Ok(_) => panic!("{path}: unreadable settings became seed fallback"),
         }
     }
@@ -291,11 +291,14 @@ async fn an_enabled_guard_file_read_refusal_cannot_remove_the_guard() -> Result<
     }
     drop(harness);
     match open(directory.path()).await {
-        Err(Error::ToolRejected {
-            code: crate::wire::ErrorCode::Invalid,
-            ..
-        }) => Ok(()),
-        Err(error) => panic!("original guard read refusal required: {error}"),
+        Err(error) => {
+            assert_eq!(
+                error.code(),
+                crate::wire::ErrorCode::Invalid,
+                "original guard read refusal required: {error}"
+            );
+            Ok(())
+        }
         Ok(_) => panic!("an unreadable enabled guard cannot fall back to the empty seed"),
     }
 }
