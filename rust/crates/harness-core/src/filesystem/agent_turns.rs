@@ -1691,105 +1691,105 @@ where
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
-        Box::pin(async move {
-            // The admission is verified before the turn's first read.
-            let admitted = self.admit(agent)?;
-            // The model context holds every settled turn of the agent's
-            // conversation, inherited ones included: a spawned child is a
-            // clone of its parent at the fork cut.
-            let history = self.history(&admitted, agent).await?;
-            // The turn's grant is derived from its context, before the turn
-            // can observe anything: every file the context can reach.
-            let mut context = TurnContext::new(agent, history, turn, input)?;
-            // Steering transcripts pin references admitted after the original
-            // turn opened. Read their manifests under exact grants, then include
-            // those references in this turn's ordinary authority derivation.
-            let transcripts: Vec<FileRef> = context
-                .settled
-                .iter()
-                .filter_map(|settled| settled.steering.clone())
-                .collect();
-            if !transcripts.is_empty() {
-                let authority = self.admit(agent)?.authority(&transcripts).await?;
-                let reader = FilesystemContentVerifier::new(
-                    Arc::clone(&self.host),
-                    &authority.verifier,
-                    &authority.scope,
-                    crate::conversation::MAX_EXACT_JS_INTEGER,
-                    None,
-                )?;
-                for settled in &mut context.settled {
-                    let Some(file) = &settled.steering else {
-                        continue;
-                    };
-                    let bytes = reader
-                        .read(file, file.descriptor().byte_length(), None, None)?
-                        .await?;
-                    settled.steered = crate::contract::json_from_slice(&bytes)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                }
-            }
-            let external: Vec<FileRef> = context.files().cloned().collect();
-            let (journal, bindings, files) = crate::core::until_turn_stopped(
-                Some(stop.clone()),
-                self.journal(admitted, &external, Some(&mut context)),
-            )
-            .await?;
-            let input = std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
-            let input = &input;
-            // Append a roster only when this rendered history lacks it. Losing
-            // its announcing turn or compacting starts a new base; no retained
-            // message is rewritten. Stage once per distinct roster. A
-            // turn decides it once, when it starts: a resumed turn keeps the
-            // announcement its checkpoint holds, so it sends the request it
-            // started with, and a roster change meanwhile is the next turn's.
-            let roster = match crate::agent::turn_roster(agent).map_err(agent_error)? {
-                Some(kept) => kept,
-                None => match self.executors.roster(agent) {
-                    Some(roster) => {
-                        let (bytes, digest) = roster.canonical();
-                        if context.contains_roster(bytes)? {
-                            None
-                        } else {
-                            Some((files.stage_roster(digest, bytes).await?, digest))
-                        }
+        Box::pin(crate::core::until_turn_stopped(
+            Some(stop.clone()),
+            async move {
+                // The admission is verified before the turn's first read.
+                let admitted = self.admit(agent)?;
+                // The model context holds every settled turn of the agent's
+                // conversation, inherited ones included: a spawned child is a
+                // clone of its parent at the fork cut.
+                let history = self.history(&admitted, agent).await?;
+                // The turn's grant is derived from its context, before the turn
+                // can observe anything: every file the context can reach.
+                let mut context = TurnContext::new(agent, history, turn, input)?;
+                // Steering transcripts pin references admitted after the original
+                // turn opened. Read their manifests under exact grants, then include
+                // those references in this turn's ordinary authority derivation.
+                let transcripts: Vec<FileRef> = context
+                    .settled
+                    .iter()
+                    .filter_map(|settled| settled.steering.clone())
+                    .collect();
+                if !transcripts.is_empty() {
+                    let authority = self.admit(agent)?.authority(&transcripts).await?;
+                    let reader = FilesystemContentVerifier::new(
+                        Arc::clone(&self.host),
+                        &authority.verifier,
+                        &authority.scope,
+                        crate::conversation::MAX_EXACT_JS_INTEGER,
+                        None,
+                    )?;
+                    for settled in &mut context.settled {
+                        let Some(file) = &settled.steering else {
+                            continue;
+                        };
+                        let bytes = reader
+                            .read(file, file.descriptor().byte_length(), None, None)?
+                            .await?;
+                        settled.steered = crate::contract::json_from_slice(&bytes)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
                     }
-                    None => None,
-                },
-            };
-            let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
-            let effects = Arc::new(FilesystemTurnEffects::new(
-                Arc::clone(&files),
-                Arc::clone(&self.stream),
-                agent.path.clone(),
-                (turn, segment),
-                self.limits.maximum_bytes,
-            )) as Arc<dyn crate::agent::TurnEffects>;
-            let children = Arc::new(FilesystemTurnChildren {
-                stream: Arc::clone(&self.stream),
-                host: Arc::clone(&self.host),
-                issuer: self.issuer.clone(),
-                admission: self.admission.clone(),
-                agent: agent.path.clone(),
-                volumes: agent.volumes.clone(),
-                maximum_bytes: self.limits.maximum_bytes,
-            }) as Arc<dyn crate::agent::TurnChildren>;
-            let goal = match self.goals {
-                Some(policy) => FilesystemTurnGoal::bind(
-                    &self.host,
-                    agent,
-                    &bindings.issuer.verifier(&mut None)?,
-                    &bindings.scope,
+                }
+                let external: Vec<FileRef> = context.files().cloned().collect();
+                let (journal, bindings, files) = self
+                    .journal(admitted, &external, Some(&mut context))
+                    .await?;
+                let input =
+                    std::mem::replace(&mut context.input, ModelContent::Text(String::new()));
+                let input = &input;
+                // Append a roster only when this rendered history lacks it. Losing
+                // its announcing turn or compacting starts a new base; no retained
+                // message is rewritten. Stage once per distinct roster. A
+                // turn decides it once, when it starts: a resumed turn keeps the
+                // announcement its checkpoint holds, so it sends the request it
+                // started with, and a roster change meanwhile is the next turn's.
+                let roster = match crate::agent::turn_roster(agent).map_err(agent_error)? {
+                    Some(kept) => kept,
+                    None => match self.executors.roster(agent) {
+                        Some(roster) => {
+                            let (bytes, digest) = roster.canonical();
+                            if context.contains_roster(bytes)? {
+                                None
+                            } else {
+                                Some((files.stage_roster(digest, bytes).await?, digest))
+                            }
+                        }
+                        None => None,
+                    },
+                };
+                let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
+                let effects = Arc::new(FilesystemTurnEffects::new(
+                    Arc::clone(&files),
+                    Arc::clone(&self.stream),
+                    agent.path.clone(),
+                    (turn, segment),
                     self.limits.maximum_bytes,
-                    policy,
-                )?
-                .map(|goal| Arc::new(goal) as Arc<dyn crate::agent::TurnGoal>),
-                None => None,
-            };
-            let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
-            let outputs = Arc::clone(&files);
-            let boundary =
-                super::agent_steering::FilesystemBoundary::new(
+                )) as Arc<dyn crate::agent::TurnEffects>;
+                let children = Arc::new(FilesystemTurnChildren {
+                    stream: Arc::clone(&self.stream),
+                    host: Arc::clone(&self.host),
+                    issuer: self.issuer.clone(),
+                    admission: self.admission.clone(),
+                    agent: agent.path.clone(),
+                    volumes: agent.volumes.clone(),
+                    maximum_bytes: self.limits.maximum_bytes,
+                }) as Arc<dyn crate::agent::TurnChildren>;
+                let goal = match self.goals {
+                    Some(policy) => FilesystemTurnGoal::bind(
+                        &self.host,
+                        agent,
+                        &bindings.issuer.verifier(&mut None)?,
+                        &bindings.scope,
+                        self.limits.maximum_bytes,
+                        policy,
+                    )?
+                    .map(|goal| Arc::new(goal) as Arc<dyn crate::agent::TurnGoal>),
+                    None => None,
+                };
+                let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
+                let outputs = Arc::clone(&files);
+                let boundary = super::agent_steering::FilesystemBoundary::new(
                     Arc::clone(&self.stream),
                     Arc::clone(&self.host),
                     self.issuer.clone(),
@@ -1803,73 +1803,74 @@ where
                     })?),
                     self.executors.render_bytes(),
                 );
-            // Each call dispatches only once the effects of the turn's earlier
-            // calls committed, so it reaches what they created, and a `wait`
-            // only once its children settled.
-            let approvals = Arc::new(
-                AgentApprovals::new(files, Arc::new(policy))
-                    .yielding(Arc::clone(&effects))
-                    .awaiting(
-                        Arc::clone(&children),
-                        matches!(agent.phase, crate::agent::Phase::Waiting { .. }),
-                    ),
-            );
-            let journal = journal
-                .with_model_boundary(Arc::new(boundary))
-                .with_stop(stop)
-                .with_agent_approvals(Arc::clone(&approvals));
-            let selected = context
-                .select(
-                    &*self.stream,
-                    agent,
-                    &*bindings.content.reader,
-                    input,
-                    roster.as_ref().map(|(file, _)| file),
-                    self.executors.render_bytes(),
-                )
-                .await?;
-            // The original selection validator requires the current input to
-            // equal its final message. A waking Notice carries the whole frozen
-            // event block after coalescing, not just the event that woke it.
-            let input = selected
-                .messages
-                .last()
-                .ok_or_else(|| Error::Invalid("selected turn has no current input".into()))?
-                .content
-                .clone();
-            let journal = journal.with_bound_selection(selected.clone());
-            let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
-            let mut authority = TurnAuthority {
-                issuer: bindings.issuer,
-                scope: bindings.scope,
-                grants: bindings.grants,
-                content: bindings.content,
-                approval: Arc::new(resolved.bind()?),
-                effects: Some(Arc::clone(&effects)),
-                journal: Arc::clone(&journal),
-                children: Some(children),
-                workspace_tools: None,
-            };
-            if let Some(factory) = &self.workspace_tools {
-                authority.workspace_tools = Some(factory(agent, &authority)?);
-            }
-            Ok(OpenTurn {
-                executor: self
-                    .executors
-                    .executor(agent, turn, &input, &authority)
-                    .await?,
-                journal,
-                max_steps: self.limits.max_steps,
-                custody: Some(authority.issuer),
-                selected: Some(selected),
-                approvals: Some(approvals),
-                effects: Some(effects),
-                goal,
-                outputs,
-                input: Some(input),
-                roster,
-            })
-        })
+                // Each call dispatches only once the effects of the turn's earlier
+                // calls committed, so it reaches what they created, and a `wait`
+                // only once its children settled.
+                let approvals = Arc::new(
+                    AgentApprovals::new(files, Arc::new(policy))
+                        .yielding(Arc::clone(&effects))
+                        .awaiting(
+                            Arc::clone(&children),
+                            matches!(agent.phase, crate::agent::Phase::Waiting { .. }),
+                        ),
+                );
+                let journal = journal
+                    .with_model_boundary(Arc::new(boundary))
+                    .with_stop(stop)
+                    .with_agent_approvals(Arc::clone(&approvals));
+                let selected = context
+                    .select(
+                        &*self.stream,
+                        agent,
+                        &*bindings.content.reader,
+                        input,
+                        roster.as_ref().map(|(file, _)| file),
+                        self.executors.render_bytes(),
+                    )
+                    .await?;
+                // The original selection validator requires the current input to
+                // equal its final message. A waking Notice carries the whole frozen
+                // event block after coalescing, not just the event that woke it.
+                let input = selected
+                    .messages
+                    .last()
+                    .ok_or_else(|| Error::Invalid("selected turn has no current input".into()))?
+                    .content
+                    .clone();
+                let journal = journal.with_bound_selection(selected.clone());
+                let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
+                let mut authority = TurnAuthority {
+                    issuer: bindings.issuer,
+                    scope: bindings.scope,
+                    grants: bindings.grants,
+                    content: bindings.content,
+                    approval: Arc::new(resolved.bind()?),
+                    effects: Some(Arc::clone(&effects)),
+                    journal: Arc::clone(&journal),
+                    children: Some(children),
+                    workspace_tools: None,
+                };
+                if let Some(factory) = &self.workspace_tools {
+                    authority.workspace_tools = Some(factory(agent, &authority)?);
+                }
+                Ok(OpenTurn {
+                    executor: self
+                        .executors
+                        .executor(agent, turn, &input, &authority)
+                        .await?,
+                    journal,
+                    max_steps: self.limits.max_steps,
+                    custody: Some(authority.issuer),
+                    selected: Some(selected),
+                    approvals: Some(approvals),
+                    effects: Some(effects),
+                    goal,
+                    outputs,
+                    input: Some(input),
+                    roster,
+                })
+            },
+        ))
     }
 }
 
