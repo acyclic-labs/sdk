@@ -27,7 +27,9 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
     else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
     if ("close" in response) response.close();
   };
-  const close = () => terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
+  const close = () => {
+    if (!closed) terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
+  };
   // A failed terminal producer must also wake an in-flight body read. One
   // lifetime handler retains the original cause; no reaction is added per chunk.
   void terminal.catch(cause => {
@@ -44,7 +46,15 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
         for (;;) {
           // reader.cancel settles its pending read. Do not attach one more
           // reaction to a long-lived cancellation promise on every chunk.
-          const part = await reader.read();
+          let part: ReadableStreamReadResult<Uint8Array>;
+          try {
+            part = await reader.read();
+          } catch (cause) {
+            // A read can already be rejected when the original owner stops.
+            // Preserve that owner's first cause instead of the queued error.
+            if (closed) await stopped;
+            throw cause;
+          }
           if (closed) await stopped;
           if (part.done) break;
           yield { data: part.value };
