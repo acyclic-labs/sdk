@@ -34,7 +34,9 @@ fn file_actions(action: Action) -> &'static [access::Action] {
             access::Action::Delete,
             access::Action::Rename,
         ],
-        Action::Append => &[access::Action::Append],
+        // A file append is create-only. Mutable append-only data belongs in
+        // Streams; granting Append on a file would permit changing its bytes.
+        Action::Append => &[access::Action::Create],
         Action::Spawn | Action::Call => &[],
     }
 }
@@ -112,18 +114,134 @@ pub fn meet<'a>(
     policies: impl IntoIterator<Item = (&'a str, &'a Policy)>,
     version: u64,
 ) -> Result<access::Policy> {
+    let mut layers: Vec<_> = policies
+        .into_iter()
+        .map(|(layer, policy)| lower(layer, policy))
+        .collect();
+    if layers.is_empty() {
+        layers.push(lower("open", &Policy::default()));
+    }
     let policy = access::Policy {
         schema_version: access::POLICY_SCHEMA_VERSION,
         version,
-        layers: policies
-            .into_iter()
-            .map(|(layer, policy)| lower(layer, policy))
-            .collect(),
+        layers,
     };
     policy
         .validate()
         .map_err(|error| Error::Invalid(format!("{}: {error}", super::POLICY)))?;
     Ok(policy)
+}
+
+/// Original access programs for issuer policy and the subject's own advisory
+/// policy. Only the host's authenticated committer may classify a policy as
+/// advisory; a path name or a decoded configuration cannot establish that fact.
+/// Both programs intersect the same original principal and static ceiling.
+pub struct Permissions {
+    issuer: access::PathTrie,
+    advisory: Option<access::PathTrie>,
+}
+
+impl Permissions {
+    /// Compiles admitted issuer layers and, separately, a policy committed by
+    /// the subject. An issuer-committed home policy belongs in `issuer`.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for invalid rules or access bindings.
+    pub fn compile(
+        issuer: &access::Policy,
+        advisory: Option<&Policy>,
+        principal: &access::Principal,
+        resource: access::Resource<'_>,
+        context: access::Context,
+        capability: &access::Capability,
+    ) -> Result<Self> {
+        let compile = |policy: &access::Policy| {
+            access::PathTrie::compile(policy, principal, resource, context, capability)
+                .map_err(|error| Error::Invalid(format!("{}: {error}", super::POLICY)))
+        };
+        Ok(Self {
+            issuer: compile(issuer)?,
+            advisory: advisory
+                .map(|policy| meet([("advisory", policy)], issuer.version))
+                .transpose()?
+                .as_ref()
+                .map(compile)
+                .transpose()?,
+        })
+    }
+
+    /// Checks current issuer policy and the static ceiling first. Own denies
+    /// never prevent removing a self-imposed policy or plugin lock. Recovery
+    /// grants no read, admin or issuer-policy bypass.
+    #[must_use]
+    pub fn allows(&self, action: access::Action, path: &str, now: u64) -> bool {
+        Self::decide(
+            action,
+            now,
+            matches!(path, "policy.ts" | "plugins.ts"),
+            self.issuer.prepare(path),
+            self.advisory.as_ref().map(|policy| policy.prepare(path)),
+        )
+    }
+
+    /// Checks a row produced by the original filesystem generation frontier.
+    /// The caller cannot describe an overwrite as a create: the sealed row
+    /// supplies its original before/after bindings. Names remain borrowed in
+    /// their native encoding, using the shared access compiler's path decoder.
+    #[must_use]
+    pub fn allows_change(&self, row: &acyclic_fs::ChangedPathEntry, now: u64) -> bool {
+        let change = row.value();
+        let action = match (&change.before, &change.after) {
+            (None, Some(_)) => access::Action::Create,
+            (Some(_), None) => access::Action::Delete,
+            (Some(_), Some(_)) => access::Action::Write,
+            (None, None) => return false,
+        };
+        let recovery = match change.path.components() {
+            [name] => [b"policy.ts".as_slice(), b"plugins.ts".as_slice()]
+                .into_iter()
+                .any(|path| match name.encoding() {
+                    acyclic_fs::kernel::NameEncoding::Utf8
+                    | acyclic_fs::kernel::NameEncoding::PosixBytes => name.as_bytes() == path,
+                    acyclic_fs::kernel::NameEncoding::WindowsUtf16Le => name
+                        .as_bytes()
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                        .eq(path.iter().copied().map(u16::from)),
+                }),
+            _ => false,
+        };
+        Self::decide(
+            action,
+            now,
+            recovery,
+            self.issuer.prepare_namespace(&change.path),
+            self.advisory
+                .as_ref()
+                .map(|policy| policy.prepare_namespace(&change.path)),
+        )
+    }
+
+    fn decide(
+        action: access::Action,
+        now: u64,
+        recovery_path: bool,
+        issuer: std::result::Result<access::PreparedPath<'_>, access::InvalidPolicy>,
+        advisory: Option<std::result::Result<access::PreparedPath<'_>, access::InvalidPolicy>>,
+    ) -> bool {
+        let recovery = recovery_path
+            && matches!(
+                action,
+                access::Action::Create
+                    | access::Action::Write
+                    | access::Action::Delete
+                    | access::Action::Rename
+            );
+        issuer.is_ok_and(|path| path.decide(action, now).allowed)
+            && (recovery
+                || advisory
+                    .is_none_or(|path| path.is_ok_and(|path| path.decide(action, now).allowed)))
+    }
 }
 
 #[cfg(test)]
@@ -215,6 +333,80 @@ mod tests {
                 "{met:?} {action:?} {path}"
             );
         }
+        let empty = decoded(json!({}));
+        let locked = decoded(json!({"only": []}));
+        let issuer_lock = decoded(json!({
+            "deny": [{"path": "policy.ts", "actions": ["write"]}]
+        }));
+        for (issuer, advisory, action, path, allowed) in [
+            (&empty, &locked, access::Action::Write, "policy.ts", true),
+            (&empty, &locked, access::Action::Delete, "plugins.ts", true),
+            (
+                &empty,
+                &locked,
+                access::Action::Write,
+                "plugins/copy.ts",
+                false,
+            ),
+            (&empty, &locked, access::Action::Read, "policy.ts", false),
+            (
+                &issuer_lock,
+                &empty,
+                access::Action::Write,
+                "policy.ts",
+                false,
+            ),
+            (
+                &issuer_lock,
+                &locked,
+                access::Action::Write,
+                "policy.ts",
+                false,
+            ),
+        ] {
+            let issuer = meet([("parent", issuer)], 7)?;
+            let compiled = Permissions::compile(
+                &issuer,
+                Some(advisory),
+                &principal,
+                resource,
+                context,
+                &capability,
+            )?;
+            assert_eq!(
+                compiled.allows(action, path, 0),
+                allowed,
+                "{action:?} {path}"
+            );
+        }
+        // Recovery cannot exceed the original static grant ceiling.
+        let read_only = access::Capability::whole_volume(None, &[access::Action::Read]);
+        let compiled = Permissions::compile(
+            &meet([], 7)?,
+            Some(&locked),
+            &principal,
+            resource,
+            context,
+            &read_only,
+        )?;
+        assert!(!compiled.allows(access::Action::Write, "policy.ts", 0));
+
+        // File append is an absent-path create, never permission to modify an
+        // existing file or append mutable bytes in place.
+        let create_only = decoded(json!({
+            "only": [{"path": "out/**", "actions": ["append"]}]
+        }));
+        let compiled = Permissions::compile(
+            &meet([("parent", &create_only)], 7)?,
+            None,
+            &principal,
+            resource,
+            context,
+            &capability,
+        )?;
+        assert!(compiled.allows(access::Action::Create, "out/new", 0));
+        assert!(!compiled.allows(access::Action::Write, "out/new", 0));
+        assert!(!compiled.allows(access::Action::Append, "out/new", 0));
         Ok(())
     }
 
