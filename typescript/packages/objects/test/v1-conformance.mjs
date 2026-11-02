@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
-import { MemoryObjectsV1, blobDigest, verified } from "@acyclic-labs/objects";
+import { MemoryObjectsV1, ObjectsV1Provider, blobDigest, verified } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
 
@@ -256,6 +256,30 @@ test("Objects v1 owned binary bindings retain validation and caller bytes", asyn
   decoded.body[0] ^= 1;
   const corrupt = toBinary(wire.GetBlobResponseSchema, decoded);
   assert.throws(() => verify_objects_v1("blobs/get", request, corrupt), fail(wire.ErrorCode.UNAVAILABLE));
+  let bodyReads = 0, corruptFirst = false, closed = 0;
+  const client = new class extends ObjectsV1Provider {
+    open(route, input) {
+      const original = memory.open(route, input);
+      return {
+        async next() {
+          const reply = await original.next();
+          if (reply === null) return null;
+          const retained = reply.body;
+          return { revision: reply.revision, get body() {
+            return ++bodyReads === 1 && !corruptFirst ? retained : corrupt;
+          } };
+        },
+        close() { closed++; original.close(); original.free(); },
+      };
+    }
+  };
+  // A later getter cannot replace the real account bytes after Rust verifies them.
+  assert.deepEqual((await client.get({digest,maximumBytes:BigInt(body.length)})).body,body);
+  assert.equal(bodyReads,1);
+  bodyReads = 0; corruptFirst = true;
+  await assert.rejects(client.get({digest,maximumBytes:BigInt(body.length)}),fail(wire.ErrorCode.UNAVAILABLE));
+  assert.equal(bodyReads,1);
+  assert.equal(closed,2);
   await assert.rejects(memory.invoke("blobs/put", new Uint8Array([0xff])), fail(wire.ErrorCode.INVALID_ARGUMENT));
   assert.throws(() => verify_objects_v1("blobs/get", request, new Uint8Array([0xff])), fail(wire.ErrorCode.UNAVAILABLE));
 });

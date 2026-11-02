@@ -175,8 +175,9 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
       try {
         const reply = await request.next();
         if (reply === null) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
-        verify_objects_v1(route, bytes, reply.body);
-        return fromBinary(output, reply.body);
+        const body = reply.body;
+        verify_objects_v1(route, bytes, body);
+        return fromBinary(output, body);
       } finally { request.close(); }
     } catch (error) { throw objectsV1Error(error); }
   }
