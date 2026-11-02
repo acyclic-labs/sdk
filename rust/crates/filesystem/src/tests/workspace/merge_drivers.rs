@@ -1046,7 +1046,9 @@ async fn merge_content_pages_preserve_object_ranges_holes_and_original_credit()
                 .await
                 .map_err(|failure| failure.error),
             Err(WorkspaceError::Filesystem(FsError::FileRead(
-                crate::kernel::FileRangeReadError::InvalidRange
+                crate::kernel::FileRangeReadError::Extent(
+                    crate::kernel::ExtentReadError::InvalidRange
+                )
             )))
         ));
         drop(content);
