@@ -32,6 +32,24 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Typed failure at the shared actor runtime and publication boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A shared call journal is malformed or cannot be addressed.
+    #[error(transparent)]
+    Call(#[from] crate::call::Error),
+    /// Cancellation or executor loss settled the caller's original journal.
+    #[error("actor invocation terminated: {receipt:?}")]
+    InvocationTerminated {
+        /// Original call decision; no state publication is inferred from it.
+        receipt: Box<crate::call::Receipt>,
+    },
+    /// The original call guard refused this inline step. No effects committed;
+    /// the runtime consumes only its input under the same settled marker.
+    #[error("actor call was already settled")]
+    CallSettled {
+        /// Original call whose settled marker refused the publication.
+        call: crate::call::CallPath,
+        /// Exact input from the refused publication, retained through retries.
+        trigger: Trigger,
+    },
     /// The original scheduling clock could not produce a deadline event.
     #[error(transparent)]
     Clock(#[from] ClockError),
@@ -89,6 +107,9 @@ impl Error {
     /// Stable, path-free telemetry category. Unknown effects remain unknown.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Call(_) => "call",
+            Self::InvocationTerminated { .. } => "invocation_terminated",
+            Self::CallSettled { .. } => "call_settled",
             Self::Clock(_) => "clock",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
@@ -133,6 +154,7 @@ impl Alarm {
 pub struct State {
     epoch: u64,
     placement_branch: Option<CommitId>,
+    escrow: Option<crate::escrow::Escrow>,
     checkpoint: Option<Checkpoint>,
     subscriptions: BTreeMap<String, Subscription>,
     alarm: Alarm,
@@ -264,7 +286,7 @@ impl Snapshot {
 pub struct PreparedPublish {
     own: Option<StreamPath>,
     state: Option<State>,
-    reply: Option<StreamPath>,
+    call: Option<(crate::call::CallPath, Trigger)>,
     journal: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
@@ -342,7 +364,7 @@ impl PreparedPublish {
         Self {
             own: None,
             state: None,
-            reply: None,
+            call: None,
             journal: None,
             composition: None,
             sealed: false,
@@ -400,11 +422,11 @@ impl PreparedPublish {
         {
             return Err(Error::Invalid("effect changes the host's actor journal"));
         }
-        if self
-            .reply
-            .as_ref()
-            .is_some_and(|reply| mutation_targets(&effect.mutation, reply))
-        {
+        if self.call.as_ref().is_some_and(|(call, _)| {
+            [call.log(), call.settled()]
+                .into_iter()
+                .any(|path| mutation_targets(&effect.mutation, path))
+        }) {
             return Err(Error::Invalid("effect changes the host's invocation reply"));
         }
         self.require(effect.conditions)?;
@@ -580,6 +602,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let state = State {
             epoch: 0,
             placement_branch: None,
+            escrow: None,
             checkpoint,
             subscriptions,
             alarm: Alarm::default(),
@@ -933,14 +956,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         {
             return Err(Error::Invalid("delivered record differs from its trigger"));
         }
-        let reply = if let Some((path, reply)) = self.invocation_reply(
+        let call = if let Some((path, completion)) = self.invocation_completion(
             previous,
             trigger,
             delivered,
             transition.response.as_ref().map(Ok),
             &transition.effects,
         )? {
-            transition.effects.push(reply);
+            transition.effects.extend(completion);
             Some(path)
         } else {
             None
@@ -967,7 +990,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ),
         };
         let mut prepared = self.prepare(previous, state, transition.effects, key)?;
-        prepared.reply = reply;
+        prepared.call = call.map(|call| (call, trigger.clone()));
         prepared.composition = composition;
         Ok(prepared)
     }
@@ -1003,32 +1026,51 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                             },
                         )?;
                         if !original
-                    .conditions
-                    .iter()
-                    .all(|entry| request.conditions.contains(entry))
-                    || !original
-                        .mutations
-                        .iter()
-                        .all(|entry| request.mutations.contains(entry))
-                    || prepared.own.as_ref().is_some_and(|own| {
-                        request.mutations.iter().filter(|mutation| {
+                            .conditions
+                            .iter()
+                            .all(|entry| request.conditions.contains(entry))
+                            || !original
+                                .mutations
+                                .iter()
+                                .all(|entry| request.mutations.contains(entry))
+                            || prepared.own.as_ref().is_some_and(|own| {
+                                request.mutations.iter().filter(|mutation| {
                             matches!(mutation, CommitMutation::Append { path, .. } if path == own)
                         }).count() != 1
-                    })
-                    || prepared.reply.as_ref().is_some_and(|reply| {
-                        request.mutations.iter().filter(|mutation| {
-                            matches!(mutation, CommitMutation::Append { path, .. } if path == reply)
-                        }).count() != 1 || request.mutations.iter().any(|mutation| {
-                            matches!(mutation, CommitMutation::Fork { destination, .. } if covers(destination, reply))
-                        })
-                    })
-                    || prepared.journal.as_ref().is_some_and(|journal| {
-                        request.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
-                            != original.mutations.iter().filter(|mutation| mutation_targets(mutation, journal)).count()
-                    })
-                {
-                    return Err(Error::Invalid("composition changed the actor publication"));
-                }
+                            })
+                            || prepared.call.as_ref().is_some_and(|(call, _)| {
+                                [call.log(), call.settled()].into_iter().any(|protected| {
+                                    request
+                                        .mutations
+                                        .iter()
+                                        .filter(|mutation| mutation_targets(mutation, protected))
+                                        .count()
+                                        != original
+                                            .mutations
+                                            .iter()
+                                            .filter(|mutation| {
+                                                mutation_targets(mutation, protected)
+                                            })
+                                            .count()
+                                })
+                            })
+                            || prepared.journal.as_ref().is_some_and(|journal| {
+                                request
+                                    .mutations
+                                    .iter()
+                                    .filter(|mutation| mutation_targets(mutation, journal))
+                                    .count()
+                                    != original
+                                        .mutations
+                                        .iter()
+                                        .filter(|mutation| mutation_targets(mutation, journal))
+                                        .count()
+                            })
+                        {
+                            return Err(Error::Invalid(
+                                "composition changed the actor publication",
+                            ));
+                        }
                         prepared.request = request;
                     }
                     prepared.sealed = true;
@@ -1087,10 +1129,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }
                     _ => false,
                 };
+                let settled = prepared.call.filter(|(call, _)| matches!(&outcome,
+                    Ok(CommitOutcome::Conflict(conflicts)) if !conflicts.is_empty()
+                        && conflicts.iter().all(|conflict| matches!(conflict,
+                            acyclic_stream::CommitConflict::Exists { path } if path == call.settled()))));
                 if let Some(composition) = prepared.composition {
                     if let Err(source) = composition.settle(outcome.as_ref()).await {
                         return Err(Error::Settlement { outcome, source });
                     }
+                }
+                if let Some((call, trigger)) = settled {
+                    return Err(Error::CallSettled { call, trigger });
                 }
                 if revalidate {
                     return Err(Error::PreconditionChanged);
@@ -1128,7 +1177,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
             state: Some(state),
-            reply: None,
+            call: None,
             journal: None,
             composition: None,
             sealed: false,

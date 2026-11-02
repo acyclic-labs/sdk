@@ -225,10 +225,27 @@ impl CallPath {
     /// # Errors
     /// When the record cannot be built.
     pub fn settle(&self, fence: Option<&StreamPath>, outcome: &Outcome) -> Result<Commit, Error> {
+        self.settle_with_attributes(fence, outcome, std::iter::empty())
+    }
+
+    /// Settle with executor-defined receipt metadata while retaining the result
+    /// bytes as the terminal value. Reserved call attributes cannot be replaced.
+    ///
+    /// # Errors
+    /// When the record or its attributes cannot be built.
+    pub fn settle_with_attributes(
+        &self,
+        fence: Option<&StreamPath>,
+        outcome: &Outcome,
+        attributes: impl IntoIterator<Item = Attribute>,
+    ) -> Result<Commit, Error> {
         Ok(Commit {
             conditions: self.open(fence).collect(),
             mutations: vec![
-                append(&self.log, record(outcome.kind(), outcome.body(), fence)?),
+                append(
+                    &self.log,
+                    record_with_attributes(outcome.kind(), outcome.body(), fence, attributes)?,
+                ),
                 append(
                     &self.settled,
                     AppendRecord::from(OwnedBytes::from(outcome.kind())),
@@ -266,15 +283,36 @@ fn record(
     value: OwnedBytes,
     fence: Option<&StreamPath>,
 ) -> Result<AppendRecord, Error> {
-    let attributes = std::iter::once(Attribute {
+    record_with_attributes(kind, value, fence, std::iter::empty())
+}
+
+fn record_with_attributes(
+    kind: &'static [u8],
+    value: OwnedBytes,
+    fence: Option<&StreamPath>,
+    attributes: impl IntoIterator<Item = Attribute>,
+) -> Result<AppendRecord, Error> {
+    let mut attributes = std::iter::once(Ok(Attribute {
         name: KIND.into(),
         value: OwnedBytes::from(kind),
-    })
-    .chain(fence.map(|fence| Attribute {
-        name: FENCE.into(),
-        value: OwnedBytes::from(fence.as_str()),
     }))
-    .collect();
+    .chain(fence.map(|fence| {
+        Ok(Attribute {
+            name: FENCE.into(),
+            value: OwnedBytes::from(fence.as_str()),
+        })
+    }))
+    .chain(attributes.into_iter().map(|attribute| {
+        if matches!(attribute.name.as_str(), KIND | FENCE) {
+            Err(Error::Malformed(
+                "executor metadata replaces a call attribute",
+            ))
+        } else {
+            Ok(attribute)
+        }
+    }))
+    .collect::<Result<Vec<_>, _>>()?;
+    attributes.sort_unstable_by(|left, right| left.name.cmp(&right.name));
     Ok(AppendRecord {
         value,
         headers: RecordHeaders::new(Vec::new(), attributes).map_err(Error::Stream)?,

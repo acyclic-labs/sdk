@@ -1163,8 +1163,8 @@ impl<P: StreamProvider + ?Sized + 'static> Shared<P> {
     /// Commit the Open, retrying it identically while its outcome is
     /// unknown. `Err` means it was never attempted or a condition refused it.
     async fn commit_open(&self, connection: &str, open: &SocketOpen) -> Result<Opened, Error> {
-        let invocation = open_invocation(connection, open)?;
         let socket = self.layout.socket(connection)?;
+        let invocation = open_invocation(socket.clone(), connection, open)?;
         // Held across retries, so every attempt carries the same conditions.
         let ledger = self.ledger.read().await;
         let epochs = self.layout.epochs()?;

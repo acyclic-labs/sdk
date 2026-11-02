@@ -21,7 +21,10 @@ pub fn check(bytes: &[u8]) -> bool {
         else {
             return false;
         };
-        if let Ok(invocation) = request.invocation(actor, "inbox".into())
+        let Ok(caller) = acyclic_stream::StreamPath::new("reservation-codec/caller") else {
+            return false;
+        };
+        if let Ok(invocation) = request.invocation(caller, actor, "inbox".into())
             && invocation.request().as_ref() != bytes
         {
             return false;

@@ -20,14 +20,29 @@ the previous version active, and paused subscriptions remain paused.
 Local `Store::enqueue_invoke` requires the provider's accepted Commit
 projection. It retains the original inbox record and activation from that one
 publication, including on exact replay. Enqueue performs one state view and one
-write, with no following commit read. Completion follows the original reply
-with creation admission, then reads only its exact co-committed state record:
+write, with no following commit read. Every `Invocation` names its caller's
+stream root explicitly. Completion uses the shared `call::CallPath` and
+`call::Journal`, following the original call log with creation admission, then
+reading only its exact co-committed state record:
 two data observations and zero control observations, whether the result is
 already present or still pending. Both records retain the accepted input
 identity and consumed cursor checks; later actor state is not read. Dropping
 the observer cancels its follow, without cancelling committed input. Follow
 errors retain their original cause; an ended follow returns Unavailable. An
 unsupported provider refuses before enqueue effects.
+
+The call terminal contains the original result bytes. Its completion attribute
+binds the accepted input digest, commit and sequence to the exact state revision;
+the response retains that record's `OwnedBytes` owner. The terminal and shared
+settled marker publish with the consumed input and actor state in one commit.
+There is no separate reply stream or response payload wrapper.
+
+A caller's shared call cancellation returns `Error::InvocationTerminated` with
+the original call receipt. If that marker wins before inline publication, the
+runtime consumes the input under the same state and settled-marker guards,
+keeping the previous guest state and discarding the refused effects. This adds
+no control read to normal completion. Dropping an observer alone does not cancel
+the call or assert that physical execution stopped.
 
 Deployment and update requests can carry `EntrySource`: an exact selected
 immutable Objects digest, descriptor length, environment and entry. Its entry
@@ -258,6 +273,10 @@ candidates roll back, while a committed debit never expires. Copied branch
 funding cannot be spent by a new placement. These values convey no grant or
 execution authority; suballocation and refund delivery must join their original
 owner's publication. Guest metadata packets cannot replace the balance.
+The balance occupies one host-owned state field. Reads and candidate debits
+allocate nothing and do not visit the metadata tree; encoding happens only at
+the original state publication boundary. Rollback restores the same small
+value. This does not remove the existing whole-state encoding at publication.
 `Store::observe` performs the required fresh head observation before handler
 admission. An unchanged tail and commit anchor retain the original typed state
 without decoding it again; a changed cut is decoded before delivery continues.

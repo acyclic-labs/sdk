@@ -8,12 +8,14 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 
 /// Synchronous transaction borrowed from one admitted actor. Failure discards
-/// its metadata, journal appends and alarm together. No borrow escapes the call.
+/// its balance, metadata, journal appends and alarm together. No borrow escapes
+/// the call. The balance is separate from guest-addressable metadata.
 pub struct ActorStateTransaction<'a> {
     state: &'a mut State,
     journal: &'a mut Vec<Bytes>,
     undo: Vec<(String, Option<Bytes>)>,
     alarm: Alarm,
+    escrow: Option<crate::escrow::Escrow>,
     journal_tail: u64,
     journal_len: usize,
     accepted: bool,
@@ -23,23 +25,20 @@ impl ActorStateTransaction<'_> {
     /// Read the one balance at this original actor cut. Missing funding refuses;
     /// it never inherits an unbounded fallback from another agent or branch.
     pub fn escrow(&self) -> Result<crate::escrow::Escrow, Error> {
-        Ok(crate::escrow::Escrow::decode(
-            self.get(crate::escrow::KEY)
-                .ok_or(crate::escrow::Error::Missing)?,
-        )?
-        .require_branch(self.branch)?)
+        Ok(self
+            .state
+            .escrow
+            .ok_or(crate::escrow::Error::Missing)?
+            .require_branch(self.branch)?)
     }
     /// Stage funding supplied by the original admitting host. This grants no
     /// execution or allocation authority. Publish it with the original funding
     /// debit/creation; an existing balance cannot be reset, including at zero.
     pub fn fund_escrow(&mut self, funding: crate::escrow::Escrow) -> Result<(), Error> {
-        if self.get(crate::escrow::KEY).is_some() {
+        if self.state.escrow.is_some() {
             return Err(crate::escrow::Error::AlreadyFunded.into());
         }
-        self.put(
-            crate::escrow::KEY.into(),
-            funding.in_branch(self.branch).encode(),
-        );
+        self.state.escrow = Some(funding.in_branch(self.branch));
         Ok(())
     }
     /// Stage a debit in this actor's existing transaction. Join it through
@@ -48,9 +47,7 @@ impl ActorStateTransaction<'_> {
     pub fn debit_escrow(&mut self, units: u64) -> Result<(), Error> {
         let mut escrow = self.escrow()?;
         escrow.debit(units)?;
-        if units != 0 && escrow.remaining().is_some() {
-            self.put(crate::escrow::KEY.into(), escrow.encode());
-        }
+        self.state.escrow = Some(escrow);
         Ok(())
     }
     /// Read this transaction's own writes and its original committed cut.
@@ -121,6 +118,7 @@ impl Drop for ActorStateTransaction<'_> {
             }
         }
         self.state.alarm = self.alarm.clone();
+        self.state.escrow = self.escrow;
         self.state.journal_tail = self.journal_tail;
         self.journal.truncate(self.journal_len);
     }
@@ -210,9 +208,6 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 return Err(Error::Conflict);
             }
             for write in commit.writes {
-                if write.key == crate::escrow::KEY {
-                    return Err(crate::escrow::Error::GuestWrite.into());
-                }
                 state.put(write.key, write.value);
             }
             if !commit.journal.is_empty() {
@@ -254,6 +249,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         let mut transaction = ActorStateTransaction {
             branch,
             alarm: state.alarm.clone(),
+            escrow: state.escrow,
             journal_tail: state.journal_tail,
             journal_len: self.journal.len(),
             state,
@@ -264,6 +260,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         let value = action(&mut transaction)?;
         self.dirty |= !transaction.undo.is_empty()
             || transaction.alarm != transaction.state.alarm
+            || transaction.escrow != transaction.state.escrow
             || transaction.journal_tail != transaction.state.journal_tail;
         transaction.accepted = true;
         Ok(value)

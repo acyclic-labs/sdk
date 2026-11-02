@@ -144,6 +144,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     let address = actor("invoked")?;
     place(&store, &address).await?;
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         address.clone(),
         "inbox".into(),
         Bytes::from_static(b"op"),
@@ -205,6 +206,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         Err(Error::Invalid("response without an invocation"))
     ));
     let foreign = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         actor("different")?,
         "inbox".into(),
         Bytes::from_static(b"op"),
@@ -246,7 +248,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     ));
     assert_eq!(store.load(&address).await?.tail, before.tail);
     let mut forked = result.clone();
-    let reply_parent = StreamPath::new(format!("{}/replies", before.path()))?;
+    let reply_parent = invocation.caller().clone();
     let reply_fork = Effect {
         conditions: Vec::new(),
         mutation: CommitMutation::Fork {
@@ -312,14 +314,37 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         committed
     );
     assert!(committed.response().is_empty());
+    assert_eq!(committed.receipt().terminal().value, *committed.response());
+    assert_eq!(
+        committed.receipt().call().outcome,
+        crate::call::Outcome::Ok(committed.response().clone())
+    );
+    assert_eq!(
+        committed.receipt().call().log,
+        *invocation.call(before.path())?.log()
+    );
+    for name in ["acyclic.call.v1", "acyclic.call.v1.fence"] {
+        assert!(matches!(
+            invocation.call(before.path())?.settle_with_attributes(
+                None,
+                &crate::call::Outcome::Ok(Bytes::new().into()),
+                [acyclic_stream::Attribute {
+                    name: name.into(),
+                    value: Bytes::from_static(b"forged").into(),
+                }],
+            ),
+            Err(crate::call::Error::Malformed(_))
+        ));
+    }
     assert_eq!(committed.receipt().revision(), before.tail + 1);
     assert_eq!(
         committed.receipt().state().commit_id,
-        committed.receipt().reply().commit_id
+        committed.receipt().terminal().commit_id
     );
     let reopened = Store::new(provider, state_root()?);
     assert_eq!(reopened.invoke(&invocation).await?, committed);
     let changed = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         address.clone(),
         "inbox".into(),
         invocation.operation().clone(),
@@ -350,6 +375,7 @@ async fn invocation_completion_rejects_changed_original_publication() -> TestRes
         let address = actor("changed-publication")?;
         place(&store, &address).await?;
         let invocation = crate::invocation::Invocation::new(
+            acyclic_stream::StreamPath::new("invoke-control/caller")?,
             address.clone(),
             "inbox".into(),
             Bytes::from_static(b"changed-publication"),
@@ -427,6 +453,7 @@ async fn invocation_reconciles_the_original_records_after_durable_provider_reope
     let directory = tempfile::tempdir()?;
     let address = actor("durable-invoked")?;
     let invocation = crate::invocation::Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         address.clone(),
         "inbox".into(),
         Bytes::from_static(b"durable-op"),
@@ -460,6 +487,10 @@ async fn invocation_reconciles_the_original_records_after_durable_provider_reope
     );
     let reopened = store.invoke(&invocation).await?;
     assert_eq!(reopened, committed);
+    assert_eq!(
+        reopened.response().as_ptr(),
+        reopened.receipt().terminal().value.as_ptr()
+    );
     let receipt = reopened.receipt();
     let floor = acyclic_stream::RevisionCut::of(receipt.ticket().storage_revision().clone());
     let applied = store.provider().wait_applied(&floor).await?;

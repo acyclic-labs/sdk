@@ -264,6 +264,7 @@ impl Handler for Package {
                 let payload = Bytes::from(serde_json::to_vec(&next).map_err(guest)?);
                 let record = if next.step % 2 == 0 {
                     Invocation::new(
+                        acyclic_stream::StreamPath::new("invoke-control/caller")?,
                         route.actor.clone(),
                         "inbox".into(),
                         Bytes::from(next.operation()),
@@ -488,6 +489,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
         };
         let route = &routes[request.target()];
         let call = Invocation::new(
+            acyclic_stream::StreamPath::new("invoke-control/caller")?,
             route.actor.clone(),
             "inbox".into(),
             Bytes::from(request.operation()),
@@ -647,6 +649,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
                 resume: true,
             };
             let call = Invocation::new(
+                acyclic_stream::StreamPath::new("invoke-control/caller")?,
                 routes[target].actor.clone(),
                 "inbox".into(),
                 Bytes::from(request.operation()),
@@ -841,6 +844,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
         "an arbitrary await is not a durable handoff"
     );
     let invocation = Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"original"),

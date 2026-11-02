@@ -863,6 +863,7 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         manifest,
     )?;
     let invocation = acyclic_actors::invocation::Invocation::new(
+        acyclic_stream::StreamPath::new("invoke-control/caller")?,
         actor.clone(),
         "inbox".into(),
         Bytes::from_static(b"operation"),
