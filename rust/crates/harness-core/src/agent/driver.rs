@@ -591,15 +591,7 @@ async fn stage_text(
     turn: OperationId,
     text: String,
 ) -> Result<FileRef, Error> {
-    let output = TurnOutput {
-        #[cfg(feature = "research")]
-        journal_cut: None,
-        text,
-        attachments: Vec::new(),
-        metadata: serde_json::Value::Null,
-        steps: 0,
-        transcript: Vec::new(),
-    };
+    let output = TurnOutput::new(text, serde_json::Value::Null, 0);
     let bytes =
         crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;
     outputs.stage(turn, &bytes).await.map_err(host_error)
