@@ -44,9 +44,7 @@ mod input;
 use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
-    if bytes.len() > 4096 {
-        return;
-    }
+    futures::executor::block_on(acyclic_harness::hooks::chain_model::check(bytes)).unwrap();
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {
             operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
