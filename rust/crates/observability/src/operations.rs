@@ -321,6 +321,10 @@ impl<A: Sink, B: Sink> Sink for (A, B) {
         self.0.record(sample);
         self.1.record(sample);
     }
+    #[cfg(feature = "research")]
+    fn interval_details(&self) -> bool {
+        self.0.interval_details() || self.1.interval_details()
+    }
     fn error_details(&self) -> bool {
         self.0.error_details() || self.1.error_details()
     }
