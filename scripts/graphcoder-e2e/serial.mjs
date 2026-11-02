@@ -1,7 +1,6 @@
 // A matrix is a collection of bounded case suites. Windows executes them serially.
 import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +10,7 @@ import { Processes } from "./process.mjs";
 import { failureReport, publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
+import { sha256File } from "../file-digest.mjs";
 
 // Each filesystem variant is its own suite, so each owns one whole envelope.
 export function variants(cases, platform) {
@@ -114,17 +114,11 @@ export function collectPartitions(cases, bundles, platform, coverage) {
   return collect(cases, ordered.flatMap(bundle => bundle.receipts), platform, coverage);
 }
 
-async function digest(path) {
-  const hash = createHash("sha256");
-  for await (const bytes of createReadStream(path)) hash.update(bytes);
-  return hash.digest("hex");
-}
-
 export async function acceptanceBinding(directory, binary, mock, cases, env=process.env) {
   const digests = new Map();
   const executable = path => {
     const absolute = resolve(path);
-    if (!digests.has(absolute)) digests.set(absolute, digest(absolute));
+    if (!digests.has(absolute)) digests.set(absolute, sha256File(absolute));
     return digests.get(absolute);
   };
   const source = {};
@@ -138,7 +132,7 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
       const page=entries.slice(start,start+64);
       const results=await Promise.allSettled(page.map(async entry=>{
         const name=prefix+entry.name,path=join(root,entry.name);
-        if(entry.isFile())return await digest(path);
+        if(entry.isFile())return await sha256File(path);
         if(entry.isDirectory()||!closure)return;
         const target=await realpath(path),within=relative(closure,target);
         assert.ok(entry.isSymbolicLink()&&!isAbsolute(within)&&within!=='..'&&!within.startsWith('..'+sep),
@@ -157,6 +151,7 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(directory,'graphcoder-e2e/');
   await sources(join(directory,'../../plugin/tests/hosts'),'plugin/tests/hosts/');
   await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
+  source['file-digest.mjs'] = await sha256File(new URL('../file-digest.mjs', import.meta.url));
   const executables={ NODE: await executable(process.execPath) };
   for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
     'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])

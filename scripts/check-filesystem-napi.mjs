@@ -1,11 +1,10 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
-import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { sha256File } from "./file-digest.mjs";
 
 const libraryNames = {
   win32: "acyclic_fs_napi.dll",
@@ -68,9 +67,7 @@ try {
     await mkdir(output);
     const name = `acyclic-fs-${version}-${process.platform}-${process.arch}.node`;
     await copyFile(bindingPath, join(output, name));
-    const digest = createHash("sha256");
-    for await (const chunk of createReadStream(join(output, name))) digest.update(chunk);
-    await writeFile(join(output, "SHA256SUMS"), `${digest.digest("hex")}  ${name}\n`, { flag: "wx" });
+    await writeFile(join(output, "SHA256SUMS"), `${await sha256File(join(output, name))}  ${name}\n`, { flag: "wx" });
   }
 } finally {
   await rm(temporary, { recursive: true, force: true });

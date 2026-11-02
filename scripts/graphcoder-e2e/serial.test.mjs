@@ -150,16 +150,22 @@ test('partition provenance includes plugin executables and host helper source',a
   for(const path of [directory,hosts,join(root,'scripts/graphcoder-pty')])await mkdir(path,{recursive:true});
   const binary=join(root,'graphcoder'),mock=join(root,'mock'),plugin=join(root,'plugin-bin'),codex=join(root,'codex');
   for(const path of [binary,mock,plugin,codex])await writeFile(path,'original');
+  const pluginBytes=Buffer.alloc(2*1024*1024+1,0x37);
+  await writeFile(plugin,pluginBytes);
   const helper=join(hosts,'qualify-scripted.mjs');await writeFile(helper,'original helper');
   // These identity-only inputs refer to the actual running executable; no
   // invented native-tool output or executable image is needed for the check.
   const env={E2E_PLUGIN_BINARY:plugin,E2E_CODEX:codex,E2E_BUN:process.execPath,
     E2E_PROCESS_HOST:process.execPath,E2E_CONPTY_HOST:process.execPath};
   const before=await acceptanceBinding(directory,binary,mock,[],env);
+  assert.equal(before.executables.E2E_PLUGIN_BINARY,createHash('sha256').update(pluginBytes).digest('hex'));
+  assert.equal(before.source['file-digest.mjs'],createHash('sha256')
+    .update(await readFile(new URL('../file-digest.mjs',import.meta.url))).digest('hex'));
   assert.match(before.executables.NODE,/^[a-f0-9]{64}$/);
   for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST'])
     assert.equal(before.executables[name],before.executables.NODE,`${name} must bind its admitted executable`);
-  await writeFile(plugin,'different plugin');
+  pluginBytes[pluginBytes.length-1]^=1;
+  await writeFile(plugin,pluginBytes);
   const changedPlugin=await acceptanceBinding(directory,binary,mock,[],env);
   assert.notDeepEqual(changedPlugin,before,'mixed plugin binaries must not share provenance');
   await writeFile(codex,'different native host');
@@ -167,6 +173,8 @@ test('partition provenance includes plugin executables and host helper source',a
   assert.notDeepEqual(changedHost,changedPlugin,'mixed native hosts must not share provenance');
   await writeFile(helper,'different helper');
   assert.notDeepEqual(await acceptanceBinding(directory,binary,mock,[],env),changedHost,'mixed host helpers must not share provenance');
+  await rm(plugin);
+  await assert.rejects(acceptanceBinding(directory,binary,mock,[],env),{code:'ENOENT'});
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
