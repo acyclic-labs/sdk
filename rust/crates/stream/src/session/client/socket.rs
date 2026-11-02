@@ -59,27 +59,31 @@ impl ActorSocket {
     }
 
     /// The next frame from the host; `None` once the host ended the channel.
+    /// Receive credit is returned before exposing the bytes. Use
+    /// [`Self::next_chunk`] to retain credit through their consumption.
     pub async fn next(&mut self) -> Result<Option<Bytes>, StreamError> {
-        loop {
-            let Some(mut delivery) = self.cursor.receive().await? else {
-                return Ok(None);
-            };
-            // Sockets carry no skipped-cut watermarks.
-            if delivery.consume_before(&self.cursor.progress)?.is_some() {
-                return Err(StreamError::InvalidResponse);
-            }
-            let fresh = delivery.consume(&self.cursor.progress)?;
-            drop(delivery.credit);
-            if !fresh {
-                continue;
-            }
-            return match delivery.item.into_wire().body {
-                Some(Body::Data(wire::SessionData {
-                    item: Some(Item::ActorSocket(frame)),
-                    ..
-                })) => Ok(Some(frame)),
-                _ => Err(StreamError::InvalidResponse),
-            };
+        Ok(self.receive().await?.map(|(bytes, _credit)| bytes))
+    }
+
+    /// The next original frame with its receive credit, without a payload copy.
+    /// Retaining the returned chunk delays further data credit; it does not
+    /// prevent observing the original terminal or dropping this socket.
+    pub async fn next_chunk(
+        &mut self,
+    ) -> Result<Option<crate::body::BodyChunk<impl Sized + use<>>>, StreamError> {
+        Ok(self
+            .receive()
+            .await?
+            .map(|(bytes, credit)| crate::body::BodyChunk::new(bytes, credit)))
+    }
+
+    async fn receive(&mut self) -> Result<Option<(Bytes, Credit)>, StreamError> {
+        let Some((data, credit)) = self.cursor.receive_data().await? else {
+            return Ok(None);
+        };
+        match data.item {
+            Some(Item::ActorSocket(frame)) => Ok(Some((frame, credit))),
+            _ => Err(StreamError::InvalidResponse),
         }
     }
 }
