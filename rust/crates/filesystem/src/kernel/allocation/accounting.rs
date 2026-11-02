@@ -87,6 +87,7 @@ impl<'a> KernelAccounting<'a> {
 
     #[inline]
     pub(crate) fn check(&self) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
         match self {
             Self::Standalone { cancellation, .. }
             | Self::BorrowedStandalone { cancellation, .. } => {
@@ -143,7 +144,6 @@ impl<'a> KernelAccounting<'a> {
         bytes: u64,
         operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
-        self.ensure_active()?;
         self.check()?;
         match self {
             Self::Standalone {

@@ -22,13 +22,13 @@ impl<'a> AuthorityFrame<'a> {
                 work,
                 budget,
                 ..
-            } => Self::standalone(allocations, work, *budget, cancellation),
+            } => Ok(Self::standalone(allocations, work, *budget, cancellation)),
             KernelAccounting::BorrowedStandalone {
                 allocations,
                 work,
                 budget,
                 ..
-            } => Self::standalone(allocations, work, *budget, cancellation),
+            } => Ok(Self::standalone(allocations, work, *budget, cancellation)),
         }
     }
 
@@ -37,9 +37,8 @@ impl<'a> AuthorityFrame<'a> {
         work: &'a mut WorkCounters,
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
-    ) -> Result<Self, FsError> {
-        allocations.ensure_active()?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             value: AuthorityWork {
                 allocations: std::mem::take(allocations),
                 scratch_floor: 0,
@@ -53,7 +52,7 @@ impl<'a> AuthorityFrame<'a> {
                 request_allocation: None,
             },
             restore: Some((allocations, work)),
-        })
+        }
     }
 }
 

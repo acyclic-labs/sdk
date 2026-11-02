@@ -283,7 +283,16 @@ impl<'a> AuthorityWork<'a> {
         self.admit(WorkCounters::UNCHARGED)
     }
 
-    pub(crate) fn admit(&self, mut delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+    pub(crate) fn admit(&self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
+        if !self.is_native() {
+            self.allocations.ensure_active().map_err(authority_error)?;
+        }
+        self.admit_active(delta)
+    }
+
+    // Admission and completed-prefix recording each check custody once, before
+    // reading or changing counters. Completion still records before cancellation.
+    fn admit_active(&self, mut delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         self.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
@@ -291,7 +300,6 @@ impl<'a> AuthorityWork<'a> {
         if let Some(original) = self.original {
             return original.admit(delta).map_err(Into::into);
         }
-        self.work.verify_within(&self.budget)?;
         delta.peak_allocation_bytes = delta
             .peak_allocation_bytes
             .max(self.allocations.live_bytes());
@@ -313,8 +321,9 @@ impl<'a> AuthorityWork<'a> {
             let result = original.record_admitted(delta);
             return result.map_err(AuthorityStoreError::from);
         }
+        self.allocations.ensure_active().map_err(authority_error)?;
         self.work.try_add_assign(&delta)?;
-        self.check()
+        self.admit_active(WorkCounters::UNCHARGED)
     }
 
     pub(crate) fn vec_owned<T>(
