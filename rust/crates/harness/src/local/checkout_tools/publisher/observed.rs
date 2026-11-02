@@ -32,7 +32,7 @@ impl CheckoutPublisher {
         else {
             return Ok(file);
         };
-        let parents = capture
+        let (parents, _allocation) = capture
             .parents(budget, &cancellation)
             .await
             .map_err(storage)?

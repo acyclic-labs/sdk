@@ -145,7 +145,7 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
     let generation = acyclic_fs::GenerationId::from_bytes(&encoded)
         .ok_or_else(|| Error::Invalid("file version is not a canonical generation".into()))?;
     let stop = acyclic_fs::CancellationToken::new();
-    let parents = workspace
+    let (parents, _allocation) = workspace
         .generation(generation, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
         .await
         .map_err(storage)?

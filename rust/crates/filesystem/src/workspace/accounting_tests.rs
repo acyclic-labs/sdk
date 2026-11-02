@@ -206,6 +206,109 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
     Ok(())
 }
 
+#[tokio::test]
+async fn generation_parents_keep_original_work_and_result_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let fs = Fs::memory();
+    let workspace = fs
+        .create_workspace("parent-custody", budget, &cancellation)
+        .await?
+        .value;
+    let before = workspace.head(budget, &cancellation).await?.value;
+    workspace.write_text("/file", "first").await?;
+    let selected = workspace.head(budget, &cancellation).await?.value;
+    // Later publications cannot replace the selected generation's ancestry.
+    workspace.write_text("/file", "second").await?;
+    for generation in [&before, &selected] {
+        for reads in [0, budget.backend_read_operations] {
+            let source = Prefunded {
+                budget: WorkBudget {
+                    backend_read_operations: reads,
+                    ..budget
+                },
+                held: Mutex::new(None),
+            };
+            let (result, spent, live, baseline) = generation.parents(&source, &cancellation).await;
+            spent.verify(source.budget)?;
+            if reads == 0 {
+                assert!(matches!(
+                    result,
+                    Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                        counter: "backend_read_operations",
+                        ..
+                    }))
+                ));
+                assert_eq!(spent.backend_read_operations, 0);
+                assert_eq!(live, baseline);
+            } else {
+                let (parents, allocation) = result?;
+                assert!(allocation.is_none());
+                assert_eq!(
+                    parents.as_slice(),
+                    if generation.id() == before.id() {
+                        &[][..]
+                    } else {
+                        std::slice::from_ref(&before.id)
+                    }
+                );
+                assert_eq!(spent.backend_read_operations, 1);
+                assert!(spent.items_examined > 1);
+                assert_eq!(
+                    live,
+                    baseline + (parents.capacity() * size_of::<GenerationId>()) as u64
+                );
+            }
+        }
+    }
+    let foreign_workspace = fs
+        .create_workspace("foreign-parent-custody", budget, &cancellation)
+        .await?
+        .value;
+    let foreign = Generation {
+        workspace: foreign_workspace,
+        id: selected.id(),
+        publication_closure: None,
+    };
+    let source = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let (result, spent, live, baseline) = foreign.parents(&source, &cancellation).await;
+    assert!(matches!(result, Err(WorkspaceError::ForeignGeneration)));
+    assert_eq!(spent.backend_read_operations, 1);
+    assert_eq!(live, baseline);
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let failure = selected.parents(budget, &cancelled).await.unwrap_err();
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(failure.work.backend_read_operations, 0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let (parents, allocation) = selected.parents(&original, &cancellation).await?;
+        let allocation = allocation.ok_or("parent result lost original native backing")?;
+        let bytes = (parents.capacity() * size_of::<GenerationId>()) as u64;
+        assert_eq!(parents, [before.id()]);
+        assert_eq!(allocation.bytes(), bytes);
+        assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+        drop((parents, allocation));
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert!(matches!(
+            foreign.parents(&original, &cancellation).await,
+            Err(WorkspaceError::ForeignGeneration)
+        ));
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
 pub(super) struct Observation {
     pub(super) minimum: u64,
     pub(super) completion: Option<tokio::sync::oneshot::Receiver<()>>,

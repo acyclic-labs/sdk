@@ -177,21 +177,43 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work.finish(result, &accounting)
     }
 
-    /// Performs the operation under the supplied limits.
-    pub async fn parents(
+    /// Reads this exact generation's parents under the original caller work.
+    /// The returned allocation keeps native result backing alive until retirement.
+    pub async fn parents<W: crate::facade::FsWork>(
         &self,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Vec<GenerationId>>, WorkspaceError> {
-        self.workspace
-            .volume
-            .fs
-            .generation_parents(&self.workspace.volume, self.id, budget, cancellation)
-            .await
-            .map(|receipt| crate::OperationReceipt {
-                value: receipt.value.0,
-                work: receipt.work,
-            })
+    ) -> W::Output<(Vec<GenerationId>, crate::AuthorityAllocation), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = {
+            let mut scope = accounting.allocation_scope();
+            let result = async {
+                let volume = &self.workspace.volume;
+                let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+                    &volume.fs.inner.objects,
+                    self.id.object_id(),
+                    volume.config,
+                    &mut scope,
+                    cancellation,
+                )
+                .await?;
+                let bytes = crate::foundation::usize_to_u64(
+                    root.parents.capacity() * size_of::<GenerationId>(),
+                );
+                let root = crate::kernel::Owned::new(root, allocation, bytes);
+                if root.value.volume_id != volume.id {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                let allocation = workspace_allocation(root.allocation, &scope)?;
+                Ok((root.value.parents, allocation))
+            }
+            .await;
+            if result.is_ok() {
+                scope.keep();
+            }
+            result
+        };
+        work.finish(result, &accounting)
     }
 
     /// Reads one complete regular file from this exact generation.

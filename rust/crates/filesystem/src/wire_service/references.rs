@@ -106,11 +106,12 @@ async fn generation_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
 ) -> Result<wire::GenerationResponse, Status> {
     let reference = generation_ref(generation);
     let workspace = reference.workspace.clone();
-    let parents = generation
+    let (parents, _allocation) = generation
         .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map_err(|failure| status(&failure.error))?
-        .value
+        .value;
+    let parents = parents
         .into_iter()
         .map(|id| wire::GenerationRef {
             workspace: workspace.clone(),

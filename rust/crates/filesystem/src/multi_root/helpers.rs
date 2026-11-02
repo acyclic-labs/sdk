@@ -124,7 +124,7 @@ pub(super) async fn generation_descends_from<
         if !visited.insert(candidate) || visited.len() > 65_536 {
             continue;
         }
-        for parent in workspace
+        let (parents, _allocation) = workspace
             .generation(candidate, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| failure.error)?
@@ -132,8 +132,8 @@ pub(super) async fn generation_descends_from<
             .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(|failure| failure.error)?
-            .value
-        {
+            .value;
+        for parent in parents {
             if parent == ancestor {
                 return Ok(true);
             }

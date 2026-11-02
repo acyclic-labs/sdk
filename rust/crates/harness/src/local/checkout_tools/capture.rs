@@ -272,7 +272,7 @@ async fn apply_owed_write(
         .await
         .map_err(storage)?
         .value;
-    let parents = to
+    let (parents, _allocation) = to
         .parents(WorkBudget::UNBOUNDED, &cancellation)
         .await
         .map_err(storage)?

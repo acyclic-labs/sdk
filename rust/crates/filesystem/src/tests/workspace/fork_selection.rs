@@ -15,7 +15,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     )
     .await?;
     let initial = unbounded!(child, head())?;
-    assert_eq!(unbounded!(initial, parents())?, vec![pinned.id()]);
+    assert_eq!(unbounded!(initial, parents())?.0, vec![pinned.id()]);
     assert!(
         unbounded!(child, list_directory("/", None, 1))?
             .0
@@ -90,7 +90,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         )
         .await?;
         assert_eq!(
-            unbounded!(unbounded!(child, head())?, parents())?,
+            unbounded!(unbounded!(child, head())?, parents())?.0,
             vec![pinned.id()]
         );
         assert_eq!(
