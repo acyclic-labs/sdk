@@ -120,6 +120,53 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
     let observed = host.inspect(&sandbox).await?;
     assert_eq!(sandbox.as_resource().key(), observed.id.as_bytes());
 
+    // The original provider observation is the identity authority. Converting
+    // it at any command boundary must not allocate a UUID string.
+    let converted = acyclic_test_support::measure(|| {
+        assert_eq!(host.machine_id(&sandbox).ok(), Some(observed.id));
+    });
+    assert_eq!(converted.count_total, 0);
+    let text_round_trip = acyclic_test_support::measure(|| {
+        let text = observed.id.to_string();
+        assert_eq!(MachineId::parse(&text).ok(), Some(observed.id));
+    });
+    assert_eq!(text_round_trip.count_total, 1);
+    let key = IdempotencyKey::new("create-sandbox")?;
+    let original_key = MachinesKey::parse(
+        &uuid::Uuid::from_bytes(
+            *blake3::hash(key.as_str().as_bytes())
+                .as_bytes()
+                .first_chunk::<16>()
+                .ok_or_else(|| Error::Invalid("key digest".into()))?,
+        )
+        .to_string(),
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let converted = acyclic_test_support::measure(|| {
+        assert_eq!(machines_key(&key).ok(), Some(original_key));
+    });
+    assert_eq!(converted.count_total, 0);
+    let copied = acyclic_test_support::measure(|| {
+        assert!(IdempotencyKey::new(key.0.clone()).is_ok());
+        assert_eq!(
+            MachinesKey::parse(&original_key.to_string()).ok(),
+            Some(original_key)
+        );
+    });
+    assert_eq!(copied.count_total, 2);
+    for invalid in [Vec::new(), vec![0; 16], vec![1; 15], vec![1; 17]] {
+        assert!(matches!(
+            parse_uuid(&invalid, MachineId::from_bytes),
+            Err(Error::Invalid(_))
+        ));
+    }
+    for invalid in [
+        IdempotencyKey(String::new()),
+        IdempotencyKey("bad\nkey".into()),
+    ] {
+        assert!(matches!(machines_key(&invalid), Err(Error::Invalid(_))));
+    }
+
     let foreign = SandboxRef::new(
         ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?,
         observed.id.as_bytes().into(),

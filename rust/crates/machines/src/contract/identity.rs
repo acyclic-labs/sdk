@@ -17,6 +17,12 @@ macro_rules! uuid_identity {
             /// Parses a retained non-nil UUID.
             pub fn parse(value: &str) -> Result<Self, IdentityError> {
                 let value = Uuid::parse_str(value).map_err(|_| IdentityError)?;
+                Self::from_bytes(*value.as_bytes())
+            }
+
+            /// Admits the original 16-byte UUID without formatting or allocation.
+            pub fn from_bytes(bytes: [u8; 16]) -> Result<Self, IdentityError> {
+                let value = Uuid::from_bytes(bytes);
                 if value.is_nil() {
                     return Err(IdentityError);
                 }
@@ -84,10 +90,11 @@ mod resource_identity_tests {
         assert_eq!(identity.account().as_bytes(), b"account");
         let (account, retained) =
             crate::addressing::ResourceIdentity::decode(&identity.encode())?.into_parts();
-        let restored = super::MachineId(uuid::Uuid::from_slice(retained.as_bytes())?);
+        let restored = super::MachineId::from_bytes(retained.as_bytes().try_into()?)?;
         assert_eq!(account.into_bytes(), b"account");
         assert_eq!(restored, id);
         assert_ne!(retained.as_bytes(), id.to_string().as_bytes());
+        assert!(super::MachineId::from_bytes([0; 16]).is_err());
         Ok(())
     }
 }

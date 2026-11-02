@@ -341,10 +341,10 @@ impl MachinesHost {
         Image::custom(digest).map_err(|error| Error::Invalid(error.to_string()))
     }
     pub(super) fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
-        parse_uuid(self.key(reference.as_resource())?, MachineId::parse)
+        parse_uuid(self.key(reference.as_resource())?, MachineId::from_bytes)
     }
     pub(super) fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {
-        parse_uuid(self.key(reference.as_resource())?, CheckpointId::parse)
+        parse_uuid(self.key(reference.as_resource())?, CheckpointId::from_bytes)
     }
     fn key<'a>(&self, reference: &'a crate::resources::ResourceRef) -> Result<&'a [u8]> {
         reference.validate(&mut None)?;
