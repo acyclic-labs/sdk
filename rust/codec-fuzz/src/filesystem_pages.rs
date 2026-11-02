@@ -25,7 +25,7 @@ impl From<VolumeCreatedError> for DecodeFailure {
 macro_rules! interrupt {
     ($decode:ident, $bytes:expr, $limits:expr, $steps:expr) => {{
         assert!($steps > 0, "admitted decoding accounts for its work");
-        for before in [0, $bytes.len() % $steps] {
+        for before in [0, $bytes.len() % $steps, $steps - 1] {
             let mut calls = 0;
             let result = $decode::<DecodeFailure>($bytes, $limits, &mut |_| {
                 let current = calls;
@@ -48,6 +48,16 @@ macro_rules! interrupt {
 
 fn allocation_error(_: std::collections::TryReserveError) -> FsError {
     CanonicalDecodeError::AllocationFailed.into()
+}
+
+fn refuses_framing<T, E>(bytes: &[u8], mut decode: impl FnMut(&[u8]) -> Result<T, E>) {
+    // Fixed selected prefixes avoid a quadratic walk over every input prefix.
+    for end in [0, bytes.len() / 2, bytes.len() - 1] {
+        assert!(decode(&bytes[..end]).is_err(), "truncated object admitted");
+    }
+    let mut trailing = bytes.to_vec();
+    trailing.push(0);
+    assert!(decode(&trailing).is_err(), "trailing bytes admitted");
 }
 
 fn refuses_other_versions(mut decode: impl FnMut(&[u8]) -> Result<(), FsError>, bytes: &[u8]) {
@@ -90,12 +100,9 @@ pub fn check(bytes: &[u8]) {
                 .unwrap();
                 assert_eq!(encoded, bytes);
                 interrupt!($decode, bytes, limits, steps);
-                assert!(
-                    $decode::<FsError>(&bytes[..bytes.len() - 1], limits, &mut |_| Ok(())).is_err()
-                );
-                let mut trailing = bytes.to_vec();
-                trailing.push(0);
-                assert!($decode::<FsError>(&trailing, limits, &mut |_| Ok(())).is_err());
+                refuses_framing(bytes, |input| {
+                    $decode::<FsError>(input, limits, &mut |_| Ok(()))
+                });
                 refuses_other_versions(
                     |input| $decode::<FsError>(input, limits, &mut |_| Ok(())).map(|_| ()),
                     bytes,
@@ -114,6 +121,9 @@ pub fn check(bytes: &[u8]) {
         Ok(())
     }) {
         interrupt!(decode_file_metadata, bytes, limits, steps);
+        refuses_framing(bytes, |input| {
+            decode_file_metadata::<FsError>(input, limits, &mut |_| Ok(()))
+        });
         assert_eq!(
             encode_file_metadata(value, |_| Ok(()), allocation_error).unwrap(),
             bytes
@@ -129,6 +139,9 @@ pub fn check(bytes: &[u8]) {
         Ok(())
     }) {
         interrupt!(decode_generation_root, bytes, limits, steps);
+        refuses_framing(bytes, |input| {
+            decode_generation_root::<FsError>(input, limits, &mut |_| Ok(()))
+        });
         assert_eq!(
             encode_generation_root(&value, |_| Ok(()), allocation_error).unwrap(),
             bytes
@@ -144,6 +157,9 @@ pub fn check(bytes: &[u8]) {
         Ok(())
     }) {
         interrupt!(decode_volume_created, bytes, u64::MAX, steps);
+        refuses_framing(bytes, |input| {
+            decode_volume_created::<VolumeCreatedError>(input, u64::MAX, &mut |_| Ok(()))
+        });
         assert_eq!(
             encode_volume_created(
                 value,
@@ -164,6 +180,7 @@ pub fn check(bytes: &[u8]) {
     }
     publication_codec_fuzz::check(bytes);
     if let Ok(value) = decode_retention_created(bytes, u64::MAX) {
+        refuses_framing(bytes, |input| decode_retention_created(input, u64::MAX));
         assert_eq!(
             encode_retention_created(
                 &value,
@@ -183,6 +200,7 @@ pub fn check(bytes: &[u8]) {
         );
     }
     if let Ok(value) = decode_workspace_deleted(bytes, u64::MAX) {
+        refuses_framing(bytes, |input| decode_workspace_deleted(input, u64::MAX));
         assert_eq!(
             encode_workspace_deleted(value, |_| Ok::<_, FsError>(()), allocation_error).unwrap(),
             bytes
@@ -197,6 +215,9 @@ pub fn check(bytes: &[u8]) {
         );
     }
     if let Ok(value) = decode_generation_export_manifest(bytes, u64::MAX, u64::MAX) {
+        refuses_framing(bytes, |input| {
+            decode_generation_export_manifest(input, u64::MAX, u64::MAX)
+        });
         assert_eq!(encode_generation_export_manifest(&value).unwrap(), bytes);
         refuses_versions(
             bytes,
