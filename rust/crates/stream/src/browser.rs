@@ -437,10 +437,14 @@ impl BrowserStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        let _ = self.inner.revisions.floor(at_least)?;
-        // Park on the durable authority outside the cache lock, so writes can
-        // advance it. Refresh first: another tab's commits reach it by replay.
-        self.with_provider(async |_| Ok(())).await?;
-        self.inner.revisions.wait(at_least).await
+        let revisions = &self.inner.revisions;
+        let minimum = revisions.floor(at_least)?;
+        if minimum.is_some_and(|minimum| minimum > revisions.current().index) {
+            // Another opener's commits reach the durable authority by replay.
+            self.with_provider(async |_| Ok(())).await?;
+        }
+        // Covered cuts use the durable authority, independent of cache validity.
+        // Park outside the cache lock so writes and refreshes can advance it.
+        revisions.wait(at_least).await
     }
 }

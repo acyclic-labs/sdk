@@ -542,6 +542,31 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
     let Ok(AppendOutcome::Committed(receipt)) = append(&writer, "events").await else {
         panic!("append");
     };
+    let covered = crate::RevisionCut::of(receipt.revision.clone());
+    let transactions = writer.inner.transactions.get();
+    {
+        let _cache = writer.inner.cache.lock().await;
+        let applied = writer
+            .wait_revision(&covered)
+            .now_or_never()
+            .expect("covered authority waited for the cache")
+            .expect("covered revision");
+        assert!(covered.proven_by(Some(&applied)));
+    }
+    assert_eq!(writer.inner.transactions.get(), transactions);
+    let mut records = writer
+        .read(ReadRequest {
+            path: StreamPath::new("events").expect("path"),
+            key: None,
+            from: 1,
+            limit: 1,
+            at_least: covered,
+        })
+        .await
+        .expect("covered read");
+    let record = records.next().await.expect("record").expect("read");
+    assert_eq!(record.commit_id, receipt.commit_id);
+    assert_eq!(writer.inner.transactions.get(), transactions + 1);
     let mut future = receipt.revision.clone();
     future.index += 1;
     let request = ReadRequest {
