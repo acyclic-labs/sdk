@@ -205,7 +205,7 @@ fn object_code(error: &ObjectStoreError) -> Code {
         | E::TooLarge { .. }
         | E::Work(_) => Code::ResourceExhausted,
         E::Corrupt | E::QuarantineFailed(_) => Code::DataLoss,
-        E::Rejected(_) => Code::FailedPrecondition,
+        E::Rejected(_) | E::AccountingHandoffActive => Code::FailedPrecondition,
         E::Simulation(_) | E::SharedReadUnavailable => Code::Unavailable,
         E::Io(error) => io_code(error),
         #[cfg(not(target_arch = "wasm32"))]
