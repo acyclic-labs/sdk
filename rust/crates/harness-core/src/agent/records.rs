@@ -222,11 +222,11 @@ pub struct VolumeBinding {
     pub volume: VolumeRef,
 }
 
-/// Conversation a role selects for its agents.
+/// Conversation selected when an agent is created.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpawnContext {
-    /// A root role that is never admitted as a child.
+    /// A root context that is never admitted as a child.
     TopLevel,
     /// Only the self-contained brief and explicitly sent files.
     Fresh,
@@ -270,7 +270,7 @@ pub struct ForkAdopted {
     pub agent: AgentId,
     /// Spawning agent, `None` for a root.
     pub parent: Option<AgentPath>,
-    /// Role profile; `None` when an external host owns the agent's loop.
+    /// Creation snapshot; `None` when an external host owns the agent's loop.
     pub profile: Option<CreationConfig>,
     /// Inbox sequence of this record; the agent's first consumed input.
     pub forked_at: u64,
