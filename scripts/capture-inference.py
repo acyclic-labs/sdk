@@ -43,7 +43,7 @@ def main():
         req = urllib.request.Request(rate_endpoint if name == "rate" else endpoint + "/v1/chat/completions",
                                      data=request_bytes, headers=headers)
         try:
-            response = urllib.request.urlopen(req, timeout=30)
+            response = urllib.request.urlopen(req, timeout=None)
         except urllib.error.HTTPError as error:
             response = error
         with response:
@@ -64,14 +64,12 @@ def main():
             counter = next(event["usage"] for event in events if event.get("usage"))
             usage[name] = {"input": "/usage/prompt_tokens", "input_tokens": counter["prompt_tokens"],
                            "output": "/usage/completion_tokens", "output_tokens": counter["completion_tokens"]}
-        if name == "tool":
-            events = [json.loads(line[6:]) for line in body.decode().splitlines()
-                      if line.startswith("data: ") and line != "data: [DONE]"]
-            calls = [call for event in events for choice in event.get("choices", [])
-                     for call in choice.get("delta", {}).get("tool_calls", [])]
-            call_id = next(call["id"] for call in calls if call.get("id"))
-            cases["result"]["messages"][1]["tool_calls"][0]["id"] = call_id
-            cases["result"]["messages"][2]["tool_call_id"] = call_id
+            if name == "tool":
+                calls = [call for event in events for choice in event.get("choices", [])
+                         for call in choice.get("delta", {}).get("tool_calls", [])]
+                call_id = next(call["id"] for call in calls if call.get("id"))
+                cases["result"]["messages"][1]["tool_calls"][0]["id"] = call_id
+                cases["result"]["messages"][2]["tool_call_id"] = call_id
     manifest = {"captured_at": datetime.now(timezone.utc).isoformat(), "source": "Linux llama.cpp",
                 "model": "conformance-tiny", "adapter": "chat", "captures": captures,
                 "provider_id": "llamacpp", "endpoint": {

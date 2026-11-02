@@ -34,7 +34,7 @@ def main():
             (root / f"{name}.request.txt").write_bytes(data)
         request = urllib.request.Request(issuer + route, data=data, headers=headers)
         try:
-            response = opener.open(request, timeout=10)
+            response = opener.open(request, timeout=None)
         except urllib.error.HTTPError as error:
             response = error
         with response:
