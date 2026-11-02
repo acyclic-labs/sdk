@@ -146,6 +146,8 @@ pub enum CommandQuery {
     Model,
     /// Captured workspace changes against each volume's base.
     Diff,
+    /// Committed conversation cuts, newest first.
+    History,
     /// Markdown files in the private plans/ directory.
     Plan,
     /// Private GOAL.md.

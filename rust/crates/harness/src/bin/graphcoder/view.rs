@@ -28,6 +28,7 @@ use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 mod diff;
+mod query;
 
 async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bool>) {
     let result = query.advance().await;
@@ -466,11 +467,11 @@ pub async fn run(
     let mut input = PromptInput::default();
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
-    let mut diff_open = false;
-    let mut diff_panel: Option<diff::DiffPanel> = None;
-    let diff_loading = [Line::raw("Loading…")];
-    let mut diff_query = std::pin::pin!(None);
-    let mut diff_credit = 0;
+    let mut source: Option<query::Source> = None;
+    let mut query_panel: Option<query::Panel> = None;
+    let query_loading = [Line::raw("Loading…")];
+    let mut query_future = std::pin::pin!(None);
+    let mut query_dirty = false;
     let mut usage_future = std::pin::pin!(Some(usage(conversation.usage_query())));
     let mut usage_page = QueryPage::<()>::new(vec![Line::raw("Loading usage…")], None, false);
     let usage_unavailable = [Line::raw("Usage unavailable")];
@@ -497,7 +498,7 @@ pub async fn run(
             terminal.bell();
         }
         let approval_rows = if overlay.is_none()
-            && !diff_open
+            && source.is_none()
             && view.prompt.is_none()
             && view.approval().is_some()
         {
@@ -506,7 +507,7 @@ pub async fn run(
             Vec::new()
         };
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
-        if let Some(panel) = diff_panel.as_mut() {
+        if let Some(panel) = query_panel.as_mut() {
             let area = Rect::from((Position::ORIGIN, size));
             panel.wrap(Screen::default().areas(area, &input).overlay_columns());
         }
@@ -524,10 +525,10 @@ pub async fn run(
                 },
                 overlay: overlay.as_ref().map_or_else(
                     || {
-                        diff_panel.as_ref().map_or_else(
+                        query_panel.as_ref().map_or_else(
                             || {
-                                if diff_open {
-                                    &diff_loading[..]
+                                if source.is_some() {
+                                    &query_loading[..]
                                 } else {
                                     &approval_rows[..]
                                 }
@@ -538,12 +539,8 @@ pub async fn run(
                     |(_, lines)| &lines[..],
                 ),
                 overlay_title: overlay.as_ref().map_or(
-                    if diff_open {
-                        if diff_query.is_some() {
-                            "Diff · loading"
-                        } else {
-                            "Diff"
-                        }
+                    if let Some(source) = &source {
+                        source.title()
                     } else if approval_rows.is_empty() {
                         ""
                     } else {
@@ -556,7 +553,7 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() || diff_open {
+            let scroll = if overlay.is_some() || source.is_some() {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
@@ -571,11 +568,20 @@ pub async fn run(
         // Only inner content cells can advance the query. Reserve the hint;
         // a collapsed panel waits for the existing resize/input event.
         let credit = u32::from(areas.overlay_rows(1)).min(128);
-        if diff_open && diff_credit != credit {
-            diff_credit = credit;
-            diff_panel = None;
-            diff_query
-                .set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
+        // Resize reflows the admitted page, without reopening its source.
+        // A committed turn marks only the newest page dirty. Finish any original
+        // pending query before refreshing it, so continuous input cannot starve IO.
+        if let Some(source) = &source
+            && query_future.is_none()
+            && (query_panel.is_none() || query_dirty)
+            && credit != 0
+        {
+            query_dirty = false;
+            query_future.set(Some(query::load(
+                Arc::clone(&conversation),
+                credit,
+                source.clone(),
+            )));
         }
         tokio::select! {
             (query, result) = async {
@@ -599,20 +605,20 @@ pub async fn run(
                 }
             }
             result = async {
-                match diff_query.as_mut().as_pin_mut() {
+                match query_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,
                     None => std::future::pending().await,
                 }
             } => {
-                diff_query.set(None);
+                query_future.set(None);
                 match result {
                     Ok(panel) => {
-                        diff_panel = Some(panel);
+                        query_panel = Some(panel);
                         overlay_top = 0;
                     }
                     Err(error) => {
-                        diff_open = false;
-                        diff_panel = None;
+                        source = None;
+                        query_panel = None;
                         view.notice = Some(error.to_string());
                     }
                 }
@@ -628,8 +634,8 @@ pub async fn run(
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
-                if diff_open && settled && credit != 0 {
-                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
+                if settled && source.as_ref().is_some_and(query::Source::follows_tail) {
+                    query_dirty = true;
                 }
                 // A settled turn clears the output and the streamed answer.
                 if view.reply != events.reply() {
@@ -691,18 +697,22 @@ pub async fn run(
                                         return Ok(view.outcome.code());
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
-                                        diff_open = false;
-                                        diff_panel = None;
-                                        diff_query.set(None);
+                                        source = None;
+                                        query_panel = None;
+                                        query_future.set(None);
                                         overlay = Some(("Help", View::help(&catalog, &input)));
                                         overlay_top = 0;
                                         continue;
                                     }
-                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Diff })) => {
+                                    Ok(Some(CommandResolution::Select { query: selected @ (CommandQuery::Diff | CommandQuery::History) })) => {
                                         overlay = None;
-                                        diff_open = true;
-                                        diff_credit = credit;
-                                        diff_query.set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
+                                        source = Some(match selected {
+                                            CommandQuery::History => query::Source::History(None),
+                                            _ => query::Source::Diff(None),
+                                        });
+                                        query_panel = None;
+                                        query_future.set(None);
+                                        query_dirty = false;
                                         overlay_top = 0;
                                         continue;
                                     }
@@ -759,10 +769,10 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if overlay.is_some() => {
                                 overlay = None;
                             }
-                            InputEffect::Host(Action::Escape) if diff_open => {
-                                diff_open = false;
-                                diff_panel = None;
-                                diff_query.set(None);
+                            InputEffect::Host(Action::Escape) if source.is_some() => {
+                                source = None;
+                                query_panel = None;
+                                query_future.set(None);
                             }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
@@ -775,24 +785,26 @@ pub async fn run(
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
-                            InputEffect::Scroll(rows) if diff_open && diff_query.is_none() && credit != 0 => {
-                                if let Some(panel) = diff_panel.as_ref()
+                            InputEffect::Scroll(rows) if source.is_some() && query_future.is_none() && credit != 0 => {
+                                if let Some(panel) = query_panel.as_ref()
                                     && !panel.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))
                                 {
                                     continue;
                                 }
-                                let cursor = if rows < 0 {
-                                    diff_panel.as_mut().and_then(|panel| panel.next.take())
+                                let next = if rows < 0 {
+                                    query_panel.as_mut().and_then(|panel| panel.next.take())
+                                } else if query_panel.as_ref().is_some_and(|panel| panel.continued) {
+                                    source.as_ref().map(query::Source::newest)
                                 } else {
                                     None
                                 };
-                                if cursor.is_some()
-                                    || rows > 0 && diff_panel.as_ref().is_some_and(|panel| panel.continued)
-                                {
-                                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, cursor)));
+                                if let Some(next) = next {
+                                    source = Some(next);
+                                    query_panel = None;
+                                    query_dirty = false;
                                 }
                             }
-                            InputEffect::Scroll(_) if diff_open => {}
+                            InputEffect::Scroll(_) if source.is_some() => {}
                             InputEffect::Scroll(rows) if overlay.is_some() => {
                                 overlay_top = overlay_top.saturating_add_signed(-rows);
                             }
