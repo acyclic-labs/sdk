@@ -4,6 +4,8 @@ Rust-first, provider-neutral agent runtime. Harness owns typed conversation, tas
 
 [Paired populations](docs/experiments.md) describes file-driven experiment arms,
 live forks from one saved turn, cheap-model admission and clustered statistics.
+The [organism probe protocols](docs/probes/README.md) supply authored inputs,
+objective scorers, controls and results tables for five research contrasts.
 
 Declared instructions and skill frontmatter use the ordinary context pipeline.
 An authorized caller captures a `ContextDiscovery` revision with finite limits,
