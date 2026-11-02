@@ -24,5 +24,6 @@ impl Registry {
         });
         LocalHarnessConfig::resolving(workspace, Arc::new(models), selection)
             .preset(&Preset::graphcoder())
+            .web_tools()
     }
 }

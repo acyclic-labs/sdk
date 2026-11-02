@@ -1,7 +1,5 @@
 ---
 version: 1
-name: advisor
-model: alloy/advisor
 context: fresh
 may_spawn: [worker, advisor]
 ---

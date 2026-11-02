@@ -678,10 +678,9 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let request = InboxRecord::Spawn(SpawnRequest {
-        profile: acyclic_harness_core::agent::AgentProfilePin {
-            role: "worker".into(),
-            digest: [0; 32],
+        profile: acyclic_harness_core::agent::CreationConfig {
             context: acyclic_harness_core::agent::SpawnContext::Fork,
+            template: None,
         },
         history: None,
         by: user(),
@@ -741,10 +740,9 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
-            profile: acyclic_harness_core::agent::AgentProfilePin {
-                role: "worker".into(),
-                digest: [0; 32],
+            profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
+                template: None,
             },
             history: None,
             by: user(),
@@ -786,10 +784,9 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let request = |n: usize| {
         InboxRecord::Spawn(SpawnRequest {
-            profile: acyclic_harness_core::agent::AgentProfilePin {
-                role: "worker".into(),
-                digest: [0; 32],
+            profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
+                template: None,
             },
             history: None,
             by: user(),

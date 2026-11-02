@@ -77,7 +77,7 @@ pub struct AgentState {
     /// Spawning agent.
     pub parent: Option<AgentPath>,
     /// Role profile pinned at adoption.
-    pub profile: Option<super::AgentProfilePin>,
+    pub profile: Option<super::CreationConfig>,
     /// Owned volumes.
     pub volumes: Vec<VolumeBinding>,
     /// Approval policy file.
@@ -409,7 +409,7 @@ pub enum Out {
         brief: Option<FileRef>,
         /// Role profile admitted before the spawn effect was recorded; `None`
         /// for a host-requested spawn.
-        profile: Option<super::AgentProfilePin>,
+        profile: Option<super::CreationConfig>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
         /// Optional retained conversation cut selected by the caller.

@@ -316,20 +316,21 @@ impl Providers {
             .model
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-        let mut tools = options
-            .preset
-            .tools(
-                |name| {
-                    registry
-                        .workspace
-                        .as_ref()
-                        .is_some_and(|workspace| workspace.tools.contains(&name))
-                },
-                Vec::new(),
-            )
-            .map_err(js_error)?;
+        let selected = crate::tools::default_names();
+        let mut tools = crate::tools::registry(
+            &selected,
+            |name| {
+                registry
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.tools.contains(&name))
+            },
+            Vec::new(),
+        )
+        .map_err(js_error)?;
         tools.extend(registry.tools.clone()).map_err(js_error)?;
-        let grants = options.preset.tool_grants(&tools).map_err(js_error)?;
+        let grants = crate::tools::call_grants(&tools, selected.iter().map(String::as_str))
+            .map_err(js_error)?;
         let context: Arc<dyn TurnContext> = match &registry.workspace {
             Some(workspace) => Arc::new(Tasks(
                 crate::runtime::Bindings {
@@ -357,12 +358,12 @@ impl Providers {
             None => Arc::new(Grants(grants)),
         };
         let executors =
-            options
-                .preset
-                .executors((model, provider), tools, (limits, compaction), context);
-        Ok(match options.profiles() {
-            Some(profiles) => executors.with_profiles(profiles),
-            None => executors,
+            StockExecutors::new((model, provider), tools, (limits, compaction), context)
+                .with_agent_tools(&selected);
+        Ok(if options.children {
+            executors.with_templates()
+        } else {
+            executors
         })
     }
 

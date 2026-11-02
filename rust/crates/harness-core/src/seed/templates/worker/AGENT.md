@@ -1,7 +1,5 @@
 ---
 version: 1
-name: worker
-model: openai/gpt-6-luna
 context: fork
 may_spawn: [worker, advisor, reviewer]
 ---

@@ -32,8 +32,8 @@ struct NativeTurns {
 }
 
 impl TurnExecutors for NativeTurns {
-    fn profiles(&self) -> Option<Arc<dyn crate::agent::SpawnProfiles>> {
-        Some(crate::profile::Profiles::builtin())
+    fn templates(&self) -> bool {
+        true
     }
 
     fn executor<'a>(
@@ -163,8 +163,7 @@ impl TurnExecutors for NativeTurns {
                 ]),
                 ScriptedTurn::Text("done".into()),
             ]));
-            let tools =
-                crate::preset::Preset::graphcoder().tools(|name| name == "shell", Vec::new())?;
+            let tools = crate::tools::registry(&["shell".into()], |_| true, Vec::new())?;
             StockExecutors::new(
                 (Model::new("test".into(), "text".into(), "1".into())?, model),
                 tools,

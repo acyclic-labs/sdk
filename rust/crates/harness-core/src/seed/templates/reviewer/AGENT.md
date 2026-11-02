@@ -1,7 +1,5 @@
 ---
 version: 1
-name: reviewer
-model: anthropic/claude-sonnet-5-5
 context: fresh
 may_spawn: [worker, advisor, reviewer]
 ---

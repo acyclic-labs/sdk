@@ -23,6 +23,19 @@ pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O:
 }
 
 impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
+    fn call_path(&self, call: &str) -> Result<String> {
+        if call.is_empty()
+            || !call
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(Error::Invalid(
+                "agent effect call key is not a file name".into(),
+            ));
+        }
+        Ok(format!("{}/{call}.json", self.directory))
+    }
+
     pub(in crate::filesystem) fn new(
         files: Arc<AgentInternalFiles<A, O>>,
         stream: Arc<P>,
@@ -59,24 +72,29 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn recorded_call<'a>(
+        &'a self,
+        call: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<TurnEffect>>> {
+        Box::pin(async move {
+            self.files
+                .read(&self.call_path(call)?, self.maximum_bytes)
+                .await?
+                .as_deref()
+                .map(decode)
+                .transpose()
+        })
+    }
+
     fn record<'a>(
         &'a self,
         call: &'a str,
         effect: &'a TurnEffect,
     ) -> BoxProviderFuture<'a, Result<TurnEffect>> {
         Box::pin(async move {
-            if call.is_empty()
-                || !call
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            {
-                return Err(Error::Invalid(
-                    "agent effect call key is not a file name".into(),
-                ));
-            }
             // The call key already orders effects by model step. The file's
             // create-once identity supplies replay without a directory index.
-            let path = format!("{}/{call}.json", self.directory);
+            let path = self.call_path(call)?;
             let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
                 InternalFileCreation::Existing(existing) => return decode(&existing),
                 InternalFileCreation::Vacant(file) => file,
@@ -213,10 +231,9 @@ mod tests {
                     name.into(),
                     &mut None,
                 )?),
-                profile: crate::agent::AgentProfilePin {
-                    role: "worker".into(),
-                    digest: [0; 32],
+                profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::Fork,
+                    template: None,
                 },
             })
         };

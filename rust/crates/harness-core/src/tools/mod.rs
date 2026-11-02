@@ -12,7 +12,7 @@ pub use shell::{ShellCommand, ShellInput};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod code_mode;
 mod defaults;
-pub use defaults::{defaults, names as default_names};
+pub use defaults::{call_grants, defaults, names as default_names, registry};
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
 pub(crate) mod bounds;
@@ -30,9 +30,6 @@ pub use command::parse_command;
 pub use fs_command::{FsCommand, parse_fs_command};
 #[cfg(feature = "filesystem")]
 pub mod git;
-
-#[doc(hidden)]
-pub use defaults::bind_defaults;
 
 /// The one conversion of a rejected fs/shell operand into a model-visible
 /// result. Input the model must correct never becomes an executor error.

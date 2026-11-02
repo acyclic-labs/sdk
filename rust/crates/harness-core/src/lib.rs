@@ -110,6 +110,7 @@ pub mod sse;
 pub mod store;
 #[doc(hidden)]
 pub mod sync;
+pub mod templates;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;

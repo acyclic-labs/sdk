@@ -28,7 +28,6 @@ try {
       yield { kind: "content", delta: "guest:status" };
     }
   });
-  fixture.options.preset.tools = ["fs"];
   phase("load the guest artifact's canonical entry over host-injected storage");
   providers = await fixture.providers("indexedDb");
   guest = fixture.guest(providers);

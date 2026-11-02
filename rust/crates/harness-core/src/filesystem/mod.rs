@@ -51,6 +51,8 @@ mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};
 mod fs_tools;
 pub use fs_tools::FilesystemTools;
+mod templates;
+pub use templates::Templates;
 mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_steering;

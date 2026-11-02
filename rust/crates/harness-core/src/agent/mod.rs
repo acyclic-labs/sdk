@@ -82,10 +82,10 @@ pub use machine::{
     requested_child, step,
 };
 pub use records::{
-    AgentOutcome, AgentProfilePin, AgentRecord, Approval, ApprovalRequested, ChildDone,
-    ChildSettled, Closed, ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
+    ContextAction, ContextRequest, Control, CreationConfig, ForkAdopted, Hook, InboxRecord,
     IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message,
-    NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnProfiles, SpawnRequest,
+    NoticePayload, Phase, RECORD_VERSION, Sender, SpawnContext, SpawnRequest, SpawnTemplates,
     StatusRecord, UnsupportedRecordVersion, VolumeBinding, decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};

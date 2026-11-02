@@ -318,14 +318,13 @@ mod tests {
         ))
     }
 
-    /// The widest adoption: deepest parent, longest built-in role pin, every
+    /// A fully populated adoption: deepest parent, immutable template, every
     /// volume, brief and policy.
     fn adoption() -> ForkAdopted {
         ForkAdopted {
-            profile: Some(crate::agent::AgentProfilePin {
-                role: "orchestrator".into(),
-                digest: [u8::MAX; 32],
+            profile: Some(crate::agent::CreationConfig {
                 context: crate::agent::SpawnContext::TopLevel,
+                template: Some(file()),
             }),
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
@@ -383,10 +382,9 @@ mod tests {
                 attachments: None,
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
-                profile: crate::agent::AgentProfilePin {
-                    role: "orchestrator".into(),
-                    digest: [u8::MAX; 32],
+                profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
+                    template: None,
                 },
                 history: None,
                 by: from.clone(),
