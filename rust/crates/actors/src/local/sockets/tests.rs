@@ -685,11 +685,7 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
         .actor
         .clone();
     let maximum = acyclic_stream::MAX_RECORD_BYTES;
-    let seed = "x".repeat(maximum - 128);
-    let overhead = SocketFrame::Message(SocketPayload::Text { text: seed.clone() })
-        .encode()
-        .len()
-        - seed.len();
+    let overhead = SocketFrame::text_frame_len(maximum).ok_or("frame length overflow")? - maximum;
     let boundary = WebSocketAutoResponse {
         request: "ping".into(),
         response: "x".repeat(maximum - overhead),
@@ -697,7 +693,10 @@ async fn automatic_reply_admission_preserves_the_open_socket_at_the_frame_bound(
     let expected = SocketFrame::Message(SocketPayload::Text {
         text: boundary.response.clone(),
     });
-    assert_eq!(expected.encode().len(), maximum);
+    assert_eq!(
+        SocketFrame::text_frame_len(boundary.response.len()),
+        Some(maximum)
+    );
     sockets.set_web_socket_auto_response(&actor, Some(boundary.clone()))?;
     for length in [maximum - overhead + 1, maximum] {
         assert_eq!(
