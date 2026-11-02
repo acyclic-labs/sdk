@@ -93,7 +93,11 @@ export class Opened<Value = Uint8Array> implements AsyncIterableIterator<Record<
           throw error;
         }
         if (failure !== undefined) throw failure;
-      }, () => {});
+      }, error => {
+        // Only this owner's cancellation establishes a quiet close. Setup
+        // failures retain their original cause, including failed disposal.
+        if (error !== this.#abort.signal.reason) throw error;
+      });
     }
     return this.#closing;
   }

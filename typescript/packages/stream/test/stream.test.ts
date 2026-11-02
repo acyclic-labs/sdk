@@ -66,6 +66,23 @@ const worker = (value: import("../src/index.js").JsonValue): { readonly worker: 
 };
 
 describe("website Stream contract", () => {
+  test("early facade close retains failure disposing its original WASM cursor", async () => {
+    const provider = new MemoryStreamProvider();
+    await provider.append("close/cleanup", [new Uint8Array([1])]);
+    const source = provider.follow("close/cleanup", { from: 1n });
+    await source.opened;
+    const cleanup = new Error("original cursor cleanup failed");
+    const close = source.close.bind(source);
+    source.close = async () => { await close(); throw cleanup; };
+    const facade = source.map(record => record);
+    const closing = facade.close();
+    const failed = await closing.catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(AggregateError);
+    expect((failed as AggregateError).errors[1]).toBe(cleanup);
+    await expect(facade[Symbol.asyncDispose]()).rejects.toBe(failed);
+    expect(await source.next()).toEqual({ done: true, value: undefined });
+  });
+
   test("child seeks progress across unrelated commits while retained fences refuse", async () => {
     const client = StreamClient.memory();
     for (const path of ["seek/a", "seek/b"]) {
