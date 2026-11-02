@@ -155,6 +155,10 @@ export async function runCase(binary, login, root, name, signal) {
         await fileBytes(join(workspace, "child.txt"), marker);
         requireTools(recorded, ["spawn", "wait", "shell", "fs"], marker, workspace);
       } else assert.fail(`unknown case ${name}`);
+      if (hooksPending) {
+        step = "assert remaining completed tool outcomes";
+        requireTools(childHooks = await hooks(), []);
+      }
     } });
     step = "assert completed case latency";
     if (!(receipt.seconds < 10)) throw new assert.AssertionError({

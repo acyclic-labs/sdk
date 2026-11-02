@@ -1,0 +1,63 @@
+{
+  "source_main": "611cd6aecb235de6f4f026942380765c09779b20",
+  "original_matrix_sha256": "5fad8e36ecd8c3e6c634386b2349a27fab30e9321340497de7d3660d651bdfe8",
+  "projection": "Original completed shell envelopes; unrelated cwd omitted. No shell command is re-executed.",
+  "cases": [
+    {
+      "case": "shell",
+      "sample": 1,
+      "status": "pass",
+      "event": {
+        "tool_name": "shell",
+        "tool_input": {
+          "command": "printf %s LIVE_7ce8b9850fcc49f39fd9d463a5c5e536 > shell.txt",
+          "target": "local"
+        },
+        "tool_use_id": "8b3782c5-6c35-4301-0e7b-e85518c8c6c2:00000000:0000000000000000",
+        "session_id": null,
+        "tool_response": {
+          "exit_code": 0,
+          "omitted_bytes": 0,
+          "shell": "bash",
+          "spill": null,
+          "stderr": "",
+          "stdout": "",
+          "stop": null,
+          "success": true,
+          "target": "local",
+          "text": "Exit code: 0\n",
+          "truncated": false
+        },
+        "hook_event_name": "PostToolUse"
+      }
+    },
+    {
+      "case": "fork-merge",
+      "sample": 1,
+      "status": "fail",
+      "event": {
+        "tool_name": "shell",
+        "tool_input": {
+          "command": "printf %s LIVE_9adb20aee8c74a8f9b93fe13fa6b880e > child.txt; test \"$(wc -c < child.txt)\" -eq 36 && test \"$(cat child.txt)\" = LIVE_9adb20aee8c74a8f9b93fe13fa6b880e",
+          "cwd": null
+        },
+        "tool_use_id": "aa706f05-663e-d406-09de-95d1db5beccf:00000000:0000000000000000",
+        "session_id": null,
+        "tool_response": {
+          "exit_code": 1,
+          "omitted_bytes": 0,
+          "shell": "bash",
+          "spill": null,
+          "stderr": "",
+          "stdout": "",
+          "stop": null,
+          "success": false,
+          "target": "local",
+          "text": "Exit code: 1\n",
+          "truncated": false
+        },
+        "hook_event_name": "PostToolUse"
+      }
+    }
+  ]
+}
