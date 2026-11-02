@@ -302,22 +302,27 @@ fn resolve(importer: &str, specifier: &str) -> std::result::Result<String, Strin
     Ok(name)
 }
 
-/// Checks and encodes a module's default export, in the engine.
+/// Folds and encodes a module's default export, in the engine. A function
+/// anywhere in it, the export itself or a nested field such as a plugin
+/// entry or its `config`, is called with a copy of the base at the same
+/// path (`undefined` where the base has none) and must return data there.
+/// The result is rebuilt as plain data, so cycles, accessors and exotic
+/// objects never reach the encoder.
 const FINISH: &str = r#"(namespace, base, data) => {
-    if (!Object.prototype.hasOwnProperty.call(namespace, 'default'))
+    const own = Object.prototype.hasOwnProperty;
+    if (!own.call(namespace, 'default'))
         throw new TypeError('has no `export default`');
-    let value = namespace.default;
-    const form = typeof value === 'function' ? 'function' : 'value';
-    if (form === 'function') {
-        if (data) throw new TypeError('must export plain data, not a function of the defaults');
-        value = value(JSON.parse(base));
-    }
     const open = [];
-    const check = (v, at) => {
-        if (v === null || typeof v === 'string' || typeof v === 'boolean') return;
+    const fold = (v, below, at) => {
+        if (typeof v === 'function') {
+            if (data) throw new TypeError(`${at} must be plain data, not a function of the defaults`);
+            v = v(below === undefined ? undefined : JSON.parse(JSON.stringify(below)));
+            if (typeof v === 'function') throw new TypeError(`${at} returned a function, not plain data`);
+        }
+        if (v === null || typeof v === 'string' || typeof v === 'boolean') return v;
         if (typeof v === 'number') {
             if (!Number.isFinite(v)) throw new TypeError(`${at} is not a finite number`);
-            return;
+            return v;
         }
         if (typeof v !== 'object') throw new TypeError(`${at} is a ${typeof v}, not plain data`);
         if (open.includes(v)) throw new TypeError(`${at} contains itself`);
@@ -325,13 +330,21 @@ const FINISH: &str = r#"(namespace, base, data) => {
         const prototype = Object.getPrototypeOf(v);
         if (prototype !== (array ? Array.prototype : Object.prototype) && !(prototype === null && !array))
             throw new TypeError(`${at} is not a plain object or array`);
+        const map = below !== null && typeof below === 'object' && Array.isArray(below) === array;
+        const at_ = (key) => (map && own.call(below, key) ? below[key] : undefined);
         open.push(v);
-        if (array) v.forEach((item, index) => check(item, `${at}[${index}]`));
-        else for (const key of Object.keys(v)) if (v[key] !== undefined) check(v[key], `${at}.${key}`);
+        let out;
+        if (array) out = v.map((item, index) => fold(item, at_(index), `${at}[${index}]`));
+        else {
+            out = Object.create(null);
+            for (const key of Object.keys(v))
+                if (v[key] !== undefined) out[key] = fold(v[key], at_(key), `${at}.${key}`);
+        }
         open.pop();
+        return out;
     };
-    check(value, 'the default export');
-    return { form, json: JSON.stringify(value) };
+    const form = typeof namespace.default === 'function' ? 'function' : 'value';
+    return { form, json: JSON.stringify(fold(namespace.default, JSON.parse(base), 'the default export')) };
 }"#;
 
 /// Evaluates a resolved closure once, with no host functions installed.
