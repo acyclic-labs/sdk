@@ -302,7 +302,7 @@ async fn generated_roundtrip(
                     })),
                 }],
                 operation: Some(operation(2)),
-                maximum_conflicts: 16,
+                maximum_conflicts: Some(16),
             },
             bearer,
         )?)
@@ -385,7 +385,7 @@ async fn generated_roundtrip(
                     })),
                 }],
                 operation: Some(operation(3)),
-                maximum_conflicts: 16,
+                maximum_conflicts: Some(16),
             },
             bearer,
         )?)

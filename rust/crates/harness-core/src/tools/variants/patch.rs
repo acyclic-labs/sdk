@@ -111,7 +111,7 @@ impl ApplyPatch {
                 .transpose()?;
             return match observed.0 {
                 Some(files) => {
-                    let encoded = crate::tool::value(&PatchResult { files }, u64::MAX, work)?;
+                    let encoded = crate::tool::value(&PatchResult { files }, None, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
                 None => Ok((None, allocation(work, 0)?)),
@@ -193,7 +193,7 @@ impl ApplyPatch {
         let _receipt = io.map(|io| io.take_native_custody(retained)).transpose()?;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = retained;
-        let encoded = crate::tool::value(&PatchResult { files }, u64::MAX, work)?;
+        let encoded = crate::tool::value(&PatchResult { files }, None, work)?;
         Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
     }
 }
@@ -233,7 +233,11 @@ fn authorize_actions<'a>(
             crate::executor::with_history_io(io, |history| {
                 crate::conversation::validate_content_path(&relative, history)
             })?;
-            if relative.len() > context.effective_scope().limits().path_bytes
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|limit| relative.len() > limit.get())
                 || crate::conversation::is_internal_path(&relative)
             {
                 return Err(Error::tool_rejected(

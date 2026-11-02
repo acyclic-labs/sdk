@@ -13,7 +13,7 @@ pub(super) struct Output {
     operation: OperationId,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    remaining: u64,
+    remaining: Option<u64>,
     omitted: u64,
     destination: Option<(VolumeRef, String)>,
 }
@@ -42,9 +42,14 @@ impl Output {
                 "device output exceeds its protective chunk".into(),
             ));
         }
-        // RuntimeScope admits only a positive file limit.
-        let maximum =
-            usize::try_from(context.effective_scope().limits().file_bytes).unwrap_or(usize::MAX);
+        // A supplied positive file limit partitions this transport chunk.
+        let maximum = context
+            .effective_scope()
+            .limits()
+            .file_bytes
+            .map_or(data.len(), |limit| {
+                data.len().min(usize::try_from(limit).unwrap_or(data.len()))
+            });
         let channel = if stderr { "stderr" } else { "stdout" };
         let directory = directory(self.operation);
         for (index, piece) in data.chunks(maximum).enumerate() {
@@ -81,8 +86,12 @@ impl Output {
                 self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
         }
-        let take = self.remaining.min(data.len() as u64) as usize;
-        self.remaining -= take as u64;
+        let take = self.remaining.map_or(data.len(), |remaining| {
+            remaining.min(data.len() as u64) as usize
+        });
+        if let Some(remaining) = &mut self.remaining {
+            *remaining -= take as u64;
+        }
         self.omitted = self.omitted.saturating_add((data.len() - take) as u64);
         let output = if stderr {
             &mut self.stderr
@@ -162,7 +171,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?;
@@ -177,7 +186,7 @@ mod tests {
                     directory(operation)
                 ),
                 None,
-                2,
+                Some(2),
                 ContentAccess::default(),
             )?
             .await?;
@@ -203,7 +212,7 @@ mod tests {
         for (maximum, preview) in [(2048, "out".to_owned()), (1024, "o".repeat(4096))] {
             let mut candidate = result.clone();
             candidate.value["stdout"] = preview.clone().into();
-            let bounded = crate::tools::shell::bounded_result(candidate, maximum)?;
+            let bounded = crate::tools::shell::bounded_result(candidate, Some(maximum))?;
             let removed = preview.len() - bounded.value["stdout"].as_str().expect("stdout").len()
                 + 1
                 - bounded.value["stderr"].as_str().expect("stderr").len();
@@ -248,7 +257,7 @@ mod tests {
                 "",
                 &path,
                 None,
-                4096,
+                Some(4096),
                 ContentAccess::default(),
             )?
             .await?;
