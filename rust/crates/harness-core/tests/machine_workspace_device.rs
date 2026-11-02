@@ -246,6 +246,39 @@ async fn status(
     Err("original presence producer ended".into())
 }
 
+/// The call journal of device run `op` dispatched by `agent`.
+fn log(agent: &AgentPath, op: OperationId) -> Result<StreamPath> {
+    Ok(acyclic_harness_core::devices::call(agent, op)?
+        .log()
+        .clone())
+}
+
+/// One call journal record in the device run's event shape.
+fn journal_event(record: &acyclic_stream::Record) -> Result<serde_json::Value> {
+    use acyclic_actors::call::{Entry, Outcome};
+    let event = match Entry::decode(record)? {
+        Entry::Request(_) => return Err("a device call journal has no request".into()),
+        Entry::Accepted(_) => serde_json::json!({"started": {}}),
+        Entry::Chunk(chunk) => {
+            let (stderr, data) = acyclic_harness_core::devices::chunk_output(&chunk)?;
+            serde_json::json!({"output": {"stderr": stderr, "data": data}})
+        }
+        Entry::Terminal(Outcome::Ok(result)) => serde_json::json!({
+            "exit": {"result": serde_json::from_slice::<serde_json::Value>(&result)?}
+        }),
+        Entry::Terminal(Outcome::Error(reason)) => {
+            serde_json::json!({"refused": {"reason": reason}})
+        }
+        Entry::Terminal(Outcome::Cancelled(reason)) => {
+            serde_json::json!({"cancelled": {"reason": reason}})
+        }
+        Entry::Terminal(Outcome::Indeterminate(reason)) => {
+            serde_json::json!({"lost": {"reason": reason}})
+        }
+    };
+    Ok(serde_json::json!({ "event": event }))
+}
+
 async fn terminal(
     provider: &MemoryStream,
     path: StreamPath,
@@ -260,7 +293,7 @@ async fn terminal(
     let mut after_output = Some(after_output);
     while let Some(event) = events.next().await {
         if let FollowUpdate::Record(record) = event? {
-            let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+            let value = journal_event(&record)?;
             if value["event"].get("started").is_some() {
                 continue;
             }
@@ -658,7 +691,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             }
         ));
         let (mut release, _) = listener.accept().await?;
-        let result = terminal(&provider, paths.run("desktop", op)?, async || {
+        let result = terminal(&provider, log(&run.agent, op)?, async || {
             use tokio::io::AsyncWriteExt as _;
             release.write_all(b"continue\n").await?;
             Ok(())
@@ -712,7 +745,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             }
             .into();
             provider.commit(dispatch(binary, b"binary-output")?).await?;
-            let mut request = FollowRequest::new(paths.run("desktop", binary_op)?, 0);
+            let mut request = FollowRequest::new(log(&run.agent, binary_op)?, 0);
             request.when_absent = acyclic_stream::WhenAbsent::Wait;
             let mut events = provider.follow(request).await?;
             let mut captured = Vec::new();
@@ -724,7 +757,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 let FollowUpdate::Record(record) = update else {
                     continue;
                 };
-                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                let value = journal_event(&record)?;
                 let event = &value["event"];
                 if let Some(output) = event.get("output") {
                     assert_eq!(output["stderr"], false);
@@ -759,7 +792,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         provider
             .commit(dispatch(foreign_run, b"foreign-volume")?)
             .await?;
-        let refusal = terminal(&provider, paths.run("desktop", foreign_op)?, async || {
+        let refusal = terminal(&provider, log(&run.agent, foreign_op)?, async || {
             Err("foreign volume reached the process output boundary".into())
         })
         .await?;
@@ -787,7 +820,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         let (mut held, _) = listener.accept().await?;
         if refused_close {
             let mut original = provider
-                .follow(FollowRequest::new(paths.run("desktop", active_op)?, 0))
+                .follow(FollowRequest::new(log(&run.agent, active_op)?, 0))
                 .await?;
             loop {
                 let FollowUpdate::Record(record) = original
@@ -797,7 +830,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 else {
                     continue;
                 };
-                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                let value = journal_event(&record)?;
                 if value["event"].get("output").is_some() {
                     break;
                 }
@@ -831,7 +864,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 Err(acyclic_stream::StreamError::NotFound)
             ));
         } else {
-            let lost = terminal(&provider, paths.run("desktop", active_op)?, async || {
+            let lost = terminal(&provider, log(&run.agent, active_op)?, async || {
                 lifecycle.close(&agent).await?;
                 Ok(())
             })
@@ -952,17 +985,17 @@ async fn committed_handover(refused_close: bool) -> Result {
                 );
             }
             let mut records = provider
-                .follow(FollowRequest::new(paths.run("desktop", operation)?, 0))
+                .follow(FollowRequest::new(log(&run.agent, operation)?, 0))
                 .await?;
             let mut chunks = 0;
             let mut split_chunks = 0;
-            let tail = provider.head(paths.run("desktop", operation)?).await?.tail;
+            let tail = provider.head(log(&run.agent, operation)?).await?.tail;
             loop {
                 let event = records.next().await.ok_or("original run prefix ended")??;
                 let FollowUpdate::Record(record) = event else {
                     continue;
                 };
-                let value: serde_json::Value = serde_json::from_slice(&record.value)?;
+                let value = journal_event(&record)?;
                 if let Some(output) = value["event"].get("output") {
                     let channel = if output["stderr"] == true {
                         "stderr"
