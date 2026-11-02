@@ -21,10 +21,108 @@ async fn every_original_layer_fences_the_same_consuming_commit()
                 .value,
         );
     }
+    for (index, workspace) in workspaces.iter().enumerate() {
+        workspace
+            .write_text(
+                &format!("/layer-{index}.ts"),
+                &format!("export default {index};"),
+            )
+            .await?;
+    }
+    workspaces[0]
+        .write_text("/hidden.ts", "export default 1;")
+        .await?;
+    workspaces[5].write_text("/hidden.ts", "off: true").await?;
+    for (index, value) in [(0, "seed"), (5, "subject")] {
+        let mut transaction = workspaces[index]
+            .begin_transaction(acyclic_fs::IdempotencyKey::new(), budget, &cancellation)
+            .await?
+            .value;
+        transaction
+            .create_dir_all("/sys", budget, &cancellation)
+            .await?;
+        transaction
+            .write_text("/sys/source.ts", &format!("export default '{value}';"))
+            .await?;
+        transaction
+            .commit::<WorkspaceError, _, _>(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                |_| async {
+                    Ok(OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    })
+                },
+            )
+            .await?;
+    }
     let mut generations = Vec::new();
     for workspace in &workspaces {
         generations.push(workspace.head(budget, &cancellation).await?.value);
     }
+    {
+        use crate::config::Tree as _;
+        let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation)?;
+        let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
+        let tree = manifest.tree(&io, u64::MAX);
+        assert!(tree.read("hidden.ts").await?.is_none());
+        assert!(tree.read("missing.ts").await?.is_none());
+        assert_eq!(
+            tree.read("sys/source.ts")
+                .await?
+                .ok_or("missing seed module")?
+                .as_ref(),
+            b"export default 'seed';"
+        );
+        // Each import exists in only its original layer. The production VM
+        // resolves the closure through the same six-generation view.
+        let source = b"import a from './layer-0.ts'; import b from './layer-1.ts';
+            import c from './layer-2.ts'; import d from './layer-3.ts';
+            import e from './layer-4.ts'; import f from './layer-5.ts';
+            export default a+b+c+d+e+f;";
+        let base = serde_json::Value::Null;
+        let evaluate = || {
+            crate::config::evaluate(
+                "settings.ts",
+                source,
+                &tree,
+                &base,
+                crate::config::Surface::Data,
+            )
+        };
+        assert_eq!(evaluate().await?.value, serde_json::json!(15));
+        workspaces[5]
+            .write_text("/layer-5.ts", "export default 100;")
+            .await?;
+        assert_eq!(evaluate().await?.value, serde_json::json!(15));
+        let mut current = std::array::from_fn(|index| &generations[index]);
+        let advanced = workspaces[5].head(budget, &cancellation).await?.value;
+        current[5] = &advanced;
+        let changed = Manifest::new(current);
+        assert_eq!(
+            crate::config::evaluate(
+                "settings.ts",
+                source,
+                &changed.tree(&io, u64::MAX),
+                &serde_json::Value::Null,
+                crate::config::Surface::Data
+            )
+            .await?
+            .value,
+            serde_json::json!(110)
+        );
+        // Cancellation is an original operation failure, never a missing
+        // module that falls through to another layer.
+        let stopped = acyclic_fs::CancellationToken::new();
+        let stopped_io = crate::filesystem::PreparationIo::for_unmeasured(&stopped)?;
+        let stopped_tree = manifest.tree(&stopped_io, u64::MAX);
+        stopped.cancel();
+        assert!(stopped_tree.read("layer-5.ts").await.is_err());
+    }
+    generations[5] = workspaces[5].head(budget, &cancellation).await?.value;
     let request = |key: u8| -> Result<_, Box<dyn std::error::Error>> {
         Ok(FilesystemCommit::new(CommitRequest {
             deadline_unix_millis: None,

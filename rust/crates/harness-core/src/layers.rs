@@ -23,6 +23,8 @@ pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
 #[cfg(feature = "filesystem")]
 mod manifest;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use manifest::ManifestTree;
 #[cfg(feature = "filesystem")]
 pub use manifest::{Manifest, ManifestFailure};
 
@@ -30,7 +32,7 @@ pub use manifest::{Manifest, ManifestFailure};
 pub const HOME_PATH: &str = ".volumes/home/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = ".volumes/seed/";
-/// Tool path of the effective view: `home` over `seed`, read-only.
+/// Tool path of the effective view over the complete layer stack, read-only.
 pub const EFFECTIVE_PATH: &str = ".volumes/effective/";
 /// Suffix naming a composed file's provenance chain beside it.
 pub const WHY_SUFFIX: &str = ".why.json";
