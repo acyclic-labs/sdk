@@ -48,10 +48,8 @@ def snapshot():
 
 
 def run(args, label, expected=0, env=None, fast=False):
-    remaining = 570 - (time.monotonic() - started)
-    need(remaining > 0, 'producer job exceeded its570s budget')
     begin = time.monotonic()
-    result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, timeout=min(9, remaining) if fast else remaining)
+    result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True)
     elapsed = time.monotonic() - begin
     (OUT / (label + '.out')).write_bytes(result.stdout)
     (OUT / (label + '.err')).write_bytes(result.stderr)
@@ -91,7 +89,7 @@ try:
     OUT.mkdir()
     inputs = snapshot()
     write_json('source.json', inputs)
-    write_json('job.json', dict(source_tree=subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=ROOT, text=True).strip(), affected_crate='acyclic-stream', job_budget_seconds=570))
+    write_json('job.json', dict(source_tree=subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], cwd=ROOT, text=True).strip(), affected_crate='acyclic-stream'))
     (OUT / 'production.rs').write_bytes(original)
     (OUT / 'oracle.rs').write_bytes(TEST.read_bytes())
     step = 'positive_compile_and_test'

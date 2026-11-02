@@ -25,11 +25,11 @@ port=15480
 rateport=15481
 image=ghcr.io/ggml-org/llama.cpp:server
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-    timeout 180 docker pull "$image"
+    docker pull "$image"
 fi
 model="$root/models/Qwen3-0.6B-Q4_0.gguf"
 if [ ! -s "$model" ]; then
-    curl --fail --location --retry 1 --max-time 180 \
+    curl --fail --location \
         https://huggingface.co/ggml-org/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf \
         --output "$model.part"
     mv "$model.part" "$model"
@@ -45,7 +45,7 @@ for attempt in $(seq 1 45); do
     sleep 1
 done
 curl --fail --silent "$endpoint/health"
-if ! docker image inspect nginx:stable-alpine >/dev/null 2>&1; then timeout 180 docker pull nginx:stable-alpine; fi
+if ! docker image inspect nginx:stable-alpine >/dev/null 2>&1; then docker pull nginx:stable-alpine; fi
 cat > "$root/nginx.conf" <<'NGINX'
 events {}
 http {

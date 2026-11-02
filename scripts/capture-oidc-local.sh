@@ -23,7 +23,7 @@ cleanup() {
 }
 trap cleanup EXIT
 image=ghcr.io/dexidp/dex:v2.44.0
-if ! docker image inspect "$image" >/dev/null 2>&1; then timeout 180 docker pull "$image"; fi
+if ! docker image inspect "$image" >/dev/null 2>&1; then docker pull "$image"; fi
 cat > "$root/config.yaml" <<'DEX'
 issuer: http://127.0.0.1:15482/dex
 storage:

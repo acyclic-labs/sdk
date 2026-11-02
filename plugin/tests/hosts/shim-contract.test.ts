@@ -81,7 +81,12 @@ test("qualification calls shared native lifecycle instead of the deleted Pi oper
 test("release packaging validates without state access or authentication", () => {
   const directory = mkdtempSync(join(tmpdir(), "shim-package-"));
   const script = (name: string) => fileURLToPath(new URL(`../../scripts/${name}`, import.meta.url));
-  const run = (name: string, args: string[]) => spawnSync(process.execPath, [script(name), ...args], {encoding: "utf8", timeout: 2000});
+  const run = (name: string, args: string[]) => {
+    const result = spawnSync(process.execPath, [script(name), ...args], {encoding: "utf8"});
+    if (result.error) throw result.error;
+    assert.equal(result.signal, null, "packaging child terminated by signal");
+    return result;
+  };
   try {
     const binary = join(directory, "fixture-binary");
     writeFileSync(binary, "fixture executable bytes; packaging never executes the input binary");

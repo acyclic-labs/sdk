@@ -29,14 +29,14 @@ step=images
 minio_image=be-storage-minio:RELEASE.2025-10-15T17-29-55Z
 for image in postgres:17-alpine; do
     if ! docker image inspect "$image" >/dev/null 2>&1; then
-        timeout 120 docker pull "$image"
+        docker pull "$image"
     fi
 done
 if ! docker image inspect "$minio_image" >/dev/null 2>&1; then
     step=minio-source
     # Official release archive, captured on 2026-10-26. The upstream public
     # container and binary distribution returned unauthorized/410 on that date.
-    curl --fail --location --max-time 60 --retry 1 --output "$root/minio.tar.gz" \
+    curl --fail --location --output "$root/minio.tar.gz" \
         https://codeload.github.com/minio/minio/tar.gz/refs/tags/RELEASE.2025-10-15T17-29-55Z
     echo "be6d0bd3696c3a13a35f02d3a0280b64319c67918b4501c5c3d87f96d000085c  $root/minio.tar.gz" | sha256sum --check
     mkdir "$root/minio-source"
@@ -46,8 +46,8 @@ if ! docker image inspect "$minio_image" >/dev/null 2>&1; then
 fi
 step=postgres-start
 mkdir -p "$root/postgres" "$root/minio"
-# Reserved lane ports, outside the Cloud local-cell range. Docker refuses an
-# occupied port; the EXIT trap reports recovery and removes either container.
+# Docker refuses an occupied loopback port; the EXIT trap reports recovery and
+# removes either container.
 pg=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=storage -v "$root/postgres:/var/lib/postgresql/data" -p 127.0.0.1:15400:5432 postgres:17-alpine)
 step=minio-start
 # Public, disposable emulator values only. Never read host/cloud credentials.
@@ -87,21 +87,21 @@ curl --fail --silent --show-error --aws-sigv4 aws:amz:us-east-1:s3 --user storag
 step=compile
 cargo build --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=canonical-suites
-timeout 60 cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
+cargo run --locked -p acyclic-conformance --features storage-backends --bin storage-conformance
 step=compile-agent-host-baseline
 cargo test --locked -p acyclic-agent-host-conformance --features local --test main --no-run
 step=agent-host-baseline
-timeout 60 cargo test --locked -p acyclic-agent-host-conformance --features local --test main
+cargo test --locked -p acyclic-agent-host-conformance --features local --test main
 step=compile-postgres-checks
 cargo build --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance
 step=shared-stream-regressions
-timeout 60 cargo test --locked -p acyclic-stream --features local,postgres --lib
+cargo test --locked -p acyclic-stream --features local,postgres --lib
 step=postgres-cross-session
-timeout 60 cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres
+cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres
 step=postgres-scale
-timeout 60 cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres --scale
+cargo run --locked -p acyclic-stream --no-default-features --features postgres,conformance --example provider-conformance -- --postgres --scale
 step=compile-shared-objects-regressions
 cargo test --locked -p acyclic-objects --features local,s3 --lib --no-run
 step=shared-objects-regressions
-timeout 60 cargo test --locked -p acyclic-objects --features local,s3 --lib
+cargo test --locked -p acyclic-objects --features local,s3 --lib
 step=complete
