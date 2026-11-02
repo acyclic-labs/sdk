@@ -8,6 +8,7 @@ import ts from 'typescript-parser';
 const temporal = /^(?:sleep(?:_(?:for|until)|Ex)?|thrd_sleep|usleep|(?:clock_)?nanosleep|delay|interval(?:_at)?|timeout(?:_at)?|wait_timeout(?:_while)?|pthread_cond_(?:timedwait|clockwait)|cnd_timedwait|sem_timedwait|recv_(?:timeout|deadline)|park_timeout(?:_ms)?|wait_timeout_ms|poll|select|epoll_(?:wait|pwait2?)|ppoll|pselect|kevent(?:64)?|try_wait|yield_now|yieldNow|spin_loop|setTimeout|setInterval|setImmediate|nextTick|queueMicrotask|requestAnimationFrame|requestIdleCallback|waitAsync|waitForTimeout|waitForFunction|waitUntil|WaitForSingleObject(?:Ex)?|WaitForMultipleObjects(?:Ex)?|WaitOnAddress|WaitOne|WaitAny|WaitAll|WaitForExit(?:Async)?|WaitForInputIdle|SpinWait|SpinUntil)$/i;
 const embeddedTemporal = new RegExp('\\b(?:' + temporal.source.slice(1, -1) + ')\\b', temporal.flags);
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
+const embeddedCandidate = spelling => embeddedTemporal.test(spelling) || policyName.test(spelling);
 const loop = new Set(['for', 'while', 'loop', 'do']);
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
 const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
@@ -248,11 +249,10 @@ export function pollingUnit(file, source) {
  const sites = [];
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
-  const spelling = t.kind === 'literal' ? escapedSpelling(t.value) : t.value;
   const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
    : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && !futurePoll(i) && forbidden.has(t.value) ? 'timer-or-readiness'
-   : t.kind === 'literal' && (embeddedTemporal.test(spelling) || policyName.test(spelling)) ? 'embedded-timer-or-retry'
+   : t.kind === 'literal' && (embeddedCandidate(t.value) || embeddedCandidate(escapedSpelling(t.value))) ? 'embedded-timer-or-retry'
    : undefined;
   if (!kind) continue;
   const fingerprint = createHash('sha256').update(JSON.stringify([kind, i, unit])).digest('hex');
