@@ -18,6 +18,7 @@ export async function conversation(processes, binary, fixture, input, capture, b
           throw new Error(`conversation exited before its next turn: ${JSON.stringify(result)}`);
         }),
       ]);
+      assert.ok(!replies.has(turn.id), "committed reply preceded its prompt");
       active.child.stdin.write(JSON.stringify({ id: turn.id, prompt: turn.text }) + "\n");
       const reply = await replies.keyed(turn.id);
       assert.equal(reply.error, undefined, `failed JSONL turn ${turn.id}: ${reply.error}`);
