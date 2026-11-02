@@ -10,6 +10,7 @@ use std::{
     sync::OnceLock,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use zeroize::Zeroizing;
 #[path = "credential_io.rs"]
 mod credential_io;
 use acyclic_fs::{NativeAllocation, WorkCounters};
@@ -376,13 +377,13 @@ pub(crate) fn needs_refresh(auth: &Value, now: OffsetDateTime) -> bool {
         .is_none_or(|last| now - last >= time::Duration::days(8))
 }
 
-fn load(path: &Path, io: &mut CredentialIo) -> Result<(Vec<u8>, Value)> {
+fn load(path: &Path, io: &mut CredentialIo) -> Result<(Zeroizing<Vec<u8>>, Value)> {
     let bytes = read(path, io)?;
     let auth = document(&bytes, io)?;
     Ok((bytes, auth))
 }
 
-fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
+fn read(path: &Path, io: &mut CredentialIo) -> Result<Zeroizing<Vec<u8>>> {
     io.charge(WorkCounters {
         backend_read_operations: 2,
         object_probes: 1,
@@ -398,7 +399,9 @@ fn read(path: &Path, io: &mut CredentialIo) -> Result<Vec<u8>> {
     }
     let capacity = length as usize + 1;
     io.claim(capacity as u64, 1, WorkCounters::UNCHARGED)?;
-    let mut bytes = vec![0; capacity];
+    // Retain protection from the first read through comparison or parse failure.
+    // This fixed allocation never grows or retires an unprotected old backing.
+    let mut bytes = Zeroizing::new(vec![0; capacity]);
     let read_allowance = io
         .work()
         .map(|work| {

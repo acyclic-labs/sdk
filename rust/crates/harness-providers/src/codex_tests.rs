@@ -306,7 +306,7 @@ proptest! {
             let mut custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
             let mut io = CredentialIo::new(Some(&mut custody)).unwrap();
             let (bytes, decoded) = load(&path, &mut io).unwrap();
-            prop_assert_eq!(&bytes, &encoded);
+            prop_assert_eq!(bytes.as_slice(), encoded.as_slice());
             prop_assert_eq!(decoded, document);
             prop_assert_eq!(work.receipt().source_bytes_read, bytes.len() as u64);
             prop_assert!(work.live_allocation_bytes() > baseline);
