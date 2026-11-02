@@ -177,7 +177,7 @@ pub(crate) fn encode(
     Ok(Encoded {
         bytes: output.bytes,
         cache: Some(ModelCacheObservation {
-            version: 1,
+            version: ModelCacheObservation::VERSION,
             credential_scope: origin.credential_scope,
             profile_prefix_digest: binding.map(ModelProfileBinding::prefix_digest),
             ttl,
@@ -290,11 +290,11 @@ mod tests {
                     prop_assert_eq!(first.cache.unwrap().credential_scope, second.cache.unwrap().credential_scope);
                     prop_assert_ne!(first.cache.unwrap().breakpoint, endpoint.cache.unwrap().breakpoint);
                     let key = first.cache.unwrap().key().unwrap();
-                    let written = ModelCacheResidency::observe(key, None, 0,
+                    let written = ModelCacheResidency::observe(key, None, [1; 16], 0,
                         ModelCacheAccess::Write(ModelCacheTtl::Explicit { seconds: 300 })).unwrap();
                     for foreign in [second.cache.unwrap().key().unwrap(), endpoint.cache.unwrap().key().unwrap()] {
                         prop_assert_ne!(key, foreign);
-                        prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(written), 1,
+                        prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(written), [1; 16], 1,
                             ModelCacheAccess::Miss), Err(ModelCacheError::KeyMismatch));
                     }
                 } else {
