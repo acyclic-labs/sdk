@@ -58,7 +58,6 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
             // A read can already be rejected when the original owner stops.
             // Preserve that owner's first cause instead of the queued error.
             if (closed) await stopped;
-            fail(cause);
             throw cause;
           }
           if (closed) await stopped;
@@ -71,6 +70,11 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
       // cancel and does not manufacture a failure after successful EOF.
       terminate(undefined, false);
       yield { trailers };
+    } catch (cause) {
+      // Acquisition and reads share the same failure retirement. A borrowed,
+      // already-locked body must retain its native error and original reader.
+      fail(cause);
+      throw cause;
     } finally {
       close();
       reader?.releaseLock();
