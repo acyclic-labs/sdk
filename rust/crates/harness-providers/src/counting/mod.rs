@@ -246,8 +246,7 @@ async fn exchange_count(
     request_digest: [u8; 32],
     work: NativeWork<'_>,
 ) -> Result<u64> {
-    let mut redelivery =
-        crate::retry::Redelivery::for_request(provider.config.retry, request_digest);
+    let mut recovery = crate::retry::Attempt::count(provider.config.retry, request_digest);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
     #[cfg(not(target_arch = "wasm32"))]
     let _copy = work
@@ -269,21 +268,10 @@ async fn exchange_count(
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let sent = match work {
-            Some(work) => {
-                provider
-                    .transport
-                    .send_with_native_work(attempt, work)?
-                    .await
-            }
-            None => provider.transport.send(attempt).await,
-        };
-        #[cfg(target_arch = "wasm32")]
-        let sent = {
-            let _ = work;
-            provider.transport.send(attempt).await
-        };
+        let sent = crate::http::send(provider.transport.as_ref(), attempt, work)?.await;
+        if let Ok(response) = &sent {
+            recovery.observe(response.status);
+        }
         let (failure, retry_after) = match sent {
             Ok(response) if (200..300).contains(&response.status) => {
                 match read_count(provider, response, work).await {
@@ -292,18 +280,14 @@ async fn exchange_count(
                 }
             }
             Ok(response) => {
-                let retryable = crate::retry::retryable_status(response.status);
                 let retry_after = response.retry_after;
                 let failure =
                     crate::http_failure(response, provider.config.max_event_bytes, work).await;
-                if !retryable {
-                    return Err(failure);
-                }
                 (failure, retry_after)
             }
             Err(failure) => (failure, None),
         };
-        let Some(wait) = redelivery.next(&failure, retry_after, false) else {
+        let Some(wait) = recovery.next(&failure, retry_after) else {
             return Err(failure);
         };
         drop(failure);

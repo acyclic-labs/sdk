@@ -143,11 +143,11 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
             let cause = operation.await.unwrap_err();
             assert_eq!(cause.code(), ErrorCode::Indeterminate);
             assert!(
-                crate::retry::Redelivery::for_request(
+                crate::retry::Attempt::count(
                     crate::RetrySpec::DEFAULT,
                     *blake3::hash(&request().body).as_bytes(),
                 )
-                .next(&cause, None, false)
+                .next(&cause, None)
                 .is_none()
             );
             continue;

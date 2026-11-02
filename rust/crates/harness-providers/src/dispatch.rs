@@ -128,15 +128,7 @@ pub(crate) async fn send(
                 .sum::<usize>();
         crate::native::retain(allocation, retained as u64)?;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = work {
-        return provider
-            .transport
-            .send_with_native_work(request, work)?
-            .await;
-    }
-    let _ = work;
-    provider.transport.send(request).await
+    crate::http::send(provider.transport.as_ref(), request, work)?.await
 }
 
 pub(crate) async fn encode(
@@ -224,26 +216,13 @@ pub(crate) fn headers(
 /// One generation's recovery budget. Successful HTTP admission is final even
 /// before the first event: a lost body cannot prove the model did not execute.
 pub(crate) struct GenerationAttempt {
-    admission: Admission,
-    redelivery: crate::retry::Redelivery,
-    #[cfg(not(target_arch = "wasm32"))]
-    retried: bool,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Admission {
-    Unknown,
-    Refused(u16),
-    Accepted,
+    attempt: crate::retry::Attempt,
 }
 
 impl GenerationAttempt {
     pub(crate) fn new(spec: crate::RetrySpec, dispatch: ModelDispatch) -> Self {
         Self {
-            admission: Admission::Unknown,
-            redelivery: crate::retry::Redelivery::new(spec, dispatch),
-            #[cfg(not(target_arch = "wasm32"))]
-            retried: false,
+            attempt: crate::retry::Attempt::generation(spec, dispatch),
         }
     }
 
@@ -262,12 +241,12 @@ impl GenerationAttempt {
         loop {
             let (error, retry_after) = match response {
                 Ok(response) if (200..300).contains(&response.status) => {
-                    self.accept();
+                    self.attempt.observe(response.status);
                     return Ok(response);
                 }
                 Ok(response) => {
                     // Preserve refusal before its diagnostic body can fail.
-                    self.refuse(response.status);
+                    self.attempt.observe(response.status);
                     let retry_after = response.retry_after;
                     let error =
                         crate::http_failure(response, provider.config.max_event_bytes, work).await;
@@ -301,16 +280,6 @@ impl GenerationAttempt {
         }
     }
 
-    pub(crate) fn accept(&mut self) {
-        self.admission = Admission::Accepted;
-    }
-
-    pub(crate) fn refuse(&mut self, status: u16) {
-        if self.admission != Admission::Accepted {
-            self.admission = Admission::Refused(status);
-        }
-    }
-
     /// Complete recovery before the caller may send another model request.
     /// Refresh and timer failures are final causes, never model retry inputs.
     async fn recover(
@@ -324,7 +293,7 @@ impl GenerationAttempt {
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(login) = &provider.codex_login
-            && self.refresh(&error)
+            && self.attempt.refresh(&error)
         {
             drop(error);
             let (key, account) = login
@@ -334,54 +303,11 @@ impl GenerationAttempt {
             return Ok(());
         }
         let _ = auth;
-        if let Some(wait) = self.redeliver(&error, retry_after) {
+        if let Some(wait) = self.attempt.next(&error, retry_after) {
             drop(error);
             crate::deadline::timer(provider.transport.as_ref(), wait, work)?.await?;
             return Ok(());
         }
         Err(error)
-    }
-
-    pub(crate) fn redeliver(
-        &mut self,
-        error: &acyclic_harness_core::Error,
-        retry_after: Option<std::time::Duration>,
-    ) -> Option<std::time::Duration> {
-        // A timeout or disconnect before headers can still lose an accepted
-        // request's reply. Only a failed connection or explicit HTTP refusal
-        // proves there was no successful response to preserve. A failed error
-        // body cannot turn a final HTTP status into a retryable refusal.
-        let retryable = match self.admission {
-            Admission::Unknown => matches!(
-                error,
-                acyclic_harness_core::Error::ModelUnavailable {
-                    failure: acyclic_harness_core::ModelTransportFailure::Connect,
-                    ..
-                }
-            ),
-            Admission::Refused(status) => crate::retry::retryable_status(status),
-            Admission::Accepted => false,
-        };
-        if !retryable {
-            return None;
-        }
-        let wait = self.redelivery.next(error, retry_after, false);
-        if wait.is_some() {
-            self.admission = Admission::Unknown;
-        }
-        wait
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn refresh(&mut self, error: &acyclic_harness_core::Error) -> bool {
-        if error.code() != acyclic_harness_core::wire::ErrorCode::Unauthorized
-            || self.admission != Admission::Refused(401)
-            || self.retried
-        {
-            return false;
-        }
-        self.retried = true;
-        self.admission = Admission::Unknown;
-        true
     }
 }
