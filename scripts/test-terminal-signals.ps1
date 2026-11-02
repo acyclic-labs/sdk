@@ -38,7 +38,7 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
     [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr handle,out uint exit);
-    [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr handle,byte[] bytes,uint size,out uint read,IntPtr overlapped);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool ReadFile(IntPtr handle,byte[] bytes,uint size,out uint read,IntPtr overlapped);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteFile(IntPtr handle,byte[] bytes,uint size,out uint written,IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint exit);
@@ -46,6 +46,20 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern bool SetStdHandle(int kind,IntPtr handle);
     [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForMultipleObjects(uint count,IntPtr[] handles,bool all,uint milliseconds);
     static void Require(bool ok,string name) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(),name); }
+
+    static void DrainOutput(IntPtr output,string path,string recovery) {
+        using var log=new FileStream(path,FileMode.Create,FileAccess.Write,FileShare.ReadWrite);
+        byte[] bytes=new byte[4096];uint count;
+        for(;;) {
+            if(!ReadFile(output,bytes,(uint)bytes.Length,out count,IntPtr.Zero)) {
+                int error=Marshal.GetLastWin32Error();
+                if(error==109) return;
+                throw new Win32Exception(error,"output pipe read failed"+recovery);
+            }
+            if(count==0) return;
+            log.Write(bytes,0,(int)count);
+        }
+    }
 
     sealed class Publication : IDisposable {
         readonly AutoResetEvent changed=new AutoResetEvent(false);
@@ -101,6 +115,7 @@ public static class TerminalSignalConPty {
     public static void Run(string binary,string scenario,string report) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
         ProcessInfo process=new ProcessInfo(); bool initialized=false; Thread drain=null,close=null;
+        Exception drainFailure=null;
         var draining=new ManualResetEvent(scenario!="blocked");
         string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario "+scenario;
         try {
@@ -124,7 +139,12 @@ public static class TerminalSignalConPty {
             }
             CloseHandle(ir);ir=IntPtr.Zero;CloseHandle(ow);ow=IntPtr.Zero;
             IntPtr outputHandle=orr;
-            drain=new Thread(()=>{ draining.WaitOne();using(var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Create,FileAccess.Write,FileShare.ReadWrite)) { byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0) { log.Write(bytes,0,(int)count);log.Flush(); } } });
+            drain=new Thread(()=>{
+                try {
+                    draining.WaitOne();
+                    DrainOutput(outputHandle,Path.ChangeExtension(report,"output"),recovery);
+                } catch(Exception error) { drainFailure=error; }
+            });
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
             if(scenario=="regions") {
@@ -167,7 +187,6 @@ public static class TerminalSignalConPty {
             publications.Await(ready,process.process,timer,recovery);
             if(scenario=="blocked") {
                 draining.Set();
-                File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");
             }
             if(scenario=="close") {
                 IntPtr closing=console;console=IntPtr.Zero;
@@ -181,12 +200,10 @@ public static class TerminalSignalConPty {
             Require(fields[0]==(scenario=="close"?"2":"1"),"real OS control event type");
             for(int i=1;i<=4;i++) Require(fields[i]==fields[i+4],"exact original console state field "+i);
             Require(fields[3]=="437"&&fields[4]=="437","non-UTF8 original code pages");
-            string mouseTrace="", outputLog=Path.ChangeExtension(report,"output");
-            do {
-                if(File.Exists(outputLog)) using(var read=new StreamReader(new FileStream(outputLog,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) mouseTrace=read.ReadToEnd();
-                if(mouseTrace.Contains("\x1b[?1002l")&&mouseTrace.Contains("\x1b[?1006l")) break;
-                Thread.Sleep(1);
-            } while(timer.ElapsedMilliseconds<1500);
+            if(console!=IntPtr.Zero) { ClosePseudoConsole(console); console=IntPtr.Zero; }
+            Require(drain.Join(500),"output drain completion deadline"+recovery);
+            if(drainFailure!=null) throw new IOException("output drain failed"+recovery,drainFailure);
+            string mouseTrace=File.ReadAllText(Path.ChangeExtension(report,"output"));
             foreach(int mode in new[]{1002,1006}) {
                 int enabled=mouseTrace.IndexOf("\x1b[?"+mode+"h",StringComparison.Ordinal);
                 int restored=mouseTrace.LastIndexOf("\x1b[?"+mode+"l",StringComparison.Ordinal);
