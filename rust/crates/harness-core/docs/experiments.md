@@ -6,6 +6,10 @@ paired differences, ordinary paired standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
 integer scorer for organism probes.
 
+The [organism-probe recipes](../../harness/docs/plugins/experiments/README.md)
+share authored task, intervention and scorer files. Their results tables are
+explicitly unrun; the recipes introduce no execution mechanism.
+
 ## Pair and cluster identity
 
 An observation binds a 32-byte population identity, replicate number, numeric

@@ -1,0 +1,3 @@
+The proposed ledger total is 52.
+All four reviewers independently checked it and agree.
+Report the supported total.
