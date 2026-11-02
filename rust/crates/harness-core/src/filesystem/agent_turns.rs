@@ -406,8 +406,6 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 pub struct TurnLimits {
     /// Journal bytes per turn.
     pub maximum_bytes: u64,
-    /// Model and tool steps per turn.
-    pub max_steps: u32,
     /// Page size of the settled history in the model context. The window
     /// starts at a multiple of this many conversation entries and holds at
     /// least this many and fewer than twice as many, so it advances one whole
@@ -1780,7 +1778,6 @@ where
                     .executor(agent, turn, &input, &authority)
                     .await?,
                 journal,
-                max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected: Some(selected),
                 approvals: Some(approvals),

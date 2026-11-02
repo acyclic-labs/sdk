@@ -246,7 +246,6 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         operation_id: OperationId::new(),
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
-        max_steps: 1,
     };
     let first = executor.model_step(journal.as_ref(), &turn, 0, &[]).await?;
     assert_request(provider.as_ref(), &manifest, reader.as_ref()).await?;

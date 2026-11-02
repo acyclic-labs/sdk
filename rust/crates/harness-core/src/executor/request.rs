@@ -13,13 +13,6 @@ impl StockExecution<'_> {
         let phase = &mut DispatchPhase::new();
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
-        if step >= input.max_steps {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "model step is outside admitted turn bounds",
-            ));
-        }
         self.ensure_started(journal, input).await?;
         let events = self
             .run_model_step(

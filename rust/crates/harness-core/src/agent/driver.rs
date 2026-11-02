@@ -28,8 +28,6 @@ pub struct OpenTurn {
     pub executor: Arc<dyn Executor>,
     /// Journal of this agent's turns, on its private volume.
     pub journal: Arc<dyn ExecutionJournal>,
-    /// Model and tool steps allowed in one turn.
-    pub max_steps: u32,
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.
     pub custody: Option<crate::core::RuntimeAuthority>,
@@ -770,7 +768,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         operation_id: turn,
                         input: open.input.clone().unwrap_or(content),
                         selected_context: open.selected.clone(),
-                        max_steps: open.max_steps,
                     },
                     &*open.journal,
                 )

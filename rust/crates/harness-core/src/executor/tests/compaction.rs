@@ -140,7 +140,6 @@ async fn default_threshold_compacts_through_ordinary_model_admission() -> Result
             operation_id: OperationId::new(),
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
-            max_steps: 1,
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "answer");
@@ -203,7 +202,6 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
         operation_id: OperationId::new(),
         input: ModelContent::Text("current".into()),
         selected_context: None,
-        max_steps: 1,
     };
     StockExecution::ordinary(&executor)
         .ensure_started(&journal, &input)
@@ -253,7 +251,6 @@ async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()>
                     operation_id: OperationId::new(),
                     input: ModelContent::Text("current".into()),
                     selected_context: None,
-                    max_steps: 1
                 },
                 &journal
             )
@@ -286,7 +283,6 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
             operation_id: OperationId::new(),
             input: ModelContent::Text("current".into()),
             selected_context: None,
-            max_steps: 1,
         };
         assert!(matches!(
             executor.execute_progress(input, &journal).await?,
@@ -350,7 +346,6 @@ async fn actual_compacted_accounting_rejects_response_without_repeating_summary(
         operation_id: OperationId::new(),
         input: ModelContent::Text("c".repeat(5_000)),
         selected_context: None,
-        max_steps: 1,
     };
     for _ in 0..2 {
         assert!(
@@ -435,7 +430,6 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
             operation_id,
             input: ModelContent::Text("c".repeat(5_000)),
             selected_context: None,
-            max_steps: 1,
         };
         assert!(matches!(executor.execute_progress(input, &journal).await?,
                 ExecutionProgress::PreDispatchFailed(failure) if failure.message().ends_with("mandatory content exceeds selected model capacity")));
@@ -501,7 +495,6 @@ async fn automatic_summary_reconciles_from_captured_context_without_rereading_so
         operation_id: OperationId::new(),
         input: ModelContent::Text("c".repeat(5_000)),
         selected_context: None,
-        max_steps: 1,
     };
     assert!(executor.execute(input.clone(), &journal).await.is_err());
     assert_eq!(source.0.load(Ordering::SeqCst), 1);
@@ -735,7 +728,6 @@ async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<
         operation_id: OperationId::new(),
         input: ModelContent::Text("parent response".into()),
         selected_context: None,
-        max_steps: 1,
     };
     let source = crate::context::Context {
         messages: vec![ModelMessage {

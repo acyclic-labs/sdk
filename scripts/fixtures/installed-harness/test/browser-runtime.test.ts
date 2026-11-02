@@ -40,7 +40,7 @@ test("installed browser entry hosts an agent turn", async () => {
       stream_limits: { commands: 1000n, journal_bytes: 1048576n, paths: 100, path_bytes: 65536,
         records: 1000, payload_bytes: 1048576, commits: 1000, idempotency_results: 1000 },
       limits: { file_bytes: 65536n, path_bytes: 1024n, attachments: 4n, render_bytes: 65536n,
-        model_steps: 4n, model_events_per_step: 16n, tool_calls_per_step: 4n, context_messages: 16n },
+        model_events_per_step: 16n, tool_calls_per_step: 4n, context_messages: 16n },
       principal: "installed-user",
       preset: { tools: [], web_tools: false,
         approval_policy: { approvers: [{ kind: "rules", principal: "installed-user", rules: [], fallback: "allow" }] } },

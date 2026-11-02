@@ -129,9 +129,6 @@ impl WasmAgentServer {
                 executors: Arc::new(Providers::executors(&options, registry)?),
                 limits: TurnLimits {
                     maximum_bytes: limits.file_bytes,
-                    max_steps: u32::try_from(limits.model_steps).map_err(|_| {
-                        js_error(Error::Invalid("model step limit exceeds u32".into()))
-                    })?,
                     history_turns: HISTORY_TURNS,
                 },
                 actors: ActorLimits::new(

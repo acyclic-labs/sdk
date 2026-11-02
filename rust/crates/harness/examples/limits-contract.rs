@@ -12,7 +12,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         path_bytes: MAX_PATH_BYTES,
         attachments: MAX_PORTABLE_COUNT,
         render_bytes: MAX_EXACT_JS_INTEGER,
-        model_steps: MAX_PORTABLE_COUNT,
         model_events_per_step: MAX_PORTABLE_COUNT,
         tool_calls_per_step: MAX_PORTABLE_COUNT,
         context_messages: MAX_PORTABLE_COUNT,

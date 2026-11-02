@@ -175,7 +175,6 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             executors: Arc::new(Never),
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
                 history_turns: 8,
             },
             actors: vectors::limits()?,

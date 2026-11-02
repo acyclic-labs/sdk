@@ -189,10 +189,7 @@ fn executors(
             .map(|name| super::providers::echo_tool(name))
             .collect(),
     )?;
-    let limits = Limits {
-        model_steps: 4,
-        ..Limits::default()
-    };
+    let limits = Limits::default();
     let mut grants = preset.tool_grants(&tools)?;
     grants.push(capability::MODEL_GENERATE.into());
     grants.push(capability::INTERACTION_ROUTE.into());
@@ -386,7 +383,6 @@ async fn run(adapter: Adapter, path: &'static str, family: &str) -> TestResult {
             executors: changing.clone(),
             limits: TurnLimits {
                 maximum_bytes: 1 << 20,
-                max_steps: 4,
                 // A page of four entries: the parent's later turns cross one
                 // page cut, while the child's history stays on the first.
                 history_turns: 4,

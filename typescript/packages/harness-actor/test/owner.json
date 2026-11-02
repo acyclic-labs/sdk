@@ -10,7 +10,7 @@
     },
     "limits": {
       "file_bytes": 1048576, "path_bytes": 4096, "attachments": 32, "render_bytes": 1048576,
-      "model_steps": 16, "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
+      "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
     },
     "principal": "owner",
     "preset": {
@@ -30,7 +30,7 @@
     },
     "limits": {
       "file_bytes": 1048576, "path_bytes": 4096, "attachments": 32, "render_bytes": 1048576,
-      "model_steps": 16, "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
+      "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
     },
     "compaction": { "kind": "disabled" }
   },

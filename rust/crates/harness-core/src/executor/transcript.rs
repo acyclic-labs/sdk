@@ -208,7 +208,7 @@ impl PreparationRecord for RequestManifest {
             "VolumeClass project agent_private session_shared ",
             "ProviderRef ProviderRefWire namespace family version ",
             "FileDescriptor sha256 byte_length media_type ",
-            "Limits file_bytes path_bytes attachments render_bytes model_steps ",
+            "Limits file_bytes path_bytes attachments render_bytes ",
             "model_events_per_step tool_calls_per_step context_messages ",
             "a sequence of length 2 a sequence of length 32 u8 u32 u64 usize UUID ",
             "provider identity is invalid file or volume label is invalid ",

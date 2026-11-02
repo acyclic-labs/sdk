@@ -132,7 +132,6 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("exact ÃƒÂ©\0\r\n".into()),
         selected_context: None,
-        max_steps: 1,
     };
     assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
     let first = executor.model_step(&journal, &input, 0, &[]).await?;
@@ -206,7 +205,6 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
         operation_id: OperationId::from_bytes([67; 16]),
         input: ModelContent::Text("child task; fresh scratch".into()),
         selected_context: None,
-        max_steps: 1,
     };
     executor.execute(input.clone(), journal.as_ref()).await?;
     executor.execute(input.clone(), journal.as_ref()).await?;
@@ -265,10 +263,9 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         operation_id: OperationId::from_bytes([14; 16]),
         input: ModelContent::Text("bounded".into()),
         selected_context: None,
-        max_steps: 2,
     };
     let narrow = Limits {
-        model_steps: 1,
+        file_bytes: 1,
         ..Limits::default()
     };
     assert!(matches!(
@@ -287,7 +284,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .all(|request| request.max_output_tokens.is_none())
     );
     let changed = Limits {
-        model_steps: 3,
+        file_bytes: Limits::default().file_bytes - 1,
         ..Limits::default()
     };
     assert!(matches!(
@@ -598,7 +595,6 @@ mod prepared_request_reuse_properties {
             operation_id: OperationId::new(),
             input: current.clone(),
             selected_context: None,
-            max_steps: 1,
         };
         StockExecution::ordinary(&executor)
             .ensure_started(&journal, &input)
@@ -770,7 +766,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             operation_id: OperationId::from_bytes([83; 16]),
             input: ModelContent::Text("child task".into()),
             selected_context: None,
-            max_steps: 1,
         };
         executor.execute(input.clone(), journal.as_ref()).await?;
         executor.execute(input, journal.as_ref()).await?;
