@@ -307,7 +307,9 @@ impl SettledResults {
 }
 
 async fn observations(
-    mut records: acyclic_stream::RecordStream,
+    mut records: impl futures::Stream<
+        Item = Result<acyclic_stream::Record, acyclic_stream::StreamError>,
+    > + Unpin,
     from: u64,
     limit: u32,
 ) -> Result<Vec<MachineObservation>, ProviderError> {

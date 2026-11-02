@@ -1142,7 +1142,8 @@ impl StreamProvider for ReleaseSpy {
             if *corruption == 1 {
                 return Err(StreamError::NotFound);
             }
-            let mut records: Vec<_> = self.inner.read(request).await?.try_collect().await?;
+            let mut opened = self.inner.read(request).await?;
+            let mut records: Vec<_> = opened.by_ref().try_collect().await?;
             let locator = records.first_mut().ok_or(StreamError::NotFound)?;
             match corruption {
                 2 => locator.value = acyclic_stream::OwnedBytes::from_static(b"invalid locator"),
@@ -1155,16 +1156,20 @@ impl StreamProvider for ReleaseSpy {
                 }
                 _ => return Err(StreamError::InvalidArgument),
             }
-            return Ok(Box::pin(futures::stream::iter(records.into_iter().map(Ok))));
+            return Ok(opened.map_cursor(|_| {
+                Box::pin(futures::stream::iter(records.into_iter().map(Ok)))
+            }));
         }
         let records = self.inner.read(request).await?;
         if self.corrupt_observation == 11 {
-            return Ok(Box::pin(records.map(|record| {
-                record.map(|mut record| {
-                    record.sequence += 1;
-                    record
-                })
-            })));
+            return Ok(records.map_cursor(|records| {
+                Box::pin(records.map(|record| {
+                    record.map(|mut record| {
+                        record.sequence += 1;
+                        record
+                    })
+                }))
+            }));
         }
         Ok(records)
     }
