@@ -512,7 +512,10 @@ export class Spool {
     for (const wait of pending) wait.reject(cause);
     const blocked = this.#blocked;
     this.#blocked = undefined;
-    blocked?.();
+    if (blocked) {
+      this.#file.removeListener("drain", blocked);
+      blocked();
+    }
     this.#file?.end();
   }
   fail(cause) { this.#settle(cause); }

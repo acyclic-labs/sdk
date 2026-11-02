@@ -248,6 +248,7 @@ test("a write that fails with a chunk queued rejects the pending waiter; the que
   source.write('{"n":2}\n');
   await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.message));
   assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
+  assert.equal(transcript.listenerCount("drain"), 0, "the terminal spool releases its obsolete drain observer");
 });
 
 test("transcript withdrawal ends active and late spool waits with the original cause", async t => {
@@ -286,6 +287,7 @@ test("transcript withdrawal drops the queued source chunk with its original clos
   await closed;
   await assert.rejects(waiting, error => error.kind === "spool" && error.detail.code === "ERR_STREAM_PREMATURE_CLOSE");
   assert.equal(events.sequence, 1, "transcript loss must not publish the queued chunk");
+  assert.equal(transcript.listenerCount("drain"), 0, "transcript loss releases its obsolete drain observer");
   source.end();
 });
 test("a source closed without ending still ends the spool and its transcript", async () => {
