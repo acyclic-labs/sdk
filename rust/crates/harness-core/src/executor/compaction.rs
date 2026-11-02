@@ -121,24 +121,13 @@ impl StockExecution<'_> {
         let key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("backstop:{step}:marker"), work)
         })?;
-        let output = journal
-            .stage(
-                operation_id,
-                &key,
-                BACKSTOP_MARKER.as_bytes(),
-                "text/plain",
-                self.io,
-            )?
-            .await?;
-        let summary = crate::context::ContextSummary {
-            operation_id,
-            step,
-            source_messages,
-            source_digest,
-            output,
-        };
-        super::summary::stage_summary_provenance(journal, &summary, self.io).await?;
-        Ok(summary)
+        self.publish_summary(
+            journal,
+            (operation_id, step),
+            (source_messages, source_digest),
+            (&key, BACKSTOP_MARKER.as_bytes()),
+        )
+        .await
     }
 
     async fn prepare_compacted_request(

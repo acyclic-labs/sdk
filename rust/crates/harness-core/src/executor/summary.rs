@@ -71,14 +71,18 @@ impl StockExecution<'_> {
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
             .await?;
         let text = self.collect_summary_text(events)?;
-        self.publish_summary(
-            journal,
-            operation_id,
-            step,
-            (source_messages, source_digest),
-            text,
-        )
-        .await
+        let output_key = with_history_io(self.io, |work| {
+            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
+        })?;
+        let summary = self
+            .publish_summary(
+                journal,
+                (operation_id, step),
+                (source_messages, source_digest),
+                (&output_key, text.as_bytes()),
+            )
+            .await?;
+        Ok((summary, text))
     }
 
     async fn stage_summary_source(
@@ -173,28 +177,22 @@ impl StockExecution<'_> {
         Ok(text)
     }
 
-    async fn publish_summary(
+    /// Publish both authored summaries and kernel markers with the same exact
+    /// output provenance. Their original keys remain distinct for replay.
+    pub(super) async fn publish_summary(
         &self,
         journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        step: u32,
+        identity: (OperationId, u32),
         source: (u32, [u8; 32]),
-        text: String,
-    ) -> Result<(crate::context::ContextSummary, String)> {
+        output: (&str, &[u8]),
+    ) -> Result<crate::context::ContextSummary> {
+        let (operation_id, step) = identity;
         let (source_messages, source_digest) = source;
-        let output_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
-        })?;
+        let (output_key, bytes) = output;
         // Every producer uses the immutable publication authenticated by the
         // response commit; task-local mutable paths cannot carry that receipt.
         let output = journal
-            .stage(
-                operation_id,
-                &output_key,
-                text.as_bytes(),
-                "text/plain",
-                self.io,
-            )?
+            .stage(operation_id, output_key, bytes, "text/plain", self.io)?
             .await?;
         let summary = crate::context::ContextSummary {
             operation_id,
@@ -204,7 +202,7 @@ impl StockExecution<'_> {
             output,
         };
         stage_summary_provenance(journal, &summary, self.io).await?;
-        Ok((summary, text))
+        Ok(summary)
     }
 }
 
