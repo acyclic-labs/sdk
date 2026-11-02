@@ -351,6 +351,15 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                 .await?,
         );
     }
+    // The retained preview owns admission even after its last page. A fresh
+    // per-call token cannot revive it while reading a valid pinned proposal.
+    cancellation.cancel();
+    assert!(matches!(
+        directory
+            .resolution(&staged, binary_key, &CancellationToken::new())
+            .await,
+        Err(DrivenJoinError::Workspace(WorkspaceError::Cancelled(_)))
+    ));
     let candidate = crate::UnpublishedMergeCandidate {
         plan: typed,
         resolutions,
