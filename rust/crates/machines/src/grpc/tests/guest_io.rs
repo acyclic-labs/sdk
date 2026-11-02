@@ -803,6 +803,14 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
                 .unwrap();
             drop(sender);
             let error = output.next().await.unwrap().unwrap_err();
+            assert!(
+                error.to_string().contains("stream failed"),
+                "command failure lost its transport diagnostic: {error}"
+            );
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "command failure lost its original cause: {error}"
+            );
             assert_eq!(error, ProviderError::CommandIndeterminate(machine.id()));
             assert!(output.next().await.is_none());
         }
