@@ -6,6 +6,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Processes, ProcessObservationFailed } from "./process.mjs";
+import { requireReportCapability } from "./assertions.mjs";
 
 test("original process phases retain exact input, output and exit without treating close as EOF", async () => {
   const operation = "00000000-0000-0000-0000-000000000001", events = [];
@@ -156,6 +157,7 @@ test("original process phase cleanup joins a blocked transcript after physical r
 
 test("reported close retains missing capability without inferring readiness from successful output", async () => {
   const scope = new Processes();
+  const recovery = 'node --test --test-name-pattern="reported close retains missing capability" scripts/graphcoder-e2e/termination.test.mjs';
   const inspect = "console.log(JSON.stringify({generation:process.env.ACYCLIC_REPORT_GENERATION}));process.stdin.resume()";
   try {
     const generations = new Set();
@@ -172,6 +174,11 @@ test("reported close retains missing capability without inferring readiness from
       assert.equal(Object.isFrozen(result.report_capability), true);
       assert.throws(() => { result.report_capability.ready = true; }, TypeError);
       assert.equal(result.termination, undefined, "missing readiness is separate from a requested diagnostic");
+      assert.throws(() => requireReportCapability(result, recovery), error => {
+        assert.equal(error.actual, false);
+        assert.match(error.message, /step=admit selected native report capability/);
+        return true;
+      });
       await assert.rejects(running.reportReady, error => error.code === "REPORT_CONTROL_ENDED");
       assert.equal(scope.children.size, 0, "the retained observation follows physical close");
       generations.add(generation);
@@ -180,6 +187,11 @@ test("reported close retains missing capability without inferring readiness from
     const ordinary = await scope.run(process.execPath, ["-e", "process.stdout.write('ordinary')"]);
     assert.equal(ordinary.code, 0, ordinary.stderr);
     assert.equal(ordinary.report_capability, undefined, "an unreported launch has no selected report owner");
+    assert.throws(() => requireReportCapability(ordinary, recovery), error => {
+      assert.equal(error.actual, undefined);
+      assert.match(error.message, /step=admit selected native report capability/);
+      return true;
+    });
   } finally { await scope.close(); }
 });
 
