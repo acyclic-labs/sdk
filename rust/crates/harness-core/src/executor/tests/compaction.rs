@@ -44,7 +44,12 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             Model::new("test".into(), "summary".into(), "1".into())?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::default(),
+            echo_tools(
+                Arc::new(FakeTool(AtomicUsize::new(0))),
+                json!(true),
+                json!(true),
+                json!(true),
+            )?,
         )
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
@@ -76,7 +81,16 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
                 .await?,
             summary
         );
-        assert_eq!(provider.requests().len(), 1);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].summary);
+        assert!(!requests[0].tools.is_empty());
+        let (context, summary_instruction) = requests[0].split_summary_instruction()?;
+        assert_eq!(context.len(), 1);
+        assert_eq!(
+            summary_instruction,
+            Some(&ModelContent::Text("Summarize this context".into()))
+        );
         assert_eq!(provider.reconciliations().len(), 2);
     }
     Ok(())

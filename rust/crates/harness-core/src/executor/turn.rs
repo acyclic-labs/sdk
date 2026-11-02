@@ -247,7 +247,7 @@ impl StockExecution<'_> {
         let mut notices = crate::context::Context::default();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let tools = self.request_tools(&messages)?;
+            let tools = self.request_tools()?;
             if self.code_composition(&tools)? {
                 self.code_tools_notice(&mut notices, &tools)?;
             }

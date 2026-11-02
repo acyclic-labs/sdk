@@ -4,6 +4,7 @@ use crate::executor::transcript as segments;
 fn request(messages: &[ModelMessage]) -> Result<crate::model::PreparedModelRequest> {
     crate::model::PreparedModelRequest::prepare(
         ModelRequest {
+            summary: false,
             compose_tools: false,
             model: Model::new("test".into(), "segments".into(), "1".into())?,
             messages: messages.to_vec(),
@@ -146,10 +147,11 @@ fn recovered_requests_must_match_the_selected_header() -> Result<()> {
     );
     let execution = StockExecution::ordinary(&executor);
     execution.validate_response_request(&prepared)?;
-    for field in ["model", "tools", "output", "composition"] {
+    for field in ["model", "tools", "output", "composition", "summary"] {
         let mut changed = prepared.request().clone();
         match field {
             "composition" => changed.compose_tools = true,
+            "summary" => changed.summary = true,
             "model" => changed.model.revision = "2".into(),
             "tools" => changed.tools.push(crate::tool::ToolDefinition {
                 name: "example.echo".into(),
