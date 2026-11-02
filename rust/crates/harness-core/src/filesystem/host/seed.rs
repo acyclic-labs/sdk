@@ -9,7 +9,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let reference = self.create_volume(&volume).await?.workspace;
         let generation = self
             .seed_once(&reference, &IdempotencyKey::new("seed-v1")?, || {
-                Ok(crate::seed::TREE
+                Ok(crate::seed::tree()
                     .iter()
                     .map(|(path, bytes)| {
                         (
