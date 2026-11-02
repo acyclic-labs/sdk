@@ -694,7 +694,7 @@ impl<'io> StockExecution<'io> {
                     "stock policy changed during physical admission".into(),
                 ));
             }
-            let admitted = async {
+            let admitted: Result<_> = async {
                 if let Some(grant) = selected? {
                     let context = context.ok_or_else(|| Error::Unauthorized(
                         "physical admission requires the original task context; recovery: bind the task before dispatch".into(),
