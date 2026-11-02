@@ -249,6 +249,16 @@ pub enum Error {
     #[cfg(feature = "machines")]
     #[error("Machines {0}")]
     Machines(#[source] acyclic_machines::ProviderError),
+    /// A possibly dispatched Machine effect, retaining its receipt and cause.
+    #[cfg(feature = "machines")]
+    #[error("{}: {cause}", indeterminate_display(*operation_id, None))]
+    MachinesIndeterminate {
+        /// Original operation to reconcile, never a new dispatch identity.
+        operation_id: OperationId,
+        /// Original provider or command-capture failure.
+        #[source]
+        cause: acyclic_machines::ProviderError,
+    },
     /// The original Machine ownership traversal failed before all holders settled.
     #[cfg(feature = "machines")]
     #[error("Machine ownership: {0}")]
@@ -616,6 +626,8 @@ impl Error {
             | Self::CommandIndeterminate {
                 operation_id: id, ..
             } => Some(*id),
+            #[cfg(feature = "machines")]
+            Self::MachinesIndeterminate { operation_id, .. } => Some(*operation_id),
             Self::Cleanup(failure) => failure.classification.operation_id,
             _ => None,
         }
@@ -709,6 +721,8 @@ impl Error {
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             #[cfg(feature = "machines")]
+            Self::MachinesIndeterminate { .. } => ErrorCode::Indeterminate,
+            #[cfg(feature = "machines")]
             Self::MachineOwnership(_) => ErrorCode::Storage,
             Self::ModelDiagnostic { code, .. } => *code,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -774,7 +788,10 @@ impl Error {
             return failure.classification.effect_uncertain;
         }
         #[cfg(feature = "machines")]
-        if matches!(self, Self::MachineOwnership(_)) {
+        if matches!(
+            self,
+            Self::MachineOwnership(_) | Self::MachinesIndeterminate { .. }
+        ) {
             return true;
         }
         matches!(
@@ -931,7 +948,9 @@ impl Error {
             | Self::SearchPublicationDeferred => false,
             Self::ModelDiagnostic { .. } => false,
             #[cfg(feature = "machines")]
-            Self::Machines(_) | Self::MachineOwnership(_) => false,
+            Self::Machines(_) | Self::MachinesIndeterminate { .. } | Self::MachineOwnership(_) => {
+                false
+            }
             Self::MountUnavailable { .. } | Self::Process(_) | Self::Allocation(_) => true,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { .. } => true,

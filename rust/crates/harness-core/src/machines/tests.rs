@@ -7,7 +7,7 @@ fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(matches!(
         map_error(ProviderError::OperationIndeterminate(operation), None),
-        Error::Indeterminate(actual) if actual == OperationId::from_bytes(operation.as_bytes())
+        Error::MachinesIndeterminate { operation_id: actual, .. } if actual == OperationId::from_bytes(operation.as_bytes())
     ));
     Ok(())
 }
@@ -93,7 +93,13 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
         assert!(matches!(&retained, Error::Machines(actual) if *actual == cause));
         assert_eq!(retained.code(), code);
         match map_error(cause.clone(), Some(receipt)) {
-            Error::Indeterminate(actual) => assert!(uncertain && actual == receipt),
+            Error::MachinesIndeterminate {
+                operation_id: actual,
+                cause: retained,
+            } => {
+                assert!(uncertain && actual == receipt);
+                assert_eq!(retained, cause);
+            }
             Error::Machines(actual) => assert!(!uncertain && actual == cause),
             other => return Err(other),
         }
@@ -110,6 +116,7 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             .contains("original guest command transport failure")
     );
     assert!(std::error::Error::source(&retained).is_some());
+    assert!(retained.leaves_effect_uncertain());
     Ok(())
 }
 
