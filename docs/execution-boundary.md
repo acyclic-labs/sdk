@@ -125,6 +125,26 @@ identity and standard-stream setup. Custodied enforcement runs only after the
 warden has forked and admitted the final guest; the warden retains its original
 custody authority. The child borrows filter bytes from the original request
 mapping, with no extra policy allocation or copy.
+An authenticated host can consume an existing grant with
+`ExecutionGrant::compile_native` before repeated launches. Linux compiles its
+Landlock policy once and retains the immutable native descriptor in that grant;
+clones share it without a lock, initializer, thread or watcher. This explicit
+host operation is unmetered, like grant construction. It issues no authority
+and leaves unsupported platforms as typed refusals. Ordinary uncompiled grants
+continue through the same compiler during preparation, without a new allocation.
+Every retained-policy launch still opens and verifies the original workspace
+and read-root identities, resolves cwd beneath that workspace, and enters the
+same final-child enforcement. Replacement refuses instead of refreshing the
+grant or rebuilding policy around the new object. Warm preparation omits the
+ABI query, ruleset creation, rule insertion and computation-device binding;
+each of the `R` selected roots still requires its original open and identity
+query, and a nested cwd requires one rooted open. Each launch adds no policy
+allocation, descriptor duplication, durability barrier or round trip.
+Retaining a writable policy does not enable a read-only view to use it:
+the view takes the ordinary narrower compiler until explicitly compiled itself.
+The O(1) `into_read_only` operation retains its existing shared owners and
+performs no native work. Full policy storage funding remains separate work.
+
 The three seccomp program forms (network off, on and TCP ports) are compiled
 into exact-sized immutable arrays at build time by one shared generator.
 Grant construction selects a borrowed program without allocation, instruction
@@ -290,7 +310,9 @@ continue to select none.
 
 Idle grants share immutable policy and one native handle per declared root.
 The handles pin object identities across deletion and numeric identity reuse;
-cloning a grant adds no handles. Enforcement objects exist for active
-executions, with no per-agent process, mount, timer, watcher, thread or daemon.
+cloning a grant adds no handles. Uncompiled grants create enforcement objects
+for active executions; explicitly compiled grants retain their immutable
+native policy until its last owner retires. Neither path adds a per-agent
+process, mount, timer, watcher, thread or daemon.
 Landlock rule construction and seccomp installation buy filesystem, network
 and escape enforcement. Custody remains the existing host-loss/retirement owner.
