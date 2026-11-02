@@ -5,7 +5,7 @@ impl Journal {
         recovered: &mpsc::Sender<Recovered>,
         span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
-        let claim = lock_root(root, limits)?;
+        let claim = lock_root(root)?;
         let snapshot = read_snapshot(root, limits)?;
         let journal_bytes = match std::fs::metadata(root.join(JOURNAL_FILE)) {
             Ok(metadata) => metadata.len(),
@@ -104,7 +104,8 @@ impl Journal {
                     return Ok(journal);
                 }
                 journal.restart(epoch, None)?;
-                sync_directory(&path, LocalDurability::FullFlush)?;
+                // The journal's name is durable before its first frame.
+                sync_directory(root, LocalDurability::FullFlush)?;
                 return Ok(journal);
             }
             Some(found) if found == epoch => {}
@@ -277,14 +278,16 @@ impl Journal {
             }
         }
         acyclic_native_runtime::rename_file(&temporary, &snapshot)?;
+        // The renamed snapshot's name is durable before the journal it
+        // replaces is emptied.
         match work {
             Some(work) => work.sync(|| {
                 acyclic_native_runtime::sync_parent(
-                    &snapshot,
+                    &self.root,
                     native_durability(LocalDurability::FullFlush),
                 )
             })?,
-            None => sync_directory(&snapshot, LocalDurability::FullFlush)?,
+            None => sync_directory(&self.root, LocalDurability::FullFlush)?,
         }
         // Retiring the old journal must preserve every receipt previously
         // issued, including receipts issued before this provider was reopened.

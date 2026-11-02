@@ -170,9 +170,12 @@ async fn checkpoint_cut_preserves_wal(
             "a failed staged write or final device drain cannot retire the WAL"
         );
         let mut reopened = CoreLog::open(&namespace, Arc::default()).unwrap();
-        // Opening an ordinary log replays and checkpoints its durable frames.
-        // The pre-open byte assertion proves the failed checkpoint kept them;
-        // the empty WAL and installed leaves prove recovery consumed them.
+        // Opening an ordinary log replays its durable frames and keeps them
+        // as the WAL; the next checkpoint retires them. The pre-open byte
+        // assertion proves the failed checkpoint kept them; the empty WAL and
+        // installed leaves prove recovery consumed them.
+        assert_eq!(reopened.length, authoritative.len() as u64);
+        reopened.checkpoint(&namespace).unwrap();
         assert_eq!(reopened.length, 0);
         assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
         for index in 1..=4_u8 {
