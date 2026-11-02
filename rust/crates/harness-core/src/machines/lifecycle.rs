@@ -30,6 +30,11 @@ use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
+#[cfg(not(test))]
+type TargetHasher = std::collections::hash_map::RandomState;
+#[cfg(test)]
+type TargetHasher = first_use_tests::TargetHasher;
+
 /// The persisted format of [`MachineBinding`].
 pub const MACHINE_BINDING_VERSION: u32 = 2;
 
@@ -124,9 +129,15 @@ pub trait MachineExecutors: acyclic_stream::ProviderPlatform {
 
 /// Every agent's Machines on the provisioned targets, over the stream
 /// provider that holds the agents' subtrees.
+///
+/// Admission retains target order and one name-to-position table. A named
+/// selection borrows its key and allocates nothing; hashing costs the name's
+/// bytes and table lookup is expected constant time in the target population.
+/// A bound executor retains its position and performs no further name lookup.
 pub struct AgentMachines<P: ?Sized> {
     stream: Arc<P>,
     targets: Vec<ProvisionedTarget>,
+    positions: std::collections::HashMap<String, usize, TargetHasher>,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
@@ -135,18 +146,27 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     /// # Errors
     /// When a target name repeats or is not one canonical path segment.
     pub fn new(stream: Arc<P>, targets: Vec<ProvisionedTarget>) -> Result<Self> {
-        let mut names = std::collections::BTreeSet::new();
-        for target in &targets {
+        let mut positions = std::collections::HashMap::with_capacity_and_hasher(
+            targets.len(),
+            TargetHasher::default(),
+        );
+        for (position, target) in targets.iter().enumerate() {
             acyclic_stream::StreamPath::validate(&target.name).map_err(|_| {
                 Error::Invalid("provisioned target name is not a canonical path segment".into())
             })?;
-            if target.name.contains('/') || !names.insert(target.name.as_str()) {
+            if target.name.contains('/')
+                || positions.insert(target.name.clone(), position).is_some()
+            {
                 return Err(Error::Invalid(
                     "provisioned target names must be unique canonical path segments".into(),
                 ));
             }
         }
-        Ok(Self { stream, targets })
+        Ok(Self {
+            stream,
+            targets,
+            positions,
+        })
     }
 
     /// The provisioned targets.
@@ -160,9 +180,9 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     }
 
     fn target_position(&self, name: &str) -> Result<usize> {
-        self.targets
-            .iter()
-            .position(|target| target.name == name)
+        self.positions
+            .get(name)
+            .copied()
             .ok_or_else(|| Error::Invalid(format!("'{name}' is not a provisioned target")))
     }
 
