@@ -13,6 +13,7 @@ description = "Streaming model providers for the acyclic harness"
 crate-type = ["rlib", "cdylib"]
 
 [features]
+research = ["acyclic-harness-core/research"]
 endpoint-presets = []
 local = ["dep:acyclic-harness", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-harness/search-http"]
 # The browser content reader lives in the facade's wasm bindings.

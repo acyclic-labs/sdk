@@ -20,8 +20,8 @@ pub(crate) fn generate<'a>(
         let names = crate::tool_names::Names::new(request.request());
         let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
-        let events = generate_encoded(provider, request, dispatch, body, auth, names);
+        let encoded = encode(provider,request,&names,None,&origin).await?;
+        let events = generate_encoded(provider, request, dispatch, encoded.bytes.into(), encoded.cache, auth, names);
         futures::pin_mut!(events);
         while let Some(event) = events.next().await { yield event?; }
     })
@@ -33,6 +33,7 @@ pub(crate) fn generate_encoded<'a>(
     request: &'a PreparedModelRequest,
     dispatch: ModelDispatch,
     body: bytes::Bytes,
+    cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
     auth: (Option<Cow<'a, str>>, Option<String>),
     names: crate::tool_names::Names<'a>,
 ) -> impl futures::Stream<Item = Result<ModelEvent>> + acyclic_stream::ProviderTask + 'a {
@@ -44,12 +45,17 @@ pub(crate) fn generate_encoded<'a>(
         let response = attempt.exchange(provider, &body, dispatch, &mut auth, response,
             #[cfg(not(target_arch = "wasm32"))] None, None).await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+        let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
+            credential_scope: origin.credential_scope,
+            ..cache
+        });
         let events = crate::stream::events_named(provider.config.adapter, response.body,
             provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
         futures::pin_mut!(events);
         while let Some(event) = events.next().await {
-            let event = event.map_err(crate::diagnostic::rejection)?;
-            if let ModelEvent::Completed { metadata } = &event {
+            let mut event = event.map_err(crate::diagnostic::rejection)?;
+            if let ModelEvent::Completed { metadata } = &mut event {
+                projection::cache::attach(metadata, cache)?;
                 provider.observe(request, input_bytes, metadata)?;
             }
             yield event;
@@ -139,10 +145,10 @@ pub(crate) async fn encode(
     names: &crate::tool_names::Names<'_>,
     io: Option<&acyclic_harness_core::conversation::ContentIo>,
     origin: &acyclic_harness_core::model::ReasoningOrigin,
-) -> Result<Vec<u8>> {
+) -> Result<projection::cache::Encoded> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
     let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
-    serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
+    projection::cache::encode(&body, provider, origin)
 }
 
 pub(crate) fn request_headers(

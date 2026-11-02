@@ -7,6 +7,7 @@ use bytes::Bytes;
 pub(crate) struct PreparedInput {
     pub request: PreparedModelRequest,
     pub generation: Bytes,
+    pub cache: Option<acyclic_harness_core::executor::ModelCacheObservation>,
     count: Bytes,
 }
 
@@ -25,9 +26,7 @@ impl PreparedInput {
         let mut files = crate::files::resolve(&provider.files, request.request(), None).await?;
         let body =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let generation = serde_json::to_vec(&body)
-            .map_err(|_| invalid("model request encoding failed"))?
-            .into();
+        let encoded = projection::cache::encode(&body, provider, &origin)?;
         let count = serde_json::to_vec(&counting::wire::body(
             &body,
             &provider.model.name,
@@ -38,7 +37,8 @@ impl PreparedInput {
         drop(body);
         Ok(Self {
             request,
-            generation,
+            generation: encoded.bytes.into(),
+            cache: encoded.cache,
             count,
         })
     }

@@ -23,7 +23,10 @@ async fn encode(
     names: &crate::tool_names::Names<'_>,
     auth: (Option<&str>, Option<&str>),
     work: &NativeMaterializationWork,
-) -> Result<bytes::Bytes> {
+) -> Result<(
+    bytes::Bytes,
+    Option<acyclic_harness_core::executor::ModelCacheObservation>,
+)> {
     let (key, account) = auth;
     let (mut bytes, nodes) = request.projection_shape();
     for message in &request.request().messages {
@@ -45,8 +48,11 @@ async fn encode(
         dispatch::encode(provider, request, names, Some(&io), &origin).await,
         &mut allocation,
     )?;
-    retain(&mut allocation, body.capacity() as u64)?;
-    crate::http::owned_bytes::owned(body, allocation)
+    retain(&mut allocation, body.bytes.capacity() as u64)?;
+    Ok((
+        crate::http::owned_bytes::owned(body.bytes, allocation)?,
+        body.cache,
+    ))
 }
 
 fn invalid(reason: &'static str) -> Error {
@@ -174,7 +180,7 @@ pub(crate) fn generate<'a>(
                 crate::tool_names::Names::funded(request.request(), Some(work))?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
-            let body = encode(
+            let (body, cache) = encode(
                 provider,
                 request,
                 &names,
@@ -183,7 +189,14 @@ pub(crate) fn generate<'a>(
             )
             .await?;
             let input_bytes = body.len();
-            work.remaining()?;
+            if cache.is_some() {
+                work.charge(WorkCounters {
+                    bytes_hashed: crate::projection::cache::hashed_bytes(provider, input_bytes),
+                    ..WorkCounters::UNCHARGED
+                })?;
+            } else {
+                work.remaining()?;
+            }
             let response = dispatch::send(
                 provider,
                 body.clone(),
@@ -202,8 +215,12 @@ pub(crate) fn generate<'a>(
                     let origin_bytes = stream::family(provider.config.adapter).len() + provider.model.name.len();
                     let origin_custody = work.claim(origin_bytes as u64, 2, WorkCounters::UNCHARGED)?;
                     let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+                    let cache = cache.map(|cache| acyclic_harness_core::executor::ModelCacheObservation {
+                        credential_scope: origin.credential_scope,
+                        ..cache
+                    });
                     let events = parse_response(provider, request, &names, dispatch_id, work, response,
-                        input_bytes, origin, origin_custody);
+                        (input_bytes, cache), origin, origin_custody);
                     futures::pin_mut!(events);
                     while let Some(event) = events.next().await { yield event?; }
                 }
@@ -226,7 +243,10 @@ fn parse_response<'a>(
     dispatch_id: ModelDispatch,
     work: &'a NativeMaterializationWork,
     response: crate::HttpResponse,
-    input_bytes: usize,
+    (input_bytes, cache): (
+        usize,
+        Option<acyclic_harness_core::executor::ModelCacheObservation>,
+    ),
     origin: acyclic_harness_core::model::ReasoningOrigin,
     origin_custody: NativeAllocation,
 ) -> impl futures::Stream<Item = Result<(ModelEvent, NativeAllocation)>> + Send + 'a {
@@ -272,7 +292,14 @@ fn parse_response<'a>(
             });
             diagnostic(restored, &mut parser.allocation)?;
             let Parser { state, mut allocation } = parser;
-            let events = model_diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
+            let mut events = model_diagnostic(stream::finish(state, adapter, dispatch_id), &mut allocation)?;
+            if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
+                let metadata = match events.last_mut() {
+                    Some(ModelEvent::Completed { metadata }) => metadata,
+                    _ => Err(invalid("model completion omitted its terminal observation"))?,
+                };
+                diagnostic(crate::projection::cache::attach(metadata, cache), &mut allocation)?;
+            }
             let slots = (events.capacity() * std::mem::size_of::<ModelEvent>()) as u64;
             let retained = events.iter().try_fold(slots, |bytes, event| {
                 bytes.checked_add(event.logical_owned_bytes()?).ok_or_else(|| invalid("provider retained capacity overflow"))

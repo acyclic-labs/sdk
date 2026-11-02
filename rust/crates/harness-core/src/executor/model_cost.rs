@@ -144,7 +144,54 @@ fn family_cost(
     charge(parent, rate)?.checked_add(extra)
 }
 
+impl ModelPriceRecord {
+    fn validate_for(&self, usage: &ModelUsageRecord) -> Result<(), ModelPriceError> {
+        if self.version != 1 || self.revision.is_empty() || !currency_valid(&self.currency) {
+            return Err(ModelPriceError::InvalidRecord);
+        }
+        if self.provider != usage.provider || self.model != usage.model {
+            return Err(ModelPriceError::BindingMismatch);
+        }
+        Ok(())
+    }
+}
+
 impl ModelUsageRecord {
+    /// Net input-token savings against billing the same reads and writes at the
+    /// selected ordinary input rate. Cache creation premiums can make this
+    /// negative. Billionths of the selected currency, truncated toward zero
+    /// once after subtraction. Unknown counters/rates/overflow remain unknown.
+    /// Uses the same price interpretation as `estimate`, without IO or allocation.
+    pub fn cache_savings(&self, price: &ModelPriceRecord) -> Result<Option<i128>, ModelPriceError> {
+        price.validate_for(self)?;
+        if !self.completed {
+            return Ok(None);
+        }
+        let ordinary = |rate| match rate {
+            TokenPrice::Included => TokenPrice::Included,
+            TokenPrice::Subset { .. } => TokenPrice::Subset {
+                nano_units_per_million: price.input_nano_units_per_million,
+            },
+            TokenPrice::Additional { .. } => TokenPrice::Additional {
+                nano_units_per_million: price.input_nano_units_per_million,
+            },
+        };
+        let input = |cached, written| {
+            family_cost(
+                self.tokens.input,
+                price.input_nano_units_per_million,
+                &[
+                    (self.tokens.cached, cached),
+                    (self.tokens.cache_write, written),
+                ],
+            )
+            .and_then(|amount| i128::try_from(amount).ok())
+        };
+        Ok(input(ordinary(price.cached), ordinary(price.cache_write))
+            .zip(input(price.cached, price.cache_write))
+            .map(|(ordinary, cached)| (ordinary - cached) / 1_000_000))
+    }
+
     /// Projects one original row against one explicitly selected immutable
     /// price. Constant work, zero allocation/copy/IO/wait. A mismatched binding
     /// is rejected rather than silently priced as another model.
@@ -159,12 +206,7 @@ impl ModelUsageRecord {
             token_nano_units: None,
         };
         if let Some(price) = price {
-            if price.version != 1 || price.revision.is_empty() || !currency_valid(&price.currency) {
-                return Err(ModelPriceError::InvalidRecord);
-            }
-            if price.provider != self.provider || price.model != self.model {
-                return Err(ModelPriceError::BindingMismatch);
-            }
+            price.validate_for(self)?;
             estimated_cost.price_revision = Some(Cow::Borrowed(&price.revision));
             estimated_cost.effective_at = Some(price.effective_at);
             estimated_cost.currency = Some(Cow::Borrowed(&price.currency));
@@ -485,6 +527,8 @@ mod tests {
             });
             let inclusive = price();
             let projected = row.estimate(Some(&inclusive)).unwrap();
+            let savings = (i128::from(cached) * 8 - i128::from(written) * 6) / 1_000_000;
+            prop_assert_eq!(row.cache_savings(&inclusive).unwrap(), Some(savings));
             let expected = (input * 11 + cached * 3 + written * 17 + (output + reasoning) * 23).div_ceil(1_000_000);
             prop_assert_eq!(projected.estimated_cost.token_nano_units, Some(expected));
             let mut exclusive = inclusive.clone();
@@ -495,11 +539,13 @@ mod tests {
             other.tokens.input = Some(input);
             other.tokens.output = Some(output);
             prop_assert_eq!(other.estimate(Some(&exclusive)).unwrap().estimated_cost.token_nano_units, Some(expected));
+            prop_assert_eq!(other.cache_savings(&exclusive).unwrap(), Some(savings));
 
             // An admitted call has unknown counters even if a caller supplies numbers.
             let mut admitted = row.clone();
             admitted.completed = false;
             let pending = admitted.estimate(Some(&inclusive)).unwrap();
+            prop_assert_eq!(admitted.cache_savings(&inclusive).unwrap(), None);
             let mut unpriced = ModelUsageTotals::unpriced();
             unpriced.push(&pending).unwrap();
             unpriced.replace(&pending, &projected).unwrap();
@@ -528,6 +574,7 @@ mod tests {
 
             let mut missing = row.clone();
             missing.tokens.cached = None;
+            prop_assert_eq!(missing.cache_savings(&inclusive).unwrap(), None);
             prop_assert_eq!(missing.estimate(Some(&inclusive)).unwrap().estimated_cost.token_nano_units, None);
             missing.tokens.cached = Some(input + cached + written + 1);
             prop_assert_eq!(missing.estimate(Some(&inclusive)).unwrap().estimated_cost.token_nano_units, None);
