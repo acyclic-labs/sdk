@@ -49,6 +49,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_hooks"
+required-features = ["native"]
+path = "fuzz_targets/native_hooks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "harness_admission"
 required-features = ["native"]
 path = "fuzz_targets/harness_admission.rs"

@@ -16,6 +16,15 @@ function nativeFailure(host,code,message,cause) {
  throw Object.assign(new Error('step=validate native '+host+' completion: '+message+
   '; recovery='+completionRecovery,{cause}),{code});
 }
+function nativeObject(host,value,label) {
+ if(!value||typeof value!=='object'||Array.isArray(value))
+  nativeFailure(host,'NATIVE_HOST_EVENT_INVALID',label+' is not a record',value);
+ return value;
+}
+function nativeParts(host,value,label) {
+ if(!Array.isArray(value))nativeFailure(host,'NATIVE_HOST_EVENT_INVALID',label+' is not an array',value);
+ return value;
+}
 
 // Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer,selection) {
@@ -26,7 +35,8 @@ export function assertNativeCompletion(host,result,answer,selection) {
   let event;
   try {event=JSON.parse(line);}
   catch(cause) {nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','malformed native JSON event',cause);}
-  if(!event||typeof event!=='object'||Array.isArray(event)||typeof event.type!=='string'||!event.type)
+  nativeObject(host,event,'native event');
+  if(typeof event.type!=='string'||!event.type)
    nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native event is not a typed record',event);
   if(host==='codex') {
    if(event.type==='turn.started') {
@@ -39,7 +49,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
    if((event.type==='turn.completed'||(typeof event.type==='string'&&event.type.startsWith('item.')))&&turn!=='active')
     nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex item or terminal outside its active turn',event);
    if(event.type==='item.completed') {
-    const item=event.item;
+    const item=nativeObject(host,event.item,'native Codex item');
     if(item.type==='command_execution'||item.type==='mcp_tool_call') {
      try {
       toolOutcome(item,undefined,completionRecovery);
@@ -69,6 +79,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
     builtinPlugins=0;
     let installedPlugins=0;
     for(const plugin of event.plugins) {
+     nativeObject(host,plugin,'native Claude plugin');
      const bit=plugin.name==='agents-md'?1:plugin.name==='plugin-authoring'?2:0;
      if(bit&&plugin.path==='builtin'&&plugin.source===plugin.name+'@builtin') {
       assert.equal(builtinPlugins&bit,0,'duplicate native Claude builtin plugin');
@@ -81,13 +92,17 @@ export function assertNativeCompletion(host,result,answer,selection) {
     assert.equal(installedPlugins,count,'native Claude plugin set differs from paired mode');
     assert.equal(event.mcp_servers.length,count,'native Claude MCP connections differ from paired mode');
     if(selection.installed) {
+     nativeObject(host,event.mcp_servers[0],'native Claude MCP connection');
      assert.equal(event.mcp_servers[0].name,'plugin:acyclic:acyclic-sessions','native Claude MCP connections differ from paired mode');
      assert.equal(event.mcp_servers[0].status,'connected','native Claude MCP connections differ from paired mode');
     }
    }
-   if(event.type==='user'&&Array.isArray(event.message?.content)) {
-    for(const part of event.message.content)if(part.type==='tool_result'&&part.is_error===true) {
-     nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
+   if(event.type==='user') {
+    const message=nativeObject(host,event.message,'native Claude user message');
+    for(const part of nativeParts(host,message.content,'native Claude user content')) {
+     nativeObject(host,part,'native Claude content part');
+     if(part.type==='tool_result'&&part.is_error===true)
+      nativeFailure(host,'NATIVE_HOST_TOOL_FAILED','native Claude tool result failed',part);
     }
    }
    if(event.type==='result') {
@@ -102,7 +117,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
     terminal=event;
    }
   } else if(host==='pi') {
-   const message=event.type==='message_end'?event.message:undefined;
+   const message=event.type==='message_end'?nativeObject(host,event.message,'native Pi message'):undefined;
    if(message?.role!=='assistant')continue;
    terminal=message;
    if(message.stopReason==='error') {
@@ -119,7 +134,14 @@ export function assertNativeCompletion(host,result,answer,selection) {
   text=terminal.result;
  } else {
   assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
-  text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
+  text='';
+  for(const part of nativeParts(host,terminal.content,'native Pi content')) {
+   nativeObject(host,part,'native Pi content part');
+   if(part.type==='text') {
+    if(typeof part.text!=='string')nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native Pi text is not a string',part);
+    text+=part.text;
+   }
+  }
  }
  assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
  return builtinPlugins;
