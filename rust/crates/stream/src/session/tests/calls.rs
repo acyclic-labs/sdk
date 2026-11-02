@@ -277,6 +277,11 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
     stopped.send(second_original.clone()).await?;
     let held = input.next_chunk().await?.ok_or("no held input")?;
     let held_second = input.next_chunk().await?.ok_or("no second held input")?;
+    assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
+    drop(held_second);
+    stopped
+        .send(Bytes::from_static(b"queued before source loss"))
+        .await?;
     let mut finish = Box::pin(stopped.finish(Vec::new()));
     assert!(futures::poll!(finish.as_mut()).is_pending());
     let _withheld = terminals
@@ -284,18 +289,22 @@ async fn streamed_input_uses_original_credit_and_terminal_before_eof() -> TestRe
         .await
         .ok_or("no blocked terminal before host loss")?;
     drop(host);
-    assert!(
-        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
-        "producer loss cannot become EOF"
-    );
     assert_eq!(finish.await, Err(StreamError::Unavailable));
     futures::pin_mut!(lost);
     assert!(matches!(
         lost.next().await,
         Some(Err(StreamError::Unavailable))
     ));
+    // The held EOF followed the queued data on the same ordered transport.
+    // Once source loss is observed, a data-first adapter would disclose that
+    // data instead of the original failure. Return the cause exactly once.
+    assert!(
+        matches!(input.next_chunk().await, Err(StreamError::Unavailable)),
+        "producer loss must win over queued data"
+    );
+    assert!(input.next_chunk().await?.is_none());
+    assert!(input.trailers().is_none());
     assert_eq!(held.as_ref().as_ptr(), original.as_ptr());
-    assert_eq!(held_second.as_ref().as_ptr(), second_original.as_ptr());
 
     // Exact generation-local sequence and input/reply grammar are disjoint.
     let data = wire::SessionData {
