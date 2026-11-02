@@ -99,9 +99,8 @@ impl ApprovalDecisionFile {
             return false;
         }
         let mut encoded = [0; 64];
-        hex::encode_to_slice(request_sha256, &mut encoded)
-            .expect("SHA-256 hex buffer has twice its input width");
-        self.request_sha256.as_bytes() == encoded
+        hex::encode_to_slice(request_sha256, &mut encoded).is_ok()
+            && self.request_sha256.as_bytes() == encoded
     }
 
     /// Canonical file component naming this principal's decision.

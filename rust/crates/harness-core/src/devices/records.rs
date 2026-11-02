@@ -103,11 +103,7 @@ impl TargetPaths {
 /// # Errors
 /// When the agent's subtree cannot be extended.
 pub fn call(agent: &AgentPath, op: OperationId) -> Result<CallPath> {
-    let id: String = op
-        .into_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let id = hex::encode(op.into_bytes());
     let root = agent
         .inbox()
         .map_err(|error| Error::Invalid(error.to_string()))?;
