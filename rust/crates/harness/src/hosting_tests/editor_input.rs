@@ -220,8 +220,6 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::Fork,
                     template: None,
-                    may_spawn: Vec::new(),
-                    allowed_tools: None,
                 },
                 by: by.clone(),
                 id,

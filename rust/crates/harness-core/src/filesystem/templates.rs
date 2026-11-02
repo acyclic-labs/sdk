@@ -68,7 +68,11 @@ mod tests {
                 id: "templates".into(),
             },
         ));
-        let templates = Templates::new(Arc::clone(&host), issuer.clone(), TurnAdmission::LocalRoot);
+        let templates = Arc::new(Templates::new(
+            Arc::clone(&host),
+            issuer.clone(),
+            TurnAdmission::LocalRoot,
+        ));
         let parent = crate::templates::root()?;
         let original = templates
             .child(&parent, &path, &volumes, "worker", None)
@@ -127,9 +131,127 @@ mod tests {
             directive.messages[0].content,
             crate::model::ModelContent::Text("Retain this exact directive.".into())
         );
+        // Capability lists remain in the pinned source even when much larger
+        // than a stream frame; only its bounded reference enters records.
+        let large = format!(
+            "---\nversion: 1\ncontext: fork\nmay_spawn: [reviewer, {}]\nallowed_tools: [{}]\n---\nLarge capabilities.\n",
+            "a".repeat(70 * 1024),
+            "b".repeat(70 * 1024),
+        );
+        writer
+            .stage(
+                crate::OperationId::new(),
+                "templates/worker/AGENT.md",
+                large.as_bytes(),
+                "text/markdown",
+                "AGENT.md",
+                ContentAccess::default(),
+            )?
+            .await?;
+        let large_creation = templates
+            .child(&parent, &path, &volumes, "worker", None)
+            .await?;
+        templates
+            .child(&large_creation, &path, &volumes, "reviewer", None)
+            .await?;
+        use crate::agent::{AgentRecord, AgentState, ForkAdopted, TurnEffects};
+        let adopted = ForkAdopted {
+            agent: path.id(),
+            parent: None,
+            profile: Some(large_creation),
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: volumes.to_vec(),
+            brief: None,
+            policy: None,
+        };
+        let encoded = crate::agent::InboxRecord::ForkAdopted(Box::new(adopted.clone()))
+            .encode()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        assert!(encoded.len() < crate::agent::MAX_RECORD_BYTES);
+        // A source change cannot widen an existing parent's creation rights.
+        assert!(
+            templates
+                .child(&selected, &path, &volumes, "reviewer", None)
+                .await
+                .is_err()
+        );
+
+        // Simulate interruption after the original tool effect is durable but
+        // before its result is saved. Recovery must not select a template again.
+        let grant = crate::conversation::ContentGrant::verify(
+            &authority.verifier,
+            &authority.scope,
+            &home,
+            VolumeOperation::Write,
+            u64::MAX,
+            &mut None,
+        )?;
+        let files = Arc::new(super::super::agent_internal::AgentInternalFiles::new(
+            host.clone(),
+            home.clone(),
+            grant,
+        ));
+        let effects = Arc::new(super::super::agent_effects::FilesystemTurnEffects::new(
+            files,
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            path.clone(),
+            (crate::OperationId::new(), 0),
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+        ));
+        let mut root_adoption = adopted;
+        root_adoption.profile = Some(parent.clone());
+        let state = AgentState::adopted(path.clone(), &root_adoption)
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let mut registry = crate::tool::ToolRegistry::default();
+        crate::tools::bind_agent_tools(
+            &mut registry,
+            &state,
+            (effects.clone(), None),
+            writer.clone(),
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+            (&["spawn".into()], Some(templates.clone())),
+        )?;
+        let tool = registry
+            .get("spawn", None, None)?
+            .expect("registered spawn");
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "create".into(),
+            name: "spawn".into(),
+            arguments: serde_json::json!({"name":"child", "task":"Own the task", "role":"worker"}),
+        };
+        let result = tool.executor.execute(invocation.clone(), None).await?;
+        assert!(result.value.get("agent").is_some(), "{result:?}");
+        let original_effects = effects.recorded().await?;
+        assert_eq!(original_effects.len(), 1);
+        assert!(
+            crate::agent::records::seal(&original_effects[0])?.len()
+                < crate::agent::MAX_RECORD_BYTES
+        );
         // Off, malformed, traversal, top-level, capability and authority negatives
         // all end in typed refusal; none silently falls back to the seed.
         put("templates/worker/AGENT.md", b"off: true")?.await?;
+        assert_eq!(
+            tool.executor
+                .reconcile(invocation.clone(), None)
+                .await?
+                .unwrap()
+                .value,
+            result.value,
+        );
+        assert_eq!(effects.recorded().await?, original_effects);
+        let mut fresh_invocation = invocation.clone();
+        fresh_invocation.operation_id = crate::OperationId::new();
+        assert!(
+            tool.executor
+                .execute(fresh_invocation, None)
+                .await?
+                .value
+                .get("agent")
+                .is_none()
+        );
         assert_eq!(
             templates
                 .child(&parent, &path, &volumes, "worker", None)
@@ -143,6 +265,14 @@ mod tests {
             b"---\nversion: 2\ncontext: fork\nmay_spawn: []\n---\n",
         )?
         .await?;
+        assert_eq!(
+            tool.executor
+                .reconcile(invocation, None)
+                .await?
+                .unwrap()
+                .value,
+            result.value,
+        );
         assert!(
             templates
                 .child(&parent, &path, &volumes, "worker", None)
@@ -212,7 +342,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
         ceiling: Option<&'a crate::Capabilities>,
     ) -> BoxProviderFuture<'a, Result<CreationConfig>> {
         Box::pin(async move {
-            crate::templates::admit_child(creation, name)?;
+            crate::templates::name_component(name)?;
             let authority =
                 agent_authority(&self.issuer, &self.admission, path, volumes, &[]).await?;
             let home = volumes
@@ -232,6 +362,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
                 crate::conversation::MAX_EXACT_JS_INTEGER,
                 None,
             )?;
+            crate::templates::admit_child(creation, reader.as_ref(), name, ceiling).await?;
             crate::templates::select(
                 reader.as_ref(),
                 &home.volume,

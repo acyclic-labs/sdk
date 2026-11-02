@@ -35,7 +35,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// and actor checkpoint.
 /// Version 10 unifies child and deadline waits as one monotone condition.
 /// Version 11 adds admitted boundary steering and next-turn messages.
-pub const RECORD_VERSION: u32 = 11;
+/// Version 12 retains template capabilities only in their immutable source.
+pub const RECORD_VERSION: u32 = 12;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -248,10 +249,6 @@ pub struct CreationConfig {
     pub context: SpawnContext,
     /// The exact original template file, absent for the root default.
     pub template: Option<FileRef>,
-    /// Interim spawn capability list, admitted from template frontmatter.
-    pub may_spawn: Vec<String>,
-    /// Interim tool capability list; absent means the host's admitted tools.
-    pub allowed_tools: Option<Vec<String>>,
 }
 
 /// A host's original template reader, shared by direct and model spawns.
@@ -818,8 +815,6 @@ mod tests {
             profile: CreationConfig {
                 context: SpawnContext::Fork,
                 template: None,
-                may_spawn: Vec::new(),
-                allowed_tools: None,
             },
             history: None,
             by: Sender::User {

@@ -281,9 +281,13 @@ impl AgentTool {
             Err(error @ Error::Conflict(_)) => return Ok(super::rejected_input(error)),
             Err(error) => return Err(error),
         };
+        self.result(recorded)
+    }
+
+    fn result(&self, recorded: TurnEffect) -> Result<ToolResult> {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
-                "agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str(),
+                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
                 "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
@@ -469,14 +473,22 @@ impl ToolExecutor for AgentTool {
         Box::pin(self.run(invocation, context))
     }
 
-    /// Recording is create-once and the body is staged once, so observing an
-    /// interrupted call re-derives exactly the effect and result it recorded.
+    /// Recover the original effect before consulting any mutable spawn template
+    /// or recipient state. An interruption before recording still admits normally.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move { self.run(invocation, context).await.map(Some) })
+        Box::pin(async move {
+            if self.name != "wait" {
+                let key = call_key(&invocation, context.as_ref());
+                if let Some(effect) = self.turn.effects.recorded_call(&key).await? {
+                    return self.result(effect).map(Some);
+                }
+            }
+            self.run(invocation, context).await.map(Some)
+        })
     }
 }
 

@@ -101,8 +101,6 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
                 profile: Some(CreationConfig {
                     context: SpawnContext::Fork,
                     template: Some(notice_file()?),
-                    may_spawn: vec!["worker".into()],
-                    allowed_tools: None,
                 }),
                 agent: child_id,
                 parent: Some(root),

@@ -325,8 +325,6 @@ mod tests {
             profile: Some(crate::agent::CreationConfig {
                 context: crate::agent::SpawnContext::TopLevel,
                 template: Some(file()),
-                may_spawn: vec!["worker".into(), "advisor".into(), "reviewer".into()],
-                allowed_tools: None,
             }),
             agent: id(u64::MAX),
             parent: Some(agent(MAX_DEPTH - 1)),
@@ -387,8 +385,6 @@ mod tests {
                 profile: crate::agent::CreationConfig {
                     context: crate::agent::SpawnContext::TopLevel,
                     template: None,
-                    may_spawn: Vec::new(),
-                    allowed_tools: None,
                 },
                 history: None,
                 by: from.clone(),
