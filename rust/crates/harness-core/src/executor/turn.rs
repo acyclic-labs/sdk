@@ -164,6 +164,7 @@ impl StockExecution<'_> {
                         "assistant output exceeds file limit",
                         self.io,
                     )?;
+                    stock_retire_text(delta, self.io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
                     stock_retire_text(text, self.io)?;
@@ -216,7 +217,9 @@ impl StockExecution<'_> {
                         ModelContentPart::Text { text, native },
                     )?;
                 }
-                ModelEvent::Content { .. } | ModelEvent::Reasoning { .. } => {}
+                event @ (ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }) => {
+                    stock_retire_event(event, self.io)?;
+                }
             }
         }
         Ok(CollectedStep {
