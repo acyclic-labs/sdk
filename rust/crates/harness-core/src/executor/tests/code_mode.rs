@@ -751,10 +751,10 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
     assert_eq!(result(&model).as_str().unwrap().len(), 40000);
     for code in [
         "let total=0; for(let i=0;i<400;i++) { const x=await tools['example.echo']({data:'x'.repeat(10000)}); total+=x.data.length; } total",
-        "'x'.repeat(1000000)",
+        "await tools['example.echo']({value:42}); 'x'.repeat(1000000)",
         "throw new Error('x'.repeat(1000000))",
     ] {
-        let (mut executor, model, _) = executor(code, allowed()?, true)?;
+        let (mut executor, model, echo) = executor(code, allowed()?, true)?;
         executor.limits.render_bytes = 65_536;
         let journal = Journal::default();
         executor.execute(input(), &journal).await?;
@@ -763,8 +763,13 @@ async fn intermediate_data_stays_in_js_and_results_use_the_admitted_render_budge
         if code.starts_with("let") {
             assert_eq!(value, 4_000_000);
             assert_eq!(logs(&journal).as_array().unwrap().len(), 400);
-        } else if code.starts_with("'x'") {
-            assert_eq!(value["truncated"], true);
+        } else if code.starts_with("await") {
+            assert_eq!(
+                value,
+                json!({"error":"JavaScript result exceeds admitted output"})
+            );
+            assert_eq!(echo.0.load(Ordering::SeqCst), 1);
+            assert_eq!(logs(&journal).as_array().unwrap().len(), 1);
         } else {
             assert!(value["error"].as_str().unwrap().len() <= 2048);
         }
