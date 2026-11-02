@@ -165,22 +165,26 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
     for (profile, name) in [
         (
             FilesystemProfile::Portable,
-            LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?,
+        ),
+        (
+            FilesystemProfile::Portable,
+            LogicalName::new(NameEncoding::Utf8, vec![b'x'; 1024])?,
         ),
         (
             FilesystemProfile::Posix,
-            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'], 255)?,
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'a'])?,
         ),
         (
             FilesystemProfile::Windows,
-            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 255)?,
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8])?,
         ),
     ] {
-        for root in ["/", "/parent"] {
+        for root in ["/".to_owned(), "/parent".to_owned(), "/parent".repeat(1024)] {
             let cancellation = CancellationToken::new();
             let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
             let (path, allocation) = NamespacePath::parse_in_profile(
-                root,
+                &root,
                 profile,
                 limits,
                 &mut accounting,
@@ -196,7 +200,6 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
             let path = NamespacePath::child_from_owned(
                 crate::kernel::Owned::new(path, allocation, bytes),
                 &name,
-                limits,
                 &mut accounting,
                 &cancellation,
             )?;
@@ -208,6 +211,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 accounting.spent().bytes_copied - before.bytes_copied,
                 name.as_bytes().len() as u64
             );
+            assert_eq!(accounting.spent().items_examined - before.items_examined, 1);
             let expected_bytes =
                 parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;
             assert_eq!(path.value.encoded_bytes(), expected_bytes);
@@ -223,7 +227,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
 
             for cancel in [false, true] {
                 let (path, allocation) = NamespacePath::parse_in_profile(
-                    root,
+                    &root,
                     profile,
                     limits,
                     &mut accounting,
@@ -234,17 +238,36 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 if cancel {
                     cancellation.cancel();
                 }
+                let budget = if cancel {
+                    WorkBudget::UNBOUNDED
+                } else {
+                    WorkBudget {
+                        allocation_operations: before.allocation_operations,
+                        ..WorkBudget::UNBOUNDED
+                    }
+                };
+                let (ledger, spent, _, _) = accounting
+                    .standalone_parts()
+                    .ok_or("original ledger lost")?;
+                let mut admitted =
+                    KernelAccounting::borrowed_standalone(ledger, spent, budget, &cancellation);
                 let result = NamespacePath::child_from_owned(
                     crate::kernel::Owned::new(path, allocation, bytes),
                     &name,
-                    VolumeLimits {
-                        maximum_path_bytes: expected_bytes - 1,
-                        ..limits
-                    },
-                    &mut accounting,
+                    &mut admitted,
                     &cancellation,
                 );
-                assert!(result.is_err());
+                let error = result
+                    .err()
+                    .ok_or("unfunded or cancelled append succeeded")?;
+                if cancel {
+                    assert!(matches!(error, crate::FsError::Cancelled(_)));
+                } else {
+                    assert!(matches!(
+                        error,
+                        crate::FsError::Work(crate::WorkError::BudgetExceeded { .. })
+                    ));
+                }
                 assert_eq!(
                     accounting.spent().allocation_operations,
                     before.allocation_operations
