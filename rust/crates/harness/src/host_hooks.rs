@@ -16,12 +16,11 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
             "cannot identify Codex; requires Codex >= {MINIMUM_CODEX_VERSION}"
         ))
     })?;
-    let numbers = version
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<std::result::Result<Vec<_>, _>>();
-    if !numbers
-        .is_ok_and(|numbers| numbers.len() == 3 && numbers.as_slice() >= [0, 164, 0].as_slice())
+    let mut parts = version.split('.');
+    let numbers: [Option<u64>; 3] = std::array::from_fn(|_| parts.next()?.parse().ok());
+    if !matches!(numbers, [Some(major), Some(minor), Some(patch)]
+        if [major, minor, patch] >= [0, 164, 0])
+        || parts.next().is_some()
     {
         return Err(crate::Error::Unsupported(format!(
             "Codex {version} is unsupported; requires Codex >= {MINIMUM_CODEX_VERSION}; upgrade Codex before installing or using Acyclic"

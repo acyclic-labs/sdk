@@ -9,7 +9,24 @@ use serde_json::json;
 fn codex_minimum_version_is_enforced_without_compatibility_fallback() {
     let supported = include_str!("../fixtures/hosts/codex-0.164.0.stdout");
     let obsolete = include_str!("../fixtures/hosts/codex-0.146.0.stdout");
-    assert!(check_codex_version(supported).is_ok(), "{supported}");
+    let admitted = acyclic_test_support::measure(|| {
+        assert!(check_codex_version(std::hint::black_box(supported)).is_ok());
+    });
+    assert_eq!(admitted.count_total, 0);
+    // Restoring the original collection must violate the admission cost bound.
+    let collected = acyclic_test_support::measure(|| {
+        let numbers = std::hint::black_box(supported)
+            .trim()
+            .strip_prefix("codex-cli ")
+            .unwrap()
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(numbers.as_slice() >= [0, 164, 0].as_slice());
+        std::hint::black_box(numbers);
+    });
+    assert!(collected.count_total > admitted.count_total);
     let error = check_codex_version(obsolete).unwrap_err().to_string();
     assert!(error.contains(MINIMUM_CODEX_VERSION), "{error}");
 
