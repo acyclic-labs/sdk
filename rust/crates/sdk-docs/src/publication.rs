@@ -59,19 +59,15 @@ pub(super) fn write_bundle_inner(
     }
     validate_source_info(&data.source, &data.channel)?;
     validate_navigation(data)?;
-    reject_reparse_ancestors(output_dir)?;
-    fs::create_dir_all(output_dir)?;
-    let _publication_lock = lock_publication(output_dir)?;
-    let index = load_version_index(output_dir)?;
     let channel_dir = publication_namespace(&data.channel, &data.source.publication_status);
-    let version_dir = output_dir
-        .join(channel_dir)
-        .join(safe_version(&data.version)?);
-    let data_file = format!(
-        "{channel_dir}/{}/sdk-docs-data.v1.json",
-        safe_version(&data.version)?
-    );
+    let version = safe_version(&data.version)?;
+    let version_dir = output_dir.join(channel_dir).join(&version);
+    let data_file = format!("{channel_dir}/{version}/sdk-docs-data.v1.json");
+    // Supplied data and canonical schemas do not depend on the mutable catalog.
+    // Encode them before acquiring its lock and reuse the schema for every entry.
     let data_bytes = serde_json::to_vec_pretty(data)?;
+    let schema = DocsSchema::new()?;
+    let index_schema = serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?;
     let digest = sha256_hex(&data_bytes);
     let data_path = output_dir.join(&data_file);
     let entry = VersionEntry {
@@ -84,20 +80,23 @@ pub(super) fn write_bundle_inner(
         data_file,
         data_sha256: digest,
     };
+    reject_reparse_ancestors(output_dir)?;
+    fs::create_dir_all(output_dir)?;
+    let _publication_lock = lock_publication(output_dir)?;
+    let index = load_version_index(output_dir, &schema)?;
     let updated_index = merge_version_index(index, &entry, mark_latest)?;
     validate_latest_release(&updated_index)?;
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
     atomic_write(&data_path, &data_bytes, true)?;
-    let schema = schema_json()?;
     atomic_write(
         &version_dir.join("sdk-docs-data.v1.schema.json"),
-        &serde_json::to_vec_pretty(&schema)?,
+        schema.bytes(),
         true,
     )?;
     atomic_write(
         &output_dir.join("sdk-docs-versions.v1.schema.json"),
-        &serde_json::to_vec_pretty(&schemars::schema_for!(VersionIndex))?,
+        &index_schema,
         true,
     )?;
     if publish {
@@ -110,7 +109,10 @@ pub(super) fn write_bundle_inner(
     Ok(())
 }
 
-pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
+pub(super) fn load_version_index(
+    output_dir: &Path,
+    schema: &DocsSchema,
+) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
     reject_reparse_ancestors(&index_path)?;
     let index = if index_path.exists() {
@@ -138,7 +140,7 @@ pub(super) fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Erro
             index.schema
         )));
     }
-    validate_version_index(&index, output_dir)?;
+    validate_version_index(&index, output_dir, schema)?;
     Ok(index)
 }
 

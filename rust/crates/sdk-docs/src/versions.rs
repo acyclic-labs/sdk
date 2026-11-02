@@ -206,5 +206,17 @@ pub(super) fn titleize(value: &str) -> String {
 
 /// Return the schema generated directly from the output structs.
 pub fn schema_json() -> Result<serde_json::Value, Error> {
+    #[cfg(test)]
+    SCHEMA_GENERATIONS.with(|count| count.set(count.get() + 1));
     serde_json::to_value(schemars::schema_for!(DocsData)).map_err(Error::from)
+}
+
+#[cfg(test)]
+thread_local! {
+    static SCHEMA_GENERATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn schema_generations() -> usize {
+    SCHEMA_GENERATIONS.with(std::cell::Cell::get)
 }
