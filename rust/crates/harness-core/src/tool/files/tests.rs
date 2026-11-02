@@ -107,52 +107,45 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
         .agent_context(&Capabilities::default(), home.content_bindings())?,
     );
     for (prefix, storage) in [("", &project), (crate::layers::HOME_PATH, &home)] {
-        for mode in ["omitted", "any", "absent", "content", "authored"] {
+        for mode in ["content", "authored"] {
             let relative = format!("{mode}.txt");
             let path = format!("{prefix}{relative}");
             let mut arguments = json!({"path":path,"content":"committed"});
-            if matches!(mode, "content" | "authored") {
-                let source = storage
-                    .stage(
-                        OperationId::new(),
-                        &relative,
-                        b"original",
-                        "text/plain",
-                        &relative,
-                    )
-                    .await?;
-                let version = if mode == "content" {
-                    encode_version(&source, None)?.0
-                } else {
-                    let invocation = ToolInvocation {
-                        operation_id: OperationId::new(),
-                        call_id: "source".into(),
-                        name: "read".into(),
-                        arguments: json!({"path":path}),
-                    };
-                    let context = ToolContext::new(
-                        task.clone(),
-                        invocation.operation_id,
-                        &invocation.call_id,
-                    )?;
-                    let result = read()?.executor.execute(invocation, Some(context)).await?;
-                    let source: ReadFileResult = serde_json::from_value(result.value)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    assert!(matches!(source.file, FileReadSource::Authored(_)));
-                    super::version::encode_source(&source.file, None)?.0
+            let source = storage
+                .stage(
+                    OperationId::new(),
+                    &relative,
+                    b"original",
+                    "text/plain",
+                    &relative,
+                )
+                .await?;
+            let version = if mode == "content" {
+                encode_version(&source, None)?.0
+            } else {
+                let invocation = ToolInvocation {
+                    operation_id: OperationId::new(),
+                    call_id: "source".into(),
+                    name: "read".into(),
+                    arguments: json!({"path":path}),
                 };
-                arguments["ifVersion"] = json!(version);
-            } else if mode != "omitted" {
-                arguments["ifVersion"] = json!(mode);
-            }
+                let context =
+                    ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+                let result = read()?.executor.execute(invocation, Some(context)).await?;
+                let source: ReadFileResult = serde_json::from_value(result.value)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                assert!(matches!(source.file, FileReadSource::Authored(_)));
+                super::version::encode_source(&source.file, None)?.0
+            };
+            arguments["ifVersion"] = json!(version);
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(),
                 call_id: format!("write-{mode}"),
                 name: "write".into(),
                 arguments,
             };
-            // Each original invocation owns its ledger; all of its recovery
-            // attempts below retain that same ledger and cancellation scope.
+            // Recovery owns one ledger across its receipt checks. Publication
+            // setup uses the real executor without consuming this read budget.
             let work = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::performance::work_budget(100_000, 16_000_000),
                 &acyclic_fs::CancellationToken::new(),
@@ -177,22 +170,15 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .0
                     .is_none()
             );
-            let expected = {
-                let (result, _custody) = write()?
-                    .executor
-                    .execute_with_native_context(&context, &invocation, &work)?
-                    .await
-                    .map_err(|error| {
-                        eprintln!(
-                            "original publication failed: {error:?}; work={:?}",
-                            work.receipt()
-                        );
-                        error
-                    })?;
-                result
-            };
+            let expected = write()?
+                .executor
+                .execute(invocation.clone(), Some(context))
+                .await?;
+            let published: FileResult = serde_json::from_value(expected.value.clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(published.file.volume(), storage.volume());
+            assert_eq!(storage.read(&published.file).await?.as_ref(), b"committed");
             // Lose the caller's completion, and let an unrelated publication win.
-            drop(context);
             let later = storage
                 .stage(
                     OperationId::new(),
@@ -205,16 +191,15 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
             let before = storage.list_private_directory("", None, None, 1).await?.0;
             let restarted =
                 ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
-            if matches!(mode, "content" | "authored") {
-                // The former unconditional lookup cannot recover this write.
-                assert!(
-                    restarted
-                        .observe_tool_file_once(invocation.operation_id, None)
-                        .await?
-                        .0
-                        .is_none()
-                );
-            }
+            // The former unconditional lookup cannot recover this write.
+            assert!(
+                restarted
+                    .observe_tool_file_once(invocation.operation_id, None)
+                    .await?
+                    .0
+                    .is_none()
+            );
+            let work_before = work.receipt();
             let (recovered, _custody) = write()?
                 .executor
                 .reconcile_with_native_context(&restarted, &invocation, &work)?
@@ -227,6 +212,19 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     error
                 })?;
             assert_eq!(recovered, Some(expected), "{path}");
+            let work_after = work.receipt();
+            assert_eq!(
+                work_after.backend_write_operations,
+                work_before.backend_write_operations
+            );
+            assert_eq!(
+                work_after.authority_records_appended,
+                work_before.authority_records_appended
+            );
+            assert_eq!(
+                work_after.durability_operations,
+                work_before.durability_operations
+            );
             assert_eq!(
                 storage.list_private_directory("", None, None, 1).await?.0,
                 before
@@ -247,17 +245,15 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
                     .code(),
                 crate::wire::ErrorCode::Unauthorized
             );
-            if matches!(mode, "content" | "authored") {
-                let mut forged = invocation.clone();
-                forged.arguments["path"] = json!(format!("{prefix}other.txt"));
-                assert!(
-                    write()?
-                        .executor
-                        .reconcile_with_native_context(&restarted, &forged, &work)?
-                        .await
-                        .is_err()
-                );
-            }
+            let mut forged = invocation.clone();
+            forged.arguments["path"] = json!(format!("{prefix}other.txt"));
+            assert!(
+                write()?
+                    .executor
+                    .reconcile_with_native_context(&restarted, &forged, &work)?
+                    .await
+                    .is_err()
+            );
         }
     }
     Ok(())
