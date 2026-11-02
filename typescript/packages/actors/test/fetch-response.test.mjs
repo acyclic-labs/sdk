@@ -5,6 +5,73 @@ import { connect, constants, createServer } from "node:http2";
 import { Readable } from "node:stream";
 import { openGuestResponse } from "../dist/fetch-response.js";
 
+test("consumer return before the first read retires the original response", async () => {
+  const body = new TransformStream();
+  const writer = body.writable.getWriter();
+  const terminal = Promise.withResolvers();
+  let closes = 0;
+  const response = openGuestResponse({
+    status:200,headers:new Headers(),body:body.readable,trailers:terminal.promise,
+    close() { closes++; },
+  });
+  const closed = assert.rejects(writer.closed, {name:"AbortError"});
+  const frames = response.frames[Symbol.asyncIterator]();
+  assert.deepEqual(await frames.return(), {done:true,value:undefined});
+  // Check custody before waiting for the source: an unstarted generator never
+  // enters finally, so the old path fails here without a hanging negative run.
+  assert.equal(closes,1);
+  await closed;
+  assert.equal(body.readable.locked,false);
+  response.close();
+  assert.equal(closes,1);
+  assert.throws(() => response.frames[Symbol.asyncIterator](), TypeError);
+});
+
+test("consumer return interrupts a pending read or terminal without source EOF", async () => {
+  for (const boundary of ["body", "terminal"]) {
+    const body = boundary === "body" ? new TransformStream() : undefined;
+    const writer = body?.writable.getWriter();
+    const terminal = Promise.withResolvers();
+    let closes = 0;
+    const response = openGuestResponse({
+      status:200,headers:new Headers(),body:body?.readable ?? null,trailers:terminal.promise,
+      close() { closes++; },
+    });
+    const frames = response.frames[Symbol.asyncIterator]();
+    // With no body, next enters the terminal wait synchronously. With a native
+    // TransformStream, next waits for the original writer instead.
+    const sourceClosed = writer ? assert.rejects(writer.closed, {name:"AbortError"}) : Promise.resolve();
+    const pending = assert.rejects(frames.next(), {name:"AbortError"});
+    const returned = frames.return();
+    assert.equal(closes,1);
+    await Promise.all([pending,sourceClosed]);
+    assert.deepEqual(await returned, {done:true,value:undefined});
+    if (body) assert.equal(body.readable.locked,false);
+    response.close();
+    assert.equal(closes,1);
+  }
+});
+
+test("consumer throw cancels the original source with the same cause", async () => {
+  const body = new TransformStream();
+  const writer = body.writable.getWriter();
+  const terminal = Promise.withResolvers();
+  const failure = new Error("consumer failed");
+  let closes = 0;
+  const response = openGuestResponse({
+    status:200,headers:new Headers(),body:body.readable,trailers:terminal.promise,
+    close() { closes++; },
+  });
+  const sameCause = cause => cause === failure;
+  const sourceClosed = assert.rejects(writer.closed, sameCause);
+  const frames = response.frames[Symbol.asyncIterator]();
+  const pending = assert.rejects(frames.next(), sameCause);
+  const thrown = assert.rejects(frames.throw(failure), sameCause);
+  assert.equal(closes,1);
+  await Promise.all([pending,thrown,sourceClosed]);
+  assert.equal(body.readable.locked,false);
+});
+
 test("terminal rejection cancels a pending body read with the original cause", async () => {
   const terminal = Promise.withResolvers(), reading = Promise.withResolvers();
   const failure = new Error("terminal producer failed");
