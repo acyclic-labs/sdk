@@ -258,8 +258,7 @@ impl ContentPublisher for CheckoutPublisher {
         let maximum_receipt_bytes = access
             .io
             .map(|io| io.remaining().map(|work| work.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
+            .transpose()?;
         self.publish_changes(
             volume,
             operation,
@@ -278,7 +277,7 @@ impl ContentPublisher for CheckoutPublisher {
         &'a self,
         volume: &'a VolumeRef,
         operation: OperationId,
-        maximum: u64,
+        maximum: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<

@@ -436,7 +436,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &driver,
             &path,
             Some(AgentState::adopted(path.clone(), &adoption)?),
-            2,
+            (2, 0),
             requested("goal", &path),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -467,7 +467,7 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
             &driver,
             &path,
             Some(first.state),
-            2,
+            (2, 0),
             Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -662,7 +662,7 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
             TurnAdmission::LocalRoot,
             executors_with_targets(model.clone(), true, Some(targets))?,
             TurnLimits {
-                history_turns,
+                history_turns: Some(history_turns),
                 ..LIMITS
             },
             Default::default(),
