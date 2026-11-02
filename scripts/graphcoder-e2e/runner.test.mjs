@@ -234,6 +234,24 @@ test("transcript withdrawal ends active and late spool waits with the original c
     source.end();
   });
 });
+test("transcript withdrawal drops the queued source chunk with its original close error", async () => {
+  // Its full readable buffer holds the original write callback. Destroying
+  // this real stream closes it without injecting a competing write error.
+  const transcript = new PassThrough({ highWaterMark: 1 });
+  const source = new PassThrough();
+  const events = new Spool(source, new Promise(() => {}), { transcript });
+  const waiting = events.next(event => event.n === 2);
+  waiting.catch(() => {});
+  source.write('{"n":1}\n');
+  source.write('{"n":2}\n');
+  assert.equal(events.sequence, 1, "the second chunk is held behind the original transcript drain");
+  const closed = once(transcript, "close");
+  transcript.destroy();
+  await closed;
+  await assert.rejects(waiting, error => error.kind === "spool" && error.detail.code === "ERR_STREAM_PREMATURE_CLOSE");
+  assert.equal(events.sequence, 1, "transcript loss must not publish the queued chunk");
+  source.end();
+});
 test("a source closed without ending still ends the spool and its transcript", async () => {
   const source = new PassThrough();
   let close; const closed = new Promise(resolve => { close = resolve; });
