@@ -2,7 +2,7 @@ use super::{
     actor_delivery::{Entries, EntryError},
     calibrate::Floors,
     population::{Fixture, id, key, require_root},
-    report::{Measurements, Observation, Quantiles, Result, Terms, emit, ns},
+    report::{Measurements, Observation, Quantiles, RawSamples, Result, Terms, emit, ns},
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -711,12 +711,15 @@ async fn actor_delivery(
             return Err("settled input entered the handler again".into());
         }
     }
-    emit(serde_json::json!({
-        "schema": 1, "kind": "delivery_completion", "operation": Operation::ActorWake.name(),
-        "agents": agents, "entry_label": "event-drain-to-handler-entry",
-        "completion_label": "event-drain-completion", "input_publication_timed": false,
-        "quantiles": Quantiles::new(&mut completed.clone())?, "raw_ns": completed,
-    }))
+    emit(RawSamples {
+        fields: serde_json::json!({
+            "schema": 1, "kind": "delivery_completion", "operation": Operation::ActorWake.name(),
+            "agents": agents, "entry_label": "event-drain-to-handler-entry",
+            "completion_label": "event-drain-completion", "input_publication_timed": false,
+            "quantiles": Quantiles::new(&mut completed.clone())?,
+        }),
+        raw_ns: &completed,
+    })
 }
 
 async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
