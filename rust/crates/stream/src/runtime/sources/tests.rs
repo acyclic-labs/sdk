@@ -9,7 +9,7 @@ use futures::StreamExt;
 fn late_cancelled_wakes_cannot_disarm_a_live_source() {
     use crate::FollowRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::{Wake as _, Waker};
+    use std::task::Waker;
 
     struct Parent(AtomicUsize);
     impl std::task::Wake for Parent {

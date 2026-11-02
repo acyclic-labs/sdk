@@ -1,7 +1,6 @@
 use super::*;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::{EmbeddedCapabilities, Fs, MemoryObjectStore};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{FollowFilter, MemoryStream, ReadRequest, StreamProvider};
 use std::error::Error;
 
