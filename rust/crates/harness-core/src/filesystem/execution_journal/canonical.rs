@@ -110,10 +110,10 @@ mod tests {
             },
         ));
         let input = TurnInput {
+            max_steps: None,
             operation_id: OperationId::new(),
             input: selected.messages.last().unwrap().content.clone(),
             selected_context: Some(selected),
-            max_steps: 3,
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");

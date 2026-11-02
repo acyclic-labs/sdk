@@ -81,10 +81,10 @@ pub(super) async fn run_with_filesystem<
     case.seed.clear();
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
+        max_steps: case.max_steps,
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.take_instruction()?),
         selected_context: None,
-        max_steps: case.max_steps.unwrap_or(16),
     };
     let journal = storage.journal();
     let operation = input.operation_id;

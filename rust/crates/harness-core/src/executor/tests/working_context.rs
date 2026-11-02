@@ -63,6 +63,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
         },
     ];
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: selected.last().unwrap().content.clone(),
         selected_context: Some(SelectedModelContext {
@@ -73,7 +74,6 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
             },
             messages: selected,
         }),
-        max_steps: 3,
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;

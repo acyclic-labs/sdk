@@ -23,10 +23,10 @@ async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -
     let journal = Journal::default();
     let operation = OperationId::new();
     let input = TurnInput {
+        max_steps: None,
         operation_id: operation,
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 1000,
     };
     execution.ensure_started(&journal, &input).await?;
     execution.ensure_started(&journal, &input).await?;
@@ -411,10 +411,10 @@ async fn native_index_custody_is_released_and_a_cancelled_tail_is_not_reused() -
                     .ensure_started(
                         journal,
                         &TurnInput {
+                            max_steps: None,
                             operation_id: operation,
                             input: ModelContent::Text("different binding".into()),
                             selected_context: None,
-                            max_steps: 1,
                         }
                     )
                     .await

@@ -25,7 +25,6 @@ use acyclic_stream::{MemoryStream, ReadRequest, StreamPath, StreamProvider as _}
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 65_536,
-    max_steps: 1,
     history_turns: 8,
 };
 

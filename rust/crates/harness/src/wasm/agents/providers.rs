@@ -277,8 +277,6 @@ impl Providers {
         limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
             maximum_bytes: limits.file_bytes,
-            max_steps: u32::try_from(limits.model_steps)
-                .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
         let turns = Arc::new(

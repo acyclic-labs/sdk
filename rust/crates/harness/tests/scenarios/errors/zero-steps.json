@@ -2,5 +2,5 @@
   "prompt": "Reject a turn with no admitted steps.",
   "max_steps": 0,
   "turns": [],
-  "expect": {"error":"max_steps exceeds configured model step bound", "not_events":[{"kind":"model_started"}]}
+  "expect": {"error":"max_steps must be positive", "not_events":[{"kind":"model_started"}]}
 }

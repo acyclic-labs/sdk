@@ -79,10 +79,10 @@ fn executor(
 
 fn input() -> TurnInput {
     TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("compose".into()),
         selected_context: None,
-        max_steps: 2,
     }
 }
 

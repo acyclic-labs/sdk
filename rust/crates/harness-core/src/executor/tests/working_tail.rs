@@ -39,10 +39,10 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         },
     ));
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("current question".into()),
         selected_context: None,
-        max_steps: 4,
     };
     let mut prior = vec![
         ModelMessage {

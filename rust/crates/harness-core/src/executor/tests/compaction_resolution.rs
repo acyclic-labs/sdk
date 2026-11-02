@@ -149,10 +149,10 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
             };
             let journal = Journal::default();
             let input = TurnInput {
+                max_steps: None,
                 operation_id: operation,
                 input: ModelContent::Text("rejected".into()),
                 selected_context: None,
-                max_steps: 1,
             };
             // Inspect the entry verifier directly: a later ledger operation
             // must not mask a swallowed error by failing on the poisoned work.

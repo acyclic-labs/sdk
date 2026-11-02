@@ -51,10 +51,10 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         },
     ));
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("question".into()),
         selected_context: None,
-        max_steps: 4,
     };
     let execution = StockExecution::ordinary(&executor);
     assert!(matches!(
@@ -123,10 +123,10 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         },
     ));
     let input = TurnInput {
+        max_steps: None,
         operation_id: OperationId::new(),
         input: ModelContent::Text("question".into()),
         selected_context: None,
-        max_steps: 2,
     };
     let result = StockExecution::ordinary(&executor)
         .execute_progress(&input, &journal)

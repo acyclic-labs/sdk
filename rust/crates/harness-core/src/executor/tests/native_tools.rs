@@ -91,10 +91,10 @@ async fn run(
     let output = executor
         .execute(
             TurnInput {
+                max_steps: None,
                 operation_id: OperationId::new(),
                 input: ModelContent::Text("user".into()),
                 selected_context: None,
-                max_steps: 4,
             },
             &Journal::default(),
         )

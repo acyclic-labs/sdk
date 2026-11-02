@@ -22,13 +22,6 @@ impl StockExecution<'_> {
                     .map(|writer| (context, writer)),
             })
             .transpose()?;
-        if parent.is_some_and(|parent| step >= parent.max_steps) {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary step exceeds parent turn bounds",
-            ));
-        }
         crate::context::validate_projected_context(&source, self.stock.limits, self.io)?;
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
@@ -60,10 +53,10 @@ impl StockExecution<'_> {
             content_admission: Default::default(),
         };
         let input = TurnInput {
+            max_steps: Some(1),
             operation_id,
             input: instruction,
             selected_context: None,
-            max_steps: parent.map_or(1, |parent| parent.max_steps),
         };
         self.validate_summary_capacity(&executor, journal, &input, step)
             .await?;

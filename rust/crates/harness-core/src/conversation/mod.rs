@@ -66,8 +66,6 @@ pub struct Limits {
     pub attachments: usize,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
-    /// Maximum model round trips in the stock agent loop.
-    pub model_steps: usize,
     /// Maximum streamed observations admitted in one model round trip.
     pub model_events_per_step: usize,
     /// Maximum distinct tool calls admitted in one model round trip.
@@ -83,7 +81,6 @@ impl Default for Limits {
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
             render_bytes: MAX_EXACT_JS_INTEGER,
-            model_steps: u32::MAX as usize,
             model_events_per_step: u32::MAX as usize,
             tool_calls_per_step: u32::MAX as usize,
             context_messages: u32::MAX as usize,
@@ -106,7 +103,6 @@ impl Limits {
             || [
                 self.path_bytes,
                 self.attachments,
-                self.model_steps,
                 self.model_events_per_step,
                 self.tool_calls_per_step,
                 self.context_messages,
@@ -597,7 +593,6 @@ crate::core::ownership::owned_struct!(Limits {
     path_bytes,
     attachments,
     render_bytes,
-    model_steps,
     model_events_per_step,
     tool_calls_per_step,
     context_messages

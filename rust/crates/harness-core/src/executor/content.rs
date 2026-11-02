@@ -198,14 +198,14 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.stock.limits.validate(&mut None)?;
-        self.model_capacity()?;
-        if input.max_steps == 0 || input.max_steps as usize > self.stock.limits.model_steps {
+        if input.max_steps == Some(0) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
-                "max_steps exceeds configured model step bound",
+                "max_steps must be positive",
             ));
         }
+        self.model_capacity()?;
         with_history_io(self.io, |work| input.input.validate_turn_input(work))?;
         let scope = self
             .original_context()

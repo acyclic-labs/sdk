@@ -418,7 +418,8 @@ message RuntimeLimits {
   uint64 path_bytes = 2;
   uint64 attachments = 3;
   uint64 render_bytes = 4;
-  uint64 model_steps = 5;
+  reserved 5;
+  reserved "model_steps";
   uint64 model_events_per_step = 6;
   uint64 tool_calls_per_step = 7;
   uint64 context_messages = 8;

@@ -41,7 +41,16 @@ impl StockExecution<'_> {
         let mut hook_context = Vec::new();
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
-        for step in 0..input.max_steps {
+        let mut steps = 0_u32;
+        while input.max_steps.is_none_or(|maximum| steps < maximum) {
+            let step = steps;
+            steps = steps.checked_add(1).ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "model step identity exhausted",
+                )
+            })?;
             let model_events = self
                 .run_model_step(
                     journal,
@@ -60,13 +69,12 @@ impl StockExecution<'_> {
                 parts,
             } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
             if calls.is_empty() {
-                // A Stop block prevents settlement and consumes the step budget.
+                // A Stop block continues the same journaled turn.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(reason) =
                     Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
                 {
-                    // Every denial continues. At the final step, falling out
-                    // of the loop reports the same budget exhaustion as tools.
+                    // Every denial continues on the original model producer.
                     // The superseded answer moves into history; the turn's
                     // output is the answer given after the hook's reason.
                     let answer = if parts { "" } else { text.as_str() };
@@ -80,7 +88,7 @@ impl StockExecution<'_> {
                     text,
                     attachments: Vec::new(),
                     metadata,
-                    steps: step + 1,
+                    steps,
                     transcript,
                 }));
             }
