@@ -159,16 +159,16 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
     .unwrap()
     .unwrap();
     // The owned capture keeps physical cleanup alive if its caller is dropped.
-    acyclic_native_runtime::spawn(tree.capture(
+    tree.capture(
+        &acyclic_native_runtime::TaskSpawner::current(),
         acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_secs(60)),
         None,
         Some(acyclic_native_runtime::OwnedCaptureInput::Literal(
             stdin.as_bytes().to_vec(),
         )),
         Capture,
-    ))
+    )
     .await
-    .unwrap()
     .unwrap()
     .result
     .unwrap()

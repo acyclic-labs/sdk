@@ -349,6 +349,7 @@ async fn capture_progress_preserves_native_exit_and_refuses_admission_as_deliver
         };
         let outcome = tree
             .capture(
+                &crate::TaskSpawner::current(),
                 CaptureSchedule::new(Duration::from_secs(5)),
                 usize::MAX,
                 Some(OwnedCaptureInput::Literal(input.to_vec())),

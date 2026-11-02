@@ -75,7 +75,7 @@ fn command_at(root: &std::path::Path, program: impl AsRef<std::ffi::OsStr>) -> C
         execution_grant: None,
         input: Some(OwnedCaptureInput::Literal(b"input:".to_vec())),
         schedule: CaptureSchedule::new(Duration::from_secs(60)),
-        maximum_output_bytes: 1 << 20,
+        maximum_output_bytes: Some(1 << 20),
     }
 }
 
@@ -89,7 +89,7 @@ async fn collected_and_streamed_launches_run_a_command_identically() -> io::Resu
     let Ok(collected) = command(root.path()).capture(Recorder::default()).await else {
         panic!("collected launch failed");
     };
-    let collected = collected.await??;
+    let collected = collected.await?;
     let collected = collected.result.map_err(io::Error::other)?;
     let executable = std::env::current_exe()?;
     #[cfg(unix)]

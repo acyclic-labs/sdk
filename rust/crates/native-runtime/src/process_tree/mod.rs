@@ -51,7 +51,7 @@ mod launch;
 pub use launch::{CaptureRequest, CaptureStop, LaunchFailure};
 mod pump;
 mod stream;
-pub use stream::{ProcessCaptureStream, ProcessChunk};
+pub use stream::{ProcessCapture, ProcessCaptureStream, ProcessChunk};
 #[cfg(windows)]
 mod stdio;
 #[cfg(windows)]
@@ -1058,19 +1058,35 @@ impl ProcessTree {
     /// Captures output with an optional caller byte policy, holding no
     /// thread while the child runs: each turn runs on the blocking pool, and
     /// between turns the capture awaits one readiness wait on its pipes, its
-    /// exit and its next check. The returned future owns the tree until
-    /// cleanup finishes: dropping it early terminates the tree from the
-    /// dropping thread, so callers that may be cancelled spawn it. An `Err`
-    /// means a turn could not be submitted, and the dropped tree cleans
-    /// itself up.
-    pub async fn capture<H: CaptureHandler>(
+    /// exit and its next check. Submission transfers the tree to the original
+    /// task scope before returning, even when the observer is never polled.
+    /// Dropping the completion detaches observation; the original handler's
+    /// stop event controls cancellation and the task joins physical cleanup.
+    pub fn capture<H: CaptureHandler>(
         self,
+        spawner: &crate::TaskSpawner,
         schedule: CaptureSchedule,
         max_bytes: impl Into<Option<usize>>,
         input: Option<OwnedCaptureInput>,
         handler: H,
+    ) -> ProcessCapture<H> {
+        ProcessCapture {
+            completion: spawner.spawn(self.capture_owned(
+                schedule,
+                max_bytes.into(),
+                input,
+                handler,
+            )),
+        }
+    }
+
+    async fn capture_owned<H: CaptureHandler>(
+        self,
+        schedule: CaptureSchedule,
+        max_bytes: Option<usize>,
+        input: Option<OwnedCaptureInput>,
+        handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
-        let max_bytes = max_bytes.into();
         // How many turns a capture takes is OS readiness timing. A simulation
         // scope sees all of them as one physical submission, so a seeded
         // replay schedules the same work however the child's output arrives.

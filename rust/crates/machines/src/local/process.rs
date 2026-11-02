@@ -110,7 +110,7 @@ impl LocalMachine {
             execution_grant: None,
             input: (!command.stdin.is_empty()).then_some(OwnedCaptureInput::Literal(command.stdin)),
             schedule: deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
-            maximum_output_bytes: maximum,
+            maximum_output_bytes: maximum.into(),
         }.stream(control.bind(handler)).await.map_err(|failure| match failure {
             LaunchFailure::Refused { failure, handler } => (
                 ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)),
