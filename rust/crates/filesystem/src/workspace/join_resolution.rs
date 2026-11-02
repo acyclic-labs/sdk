@@ -253,15 +253,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             return Err(WorkspaceError::InvalidMergeResolution);
         };
         let bodies = [base, ours, theirs];
-        let limits = crate::text_merge::ByteMergeLimits {
-            max_bytes: self
-                .target_head
-                .workspace
-                .volume
-                .config
-                .limits
-                .maximum_read_bytes,
-        };
+        let limits = crate::text_merge::ByteMergeLimits { max_bytes: None };
         let (kind, [base, ours, theirs]) = match bodies
             .each_ref()
             .map(|bytes| crate::text_merge::text_from_bytes(bytes, limits))
