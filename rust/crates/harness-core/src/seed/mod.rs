@@ -38,11 +38,26 @@ macro_rules! skill {
 pub const TREE: &[(&str, &[u8])] = &[
     ("AGENT.md", AGENT_PROMPT.as_bytes()),
     skill!("advisor-consultation"),
+    skill!("analysis"),
+    skill!("approvals-and-gates"),
     skill!("candidate-search"),
-    skill!("context-checkpoint"),
+    skill!("check-on-agents"),
+    skill!("compaction"),
+    skill!("context-editing"),
+    skill!("control"),
     skill!("debugging"),
+    skill!("files-and-streams"),
     skill!("fresh-context-review"),
+    skill!("goal-loop"),
+    skill!("models-and-routing"),
+    skill!("permissions"),
+    skill!("plans-and-memory"),
+    skill!("schedules"),
+    skill!("spawn-and-delegate"),
+    skill!("swarm-topology"),
+    skill!("tools-and-mcp"),
     skill!("verify-before-done"),
+    skill!("views"),
     skill!("writing-skills"),
     ("sys/kernel.md", include_bytes!("kernel.md")),
     (
@@ -102,6 +117,29 @@ mod tests {
             .unwrap();
         for rule in crate::layers::Rule::ALL {
             assert!(kernel.contains(&format!("| {} |", rule.name())), "{rule:?}");
+        }
+    }
+
+    /// Every agent's first request indexes the seed skills, so one malformed
+    /// header would fail every admission.
+    #[test]
+    fn every_seed_skill_header_parses_under_its_directory_name() {
+        #[derive(serde::Deserialize)]
+        struct Header {
+            name: String,
+            description: String,
+        }
+        for (path, bytes) in TREE {
+            let Some(name) = path
+                .strip_prefix("skills/")
+                .and_then(|path| path.strip_suffix("/SKILL.md"))
+            else {
+                continue;
+            };
+            let header: Header = crate::context::parse_frontmatter(bytes)
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            assert_eq!(header.name, name);
+            assert!(!header.description.is_empty(), "{path}");
         }
     }
 }

@@ -90,7 +90,7 @@ impl LocalHarness {
         Ok(reference)
     }
 
-    /// Pins the live file conventions once per admission, alongside instructions.
+    /// Pins the instructions, skills, tools and environment once per admission.
     #[inline(never)]
     pub(super) fn stage_context_manifest_with<'a>(
         &'a self,
@@ -146,9 +146,7 @@ impl LocalHarness {
                 ] if rules.is_empty() => "all admitted actions allowed",
                 _ => "policy-controlled approvals",
             };
-            manifest.conventions.push(format!(
-                "Approval mode: {mode}. Shell commands have no OS sandbox. A refusal returns a tool failure; adapt or report the block, never assume the action ran. .volumes/home is your private retained home volume and is never merged into the project."
-            ));
+            let approvals = format!("{mode}; shell commands have no OS sandbox");
             // The agent tools bind per turn, outside the registry; the model
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
@@ -159,10 +157,14 @@ impl LocalHarness {
                 .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
             manifest.tools.extend(agent_tools);
             #[cfg(any(test, feature = "native-execution"))]
+            let volumes = binding
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.context_line().to_owned());
+            #[cfg(not(any(test, feature = "native-execution")))]
+            let volumes = None;
+            #[cfg(any(test, feature = "native-execution"))]
             if let Some(workspace) = &binding.workspace {
-                manifest
-                    .conventions
-                    .push(workspace.context_line().to_owned());
                 if self.checkout_context {
                     #[cfg(test)]
                     self.environment_reads
@@ -223,6 +225,20 @@ impl LocalHarness {
                     manifest.environment = Some(facts);
                 }
             }
+            // Host facts ride in the frozen environment block; without a
+            // checkout, the block carries only them and the model.
+            let environment = match manifest.environment.take() {
+                Some(facts) => facts,
+                None => crate::context::EnvironmentFacts {
+                    model: self.agent()?.0.name.clone(),
+                    ..Default::default()
+                },
+            };
+            manifest.environment = Some(crate::context::EnvironmentFacts {
+                approvals: Some(approvals),
+                volumes,
+                ..environment
+            });
             #[cfg(any(test, feature = "hooks"))]
             manifest.sources.extend(hook_configuration);
             let bytes = manifest.encode(self.limits)?;

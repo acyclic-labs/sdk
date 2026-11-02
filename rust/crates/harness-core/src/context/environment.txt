@@ -8,4 +8,6 @@
   <timezone>{timezone}</timezone>
   <git_status>{git_status}</git_status>
   <model>{model}</model>
+  <approvals>{approvals}</approvals>
+  <volumes>{volumes}</volumes>
 </environment_context>

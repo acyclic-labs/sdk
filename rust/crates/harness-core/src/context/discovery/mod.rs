@@ -37,7 +37,8 @@ pub use capture::DiscoveredContext;
 pub use capture::{DiscoveryWork, child, validate_skill_catalog};
 use skills::discovery_error;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use skills::skill_text_native;
+use skills::skill_index_native;
+use skills::{skill_index_len, skill_index_text};
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod publication;

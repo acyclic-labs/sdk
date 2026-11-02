@@ -45,9 +45,9 @@ impl<T> MountTable<T> {
         Ok(environment)
     }
 
-    /// One line describing the namespace, for the task's context projection.
+    /// The namespace's mounts and modes, for the task's environment facts.
     pub fn context_line(&self) -> String {
-        let mut line = String::from("Volumes: ");
+        let mut line = String::new();
         for (index, (path, mount)) in self.mounts().enumerate() {
             if index != 0 {
                 line.push_str(", ");

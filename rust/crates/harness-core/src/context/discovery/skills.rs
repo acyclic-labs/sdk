@@ -314,56 +314,47 @@ pub async fn discover_skills_at(
     Ok(result)
 }
 
+/// The root page of the skill index: one line per skill from its name and
+/// description, and where the model reads its body. Bodies load on demand
+/// as appended tool results, so the frozen header holds only this page.
+fn skill_index(skills: &[SkillMetadata], mut visit: impl FnMut(&str)) {
+    visit("Skills (load with read when relevant):");
+    for skill in skills {
+        visit("\n- ");
+        visit(&skill.name);
+        visit(": ");
+        visit(&skill.description);
+        if let Some(path) = crate::layers::model_path(&skill.source.root, &skill.source.path) {
+            visit(" (");
+            visit(&path);
+            visit(")");
+        }
+    }
+}
+
+/// Exact byte length of [`skill_index_text`], counted before it is built.
+pub(super) fn skill_index_len(skills: &[SkillMetadata]) -> u64 {
+    let mut length = 0_u64;
+    skill_index(skills, |part| {
+        length = length.saturating_add(part.len() as u64)
+    });
+    length
+}
+
+pub(super) fn skill_index_text(skills: &[SkillMetadata], length: u64) -> String {
+    let mut text = String::with_capacity(usize::try_from(length).unwrap_or(0));
+    skill_index(skills, |part| text.push_str(part));
+    text
+}
+
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn skill_text_native(
+pub(super) fn skill_index_native(
     skills: &[SkillMetadata],
-    size: u64,
+    length: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    use crate::store::history::HistoryIo as _;
-    let mut observer =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let bounds = crate::executor::json::JsonBounds {
-        maximum_bytes: size,
-        maximum_items: work.remaining()?.items_examined,
-        maximum_depth: 256,
-    };
-    let diagnostic = work.claim(
-        crate::executor::json::sdk_json_diagnostic_bytes(),
-        0,
-        acyclic_fs::WorkCounters::UNCHARGED,
-    )?;
-    let bytes = match crate::executor::json::json_bytes_bounded(
-        &skills,
-        bounds,
-        Some(crate::wire::ErrorCode::Invalid),
-        &mut |charge| observer.codec_charge(charge),
-    ) {
-        Err(Error::NativeJson {
-            code,
-            source,
-            custody: None,
-        }) => {
-            return Err(Error::NativeJson {
-                code,
-                source,
-                custody: Some(diagnostic),
-            });
-        }
-        result => result?,
-    };
-    drop(diagnostic);
-    if bytes.len() as u64 != size {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "discovered skill serialization changed its counted size",
-        });
-    }
-    let text = String::from_utf8(bytes).map_err(|_| Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "discovered skill serialization is not UTF-8",
-    })?;
-    Ok((text, observer.into_custody()?))
+    let allocation = work.claim(length, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+    Ok((skill_index_text(skills, length), allocation))
 }
 
 #[cfg(test)]

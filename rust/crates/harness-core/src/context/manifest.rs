@@ -14,9 +14,6 @@ mod binding;
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextManifest {
-    /// Declarative conventions pinned in this manifest file, before discovered instructions.
-    #[serde(default)]
-    pub conventions: Vec<String>,
     /// Environment snapshot gathered from the task binding at admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentFacts>,
@@ -32,10 +29,6 @@ pub struct ContextManifest {
     pub tools: Vec<ToolDefinition>,
 }
 
-/// The shared plans/ and goal-loop conventions, as their JSON source text.
-#[doc(hidden)]
-pub const DEFAULT_CONVENTIONS_JSON: &str = include_str!("instructions.json");
-
 impl ContextManifest {
     /// Captures the registry selection without copying any executors or granting authority.
     pub fn new(
@@ -43,10 +36,7 @@ impl ContextManifest {
         selected_skills: Vec<String>,
         tools: &ToolRegistry,
     ) -> Result<Self> {
-        let defaults: [&str; 2] = serde_json::from_str(DEFAULT_CONVENTIONS_JSON)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Self {
-            conventions: defaults.into_iter().map(str::to_owned).collect(),
             environment: None,
             discovery,
             selected_skills,
@@ -142,8 +132,7 @@ impl ContextManifest {
                 .discovery
                 .instructions
                 .len()
-                .checked_add(self.conventions.len())
-                .and_then(|count| count.checked_add(usize::from(!self.discovery.skills.is_empty())))
+                .checked_add(usize::from(!self.discovery.skills.is_empty()))
                 .and_then(|count| count.checked_add(self.selected_skills.len()))
                 .ok_or_else(|| {
                     stock_boundary(io, ErrorCode::Invalid, "manifest message count overflows")

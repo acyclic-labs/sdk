@@ -1200,7 +1200,8 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                 .file,
         )
     };
-    let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
+    // The model-visible skill index: one `- name: description (path)` line each.
+    let catalog = |index| -> Result<Vec<(String, String)>> {
         let request = provider
             .request(index)
             .ok_or_else(|| Error::NotFound("context request".into()))?;
@@ -1225,11 +1226,19 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                     )
             })
             .find_map(|text| {
-                serde_json::from_str::<Vec<crate::context::SkillMetadata>>(text)
-                    .ok()
-                    .filter(|skills| !skills.is_empty())
+                text.strip_prefix("Skills (load with read when relevant):\n")
+                    .map(|lines| {
+                        lines
+                            .lines()
+                            .filter_map(|line| {
+                                let (name, rest) = line.strip_prefix("- ")?.split_once(": ")?;
+                                let path = rest.strip_suffix(')')?.rsplit_once(" (")?.1;
+                                Some((name.to_owned(), path.to_owned()))
+                            })
+                            .collect::<Vec<_>>()
+                    })
             })
-            .ok_or_else(|| Error::NotFound("model-visible skill catalog".into()))
+            .ok_or_else(|| Error::NotFound("model-visible skill index".into()))
     };
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
@@ -1251,12 +1260,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             None,
             &[
                 crate::filesystem::WorkspaceMutation::CreateDirectory {
-                    path: "/.agents/skills/context-checkpoint".into(),
+                    path: "/.agents/skills/context-editing".into(),
                 },
                 crate::filesystem::WorkspaceMutation::PutFile {
-                    path: "/.agents/skills/context-checkpoint/SKILL.md".into(),
+                    path: "/.agents/skills/context-editing/SKILL.md".into(),
                     bytes: acyclic_stream::OwnedBytes::from_static(
-                        b"---\nname: context-checkpoint\ndescription: Project-specific context\n---\nproject procedure",
+                        b"---\nname: context-editing\ndescription: Project-specific context\n---\nproject procedure",
                     ),
                 },
             ],
@@ -1307,35 +1316,30 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .ok_or_else(|| Error::NotFound("child scratch volume".into()))?
         .volume;
     assert_ne!(child_scratch, &harness.scratch);
-    let child_skills = catalog(0)?;
-    let project_skill = child_skills
-        .iter()
-        .find(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == child_project
-        })
-        .ok_or_else(|| Error::NotFound("child project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, child_project);
-    assert_eq!(
-        child_skills
+    // Project and built-in skills of one name stay separate entries: the
+    // project's at its checkout path, the built-in through the effective view.
+    let indexed = |skills: &[(String, String)]| {
+        let mut named: Vec<_> = skills
             .iter()
-            .filter(|skill| skill.name == "context-checkpoint")
-            .count(),
-        2,
-        "configured and built-in sources remain separate pinned entries",
-    );
-    // Built-in skills are read in place from the one shared seed volume.
-    let seed = &harness.seed.0;
-    assert!(
-        child_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-        })
-    );
-    assert!(
-        child_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
-    );
+            .filter(|(name, _)| name == "context-editing")
+            .map(|(_, path)| path.as_str())
+            .collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            [
+                ".agents/skills/context-editing/SKILL.md",
+                ".volumes/effective/skills/context-editing/SKILL.md",
+            ]
+        );
+        assert!(
+            skills
+                .iter()
+                .filter(|(name, _)| name != "context-editing")
+                .all(|(name, path)| *path == format!(".volumes/effective/skills/{name}/SKILL.md"))
+        );
+    };
+    indexed(&catalog(0)?);
 
     conversation(&harness)
         .await?
@@ -1348,27 +1352,8 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(provider.request_count(), 4);
     let parent_file = publication(3)?;
     assert_eq!(parent_file.volume(), &project);
-    // The second agent must not reuse the first agent's cached private pins.
-    let parent_skills = catalog(2)?;
-    let project_skill = parent_skills
-        .iter()
-        .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
-        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, &project);
-    assert!(
-        parent_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-        })
-    );
-    assert!(
-        parent_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
-    );
-    // Project skills differ: the child reads its own forked project.
-    assert_ne!(child_skills, parent_skills);
-    for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
+    indexed(&catalog(2)?);
+    for command in ["/context-editing", "/CONTEXT-EDITING"] {
         assert!(matches!(
             harness.resolve_prompt_command(command).await,
             Err(Error::Conflict(_))

@@ -681,11 +681,10 @@ mod prepared_request_reuse_properties {
 #[tokio::test]
 async fn inherited_environment_respects_final_message_and_byte_limits() -> Result<()> {
     use crate::context::{ContextManifest, EnvironmentFacts};
-    for (message_limit, render_bytes, parent_bytes, convention_bytes, expect_environment) in [
-        (3, 32_768, 10, 0, false),
-        (4, 32_768, 10, 0, true),
-        (10, 8_000, 6_000, 0, false),
-        (10, 8_000, 10, 5_000, false),
+    for (message_limit, render_bytes, parent_bytes, expect_environment) in [
+        (2, 32_768, 10, false),
+        (3, 32_768, 10, true),
+        (10, 8_000, 6_000, false),
     ] {
         let model = Model::new("example".into(), "model".into(), "1".into())?;
         let root = crate::model::PreparedModelRequest::prepare(
@@ -713,10 +712,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             )
             .await?;
         let manifest = ContextManifest {
-            conventions: vec![format!(
-                "required convention{}",
-                "c".repeat(convention_bytes)
-            )],
             environment: Some(EnvironmentFacts {
                 cwd: Some("d".repeat(4_000)),
                 os: "fixture".into(),
@@ -727,6 +722,8 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 timezone: "UTC".into(),
                 git_status: None,
                 model: "model".into(),
+                approvals: None,
+                volumes: None,
             }),
             ..Default::default()
         };
@@ -778,10 +775,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         assert_eq!(requests.len(), 1, "replay redispatched the model");
         let request = &requests[0];
         assert!(request.messages.starts_with(&root.request().messages));
-        assert_eq!(
-            request.messages[1 + usize::from(expect_environment)].content,
-            ModelContent::Text("required convention".into())
-        );
         assert_eq!(
             request.messages.last().unwrap().content,
             ModelContent::Text("child task".into())

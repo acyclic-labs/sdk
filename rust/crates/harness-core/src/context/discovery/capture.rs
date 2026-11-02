@@ -73,9 +73,11 @@ impl DiscoveredContext {
                 "discovered context exceeds message bound",
             ));
         }
-        let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
-        })?;
+        let skill_bytes = if self.skills.is_empty() {
+            0
+        } else {
+            skill_index_len(&self.skills)
+        };
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
                 limits.validate_file(file, work)?;
@@ -91,11 +93,7 @@ impl DiscoveredContext {
                     .render_bytes
                     .checked_sub(skill_bytes)
                     .ok_or_else(|| {
-                        stock_boundary(
-                            io,
-                            ErrorCode::Invalid,
-                            "skill metadata exceeds render bound",
-                        )
+                        stock_boundary(io, ErrorCode::Invalid, "skill index exceeds render bound")
                     })?,
                 io,
             )?;
@@ -129,7 +127,7 @@ impl DiscoveredContext {
                     .push(crate::model::project_instruction(file, Some(io))?);
             }
             if !self.skills.is_empty() {
-                let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
+                let mut text = skill_index_native(&self.skills, skill_bytes, work)?;
                 messages.1.absorb(&mut text.1).map_err(Error::from)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
@@ -148,10 +146,7 @@ impl DiscoveredContext {
         if !self.skills.is_empty() {
             messages.push(ModelMessage {
                 role: ModelRole::System,
-                content: ModelContent::Text(
-                    serde_json::to_string(&self.skills)
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                ),
+                content: ModelContent::Text(skill_index_text(&self.skills, skill_bytes)),
             });
         }
         super::validate_source_messages(&messages, limits, io)?;

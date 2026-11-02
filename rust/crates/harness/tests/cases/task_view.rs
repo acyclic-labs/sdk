@@ -140,7 +140,7 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         ],
     )?;
     assert_eq!(table.mounts().count(), 2);
-    assert_eq!(table.context_line(), "Volumes: . (rw), .volumes/data (rw)");
+    assert_eq!(table.context_line(), ". (rw), .volumes/data (rw)");
     let hints = table.environment()?;
     assert_eq!(
         hints.get("ACYCLIC_VOLUME_DATA_MODE").map(String::as_str),
@@ -275,7 +275,7 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
         table.resolve(Path::new(".volumes/agents/A/file")),
         Err(Error::NotFound(_))
     ));
-    assert_eq!(table.context_line(), "Volumes: . (rw)");
+    assert_eq!(table.context_line(), ". (rw)");
     assert!(!table.environment()?.contains_key("ACYCLIC_VOLUME_AGENTS_A"));
     Ok(())
 }

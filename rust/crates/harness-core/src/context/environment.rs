@@ -26,20 +26,43 @@ pub struct EnvironmentFacts {
     pub git_status: Option<String>,
     /// Selected provider model name.
     pub model: String,
+    /// The host's approval mode and command confinement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals: Option<String>,
+    /// The mounted volumes and their access modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volumes: Option<String>,
 }
 
 impl EnvironmentFacts {
     fn parts(&self, mut visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
         let fields = [
             ("cwd", self.cwd.as_deref()),
-            ("shell", Some(self.shell.as_str())),
+            (
+                "shell",
+                Some(self.shell.as_str()).filter(|value| !value.is_empty()),
+            ),
             ("tool_path", self.tool_path.as_deref()),
             ("tooling", self.tooling.as_deref()),
-            ("os", Some(self.os.as_str())),
-            ("current_date", Some(self.current_date.as_str())),
-            ("timezone", Some(self.timezone.as_str())),
+            (
+                "os",
+                Some(self.os.as_str()).filter(|value| !value.is_empty()),
+            ),
+            (
+                "current_date",
+                Some(self.current_date.as_str()).filter(|value| !value.is_empty()),
+            ),
+            (
+                "timezone",
+                Some(self.timezone.as_str()).filter(|value| !value.is_empty()),
+            ),
             ("git_status", self.git_status.as_deref()),
-            ("model", Some(self.model.as_str())),
+            (
+                "model",
+                Some(self.model.as_str()).filter(|value| !value.is_empty()),
+            ),
+            ("approvals", self.approvals.as_deref()),
+            ("volumes", self.volumes.as_deref()),
         ];
         let mut buffer = arrayvec::ArrayString::new();
         for line in include_str!("environment.txt")
@@ -176,6 +199,8 @@ impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
             timezone: facts.timezone,
             git_status: facts.git_status,
             model: facts.model,
+            approvals: None,
+            volumes: None,
         }
     }
 }
@@ -196,6 +221,8 @@ mod tests {
             timezone: "UTC".into(),
             git_status: None,
             model: "model".into(),
+            approvals: None,
+            volumes: None,
         }
     }
 

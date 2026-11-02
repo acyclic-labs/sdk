@@ -2,7 +2,7 @@ use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     agent::{AgentOutcome, Phase},
-    context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
+    context::{CompactionPolicy, ModelContextCapacity},
     local::{
         Event,
         agent_conversation::{Conversation, Sent},
@@ -97,18 +97,45 @@ fn provider(turns: usize) -> Arc<ScriptedModelProvider> {
     )
 }
 
-fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<SkillMetadata>> {
+/// One model-visible skill index line: `- name: description (path)`.
+struct Indexed {
+    name: String,
+    description: String,
+    path: Option<String>,
+}
+
+fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<Indexed>> {
     let requests = provider.requests();
     let request = requests.get(index).ok_or("missing provider request")?;
     for message in &request.messages {
         if let ModelContent::Text(text) = &message.content
-            && let Ok(skills) = serde_json::from_str::<Vec<SkillMetadata>>(text)
-            && !skills.is_empty()
+            && let Some(lines) = text.strip_prefix("Skills (load with read when relevant):\n")
         {
-            return Ok(skills);
+            return lines
+                .lines()
+                .map(|line| {
+                    let (name, rest) = line
+                        .strip_prefix("- ")
+                        .and_then(|line| line.split_once(": "))
+                        .ok_or("malformed skill index line")?;
+                    let (description, path) = match rest.strip_suffix(')') {
+                        Some(rest) => {
+                            let (description, path) =
+                                rest.rsplit_once(" (").ok_or("malformed skill path")?;
+                            (description, Some(path.to_owned()))
+                        }
+                        None => (rest, None),
+                    };
+                    Ok(Indexed {
+                        name: name.into(),
+                        description: description.into(),
+                        path,
+                    })
+                })
+                .collect();
         }
     }
-    Err("first provider request is missing its skill catalog".into())
+    Err("first provider request is missing its skill index".into())
 }
 
 #[tokio::test]
@@ -185,11 +212,19 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
             .iter()
             .find(|skill| skill.name == name)
             .ok_or("seed skill absent from the first request")?;
-        assert_eq!(skill.source.root.directory, "skills");
-        assert_eq!(skill.source.path, *path);
-        let volume = &skill.source.root.volume;
-        assert_eq!(*volume, acyclic_harness::seed::volume(volume.provider())?);
+        assert_eq!(
+            skill.path.as_deref(),
+            Some(format!(".volumes/effective/{path}").as_str())
+        );
     }
+    // Host-retained native sources have no model path; the model finds
+    // checkout skills by searching the checkout.
+    assert!(
+        skills
+            .iter()
+            .filter(|skill| skill.description == "Greet formally")
+            .all(|skill| skill.path.is_none())
+    );
     assert!(!serde_json::to_string(&model.requests())?.contains("BODY-MUST-STAY-LAZY"));
     Ok(())
 }
@@ -252,58 +287,6 @@ async fn symlinked_user_root_is_scanned_once_before_the_first_request() -> TestR
     assert!(matching.next().is_none(), "aliased roots repeated a skill");
     assert_eq!(skill.name, "greet2");
     assert_eq!(skill.description, "Greet formally");
-    Ok(())
-}
-
-#[tokio::test]
-async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> TestResult {
-    let root = super::local_workspace::temporary()?;
-    let home = super::local_workspace::temporary()?;
-    let state = super::local_workspace::temporary()?;
-    let body = "---\nname: greet2\ndescription: Greet formally\n---\nRetained body";
-    write(root.path(), ".agents/skills/greet2/SKILL.md", body)?;
-    write(
-        root.path(),
-        ".agents/skills/unread/SKILL.md",
-        "---\nname: unread\ndescription: Load later\n---\nOriginal body",
-    )?;
-    let model = provider(1);
-    let harness = open(config(
-        root.path(),
-        home.path(),
-        state.path(),
-        model.clone(),
-    )?)
-    .await?;
-    turn(&harness, "inventory", true).await?;
-    let skills = catalog(&model, 0)?;
-    drop(harness);
-    let harness = open(config(root.path(), home.path(), state.path(), provider(0))?).await?;
-    let reader = harness.client_reader()?;
-    let retained = skills
-        .iter()
-        .find(|skill| skill.name == "greet2")
-        .ok_or("greet2 skill absent")?;
-    let unread = skills
-        .iter()
-        .find(|skill| skill.name == "unread")
-        .ok_or("unread skill absent")?;
-    write(
-        root.path(),
-        ".agents/skills/unread/SKILL.md",
-        "replacement body",
-    )?;
-    assert!(unread.source.read(reader.as_ref(), 4096).await.is_err());
-    let (_, bytes) = retained.source.read(reader.as_ref(), 4096).await?;
-    assert_eq!(bytes.as_ref(), body.as_bytes());
-    write(
-        root.path(),
-        ".agents/skills/greet2/SKILL.md",
-        "changed source",
-    )?;
-    // A materialized body must remain pinned after the source changes.
-    let (_, bytes) = retained.source.read(reader.as_ref(), 4096).await?;
-    assert_eq!(bytes.as_ref(), body.as_bytes());
     Ok(())
 }
 

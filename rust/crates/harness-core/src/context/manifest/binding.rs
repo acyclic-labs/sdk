@@ -54,19 +54,12 @@ impl ContextManifest {
         crate::executor::with_history_io(io, |work| {
             compaction::reserve_vector(
                 &mut messages,
-                manifest.conventions.len()
-                    + manifest.discovery.instructions.len()
+                manifest.discovery.instructions.len()
                     + usize::from(!manifest.discovery.skills.is_empty())
                     + manifest.selected_skills.len(),
                 work,
             )
         })?;
-        for text in manifest.conventions {
-            messages.push(ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(text),
-            });
-        }
         let mut discovered = manifest.discovery.messages(limits, io)?;
         append_context_messages(&mut messages, &mut discovered, io)?;
         let mut remaining = limits

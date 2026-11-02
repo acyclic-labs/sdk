@@ -49,8 +49,6 @@ pub use snapshot::*;
 mod manifest;
 pub use manifest::ContextManifest;
 #[doc(hidden)]
-pub use manifest::DEFAULT_CONVENTIONS_JSON;
-
 mod checkpoint;
 pub use checkpoint::*;
 mod validation;

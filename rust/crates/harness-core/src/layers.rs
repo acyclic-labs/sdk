@@ -84,6 +84,24 @@ pub fn layered(path: &str) -> bool {
     !path.starts_with(SYS)
 }
 
+/// Where the model reads a file under `root`: layered seed and home skills
+/// through the effective view, project files at their checkout path. Any
+/// other file, such as a host-retained native source, has no model path.
+#[must_use]
+pub fn model_path(root: &crate::context::ContextRoot, path: &str) -> Option<String> {
+    use crate::conversation::{VolumeClass, VolumeOwner};
+    match (root.volume.class(), root.volume.owner()) {
+        (VolumeClass::Project, VolumeOwner::Project(owner)) if owner == SEED => {
+            Some(format!("{EFFECTIVE_PATH}{path}"))
+        }
+        (VolumeClass::AgentPrivate, _) if root.directory == crate::seed::SKILLS => {
+            Some(format!("{EFFECTIVE_PATH}{path}"))
+        }
+        (VolumeClass::Project, _) => Some(path.to_owned()),
+        (VolumeClass::AgentPrivate | VolumeClass::SessionShared, _) => None,
+    }
+}
+
 /// The identity of a layer stack: a hash of its ordered `(layer,
 /// generation)` pairs, lowest first. An unchanged identity means every
 /// effective file is unchanged, so a step boundary compares one hash.
