@@ -178,7 +178,7 @@ fn cancellation_and_staleness_are_classified_once() {
     ];
     for error in &cancelled {
         assert_eq!(
-            CallbackFailure::of(error),
+            callback_failure(error),
             CallbackFailure::Cancelled,
             "{error:?}"
         );
@@ -199,11 +199,7 @@ fn cancellation_and_staleness_are_classified_once() {
         )),
     ];
     for error in &stale {
-        assert_eq!(
-            CallbackFailure::of(error),
-            CallbackFailure::Stale,
-            "{error:?}"
-        );
+        assert_eq!(callback_failure(error), CallbackFailure::Stale, "{error:?}");
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -290,7 +286,7 @@ fn every_backend_adapter_answers_one_outcome_sequence_alike() {
         ),
     ];
     for (error, expected, stops) in &sequence {
-        assert_eq!(CallbackFailure::of(error), *expected, "{error:?}");
+        assert_eq!(callback_failure(error), *expected, "{error:?}");
         assert_eq!(stops_mount(error), *stops, "{error:?}");
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert_eq!(

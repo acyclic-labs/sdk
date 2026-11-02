@@ -1,6 +1,6 @@
 use super::*;
 use crate::native_mount::retirement::SourceRetirementWait;
-use crate::native_mount::shared::outcome::CallbackFailure;
+use crate::native_mount::shared::outcome::{CallbackFailure, callback_failure, source_failure};
 
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
@@ -821,11 +821,11 @@ impl ProjFsSession {
 }
 
 pub(in crate::native_mount) fn source_hresult(error: &MountSourceError) -> HRESULT {
-    CallbackFailure::of_source(error).hresult()
+    source_failure(error).hresult()
 }
 
 pub(in crate::native_mount) fn native_hresult(error: &NativeMountError) -> HRESULT {
-    CallbackFailure::of(error).hresult()
+    callback_failure(error).hresult()
 }
 
 /// ERROR_WRITE_PROTECT.

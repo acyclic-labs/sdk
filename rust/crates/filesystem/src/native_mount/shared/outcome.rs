@@ -148,14 +148,6 @@ pub(crate) fn callback_failure(error: &NativeMountError) -> CallbackFailure {
     }
 }
 
-impl CallbackFailure {
-    pub(crate) fn of(error: &NativeMountError) -> Self {
-        callback_failure(error)
-    }
-    pub(crate) fn of_source(error: &MountSourceError) -> Self {
-        source_failure(error)
-    }
-}
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 pub(crate) use retention::callback_is_terminal as stops_mount;
 pub(crate) use retention::source_is_terminal as source_stops_mount;

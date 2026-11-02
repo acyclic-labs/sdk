@@ -18,12 +18,20 @@ struct CurrentPolicy<A: 'static, O: 'static> {
     _allocation: crate::NativeAllocation,
 }
 
-impl<A, O> CurrentPolicy<A, O>
+impl<A, O> HandlePolicy for CurrentPolicy<A, O>
 where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    fn check_with_meter(
+    fn clock(&self) -> &super::super::clock::Clock {
+        &self.runtime.clock
+    }
+
+    fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    fn check(
         &self,
         permissions: &crate::access::PinnedPath,
         work: &crate::NativeMaterializationWork,
@@ -52,28 +60,6 @@ where
             }
             NativeDemandCarrier::Native(work).check(work.cancellation(), Some(&self.cancellation))
         })
-    }
-}
-
-impl<A, O> HandlePolicy for CurrentPolicy<A, O>
-where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    fn clock(&self) -> &super::super::clock::Clock {
-        &self.runtime.clock
-    }
-
-    fn cancellation(&self) -> &CancellationToken {
-        &self.cancellation
-    }
-
-    fn check(
-        &self,
-        permissions: &crate::access::PinnedPath,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        self.check_with_meter(permissions, work)
     }
 }
 
