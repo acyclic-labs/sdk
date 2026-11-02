@@ -17,7 +17,7 @@ use serde_json::Value;
 // model provider, process, or public testing API is needed by this target.
 #[path = "../../harness-core/src/hooks/spec.rs"]
 mod spec;
-use spec::{HookEvent, HookFailure};
+use spec::{HookEvent, HookFailure, HookSpec};
 #[path = "../../harness-core/src/hooks/output.rs"]
 mod output;
 use output::{HookDiagnostic, HookOutput};
@@ -69,7 +69,7 @@ fuzz_target!(|bytes: &[u8]| {
                 session_id: None,
             };
             let encoded = input
-                .encode(event, std::path::Path::new("workspace"))
+                .encode(event, std::path::Path::new("workspace"), None)
                 .unwrap();
             let decoded: Value = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(&decoded["tool_input"], &fields);
@@ -78,7 +78,7 @@ fuzz_target!(|bytes: &[u8]| {
             assert_eq!(decoded["cwd"], "workspace");
         }
         let encoded = HookInput::Fields(&fields)
-            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"));
+            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"), None);
         if fields.is_object() {
             let decoded: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
             assert_eq!(decoded["cwd"], "workspace");

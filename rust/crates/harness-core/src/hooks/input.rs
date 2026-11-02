@@ -40,15 +40,30 @@ impl<'a> HookInput<'a> {
         }
     }
 
-    pub(super) fn encode(self, event: HookEvent, cwd: &Path) -> Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec(&Envelope(self, event, cwd))
+    /// The tool input a before-tool hook judges.
+    pub(super) fn tool_input(self) -> Option<&'a Value> {
+        match self {
+            Self::Tool { invocation, .. } => Some(&invocation.arguments),
+            Self::Fields(fields) => fields.get("tool_input"),
+        }
+    }
+
+    /// Its host's stdin envelope. `rewritten` replaces the tool input a
+    /// rewrite earlier in the before-tool chain changed.
+    pub(super) fn encode(
+        self,
+        event: HookEvent,
+        cwd: &Path,
+        rewritten: Option<&Value>,
+    ) -> Result<Vec<u8>> {
+        let mut bytes = serde_json::to_vec(&Envelope(self, event, cwd, rewritten))
             .map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
         Ok(bytes)
     }
 }
 
-struct Envelope<'a>(HookInput<'a>, HookEvent, &'a Path);
+struct Envelope<'a>(HookInput<'a>, HookEvent, &'a Path, Option<&'a Value>);
 
 impl Serialize for Envelope<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -59,8 +74,12 @@ impl Serialize for Envelope<'_> {
                     .as_object()
                     .ok_or_else(|| serde::ser::Error::custom("hook input must be an object"))?;
                 for (name, value) in object {
-                    if !matches!(name.as_str(), "cwd" | "hook_event_name") {
-                        fields.serialize_entry(name, value)?;
+                    match (name.as_str(), self.3) {
+                        ("cwd" | "hook_event_name", _) => {}
+                        ("tool_input", Some(rewritten)) => {
+                            fields.serialize_entry(name, rewritten)?;
+                        }
+                        _ => fields.serialize_entry(name, value)?,
                     }
                 }
             }
@@ -70,7 +89,7 @@ impl Serialize for Envelope<'_> {
                 session_id,
             } => {
                 fields.serialize_entry("tool_name", &invocation.name)?;
-                fields.serialize_entry("tool_input", &invocation.arguments)?;
+                fields.serialize_entry("tool_input", self.3.unwrap_or(&invocation.arguments))?;
                 fields.serialize_entry("tool_use_id", &invocation.call_id)?;
                 fields.serialize_entry("session_id", &session_id)?;
                 if let Some(response) = response {
