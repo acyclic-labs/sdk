@@ -13,7 +13,7 @@ export async function waitForHook(path, match, closed) {
   let fragments = [];
   let reads = Promise.resolve();
   const scan = () => {
-    reads = reads.then(async () => {
+    return reads = reads.then(async () => {
       if (settled) return;
       if (!file) {
         try { file = await open(path, "r"); }
@@ -42,10 +42,17 @@ export async function waitForHook(path, match, closed) {
   watcher.on("change", scan);
   watcher.on("error", failed);
   scan();
+  closed.then(async result => {
+    if (settled) return;
+    // Original exit seals publication. Drain its retained bytes through the
+    // same read cursor before deciding that the expected event is missing.
+    await scan();
+    if (!settled) failed(Object.assign(new Error(
+      `hook source exited before its event: ${JSON.stringify({ code: result.code, signal: result.signal })}; step=hook-event; recovery=inspect the original hook record and process exit before rerunning the selected case`,
+    ), { code: "HOOK_SOURCE_EXITED", detail: result }));
+  }, failed).catch(failed);
   try {
-    return await Promise.race([ready, closed.then(result => {
-      throw new Error(`hook source exited before its event: ${JSON.stringify(result)}`);
-    })]);
+    return await ready;
   } finally {
     settled = true;
     watcher.close();

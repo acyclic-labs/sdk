@@ -9,11 +9,35 @@ const fixture = fileURLToPath(new URL("./terminal-fixture.py", import.meta.url))
 const posix = { skip: process.platform === "win32", timeout: 5000 };
 // Output after this call that contains `text`; registered in the same tick as
 // the input that prompts it.
-const shown = (running, text) => new Promise((resolve, reject) => {
+const shown = async (running, text) => {
   const watch = new OutputWatch([text]);
-  const check = bytes => { if (watch.write(bytes).has(text)) { running.child.stdout.off("data", check); resolve(); } };
-  running.child.stdout.on("data", check);
-  running.closed.then(result => reject(new Error(`closed before ${text}: ${JSON.stringify({ code: result.code, signal: result.signal })}`)));
+  const output = running.child.stdout.iterator({ destroyOnReturn: false });
+  try {
+    for (;;) {
+      const next = await output.next();
+      if (next.done) throw Object.assign(new Error(
+        `terminal output ended before ${JSON.stringify(text)}; step=terminal-output; recovery=node --test scripts/graphcoder-e2e/terminal.test.mjs`,
+      ), { code: "TERMINAL_OUTPUT_EOF", expected: text });
+      if (watch.write(next.value).has(text)) return;
+    }
+  } finally { await output.return(); }
+};
+
+test("terminal output consumes the original source and refuses early EOF", async t => {
+  const processes = new Processes();
+  t.after(() => processes.close());
+  const running = processes.start(process.execPath, ["-e",
+    'process.stdin.once("data", () => process.stdout.write("interrupted")); process.stdin.resume();']);
+  const visible = shown(running, "interrupted");
+  running.child.stdin.write("show");
+  await visible;
+  running.child.stdin.end();
+  assert.equal((await running.closed).code, 0);
+
+  const lost = processes.start(process.execPath, ["-e", "process.exit(3)"]);
+  await assert.rejects(shown(lost, "interrupted"),
+    error => error.code === "TERMINAL_OUTPUT_EOF" && error.expected === "interrupted");
+  assert.equal((await lost.closed).code, 3);
 });
 
 test("ConPTY launch contract carries the shared terminal arguments and refuses others", () => {
@@ -81,8 +105,9 @@ test("terminal root leads a sized session, takes raw input and drains output aft
     // Owner budget: exactly one owner process between the test and the executable.
     assert.deepEqual(probe, { tty: true, size: [80, 24], leader: true, foreground: true, parent: running.child.pid });
     // The interrupt reaches the root's foreground group, not its owner.
+    const interrupted = shown(running, "interrupted");
     running.child.stdin.write("\x03");
-    await shown(running, "interrupted");
+    await interrupted;
     running.child.stdin.write("ping\r");
     const result = await bounded(t, running.closed);
     assert.equal(result.code, 3, result.stderr);

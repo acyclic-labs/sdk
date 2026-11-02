@@ -11,6 +11,9 @@ test("hook subscription covers retained records, later appends and process exit"
   try {
     await writeFile(path, '{"sequence":1}\n');
     assert.deepEqual(await waitForHook(path, row => row.sequence === 1, open), { sequence: 1 });
+    const exited = { code: 1, signal: null };
+    assert.deepEqual(await waitForHook(path, row => row.sequence === 1, Promise.resolve(exited)), { sequence: 1 });
+    Object.defineProperty(exited, "stdout", { enumerable: true, get() { assert.fail("hook exit reread the process transcript"); } });
     let observed, retainedVisits = 0;
     const retained = new Promise(resolve => { observed = resolve; });
     const next = waitForHook(path, row => {
@@ -23,7 +26,7 @@ test("hook subscription covers retained records, later appends and process exit"
     assert.deepEqual(await next, { sequence: 2 });
     assert.equal(retainedVisits, 1, "an append reparsed retained history");
     await assert.rejects(waitForHook(path, row => row.sequence === 3,
-      Promise.resolve({ code: 1, signal: null })), /source exited before its event/);
+      Promise.resolve(exited)), error => error.code === "HOOK_SOURCE_EXITED" && error.detail === exited);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
