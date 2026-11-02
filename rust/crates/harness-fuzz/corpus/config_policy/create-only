@@ -1,0 +1,1 @@
+[{"only":[{"path":"out/**","actions":["append"]}]}, {"only":[{"path":"out/*","actions":["write"]}]}, "out/new"]
