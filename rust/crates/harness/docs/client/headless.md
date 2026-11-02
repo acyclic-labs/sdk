@@ -36,6 +36,10 @@ decisions or cancellation. Without `--output-format jsonl`, each pending
 approval prints `{"approval":ID,"binding":BINDING}` to answer it with. A
 reconnecting text-input run answers the agent's current pending approval even
 when its saved event cursor is already past the announcing status.
+Text answers retain the operation and action digest from that status until stdin
+supplies the answer; they never discover a replacement binding at decision time.
+A status without an action binding refuses a text question before waiting for
+input. The decision still passes the original server's binding checks.
 With JSONL input, EOF ends input admission and waits for accepted prompts to
 settle. Completion also drains the finite opening cuts of the selected follows;
 later appends do not extend those cuts. Exit status is zero only when every

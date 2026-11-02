@@ -5,6 +5,7 @@
 //! prompts.
 use acyclic_harness::OperationId;
 use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply, TurnOutcome};
+use acyclic_harness::interaction::ApprovalBinding;
 use acyclic_harness::local::{
     Event,
     agent_conversation::{Conversation, Sent, ended},
@@ -27,7 +28,7 @@ enum Request {
     },
     Approval {
         approve: IntentId,
-        binding: acyclic_harness::interaction::ApprovalBinding,
+        binding: ApprovalBinding,
         approved: bool,
     },
     Cancel {
@@ -595,6 +596,29 @@ async fn diagnostic(
     output.write(task, message.into_bytes()).await
 }
 
+// Keep the original status binding with the question through the stdin wait.
+async fn prompt_approval(
+    conversation: &Conversation,
+    diagnostics: &mut Option<Output>,
+    id: IntentId,
+    binding: Option<ApprovalBinding>,
+) -> Result<(IntentId, ApprovalBinding), Failure> {
+    let binding = binding.ok_or_else(|| {
+        acyclic_harness::Error::Invalid(
+            "approval prompt: status has no action binding; recovery: graphcoder exec --input-format jsonl"
+                .into(),
+        )
+    })?;
+    diagnostic(
+        diagnostics,
+        acyclic_native_runtime::InheritedOutput::stderr,
+        conversation.task(),
+        format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
+    )
+    .await?;
+    Ok((id, binding))
+}
+
 /// Prints the prompt's settled text and returns its committed outcome.
 async fn print(
     conversation: &Conversation,
@@ -892,17 +916,10 @@ pub(super) async fn jsonl(
     // once at reconnect; replay of that same status does not prompt twice.
     if projection.is_some()
         && input_format == super::args::InputFormat::Text
-        && let Phase::WaitingApproval { id, .. } = conversation.phase().await?
+        && let Phase::WaitingApproval { id, binding } = conversation.phase().await?
     {
-        diagnostic(
-            &mut diagnostics,
-            acyclic_native_runtime::InheritedOutput::stderr,
-            conversation.task(),
-            format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
-        )
-        .await?;
-        approval = Some(id.clone());
-        announced = Some(id);
+        announced = Some(id.clone());
+        approval = Some(prompt_approval(conversation, &mut diagnostics, id, binding).await?);
     }
     if let Some(prompt) = initial_prompt {
         outstanding
@@ -1063,9 +1080,9 @@ pub(super) async fn jsonl(
             line = lines.next_line(), if open && (input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
                 let line = line?;
                 if input_format == super::args::InputFormat::Text {
-                    let id = approval.take().ok_or("approval input: no pending request; recovery: graphcoder exec --input-format jsonl")?;
+                    let (id, binding) = approval.take().ok_or("approval input: no pending request; recovery: graphcoder exec --input-format jsonl")?;
                     let answer = line.as_deref().unwrap_or_default();
-                    conversation.decide(&id, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                    conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
                     continue;
                 }
                 let Some(line) = line else {
@@ -1181,18 +1198,14 @@ pub(super) async fn jsonl(
                     approval = None;
                     announced = None;
                 }
-                if let Phase::WaitingApproval { id, .. } = &status.phase
+                if let Phase::WaitingApproval { id, binding } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
-                    // The decision input requires the exact shown binding;
-                    // one no longer pending was already decided elsewhere.
-                    let binding = match event_operation {
-                        Some(_) => None,
-                        None => conversation.approval_binding(id).await?,
-                    };
-                    let line = match &binding {
-                        Some(binding) => json!({"approval": id.as_str(), "binding": binding}),
-                        None => json!({"approval": id.as_str()}),
+                    let line = match (event_operation, binding) {
+                        (None, Some(binding)) => {
+                            json!({"approval": id.as_str(), "binding": binding})
+                        }
+                        _ => json!({"approval": id.as_str()}),
                     };
                     emit(output, &line, event_operation).await?;
                     // Replay exports historical statuses too. Only the agent's
@@ -1205,14 +1218,15 @@ pub(super) async fn jsonl(
                                 Phase::WaitingApproval { id: pending, .. } if pending == *id
                             ))
                     {
-                        diagnostic(
-                            &mut diagnostics,
-                            acyclic_native_runtime::InheritedOutput::stderr,
-                            conversation.task(),
-                            format!("graphcoder: approve request {}? [y/N] ", id.as_str()),
-                        )
-                        .await?;
-                        approval = Some(id.clone());
+                        approval = Some(
+                            prompt_approval(
+                                conversation,
+                                &mut diagnostics,
+                                id.clone(),
+                                binding.clone(),
+                            )
+                            .await?,
+                        );
                     }
                     announced = Some(id.clone());
                 }
