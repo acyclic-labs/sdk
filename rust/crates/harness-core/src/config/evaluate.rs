@@ -65,7 +65,7 @@ async fn evaluate_cached(
     tree: &dyn Tree,
     base: &Value,
     surface: Surface,
-    cache: &Mutex<HashMap<[u8; 32], Outcome>>,
+    cache: &Cache,
 ) -> Result<Evaluated> {
     let invalid = |reason: String| Error::Invalid(format!("{path}: {reason}"));
     let modules = closure(path, source, tree).await?.map_err(invalid)?;
@@ -136,9 +136,10 @@ pub async fn compose(
 /// The most recently evaluated result or failure. Replacing the entry drops
 /// its ownership instead of retaining every historical agent/revision.
 type Outcome = std::result::Result<Arc<(Value, Form)>, String>;
+type Cache = Mutex<Option<([u8; 32], Outcome)>>;
 
-fn cache() -> &'static Mutex<Option<([u8; 32], Outcome)>> {
-    static CACHE: OnceLock<Mutex<Option<([u8; 32], Outcome)>>> = OnceLock::new();
+fn cache() -> &'static Cache {
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
