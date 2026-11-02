@@ -199,7 +199,6 @@ impl StockExecution<'_> {
             input,
             (step, prior_messages, purpose),
             request,
-            phase,
         );
         let request = if started {
             preparation.await?
@@ -278,7 +277,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
         turn: (u32, &[ModelMessage], ModelPurpose),
         retained_request: Option<crate::model::PreparedModelRequest>,
-        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (step, prior_messages, purpose) = turn;
         let mut request = match retained_request {
@@ -297,7 +295,7 @@ impl StockExecution<'_> {
                 recorded
             }
             None if purpose == ModelPurpose::Response => {
-                self.prepared_response(journal, input, step, prior_messages, phase)
+                self.prepared_response(journal, input, step, prior_messages)
                     .await?
             }
             None => self.prepare_request(input, step, prior_messages).await?,

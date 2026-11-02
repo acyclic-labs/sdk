@@ -19,7 +19,6 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
         [
             tool_turn([echo_call("first", json!({"value": "old ".repeat(3_100)}))]),
             tool_turn([echo_call("second", json!({"value": "old ".repeat(3_100)}))]),
-            ScriptedTurn::Text("bounded summary".into()),
             tool_turn([echo_call("tail", json!({"value": "new"}))]),
             done_turn(),
         ],

@@ -97,7 +97,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
-        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (tail, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
@@ -153,7 +152,6 @@ impl StockExecution<'_> {
             (projection, accounting),
             prepared,
             &records,
-            phase,
         )
         .await
     }
@@ -261,7 +259,6 @@ impl StockExecution<'_> {
         captured: (ResponseProjection, Option<ContextAccounting>),
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
-        phase: &mut DispatchPhase,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
@@ -364,7 +361,6 @@ impl StockExecution<'_> {
                     (projection, accounting),
                     (source, pre_stage),
                     policy,
-                    phase,
                 )
                 .await
             }

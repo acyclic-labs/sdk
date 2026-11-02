@@ -18,9 +18,12 @@ only the default set. Duplicate contracts fail registration. The default coding 
 `run(prompt)` admits and drives a stock turn; `submit(operation, prompt)` and
 `resume(task)` expose durable admission and recovery separately. Reopening the
 same project retains the owner and admitted work.
-The local preset derives threshold compaction budgets from model capacity and
-provider token accounting. An explicit `compaction(policy)` override keeps its chosen
-budgets; unsupported accounting or incompatible budgets fail before dispatch.
+The local preset admits each request against the model's window using provider
+token accounting: one `context.pressure` notice at the threshold, then a
+mechanical backstop that evicts the oldest whole exchanges into a fixed marker,
+with no model call. An explicit `compaction(policy)` override keeps its chosen
+reserve and threshold; unsupported accounting or incompatible budgets fail
+before dispatch.
 
 `native-execution` enables approved native processes. Approval pins the request
 and volume manifest; the host supplies credentials and publication permits.

@@ -23,12 +23,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     } else {
         None
     };
-    let (provider, _) = counted_model(
-        65_536,
-        None,
-        [ScriptedTurn::Text("bounded summary".into())],
-        [],
-    );
+    let (provider, _) = counted_model(65_536, None, [], []);
     let stage = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::System,
@@ -83,25 +78,21 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;
     let first = execution
-        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .prepared_response(&journal, &input, 0, &[])
         .await?;
     assert!(first.bytes().len() < 2_000);
     let restarted = StockExecution::ordinary(&executor);
     let replayed = restarted
-        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .prepared_response(&journal, &input, 0, &[])
         .await?;
     assert_eq!(replayed.bytes(), first.bytes());
-    assert_eq!(
-        provider.request_count(),
-        1,
-        "restart repeated paid compaction"
-    );
+    assert_eq!(provider.request_count(), 0, "the backstop called a model");
     let tail = vec![ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Text("tool result after the cut".into()),
     }];
     // A fresh stock session must discover the same authenticated cut without
-    // redispatching its summary. The original selected input remains unchanged.
+    // evicting again. The original selected input remains unchanged.
     for session in [&execution, &StockExecution::ordinary(&executor)] {
         let original_input = ContextInput::copy_for_turn(&input, 1, &tail, None)?;
         let (mut context_input, base, working) =
@@ -195,7 +186,7 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
                 .is_err()
         );
     }
-    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.requests().is_empty());
     let address = std::ptr::from_ref(&journal) as usize;
     journal = Journal::default();
     assert_eq!(std::ptr::from_ref(&journal) as usize, address);

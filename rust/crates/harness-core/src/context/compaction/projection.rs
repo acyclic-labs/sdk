@@ -19,23 +19,9 @@ pub(crate) fn compact_projection(
         .map_err(|_| invalid("compaction budget exceeds portable count"))?;
     let source_digest = crate::executor::preparation_digest(context, io)?;
     if let Some(summary) = &summary {
-        let covered = context
-            .messages
-            .get(..summary.source_messages as usize)
-            .ok_or_else(|| invalid("summary extent exceeds source projection"))?;
-        let summarized = BorrowedContext {
-            messages: ContextMessages {
-                first: covered,
-                user: None,
-                second: &[],
-            },
-            metadata: &context.metadata,
-            current_input_index: context
-                .current_input_index
-                .filter(|index| *index < summary.source_messages),
-        };
         if summary.source_messages == 0
-            || summary.source_digest != crate::executor::preparation_digest(&summarized, io)?
+            || summary.source_digest
+                != prefix_digest(context, summary.source_messages as usize, io)?
             || summary.output.descriptor().media_type() != "text/plain"
         {
             return Err(invalid("summary does not bind its source prefix"));
@@ -61,4 +47,35 @@ pub(crate) fn compact_projection(
             summary,
         },
     ))
+}
+
+/// The digest a summary of `context`'s first `through` messages binds: those
+/// messages with the context's metadata and, when inside them, its current
+/// input.
+pub(crate) fn prefix_digest(
+    context: &Context,
+    through: usize,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 32]> {
+    let covered = context.messages.get(..through).ok_or_else(|| {
+        stock_boundary(
+            io,
+            ErrorCode::Invalid,
+            "summary extent exceeds source projection",
+        )
+    })?;
+    crate::executor::preparation_digest(
+        &BorrowedContext {
+            messages: ContextMessages {
+                first: covered,
+                user: None,
+                second: &[],
+            },
+            metadata: &context.metadata,
+            current_input_index: context
+                .current_input_index
+                .filter(|index| (*index as usize) < through),
+        },
+        io,
+    )
 }

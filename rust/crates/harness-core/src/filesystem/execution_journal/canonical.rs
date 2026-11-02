@@ -73,32 +73,29 @@ mod tests {
         };
         let journal = journal.with_bound_selection(selected.clone());
         let provider = Arc::new(
-            ScriptedModelProvider::new([
-                ScriptedTurn::Text("bounded summary".into()),
-                ScriptedTurn::Text("done".into()),
-            ])
-            .with_context_capacity(ModelContextCapacity {
-                context_tokens: 65_536,
-                output_tokens: Some(4_096),
-            })
-            .with_token_counter(|request| {
-                let messages = request
-                    .request()
-                    .messages
-                    .iter()
-                    .map(|message| {
-                        u32::try_from(
-                            crate::contract::canonical_json_bytes(&message.content)?.len(),
-                        )
-                        .map_err(|_| Error::Invalid("message token bound exceeds u32".into()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(ModelTokenCount::from_upper_bounds(
-                    request.request_digest(),
-                    100,
-                    messages,
-                ))
-            }),
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+                .with_context_capacity(ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: Some(4_096),
+                })
+                .with_token_counter(|request| {
+                    let messages = request
+                        .request()
+                        .messages
+                        .iter()
+                        .map(|message| {
+                            u32::try_from(
+                                crate::contract::canonical_json_bytes(&message.content)?.len(),
+                            )
+                            .map_err(|_| Error::Invalid("message token bound exceeds u32".into()))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(ModelTokenCount::from_upper_bounds(
+                        request.request_digest(),
+                        100,
+                        messages,
+                    ))
+                }),
         );
         let executor = StockExecutor::new(
             Model::new("synthetic".into(), "counter".into(), "1".into())?,
@@ -120,11 +117,11 @@ mod tests {
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
-        assert_eq!(provider.request_count(), 2);
+        assert_eq!(provider.request_count(), 1);
         assert_eq!(executor.execute(input.clone(), &journal).await?, output);
         assert_eq!(
             provider.request_count(),
-            2,
+            1,
             "replay dispatched another model request"
         );
 
