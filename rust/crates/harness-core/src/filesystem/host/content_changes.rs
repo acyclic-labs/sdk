@@ -4,17 +4,27 @@ use super::*;
 use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, ContentChanges};
 use acyclic_fs::access::Action;
 
-#[derive(Serialize)]
-struct ChangeRecord<'a> {
-    source: Option<&'a FileRef>,
-    file: Option<FileRef>,
+// One action determines both the receipt shape and its recovery authorization.
+// Version 2 has no optional-field combinations or synthetic deleted FileRef.
+#[derive(Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum ChangeRecord<S, F, P> {
+    Create { file: F },
+    Update { source: S, file: F },
+    DeleteExpected { source: S },
+    Delete { path: P },
 }
 
-#[derive(Deserialize, crate::HeapLayout)]
-struct StoredChange {
-    source: Option<FileRef>,
-    file: Option<FileRef>,
+impl<S, F, P> ChangeRecord<S, F, P> {
+    fn file(&self) -> Option<&F> {
+        match self {
+            Self::Create { file } | Self::Update { file, .. } => Some(file),
+            Self::DeleteExpected { .. } | Self::Delete { .. } => None,
+        }
+    }
 }
+
+type StoredChange = ChangeRecord<FileRef, FileRef, String>;
 
 #[derive(Deserialize, crate::HeapLayout)]
 struct ChangeReceipt(u8, Vec<StoredChange>);
@@ -24,17 +34,16 @@ impl UploadRecord for ChangeReceipt {
         self.1.iter().try_fold(
             self.1.capacity() as u64 * std::mem::size_of::<StoredChange>() as u64,
             |bytes, record| {
-                crate::core::owned_sum([
-                    bytes,
-                    record
-                        .source
-                        .as_ref()
-                        .map_or(Ok(0), FileRef::logical_owned_bytes)?,
-                    record
-                        .file
-                        .as_ref()
-                        .map_or(Ok(0), FileRef::logical_owned_bytes)?,
-                ])
+                let owned = match record {
+                    ChangeRecord::Create { file } => file.logical_owned_bytes()?,
+                    ChangeRecord::Update { source, file } => crate::core::owned_sum([
+                        source.logical_owned_bytes()?,
+                        file.logical_owned_bytes()?,
+                    ])?,
+                    ChangeRecord::DeleteExpected { source } => source.logical_owned_bytes()?,
+                    ChangeRecord::Delete { path } => path.capacity() as u64,
+                };
+                crate::core::owned_sum([bytes, owned])
             },
         )
     }
@@ -92,7 +101,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes =
                 read_generation(&generation, &path, maximum_receipt_bytes, Some(io)).await?;
             let receipt: ChangeReceipt = io.decode_json(&bytes)?;
-            if receipt.0 != 1 {
+            if receipt.0 != 2 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
             let label = crate::core::filesystem_scope_label(
@@ -124,19 +133,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None
             };
             for record in &receipt.1 {
-                let (file, action) = match (&record.source, &record.file) {
-                    (None, Some(file)) => (file, Action::Create),
-                    (Some(_), Some(file)) => (file, Action::Write),
-                    (Some(file), None) => (file, Action::Delete),
-                    (None, None) => return Err(io.invalid("empty conditional publication member")),
+                let (path, action, identity) = match record {
+                    ChangeRecord::Create { file } => (file.path(), Action::Create, Some(file)),
+                    ChangeRecord::Update { file, .. } => (file.path(), Action::Write, Some(file)),
+                    ChangeRecord::DeleteExpected { source } => {
+                        (source.path(), Action::Delete, Some(source))
+                    }
+                    ChangeRecord::Delete { path } => (path.as_str(), Action::Delete, None),
                 };
-                file.validate(&mut Some(&mut io.history_io()))?;
-                if file.volume() != volume {
-                    return Err(io.invalid("conditional receipt volume differs"));
+                crate::conversation::validate_content_path(path, &mut Some(&mut io.history_io()))?;
+                InternalContentClass::require_path(None, path, Some(io))?;
+                if let Some(file) = identity {
+                    file.validate(&mut Some(&mut io.history_io()))?;
+                    if file.volume() != volume {
+                        return Err(io.invalid("conditional receipt volume differs"));
+                    }
                 }
-                access::require(&view.0, action, file.path(), io)?;
+                access::require(&view.0, action, path, io)?;
                 if let Some(root_view) = &root_view {
-                    access::require(&root_view.0, action, file.path(), io)?;
+                    access::require(&root_view.0, action, path, io)?;
                 }
             }
             if let Some(root_view) = &root_view {
@@ -154,7 +169,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 receipt
                     .1
                     .into_iter()
-                    .map(|record| change_result(record.source.as_ref(), record.file, io)),
+                    .map(|record| change_result(record, io)),
                 count,
                 io,
             )
@@ -247,7 +262,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         source.descriptor().media_type(),
                         source.display_name(),
                     )),
-                    ContentChange::DeleteExpected { .. } => None,
+                    ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => None,
                 };
                 let file = if let Some((path, bytes, media, display)) = output {
                     if bytes.len() as u64 > maximum_bytes {
@@ -266,14 +281,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 } else {
                     None
                 };
-                records.push(ChangeRecord {
-                    source: change.source(),
-                    file,
+                records.push(match change {
+                    ContentChange::CreateAbsent { .. } => ChangeRecord::Create {
+                        file: file.ok_or_else(|| io.invalid("create has no staged file"))?,
+                    },
+                    ContentChange::UpdateExpected { source, .. } => ChangeRecord::Update {
+                        source: *source,
+                        file: file.ok_or_else(|| io.invalid("update has no staged file"))?,
+                    },
+                    ContentChange::DeleteExpected { source } => {
+                        ChangeRecord::DeleteExpected { source: *source }
+                    }
+                    ContentChange::Delete { path } => ChangeRecord::Delete { path: *path },
                 });
             }
             // Versioned as a fresh public contract; the key uses the original
             // workspace operation index and the receipt commits with all files.
-            let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
+            let receipt = io.encode(&(2_u8, &records), io.remaining()?.bytes_encoded, true)?;
             let receipt_path = content_receipt_path_io(key.as_str(), false, true, Some(io))?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
@@ -478,12 +502,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     .await,
                             )?;
                         }
-                        ContentChange::DeleteExpected { .. } => {
+                        ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
                     let metadata_path = content_metadata_path_io(change.path(), true, Some(io))?;
-                    if let Some(file) = &record.file {
+                    if let Some(file) = record.file() {
                         let bytes = io.encode(
                             &(file, Option::<&GenerationRef>::None),
                             io.remaining()?.bytes_encoded,
@@ -543,9 +567,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let count = records.len();
             self.finish_change_files(
                 &generation,
-                records
-                    .into_iter()
-                    .map(|record| change_result(record.source, record.file, io)),
+                records.into_iter().map(|record| change_result(record, io)),
                 count,
                 io,
             )
@@ -594,26 +616,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-fn change_result(
-    source: Option<&FileRef>,
-    file: Option<FileRef>,
+fn change_result<S: std::borrow::Borrow<FileRef>, P: AsRef<str>>(
+    record: ChangeRecord<S, FileRef, P>,
     io: &PreparationIo,
 ) -> Result<ContentChangeResult> {
-    match (source, file) {
-        (None, Some(file)) => Ok(ContentChangeResult::Created(file)),
-        (Some(_), Some(file)) => Ok(ContentChangeResult::Updated(file)),
-        (Some(source), None) => Ok(ContentChangeResult::Deleted(stock_string_copy(
-            source.path(),
-            Some(io),
-        )?)),
-        (None, None) => Err(io.invalid("empty conditional publication member")),
-    }
+    Ok(match record {
+        ChangeRecord::Create { file } => ContentChangeResult::Created(file),
+        ChangeRecord::Update { file, .. } => ContentChangeResult::Updated(file),
+        ChangeRecord::DeleteExpected { source } => {
+            ContentChangeResult::Deleted(stock_string_copy(source.borrow().path(), Some(io))?)
+        }
+        ChangeRecord::Delete { path } => {
+            ContentChangeResult::Deleted(stock_string_copy(path.as_ref(), Some(io))?)
+        }
+    })
 }
 
 fn change_action(change: &ContentChange<'_>) -> Action {
     match change {
         ContentChange::CreateAbsent { .. } => Action::Create,
         ContentChange::UpdateExpected { .. } => Action::Write,
-        ContentChange::DeleteExpected { .. } => Action::Delete,
+        ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => Action::Delete,
     }
 }

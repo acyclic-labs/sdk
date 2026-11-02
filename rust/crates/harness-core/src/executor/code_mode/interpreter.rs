@@ -227,6 +227,7 @@ mod tests {
                 .capability(VolumeOperation::Write, &mut None)?,
             "tool:call:read".into(),
             "tool:call:write".into(),
+            "tool:call:remove".into(),
         ]);
         let task = Arc::new(
             Bindings {
@@ -245,7 +246,7 @@ mod tests {
             .agent_context(&Capabilities::default(), content)?,
         );
         let code = r#"
-            import {read, write, list, spawn, fork, DeniedError, ConflictError} from 'acyclic';
+            import {read, write, remove, list, spawn, fork, DeniedError, ConflictError} from 'acyclic';
             const first = await write('file.txt', 'one\r\nβ\n', 'absent');
             const file = await read('file.txt');
             if (file.lines(0, 0).length !== 0) throw new Error('empty line selection');
@@ -261,6 +262,26 @@ mod tests {
             try { await write('file.txt', 'wrong', 'absent'); throw new Error('create replaced a file'); }
             catch (error) { if (!(error instanceof ConflictError)) throw error; }
             const absent = await read('missing.txt');
+            const removeVersion = await write('remove.txt', 'old', 'any');
+            const retained = await read('remove.txt');
+            await write('remove.txt', 'new', 'any');
+            try { await remove('remove.txt', removeVersion); throw new Error('stale removal succeeded'); }
+            catch (error) {
+                if (!(error instanceof ConflictError) || error.current.text() !== 'new') throw error;
+            }
+            await remove('remove.txt', 'any');
+            if (await read('remove.txt') !== null) throw new Error('unconditional removal did not remove current binding');
+            await write('remove.txt', 'again', 'any');
+            const latest = await read('remove.txt');
+            await remove('remove.txt', latest.version);
+            if (await read('remove.txt') !== null || retained.text() !== 'old') throw new Error('versioned removal changed pinned content');
+            await write('recovery.txt', 'original', 'any');
+            await remove('recovery.txt', 'any');
+            if ((await read('recovery.txt')).text() !== 'later') throw new Error('removal recovery deleted a later publication');
+            try { await remove('.system/private', 'any'); throw new Error('private removal succeeded'); }
+            catch (error) { if (!(error instanceof DeniedError)) throw error; }
+            try { await remove('remove.txt', 'absent'); throw new Error('invalid condition succeeded'); }
+            catch (error) { if (!(error instanceof TypeError)) throw error; }
             const stubs = [];
             for (const create of [spawn, fork]) {
                 try { await create(); throw new Error('creation succeeded'); }
@@ -333,6 +354,7 @@ mod tests {
                     let tool = match name {
                         "read" => crate::tool::files::read()?,
                         "write" => crate::tool::files::write()?,
+                        "remove" => crate::tool::files::remove()?,
                         _ => panic!("unexpected action"),
                     };
                     count += 1;
@@ -353,8 +375,69 @@ mod tests {
                         invocation.operation_id,
                         &invocation.call_id,
                     )?;
-                    let reply = match tool.executor.execute(invocation, Some(context)).await {
+                    let recovering =
+                        name == "remove" && invocation.arguments["path"] == "recovery.txt";
+                    let reply = match tool
+                        .executor
+                        .execute(invocation.clone(), Some(context))
+                        .await
+                    {
                         Ok(result) => {
+                            if recovering {
+                                storage
+                                    .stage(
+                                        OperationId::new(),
+                                        "recovery.txt",
+                                        b"later",
+                                        "text/plain",
+                                        "recovery.txt",
+                                    )
+                                    .await?;
+                                let generation =
+                                    storage.list_private_directory("", None, None, 1).await?.0;
+                                let context = ToolContext::new(
+                                    task.clone(),
+                                    invocation.operation_id,
+                                    &invocation.call_id,
+                                )?;
+                                let work = acyclic_fs::NativeMaterializationWork::new(
+                                    acyclic_fs::performance::work_budget(100_000, 16_000_000),
+                                    &acyclic_fs::CancellationToken::new(),
+                                )
+                                .map_err(|(cause, work)| crate::Error::NativeConstruction {
+                                    cause,
+                                    work,
+                                })?;
+                                let before = work.receipt();
+                                let (recovered, _custody) = tool
+                                    .executor
+                                    .reconcile_with_native_context(&context, &invocation, &work)?
+                                    .await?;
+                                assert_eq!(recovered.unwrap(), result);
+                                assert_eq!(
+                                    tool.executor
+                                        .reconcile(invocation.clone(), Some(context))
+                                        .await?,
+                                    Some(result.clone())
+                                );
+                                let after = work.receipt();
+                                assert_eq!(
+                                    after.backend_write_operations,
+                                    before.backend_write_operations
+                                );
+                                assert_eq!(
+                                    after.authority_records_appended,
+                                    before.authority_records_appended
+                                );
+                                assert_eq!(
+                                    after.durability_operations,
+                                    before.durability_operations
+                                );
+                                assert_eq!(
+                                    storage.list_private_directory("", None, None, 1).await?.0,
+                                    generation
+                                );
+                            }
                             let version =
                                 crate::tool::files::result_version(name, &result.value, None)?;
                             serde_json::json!({"ok":true,"value":result.value,"version":version.map(|v| v.0)})
@@ -384,7 +467,7 @@ mod tests {
         // One initial page, two resumed pages, one root page and three refusals.
         // Breaking after the first entry does not prefetch the next page.
         assert_eq!(directory_pages, 7);
-        assert_eq!(calls, 13 + 19 + large_pages + directory_pages);
+        assert_eq!(calls, 13 + 19 + 15 + large_pages + directory_pages);
         Ok(())
     }
 

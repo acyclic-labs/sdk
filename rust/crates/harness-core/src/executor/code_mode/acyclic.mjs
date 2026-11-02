@@ -93,6 +93,12 @@ export async function write(path, data, ifVersion) {
     return result.version;
 }
 
+export async function remove(path, ifVersion) {
+    if (typeof ifVersion !== 'string' || ifVersion.length === 0 || ifVersion === 'absent')
+        throw new TypeError('remove requires any or a version');
+    await bind('remove', {path, ifVersion});
+}
+
 // A continuation is the last delivered entry's original namespace version.
 // Closing the iterator drops its page without reading ahead.
 export function list(path, after) {

@@ -5,7 +5,7 @@ use crate::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
             EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadResult,
-            WriteFileInput,
+            RemoveFileInput, WriteFileInput,
         },
         schema::{self, ProjectionMode},
     },
@@ -86,9 +86,9 @@ impl ToolSpec {
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     #[cfg(not(target_arch = "wasm32"))]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &CODE];
+    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT, &CODE];
     #[cfg(target_arch = "wasm32")]
-    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT];
+    let specs = [&SHELL, &FS, &READ, &WRITE, &REMOVE, &EDIT];
     specs.into_iter()
 }
 
@@ -171,6 +171,19 @@ pub(crate) static WRITE: ToolSpec = ToolSpec {
     projection_schema: FileProjection::model_schema,
     executor: |_| Arc::new(FileTool::Write),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
+};
+
+pub(crate) static REMOVE: ToolSpec = ToolSpec {
+    name: "remove",
+    revision: "portable-1",
+    description: "Remove a file at its current binding with ifVersion any, or require an opaque version from an earlier read or publication. Recovery returns the original removal without redispatch",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: schema::input::<RemoveFileInput>,
+    output: schema::output::<()>,
+    projection_schema: |mode| mode.schema::<()>(),
+    executor: |_| Arc::new(FileTool::Remove),
+    projection: |_| Arc::new(JsonToolProjection),
 };
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {

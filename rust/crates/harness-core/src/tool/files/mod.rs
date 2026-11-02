@@ -24,6 +24,11 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
+/// Removes a file through the task's original atomic content publisher.
+pub fn remove() -> Result<Tool> {
+    FileTool::Remove.assemble(super::schema::ProjectionMode::Full)
+}
+
 /// Edits exact text or notebook cells at a project path. Text replacements require
 /// one unambiguous match unless all occurrences are requested. An optional opaque
 /// version rejects publication if that source generation is no longer current.
@@ -53,7 +58,7 @@ pub use directory::{DirectoryEntry, DirectoryEntryKind, DirectoryReadResult, Rea
 pub(crate) use inputs::FileView;
 pub use inputs::{
     EditFileInput, FileResult, NotebookCell, NotebookEdit, NotebookOutput, PatchFileInput,
-    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, WriteFileInput,
+    ReadFileInput, ReadFileResult, ReadPage, ReadSelection, RemoveFileInput, WriteFileInput,
 };
 pub use source::FileReadSource;
 mod executor;

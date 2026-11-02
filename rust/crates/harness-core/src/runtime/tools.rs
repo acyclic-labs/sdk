@@ -611,7 +611,7 @@ impl ToolContext {
             let bytes = match change {
                 ContentChange::CreateAbsent { bytes, .. }
                 | ContentChange::UpdateExpected { bytes, .. } => bytes.len() as u64,
-                ContentChange::DeleteExpected { .. } => 0,
+                ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => 0,
             };
             if bytes > self.effective_scope().limits().file_bytes {
                 return Err(Error::tool_rejected(
@@ -651,7 +651,10 @@ impl ToolContext {
                 | (ContentChange::UpdateExpected { .. }, ContentChangeResult::Updated(file)) => {
                     file
                 }
-                (ContentChange::DeleteExpected { .. }, ContentChangeResult::Deleted(_)) => continue,
+                (
+                    ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. },
+                    ContentChangeResult::Deleted(_),
+                ) => continue,
                 _ => {
                     return Err(crate::executor::stock_boundary(
                         io,
@@ -672,7 +675,7 @@ impl ToolContext {
                     source.descriptor().media_type(),
                     source.display_name(),
                 ),
-                ContentChange::DeleteExpected { .. } => continue,
+                ContentChange::DeleteExpected { .. } | ContentChange::Delete { .. } => continue,
             };
             if file.volume() != volume
                 || file.path() != change.path()

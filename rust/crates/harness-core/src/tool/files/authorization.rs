@@ -156,6 +156,33 @@ impl FileTool {
                     io,
                 );
             }
+            Self::Remove => {
+                let input = decode::<RemoveFileInput>(&invocation.arguments, work)?;
+                if input.0.if_version.is_empty() || input.0.if_version == "absent" {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "remove requires any or a version",
+                    ));
+                }
+                if input.0.if_version != "any" {
+                    return self.path_source(
+                        scope,
+                        context,
+                        &input.0.path,
+                        Some(&input.0.if_version),
+                        work,
+                        io,
+                    );
+                }
+                self.public_path(&input.0.path, io)?;
+                if input.0.path.len() > scope.limits().path_bytes {
+                    return Err(error(
+                        crate::wire::ErrorCode::Invalid,
+                        "file path exceeds original task bound",
+                    ));
+                }
+                return Ok((None, input.1));
+            }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 if let Some(version) = input

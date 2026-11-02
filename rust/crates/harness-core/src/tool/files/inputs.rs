@@ -101,6 +101,20 @@ pub struct WriteFileInput {
     pub if_version: Option<String>,
 }
 
+/// Removal at the admitted current cut or one pinned file version.
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveFileInput {
+    /// Public destination relative to the selected volume.
+    pub path: String,
+    /// `any` removes the current file; an opaque version requires that source.
+    #[serde(rename = "ifVersion")]
+    pub if_version: String,
+}
+
 /// Exact replacement against one pinned file generation.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(

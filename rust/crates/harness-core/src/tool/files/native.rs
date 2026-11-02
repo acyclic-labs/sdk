@@ -46,6 +46,12 @@ record!(
     self.content.capacity()
 );
 record!(
+    RemoveFileInput,
+    self,
+    self.path.capacity(),
+    self.if_version.capacity()
+);
+record!(
     EditFileInput,
     self,
     self.path.capacity(),
