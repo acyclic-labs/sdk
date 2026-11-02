@@ -85,7 +85,7 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             F::DirectoryNotEmpty,
         ),
     ] {
-        let error = capture_mount_error(crate::CaptureError::from(FsError::Mutation(cause)));
+        let error = MountSourceError::from(crate::CaptureError::from(FsError::Mutation(cause)));
         assert_eq!(source_failure(&error), expected, "{error:?}");
         assert!(!source_stops_mount(&error), "{error:?}");
     }
@@ -159,8 +159,8 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             // Both capture transports keep the same quota cause. In particular,
             // the native wrapper must not become the session's NativeWork arm.
             for converted in [
-                capture_mount_error(error.error),
-                capture_mount_error(crate::CaptureError::from(FsError::NativeKernel(
+                MountSourceError::from(error.error),
+                MountSourceError::from(crate::CaptureError::from(FsError::NativeKernel(
                     crate::NativeTreeMaterializationError::Work(original),
                 ))),
             ] {

@@ -1,14 +1,16 @@
 use super::*;
 
-fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
-    match error {
-        crate::CaptureError::Kernel(error) => match *error {
-            FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
-                MountSourceError::Work(error)
-            }
-            error => MountSourceError::from(error),
-        },
-        error => engine_error(error),
+impl From<crate::CaptureError> for MountSourceError {
+    fn from(error: crate::CaptureError) -> Self {
+        match error {
+            crate::CaptureError::Kernel(error) => match *error {
+                FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)) => {
+                    MountSourceError::Work(error)
+                }
+                error => MountSourceError::from(error),
+            },
+            error => engine_error(error),
+        }
     }
 }
 
@@ -91,7 +93,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     .await
                 }
             }
-            .map_err(|failure| capture_mount_error(failure.error))?;
+            .map_err(|failure| MountSourceError::from(failure.error))?;
             let scope = match scope {
                 HostCaptureScope::ExactPaths => InstallScope::Paths(paths),
                 HostCaptureScope::Subtree => {
