@@ -13,9 +13,11 @@ mod kernel;
 pub use kernel::{Boundary, Cut, fits, inherited, token_bound};
 pub mod protocol;
 mod snapshot;
+mod summary;
 #[cfg(feature = "filesystem")]
 pub use snapshot::EncodedSnapshot;
 pub use snapshot::{Snapshot, SnapshotError, SummaryOutcome};
+pub use summary::{NativeSummary, SummaryError, SummaryRef};
 
 /// Immutable identity of a shared summary on the source's common ancestor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -62,8 +64,9 @@ pub struct Epoch {
     pub profile: [u8; 32],
     /// The full summarized source range and renderer/model identity.
     pub key: SummaryKey,
-    /// Immutable summary body. A genesis epoch has no summary and cursor zero.
-    pub summary: Option<FileRef>,
+    /// Frozen portable text and optional native artifacts. A genesis epoch has
+    /// no summary and cursor zero. Late artifacts require a later epoch.
+    pub summary: Option<SummaryRef>,
 }
 
 impl Epoch {

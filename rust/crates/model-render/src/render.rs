@@ -39,9 +39,13 @@ pub struct Header {
     epoch: [u8; 32],
     prefix: Vec<u8>,
     summary_permitted: bool,
+    summary_artifact: Option<usize>,
 }
 impl Header {
     /// Pins the renderer version, epoch, target protocol and fixed root fields.
+    /// `summary_artifact` pins one index in the epoch's frozen summary set;
+    /// `None` selects portable text and is the alloy default. Changing that
+    /// choice requires another epoch, just like changing the root fields.
     ///
     /// # Errors
     /// Refuses another renderer version, a second conversation input field, or
@@ -51,13 +55,9 @@ impl Header {
         epoch: [u8; 32],
         version: u32,
         fields: &Map<String, Value>,
+        summary_artifact: Option<usize>,
     ) -> Result<Self, RenderError> {
-        if target.provider.trim().is_empty()
-            || target.endpoint.trim().is_empty()
-            || target.model.trim().is_empty()
-        {
-            return Err(RenderError::InvalidItem("missing target provider identity"));
-        }
+        target.validate()?;
         let family = target.family;
         if version != RENDERER_VERSION {
             return Err(RenderError::InvalidItem("unsupported renderer version"));
@@ -105,6 +105,7 @@ impl Header {
             epoch,
             prefix,
             summary_permitted,
+            summary_artifact,
         })
     }
     /// Epoch identity; a changed header requires a changed epoch in the owner.
@@ -114,6 +115,16 @@ impl Header {
     /// Stable prefix before the conversation array, with no per-request state.
     pub fn bytes(&self) -> &[u8] {
         &self.prefix
+    }
+
+    /// Immutable producing scope used by this epoch's item and summary selection.
+    pub const fn target(&self) -> &Provenance {
+        &self.target
+    }
+
+    /// The optional summary artifact pinned with this provider's epoch header.
+    pub const fn summary_artifact(&self) -> Option<usize> {
+        self.summary_artifact
     }
 }
 
@@ -141,12 +152,8 @@ pub fn seg<'a>(
 ) -> Result<Option<&'a RawValue>, RenderError> {
     let origin = item.provenance();
     let same_family = origin.family == target.family;
-    let same_owner = item.kind() == ItemKind::Message
-        || (same_family
-            && origin.provider == target.provider
-            && origin.endpoint == target.endpoint
-            && origin.credential_scope.is_some()
-            && origin.credential_scope == target.credential_scope);
+    let same_owner = !matches!(item.kind(), ItemKind::Reasoning | ItemKind::GuardedMessage)
+        || origin.same_owner(target);
     match select(item.kind(), same_family, same_owner) {
         Selection::Native => Ok(Some(item.wire())),
         Selection::Drop => Ok(None),
@@ -155,6 +162,30 @@ pub fn seg<'a>(
             .map(Some)
             .ok_or(RenderError::MissingProjection(target.family)),
     }
+}
+
+/// Selects one frozen summary artifact with the same ownership rule as a
+/// guarded message. The portable representation is required and never dropped.
+/// The caller supplies at most one artifact from the epoch's immutable set;
+/// absence means portable-only, including the default for an alloy.
+///
+/// Selection borrows the original reference: no file read, payload copy,
+/// allocation, artifact search or wait occurs here. File authority and body
+/// verification remain the shared file reader's responsibility.
+pub fn summary_artifact<'a, T: ?Sized>(
+    target: &Provenance,
+    portable: &'a T,
+    native: Option<(&Provenance, &'a T)>,
+) -> &'a T {
+    let Some((producer, artifact)) = native else {
+        return portable;
+    };
+    crate::selection::guarded_artifact(
+        artifact,
+        portable,
+        producer.family == target.family,
+        producer.same_owner(target),
+    )
 }
 
 /// Writes exactly the caller-selected epoch items. There is no history window,

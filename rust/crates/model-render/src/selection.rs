@@ -18,6 +18,19 @@ pub(crate) fn select(kind: ItemKind, same_family: bool, same_owner: bool) -> Sel
     }
 }
 
+pub(crate) fn guarded_artifact<'a, T: ?Sized>(
+    native: &'a T,
+    portable: &'a T,
+    same_family: bool,
+    same_owner: bool,
+) -> &'a T {
+    if select(ItemKind::GuardedMessage, same_family, same_owner) == Selection::Native {
+        native
+    } else {
+        portable
+    }
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -56,6 +69,10 @@ mod proofs {
         let same_owner: bool = kani::any();
         let selection = select(ItemKind::GuardedMessage, same_family, same_owner);
         assert_ne!(selection, Selection::Drop);
+        assert_eq!(
+            *guarded_artifact(&true, &false, same_family, same_owner),
+            same_family && same_owner
+        );
         assert_eq!(selection == Selection::Native, same_family && same_owner);
         assert_eq!(
             selection == Selection::Projection,

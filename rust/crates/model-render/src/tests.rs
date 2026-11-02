@@ -77,6 +77,7 @@ fn header_for(family: Family, provider: &str) -> Header {
         [7; 32],
         RENDERER_VERSION,
         json!({"model":"target-model"}).as_object().unwrap(),
+        None,
     )
     .unwrap()
 }
@@ -193,6 +194,9 @@ proptest! {
             let original: Value = serde_json::from_str(source.wire().get()).unwrap();
             let matching = self::target(family, "producing-provider");
             prop_assert!(std::ptr::eq(seg(&matching, &reopened).unwrap().unwrap(), reopened.wire()));
+            prop_assert!(std::ptr::eq(summary_artifact(&matching,
+                reopened.projection(family).unwrap(), Some((reopened.provenance(), reopened.wire()))),
+                reopened.wire()));
             for target_family in FAMILIES {
                 for changed in [
                     self::target(target_family, "other-provider"),
@@ -202,13 +206,16 @@ proptest! {
                 ] {
                     let selected = seg(&changed, &reopened).unwrap().unwrap();
                     prop_assert!(std::ptr::eq(selected, reopened.projection(target_family).unwrap()));
+                    prop_assert!(std::ptr::eq(summary_artifact(&changed,
+                        reopened.projection(target_family).unwrap(), Some((reopened.provenance(), reopened.wire()))),
+                        selected));
                     let visible: Value = serde_json::from_str(selected.get()).unwrap();
                     for field in ["text", "calls", "results"] {
                         prop_assert_eq!(&visible[field], &original[field]);
                     }
                     prop_assert!(visible.get("continuation").is_none());
                     let mut output = Vec::new();
-                    let header = Header::new(changed, [7;32], RENDERER_VERSION, json!({"model":"target-model"}).as_object().unwrap()).unwrap();
+                    let header = Header::new(changed, [7;32], RENDERER_VERSION, json!({"model":"target-model"}).as_object().unwrap(), None).unwrap();
                     render(&header, [&reopened], Tail, &mut output).unwrap();
                     let output: Value = serde_json::from_slice(&output).unwrap();
                     let field = match target_family {Family::Responses => "input", Family::Gemini => "contents", _ => "messages"};
@@ -224,6 +231,9 @@ proptest! {
             let unowned = WireItem::capture(unknown_origin.clone(), ItemKind::GuardedMessage,
                 raw(source.wire().get().into()), source.projections().map(|(family, wire)| (family, raw(wire.get().into()))).collect()).unwrap();
             prop_assert!(std::ptr::eq(seg(&unknown_origin, &unowned).unwrap().unwrap(), unowned.projection(family).unwrap()));
+            prop_assert!(std::ptr::eq(summary_artifact(&unknown_origin,
+                unowned.projection(family).unwrap(), Some((unowned.provenance(), unowned.wire()))),
+                unowned.projection(family).unwrap()));
             // The original two classifications cannot represent this boundary:
             // Message exposes native continuity, while Reasoning loses visible text.
             for old_kind in [ItemKind::Message, ItemKind::Reasoning] {
@@ -523,7 +533,7 @@ proptest! {
             let fields = if family == Family::Gemini { json!({"tools":tools}) }
                 else { json!({"model":"target-model","tools":tools}) };
             let fields = fields.as_object().unwrap();
-            let header = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, fields).unwrap();
+            let header = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, fields, None).unwrap();
             let items: Vec<_> = history.iter().enumerate().map(|(index, text)| {
                 let role = if index % 2 == 0 { "user" } else if family == Family::Gemini { "model" } else { "assistant" };
                 let wire = if family == Family::Gemini { json!({"role":role,"parts":[{"text":text}]}) }
@@ -563,7 +573,7 @@ proptest! {
             let list = changed.get_mut("tools").unwrap();
             let list = if family == Family::Gemini { &mut list[0]["functionDeclarations"] } else { list };
             list.as_array_mut().unwrap().reverse();
-            let changed = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, &changed).unwrap();
+            let changed = Header::new(target(family, "producing-provider"), [7;32], RENDERER_VERSION, &changed, None).unwrap();
             let mut negative = Vec::new();
             render_summary(&changed, &items, &instruction, &mut negative).unwrap();
             prop_assert!(!negative.starts_with(prefix));
@@ -579,6 +589,7 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
         [7; 32],
         RENDERER_VERSION,
         fields.as_object().unwrap(),
+        None,
     )
     .unwrap();
     let mut output = Vec::new();
@@ -608,7 +619,8 @@ fn summary_refuses_uncontrolled_tools_before_consuming_items_or_writing() {
                 target(Family::Gemini, "provider"),
                 [7; 32],
                 RENDERER_VERSION,
-                fields.as_object().unwrap()
+                fields.as_object().unwrap(),
+                None,
             )
             .is_err()
         );

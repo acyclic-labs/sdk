@@ -223,8 +223,11 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
             .unwrap(),
         CommitOutcome::Committed(_)
     ));
-    let body =
-        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap();
+    let body = SummaryRef::new(
+        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
     let mut reference = Reference::default();
     let mut swapped = false;
     let mut raced = false;
@@ -671,7 +674,11 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     next.key.through = 10;
     next.header = [4; 32];
     next.summary = Some(
-        super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap(),
+        SummaryRef::new(
+            super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap(),
+            Vec::new(),
+        )
+        .unwrap(),
     );
     let unchanged = reopened.clone();
     assert!(matches!(
@@ -684,10 +691,27 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     reopened
         .complete(summary, SummaryOutcome::Ready(body.clone()))
         .unwrap();
-    let other_body =
+    let other_body = SummaryRef::new(
         super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "other-summary.txt")
-            .unwrap();
+            .unwrap(),
+        Vec::new(),
+    )
+    .unwrap();
     let ready = reopened.clone();
+    // A late native artifact cannot amend the producer's completed portable
+    // result, even when the portable file and covered range are unchanged.
+    let late = SummaryRef::new(
+        body.portable().clone(),
+        vec![NativeSummary {
+            provenance: summary_producer(acyclic_model_render::Family::Responses),
+            artifact: other_body.portable().clone(),
+        }],
+    )
+    .unwrap();
+    assert!(matches!(
+        reopened.complete(summary, SummaryOutcome::Ready(late.clone())),
+        Err(SnapshotError::Transition(Refusal::Contradiction))
+    ));
     assert!(matches!(
         reopened.complete(summary, SummaryOutcome::Ready(other_body.clone())),
         Err(SnapshotError::Transition(Refusal::Contradiction))
@@ -721,6 +745,13 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     assert!(unbound.swap(summary, 0, 12).is_ok());
     assert!(matches!(
         reopened.swap(0, wrong, 12),
+        Err(SnapshotError::ResultReference)
+    ));
+    assert_eq!(reopened, ready);
+    let mut changed_artifacts = next.clone();
+    changed_artifacts.summary = Some(late);
+    assert!(matches!(
+        reopened.swap(0, changed_artifacts, 12),
         Err(SnapshotError::ResultReference)
     ));
     assert_eq!(reopened, ready);
@@ -765,6 +796,14 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
     );
 
     let mut corrupt: serde_json::Value = serde_json::from_slice(&prepared_record.value).unwrap();
+    let mut old_version = corrupt.clone();
+    old_version["version"] = serde_json::json!("1");
+    let mut old_record = prepared_record.clone();
+    old_record.value = serde_json::to_vec(&old_version).unwrap().into();
+    assert!(matches!(
+        Snapshot::decode(&old_record, &source, 12),
+        Err(SnapshotError::Encoding(_))
+    ));
     corrupt["snapshot"]["pending"]["summary"][0] = serde_json::json!(summary[0] ^ 1);
     let mut corrupt_record = prepared_record;
     corrupt_record.value = serde_json::to_vec(&corrupt).unwrap().into();
@@ -772,4 +811,90 @@ async fn conditional_snapshots_preserve_coverage_and_one_pending_identity_across
         Snapshot::decode(&corrupt_record, &source, 12),
         Err(SnapshotError::Identity)
     ));
+}
+
+fn summary_producer(family: acyclic_model_render::Family) -> acyclic_model_render::Provenance {
+    acyclic_model_render::Provenance {
+        family,
+        provider: "producer".into(),
+        model: "summary-model".into(),
+        endpoint: "https://example.invalid/v1".into(),
+        credential_scope: Some([9; 32]),
+    }
+}
+
+fn summary_header(
+    target: &acyclic_model_render::Provenance,
+    index: Option<usize>,
+) -> acyclic_model_render::Header {
+    acyclic_model_render::Header::new(
+        target.clone(),
+        [7; 32],
+        acyclic_model_render::RENDERER_VERSION,
+        &serde_json::Map::new(),
+        index,
+    )
+    .unwrap()
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn summaries_keep_portable_text_for_every_foreign_owner(
+        count in 1..128_usize,
+        selected in proptest::prelude::any::<usize>(),
+    ) {
+        use acyclic_model_render::{Family, Provenance};
+        use proptest::prelude::*;
+        let file = |path: &str| super::super::tests::file(
+            crate::AgentId::from_bytes([1;16]), path).unwrap();
+        let portable = file("portable.txt");
+        let mut natives = Vec::new();
+        for index in 0..count {
+            natives.push(NativeSummary {
+                provenance: summary_producer(Family::Responses),
+                artifact: file(&format!("native-{index}.json")),
+            });
+        }
+        let summary = SummaryRef::new(portable, natives).unwrap();
+        let encoded = serde_json::to_vec(&summary).unwrap();
+        let reopened: SummaryRef = serde_json::from_slice(&encoded).unwrap();
+        let index = selected % count;
+        let producer = &reopened.native()[index].provenance;
+        let changed_model = Provenance { model: "another-model".into(), ..producer.clone() };
+        prop_assert!(std::ptr::eq(reopened.select(&summary_header(&changed_model, Some(index))).unwrap(),
+            &reopened.native()[index].artifact));
+        prop_assert!(std::ptr::eq(reopened.select(&summary_header(producer, None)).unwrap(), reopened.portable()));
+        for family in [Family::Anthropic, Family::Chat, Family::Gemini, Family::Responses] {
+            if family != producer.family {
+                let target = Provenance { family, ..producer.clone() };
+                prop_assert!(std::ptr::eq(reopened.select(&summary_header(&target, Some(index))).unwrap(), reopened.portable()));
+            }
+            for target in [
+                Provenance { family, provider: "foreign".into(), ..producer.clone() },
+                Provenance { family, endpoint: "https://foreign.invalid".into(), ..producer.clone() },
+                Provenance { family, credential_scope: Some([8;32]), ..producer.clone() },
+                Provenance { family, credential_scope: None, ..producer.clone() },
+            ] {
+                prop_assert!(std::ptr::eq(reopened.select(&summary_header(&target, Some(index))).unwrap(),
+                    reopened.portable()));
+            }
+        }
+        prop_assert!(matches!(reopened.select(&summary_header(producer, Some(count))), Err(SummaryError::ArtifactIndex)));
+        // The restored unguarded reference would select native bytes for the
+        // same-family foreign owner. The oracle requires the portable file.
+        prop_assert_ne!(&reopened.native()[index].artifact, reopened.portable());
+        let mut invalid = serde_json::to_value(&reopened).unwrap();
+        invalid.as_object_mut().unwrap().remove("portable");
+        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
+        let mut invalid = serde_json::to_value(&reopened).unwrap();
+        invalid["version"] = serde_json::json!(0);
+        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
+        let mut invalid = serde_json::to_value(&reopened).unwrap();
+        invalid["portable"]["descriptor"]["media_type"] = serde_json::json!("application/json");
+        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
+        let mut invalid = serde_json::to_value(&reopened).unwrap();
+        invalid["native"][index]["provenance"]["provider"] = serde_json::json!("");
+        prop_assert!(serde_json::from_value::<SummaryRef>(invalid).is_err());
+    }
 }

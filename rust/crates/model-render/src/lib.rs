@@ -23,7 +23,7 @@ mod tools;
 pub use item::{Family, ItemKind, Provenance, WireItem};
 pub use notice::{Notice, PendingNotices, notice_block};
 pub use profile::{Cache, Effort, Reasoning};
-pub use render::{Header, RenderError, Tail, render, render_summary, seg};
+pub use render::{Header, RenderError, Tail, render, render_summary, seg, summary_artifact};
 pub use tools::{ToolDeclaration, ToolDeclarations};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
