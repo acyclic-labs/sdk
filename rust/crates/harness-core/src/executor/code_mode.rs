@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
+pub(crate) use interpreter::MEMORY_BYTES;
 
 struct Call {
     name: allocator::BridgeText,
