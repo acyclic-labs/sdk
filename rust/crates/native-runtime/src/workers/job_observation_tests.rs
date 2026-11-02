@@ -593,7 +593,11 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
 
                 // Joining the physical worker makes each oracle synchronous;
                 // a missing terminal or lost wake fails without waiting again.
-                assert_eq!(failure.panics.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    failure.panics.load(Ordering::SeqCst),
+                    1,
+                    "subscriber cut {field}, worker={worker}, outcome={outcome}"
+                );
                 assert_eq!(calls.load(Ordering::SeqCst), 1);
                 assert_eq!(wake.0.load(Ordering::SeqCst), 1);
                 assert!(

@@ -295,7 +295,9 @@ fn run_task(
         None => run(),
     };
     let waker = run();
-    obs::project(|| drop((turn, progress, observation)));
+    // A subscriber closes parent spans through the current dispatcher. Retire
+    // the original observation under its retained dispatcher, like progress.
+    obs::project(|| drop((turn, progress, obs::OperationSpan::new_root(observation))));
     waker
 }
 

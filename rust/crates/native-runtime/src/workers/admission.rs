@@ -246,7 +246,7 @@ pub(crate) fn poll_submission_with(
             if let Some(observation) = observation {
                 obs::project(move || {
                     observation.record("native.queued", true);
-                    drop(observation);
+                    drop(obs::OperationSpan::new_root(observation));
                 });
             }
             drop(prepaid);
