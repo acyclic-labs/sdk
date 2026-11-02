@@ -289,24 +289,40 @@ fn native_source_io_projection_rejects_foreign_root_and_resource_before_allocati
 }
 
 #[test]
-fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
+fn native_source_io_last_physical_lease_retires_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;
     let root_stop = CancellationToken::new();
     let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;
-    let original = root.native_volume_work(WorkBudget {
-        items_examined: 3,
-        ..crate::performance::BOUNDARY_BUDGET
-    })?;
+    let original = root.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
     let source = native_source_io_control(&borrowed, &original)?;
     let lease = source.native_source_io_lease(source.clone())?;
     let last_lease = lease.clone();
-    root_stop.cancel();
+    let wait = CancellationToken::new();
+    let worker_wait = wait.clone();
+    let worker_source = Arc::clone(&source);
+    let (waiting, observed) = std::sync::mpsc::channel();
+    source
+        .capture_gate
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .cleanup_wait_observed = Some(waiting);
+    let worker = std::thread::spawn(move || {
+        let _observation = CleanupWaitObservation(Arc::downgrade(&worker_source));
+        worker_source.shutdown_with_cleanup_wait(&worker_wait)
+    });
     assert!(matches!(
-        source.shutdown_accepted_cleanup(),
-        Err(MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::Work(_)
-        ))
+        observed.recv()?,
+        crate::native_mount::retirement::SourceRetirementWait::Caller
+    ));
+    assert!(!worker.is_finished());
+    root_stop.cancel();
+    wait.cancel();
+    assert!(matches!(
+        worker
+            .join()
+            .map_err(|_| "caller cleanup worker panicked")?,
+        Err(MountSourceError::Cancelled)
     ));
     let closing_prefix = root.receipt();
     assert!(matches!(
@@ -361,19 +377,21 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
             session.retained_source = Some(source);
         }
         root_stop.cancel();
+        let wait = CancellationToken::new();
+        wait.cancel();
         let result = if driver_owned {
             packet.retire(
-                None,
+                Some(&wait),
                 crate::native_mount::retirement::SourceRetirementWait::Caller,
             )
         } else {
-            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)
+            session.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedWait(
+                &wait,
+            ))
         };
         assert!(matches!(
             result,
-            Err(NativeMountError::Materialization(
-                crate::NativeTreeMaterializationError::Work(_)
-            ))
+            Err(NativeMountError::Source(MountSourceError::Cancelled))
         ));
         assert!(if driver_owned {
             packet.retained_source.is_some()
@@ -411,40 +429,40 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
 }
 
 #[test]
-fn physical_source_cleanup_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_source_cleanup_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::Source)
 }
 
 #[test]
-fn physical_driver_packet_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_driver_packet_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::DriverPacket)
 }
 
 #[test]
-fn physical_lazy_source_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_lazy_source_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::LazySource)
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn physical_fuse_loop_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_fuse_loop_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::FuseLoop)
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn physical_darwin_loop_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_darwin_loop_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::DarwinLoop)
 }
 
 #[cfg(windows)]
 #[test]
-fn physical_projfs_stop_joins_last_lease_after_caller_poll_bank_exhaustion()
+fn physical_projfs_stop_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     physical_cleanup_joins_last_lease(PhysicalCleanupPath::ProjFsStop)
 }
@@ -460,6 +478,23 @@ enum PhysicalCleanupPath {
     DarwinLoop,
     #[cfg(windows)]
     ProjFsStop,
+}
+
+// The worker owns publication of its wait observation. If it fails or unwinds
+// before waiting, dropping the original sender makes recv report disconnection.
+struct CleanupWaitObservation(Weak<MemorySource>);
+
+impl Drop for CleanupWaitObservation {
+    fn drop(&mut self) {
+        if let Some(source) = self.0.upgrade() {
+            source
+                .capture_gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .cleanup_wait_observed
+                .take();
+        }
+    }
 }
 
 fn physical_cleanup_worker(
@@ -525,37 +560,31 @@ fn physical_cleanup_joins_last_lease(
     let weak = Arc::downgrade(&source);
     let alias = lease.clone();
     root_stop.cancel();
-    // The caller's bounded join has genuinely exhausted its original poll bank.
+    let wait = CancellationToken::new();
+    wait.cancel();
     assert!(matches!(
-        mounted.shutdown_accepted_cleanup(),
-        Err(MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::Work(_)
-        ))
+        mounted.shutdown_with_cleanup_wait(&wait),
+        Err(MountSourceError::Cancelled)
     ));
-    assert_eq!(
-        source
-            .cleanup_credit
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .ok_or("missing cleanup credit")?
-            .0
-            .remaining_work()
-            .items_examined,
-        0
-    );
     let before = root.receipt();
     let (waiting, observed) = std::sync::mpsc::channel();
     source
         .capture_gate
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .physical_cleanup_wait_observed = Some(waiting);
+        .cleanup_wait_observed = Some(waiting);
     drop(source);
-    let worker = std::thread::spawn(move || physical_cleanup_worker(path, mounted));
+    let worker_observation = CleanupWaitObservation(weak.clone());
+    let worker = std::thread::spawn(move || {
+        let _observation = worker_observation;
+        physical_cleanup_worker(path, mounted)
+    });
     // Sent while holding the actual gate, after observing a live producer and
     // before the physical join. The lease drop cannot overtake that observation.
-    observed.recv()?;
+    assert!(matches!(
+        observed.recv()?,
+        crate::native_mount::retirement::SourceRetirementWait::Physical
+    ));
     assert!(
         !worker.is_finished(),
         "physical cleanup returned before its last lease"

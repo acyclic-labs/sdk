@@ -51,7 +51,8 @@ pub(super) struct CaptureSourceGate {
     producers: u64,
     retired: bool,
     #[cfg(test)]
-    physical_cleanup_wait_observed: Option<std::sync::mpsc::Sender<()>>,
+    cleanup_wait_observed:
+        Option<std::sync::mpsc::Sender<crate::native_mount::retirement::SourceRetirementWait>>,
     #[cfg(windows)]
     pub(in crate::native_mount) namespace_bound: bool,
     ever_used: bool,
