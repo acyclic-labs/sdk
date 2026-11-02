@@ -52,6 +52,46 @@ async fn status(client: &mut AgentClient) -> Result<StatusRecord, AgentClientErr
 }
 
 #[tokio::test]
+async fn lifecycle_observation_bootstraps_latest_then_waits_for_the_committed_step()
+-> Result<(), Box<dyn std::error::Error>> {
+    let memory = Arc::new(MemoryStream::default());
+    let agent = AgentPath::root(&AgentId::from_bytes([23; 16]));
+    let path = agent.status()?;
+    let records = (0..128)
+        .map(|cursor| {
+            StatusRecord {
+                phase: Phase::Running,
+                cursor,
+                conversation: cursor,
+            }
+            .append_record()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    append(&memory, path.clone(), records).await?;
+    let pool = Client::with_transport(
+        Arc::new(Endpoint(memory.clone())),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(PlatformExecutor),
+    );
+    pool.register_credential(0, session::testing::credential())?;
+    let mut observer = AgentStatus::new(pool, agent, 0)?;
+    assert_eq!(observer.next().await?.cursor, 127);
+    let settled = StatusRecord {
+        phase: Phase::Idle,
+        cursor: 128,
+        conversation: 128,
+    };
+    let waiting = observer.next();
+    let produce = append(&memory, path, vec![settled.append_record()?]);
+    let (observed, committed) = futures::join!(waiting, produce);
+    committed?;
+    assert_eq!(observed?, settled);
+    // No conversation stream exists; a transcript follow would fail or wait.
+    assert_eq!(observer.0.residency().0, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn empty_conversation_waits_for_creation_without_selection_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let memory = Arc::new(MemoryStream::default());

@@ -2,6 +2,9 @@
 
 Rust-first, provider-neutral agent runtime. Harness owns typed conversation, task, effect, interaction, and fork semantics; providers own byte storage, history, execution checkpoints, and model-specific projection. A Rust future is not automatically a durable operation.
 
+[Paired populations](docs/experiments.md) describes file-driven experiment arms,
+live forks from one saved turn, cheap-model admission and clustered statistics.
+
 Declared instructions and skill frontmatter use the ordinary context pipeline.
 An authorized caller captures a `ContextDiscovery` revision with finite limits,
 then binds it through `HarnessBuilder::declared_context`. Skill bodies stay lazy

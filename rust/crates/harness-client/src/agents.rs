@@ -114,6 +114,30 @@ pub struct AgentClient {
     all: bool,
 }
 
+/// Lifecycle-only observation on the shared session and bounded record fold.
+/// Its surface excludes conversation access because no transcript is followed.
+pub struct AgentStatus(AgentClient);
+
+impl AgentStatus {
+    pub(crate) fn new(
+        client: Client,
+        agent: AgentPath,
+        credential: u32,
+    ) -> Result<Self, AgentClientError> {
+        Ok(Self(AgentClient::status_only(client, agent, credential)?))
+    }
+
+    /// Wait for the next committed lifecycle state. Producer/session loss
+    /// returns the original typed error from the ordinary session adapter.
+    pub async fn next(&mut self) -> Result<StatusRecord, AgentClientError> {
+        loop {
+            if let AgentEvent::Status { status, .. } = self.0.next().await? {
+                return Ok(status);
+            }
+        }
+    }
+}
+
 /// One canonical session delivery, before a frontend chooses its projection.
 pub struct AgentDelivery {
     /// Source resource; record identity is this resource plus its sequence.
@@ -175,17 +199,7 @@ impl AgentClient {
         credential: u32,
         all: bool,
     ) -> Result<Self, AgentClientError> {
-        let conversation = agent.conversation()?;
-        let mut selected = Self {
-            session: WireSession::new(client, DemandPolicy::default()),
-            agent: agent.clone(),
-            conversation,
-            streams: Vec::new(),
-            resources: Vec::new(),
-            next_stream: 0,
-            credential,
-            all,
-        };
+        let mut selected = Self::empty(client, agent.clone(), credential, all)?;
         selected.set_view(
             AgentSelection {
                 agent,
@@ -195,6 +209,40 @@ impl AgentClient {
             std::iter::empty(),
         )?;
         Ok(selected)
+    }
+
+    fn empty(
+        client: Client,
+        agent: AgentPath,
+        credential: u32,
+        all: bool,
+    ) -> Result<Self, AgentClientError> {
+        Ok(Self {
+            session: WireSession::new(client, DemandPolicy::default()),
+            conversation: agent.conversation()?,
+            agent,
+            streams: Vec::new(),
+            resources: Vec::new(),
+            next_stream: 0,
+            credential,
+            all,
+        })
+    }
+
+    /// Observe only the latest lifecycle status and subsequent transitions.
+    /// One logical follow, with no conversation history or transcript transfer.
+    fn status_only(
+        client: Client,
+        agent: AgentPath,
+        credential: u32,
+    ) -> Result<Self, AgentClientError> {
+        let path = agent.status()?;
+        let mut observer = Self::empty(client, agent.clone(), credential, false)?;
+        observer
+            .session
+            .replace_streams([(path.clone(), subscription(&path, 0, credential, true))])?;
+        observer.streams.push((agent, true, path));
+        Ok(observer)
     }
 
     /// Combined focused/visible budget. Each agent owns a conversation and a

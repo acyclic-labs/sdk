@@ -286,6 +286,14 @@ impl AgentControls {
         }
     }
 
+    /// Observe lifecycle progress with one latest-status follow on this pool.
+    pub fn observe_status(
+        &self,
+        agent: crate::AgentPath,
+    ) -> Result<crate::AgentStatus, crate::AgentClientError> {
+        crate::AgentStatus::new(self.client.clone(), agent, self.credential)
+    }
+
     /// Start bounded observation on this same authenticated pool and slot.
     pub fn observe(
         &self,
