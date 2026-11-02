@@ -1,5 +1,79 @@
 # Polling and timed-wait inventory
 
+Terminal signal child-exit successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness-tui/tests/cases/terminal_signals.rs` | Seven child-exit recheck sites routed through a one-millisecond sleep and a 900-millisecond readiness deadline | The original `Child::wait`, followed by the original PTY drain; an OS wait failure returns its I/O error. | Existing signal-disposition control passed on Linux x86_64 |
+| Same source, suspension control | Repeated nonblocking `waitpid` calls until a stopped child appears | The same child's blocking `waitpid` with `UNTRACED`; an early exit fails the original stopped-status assertion. | Compiled with the original signal control; suspension execution unqualified |
+
+Area cleanup centralizes child exit and final output collection in one fixture
+method and removes seven duplicate status-check closures. Each exit observation
+now performs one blocking child wait and one final output drain instead of a
+number of probes and sleeps determined by scheduling. Suspension performs one
+blocking OS wait instead of repeated `NOHANG` calls. The original child produces
+both statuses; already-exited or already-stopped children retain their status
+until the observer waits. Actual process exit, signal identity, paste refusal,
+escape input and terminal restoration assertions remain. Output and wait errors
+still propagate. No channel, worker, timer, allocation or product operation is
+added. Final output collection remains proportional to actual terminal bytes;
+this is not a whole-operation constant-time claim. Existing terminal readiness
+and handoff timing sites remain open for their own producer-event conversion.
+The original dropping/reopening signal-disposition control passed on Linux
+x86_64 (one test, 0.02 s), exercising four real child/signal combinations. Other
+signal controls were compiled but not executed for this change.
+
+Identity cancellation retention successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:1238` | Retry tools/call and ping until the cancelled operation admits another call | Close input and await the original serving task, which joins the dispatched operation, then inspect the retained approval. | Named cancellation/withdrawal control passed on Linux x86_64 |
+
+The original real transport control keeps its ping and cancellation reply
+assertions. Its final assertion now directly checks that device approval survived
+the completed cancellation. After joining the real transport, the same control
+also requests a missing reply and requires the original writer's retained
+withdrawal to return `None`, without a timer or a new request. Area cleanup
+deletes the request-ID counter, busy
+reply branch and readiness loop. Additional tools/call and ping requests change
+from two per probe attempt to zero; the existing EOF and serving-task join remain
+one each. The final approval check takes one existing server lock. No new event,
+channel, allocation, task, timer, syscall, round trip or payload copy is added to
+product code. The fixture has fixed work instead of work proportional to racing
+admission attempts. Dropping approval during cancellation fails the final state
+assertion. This bounded change does not claim a new admission event or close the
+broader census.
+
+The existing real transport control passed on Linux x86_64 (one test, 0.01 s),
+including the missing reply observed after writer withdrawal and retained device
+approval. This does not qualify the other transport controls or native mounts.
+
+Identity consumed-exchange release successor:
+
+| Source on preceding milestone | Kind | Replacement and terminal | Status |
+| --- | --- | --- | --- |
+| `plugin/identity/src/mcp.rs:748` | HTTP fixture waits on a Notify whose producer can disappear | One-shot release retained before subscription; producer loss ends the original HTTP response with 503. | Named release control passed on Linux x86_64 |
+
+The existing handler takes its entry sender and release receiver together under
+the original sender-slot lock, publishes entry, then awaits that release. The
+two drain controls send exactly once and detect a lost receiver. A second HTTP
+request is refused with 409 instead of entering an unowned wait. No readiness
+probe, timer or retry is added. The named real HTTP/credential control releases
+or drops the producer before the request, then requires either saved rotated
+credentials or the original identity client's typed HTTP 503 failure. This control
+passed (one test, 0.79 s). Existing drain controls remain unexecuted for this change.
+
+Area cleanup folds both event endpoints into the one existing exchange slot and
+removes the release Notify and two per-handler Arc clones. Per fixture, event
+allocations remain three: one entry channel, one shared slot and one release
+channel replacing the original Arc/Notify. Per handler, slot locks remain one;
+release receives remain one. Each release consumes its sender, so repeated
+release is excluded by ownership. The handler's bounded event work has no scan
+or retained history. Added production tasks, workers, syscalls, round trips,
+durability barriers and payload copies are zero. Actual allocation bytes,
+latency and idle CPU remain unmeasured; the broader census remains open.
+
+
 Identity HTTP-entry observation successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
@@ -4948,3 +5022,28 @@ At `6b26abe95b`, the full census completed over 6,083 source files with 91,428 c
 These three changes delete three timer configurations and add no process, worker, channel, syscall, copy, allocation or durability barrier. Child completion remains the original operating-system event. The fixed fixture inputs bound their work; neither a readiness probe nor a time-based absence assertion remains in these controls. Linux x86_64: the private-target and staging controls passed at `b4dd04835b`. The original log/status control passed at `617b3b7f8d`, 1/1 in 0.059 seconds total execution, after correcting its stale source selector for a removed later command.
 
 The original view-table Loom target compiled with the production reservation expressed as an associated function. That signature change adds no runtime work: it preserves the same original lock, serial admission and retained Arc clone. Its dedicated admitted-callback unwind control and skipped-drain negative passed 2/2 at `15c969ed96`, 0.00 seconds execution. The existing normal callback/replacement model remains unchanged. No platform adapter or whole-owner complexity result is inferred.
+
+### Terminal fixture readiness observes original I/O
+
+`rust/crates/harness-tui/tests/cases/terminal_signals.rs` replaces the shared one-millisecond readiness recheck and implicit 900 ms readiness budget with a blocking native wait on the original PTY and child stderr pipe. The parent retains a PTY slave to check restoration, so PTY EOF alone cannot identify child exit. The original child stderr EOF supplies that missing terminal. Output is drained after observing EOF, and an already published expected marker wins over the terminal; otherwise the wait returns `UnexpectedEof` with the original output. Native wait/read errors remain errors, and interrupted OS waits restart without a timer.
+
+The same fixture send operation now handles partial writes and actual write backpressure for every original input, including the oversized paste. It waits on PTY readability/writability plus original child pipe closure and drains output to avoid reciprocal pipe pressure. The former 1,024-byte retry closure is deleted. Area cleanup centralizes nonblocking output collection in one shared reader and input delivery in one send operation; predicates now observe immutable fixture state.
+
+Before: each unsuccessful readiness observation slept 1 ms and reread state until a fixed budget; paste delivery retried fixed chunks through that same readiness loop. After: zero readiness timers or periodic probes, one blocking two-descriptor OS wait when the original read/write cannot progress, and work only for actual bytes or native events. Launch adds two `fcntl` calls to make the already existing stderr pipe nonblocking; no new descriptor, process, worker, task, channel, provider request or durability barrier. Error output retains one additional buffer whose allocations/copies are proportional to original stderr bytes. Existing output searches and terminal parsing remain proportional to the finite fixture output; no whole-operation constant-work, measured idle CPU or event-latency claim is made.
+
+The real subprocess/PTY control `readiness_retains_output_and_reports_original_child_exit` exercises a child that exits before negotiation readiness and a child whose original readiness remains observable after physical exit. It retains the original readiness in the latter case and refuses the missing producer with `UnexpectedEof` in the former. Linux x86_64: `cargo test --locked -p acyclic-harness-tui --features tui --test main terminal_signals::readiness_retains_output_and_reports_original_child_exit -- --exact --nocapture`, 1/1 passed in 0.01 seconds at `a634a78da6`. Other terminal controls compiled but were not run for this successor. The original 30 ms partial-reply handoff sleep and repeated child input deadlines remain OPEN for an original decoder-deadline event or explicit clock join; this change does not qualify them as exceptions or claim whole-file closure.
+
+The first successor compile at `9b5b396629` found a setup error-type mismatch before executing the control. The fixture constructor now returns its original `io::Result` directly, preserving typed source errors without a boxed conversion/downcast. This also removes the corresponding dynamic-error projection in the original child-exit assertion. No runtime verdict follows from the failed compile.
+
+### Capture responses use their original completion
+
+| Site | Former wait | Original event and state |
+| --- | --- | --- |
+| `scripts/capture-oidc.py:37` | Implicit ten-second HTTP request window | One original response, HTTP refusal, transport error or EOF; no hidden application timeout. Actioned, source only. |
+| `scripts/capture-inference.py:46` | Implicit thirty-second HTTP request window | Same original response/stream closure and transport error, retaining actual captured bytes. Actioned, source only. |
+
+Both operations now explicitly pass `timeout=None`, so a process-wide socket default cannot reintroduce a capture deadline. They retain the original raw body/header writes, status and size refusals, usage extraction, tool-call identity and manifest provenance. An HTTP error remains its actual captured response; transport and parsing failures retain their original typed exceptions and existing exact recovery commands. Completion of an unresponsive but still connected provider is not proved by removing a timer. No provider, model, container or capture script executed for this change, and no fixture bytes were authored or replaced.
+
+Area cleanup: the inference tool capture now uses the same decoded SSE events as its original usage extraction. The duplicate UTF-8 decode, split, event-list allocation and JSON parses are deleted. Per capture invocation, four OIDC and six inference requests remain four and six; ten implicit application request windows become zero. The tool response is decoded once instead of twice (three successful streamed responses use three decodes instead of four). Added requests, processes, tasks, workers, descriptors, durability barriers and copies: zero. Remaining parsing/storage is proportional to actual response bytes, with no general constant-work or allocation-byte claim.
+
+The surrounding service launch wrappers remain OPEN: `scripts/capture-oidc-local.sh` still retries discovery every second, and `scripts/capture-inference-local.sh` still retries both service endpoints every second. They require readiness and early-exit records from the original service owners. Their real log/event fixtures must be captured before those consumers can be converted; no invented readiness text or additional healthcheck poller is admitted.
