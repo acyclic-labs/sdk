@@ -19,10 +19,11 @@ pub(super) fn plugin(instance: &str, matcher: Option<RequestMatch>) -> HookSpec 
     }
 }
 
-pub(super) fn instance(hook: &HookSpec) -> &str {
+fn identity(hook: &HookSpec) -> &str {
     match &hook.run {
         HookRun::Plugin { instance, .. } => instance,
-        _ => unreachable!("only plugin hooks here"),
+        HookRun::Shell { command, .. } => command,
+        HookRun::Executable { executable, .. } => executable,
     }
 }
 
@@ -55,7 +56,7 @@ pub(super) async fn judge(
             |hook, _, rewritten| {
                 let input = rewritten.unwrap_or(&original["tool_input"]);
                 let command = input["command"].as_str().unwrap_or_default().to_owned();
-                let name = instance(hook).to_owned();
+                let name = identity(hook).to_owned();
                 let decision = decide(&name, &command);
                 runs.borrow_mut().push((name, command));
                 std::future::ready(Ok((Some(0), decision.to_string().into_bytes(), vec![])))
@@ -68,7 +69,8 @@ pub(super) async fn judge(
 /// Step the original future across producer withdrawal, before or after its
 /// first suspension. A registered result wait must wake and retain its cause.
 /// Two explicit transition polls make a lost wake or terminal fail without a hang.
-/// Caller cancellation must retire the same pending result receiver.
+/// Caller cancellation must retire the same pending result receiver. Generated
+/// cuts cover the initial round, ordered rewrites and final-input revalidation.
 fn withdrawn(bytes: &[u8]) -> Result<()> {
     struct Wakes(AtomicUsize);
     impl Wake for Wakes {
@@ -80,12 +82,30 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
         }
     }
     const CLOSED: &str = "hook result producer closed";
-    let report = bytes.first().is_some_and(|byte| byte & 1 != 0);
+    let phase = bytes.get(3).copied().unwrap_or_default() % 3;
+    // Rewriting failure controls block immediately, preserving the original
+    // failing callback as the terminal cause before another revalidation.
+    let report = phase == 0 && bytes.first().is_some_and(|byte| byte & 1 != 0);
     let mut source = plugin("source", None);
     if report {
+        source.run = HookRun::Shell {
+            command: "source".into(),
+            shell: None,
+        };
         source.failure = HookFailure::Report;
     }
-    let configured = configured(vec![source, plugin("allow", None)])?;
+    let hooks = if phase == 0 {
+        vec![source, plugin("allow", None)]
+    } else {
+        vec![plugin("first", None), source, plugin("last", None)]
+    };
+    let configured = configured(hooks)?;
+    let wait_input = if phase == 1 { "first" } else { "final" };
+    let expected_visits = match phase {
+        0 => 2,
+        1 => 4,
+        _ => 8,
+    };
     let original = json!({"tool_name":"shell","tool_input":{"command":"checked"}});
     let registry = crate::tool::ToolRegistry::default();
     let (producer, receiver) = futures::channel::oneshot::channel::<()>();
@@ -100,9 +120,20 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
             &original,
             &registry,
             u64::MAX,
-            |hook, _, _| {
+            |hook, _, rewritten| {
                 visits.set(visits.get() + 1);
-                let result = (instance(hook) == "source").then(|| receiver.take());
+                let input = rewritten.unwrap_or(&original["tool_input"]);
+                let command = input["command"].as_str().unwrap_or_default();
+                let name = identity(hook);
+                let result = (name == "source" && (phase == 0 || command == wait_input))
+                    .then(|| receiver.take());
+                let decision: &[u8] = match (name, command) {
+                    ("first", "checked") => br#"{"allow":true,"input":{"command":"first"}}"#,
+                    ("last", command) if command != "final" => {
+                        br#"{"allow":true,"input":{"command":"final"}}"#
+                    }
+                    _ => br#"{"allow":true}"#,
+                };
                 async move {
                     if let Some(result) = result {
                         let receiver =
@@ -110,7 +141,7 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
                         receiver.await.map_err(|_| Error::Invalid(CLOSED.into()))?;
                         return Err(Error::Invalid("withdrawn producer returned success".into()));
                     }
-                    Ok((Some(0), br#"{"allow":true}"#.to_vec(), Vec::new()))
+                    Ok((Some(0), decision.to_vec(), Vec::new()))
                 }
             },
         );
@@ -118,7 +149,9 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
         let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
         let waker = Waker::from(wakes.clone());
         let mut context = Context::from_waker(&waker);
-        if suspended && (run.as_mut().poll(&mut context).is_ready() || visits.get() != 2) {
+        if suspended
+            && (run.as_mut().poll(&mut context).is_ready() || visits.get() != expected_visits)
+        {
             return Err(Error::Invalid(
                 "hook did not wait on its result producer".into(),
             ));
@@ -136,7 +169,7 @@ fn withdrawn(bytes: &[u8]) -> Result<()> {
                 ));
             };
             let output = output?;
-            if visits.get() != 2
+            if visits.get() != expected_visits
                 || output.blocks() == report
                 || output.updated_input.is_some()
                 || !matches!(
@@ -275,7 +308,9 @@ mod tests {
         for first in 0..6 {
             for second in 0..6 {
                 for cancel in 0..2 {
-                    check(&[first, second, cancel]).await?;
+                    for phase in 0..3 {
+                        check(&[first, second, cancel, phase]).await?;
+                    }
                 }
             }
         }
