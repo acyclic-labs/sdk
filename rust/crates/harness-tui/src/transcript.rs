@@ -5,7 +5,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use std::collections::VecDeque;
+use std::{borrow::Cow, collections::VecDeque};
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_BLOCKS: usize = 128;
@@ -50,7 +50,7 @@ impl TranscriptRows {
     pub fn push(&mut self, prompt: bool, text: &str) {
         self.clear_pending();
         self.truncated |= text.len() > MAX_BLOCK_BYTES;
-        self.push_owned(prompt, bounded_text(text));
+        self.push_owned(prompt, bounded_text(text).into_owned());
     }
 
     fn push_owned(&mut self, prompt: bool, text: String) {
@@ -164,17 +164,17 @@ impl TranscriptRows {
     }
 }
 
-fn bounded_text(text: &str) -> String {
+fn bounded_text(text: &str) -> Cow<'_, str> {
     let text = text.trim_end_matches('\n');
     if text.len() <= MAX_BLOCK_BYTES {
-        return text.to_owned();
+        return Cow::Borrowed(text);
     }
     let minimum = text.len() - (MAX_BLOCK_BYTES - OMITTED.len() - 1);
     let start = text
         .grapheme_indices(true)
         .find(|(at, _)| *at >= minimum)
         .map_or(text.len(), |(at, _)| at);
-    format!("{OMITTED}\n{}", &text[start..])
+    Cow::Owned(format!("{OMITTED}\n{}", &text[start..]))
 }
 
 /// A prompt is shown bold as typed; an answer is rendered markdown.
@@ -345,7 +345,8 @@ mod tests {
                     .all(|line| line.width() <= usize::from(width))
             );
         }
-        let text = bounded_text(&format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES)));
+        let source = format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES));
+        let text = bounded_text(&source);
         assert!(text.len() <= MAX_BLOCK_BYTES);
         assert!(text.ends_with("e\u{301}end"));
         assert!(text.starts_with(OMITTED));
