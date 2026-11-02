@@ -338,11 +338,13 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
             let path = agent.machine("generated-target").unwrap();
             let record = read(&provider, &path, 1).await;
             assert_eq!(record.sequence, 1);
-            let mut binding = serde_json::from_slice(&record.value).unwrap();
-            let binding_source = Source::project(&account, &path, &record);
-            let placement = Placement::project(binding_source, &binding).unwrap();
+            let placement = Placement::project(&agent, &account, &path, &record).unwrap();
             assert_eq!(placement.binding.machine, sandbox);
-            assert!(std::ptr::eq(placement.binding, &binding));
+            assert_eq!(placement.source.origin, record.origin.as_str());
+            assert!(std::ptr::eq(
+                placement.source.commit_id,
+                record.commit_id.as_bytes()
+            ));
             assert!(
                 placement.host.is_none()
                     && placement.region.is_none()
@@ -350,11 +352,41 @@ fn resource_files_retain_original_fork_evidence_and_unknown_physical_work() {
                     && placement.core.is_none()
             );
             assert!(placement.executor_shard.is_none());
+            let foreign =
+                crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([15; 16]));
+            assert!(Placement::project(&foreign, &account, &path, &record).is_err());
+            assert!(
+                Placement::project(
+                    &agent,
+                    &account,
+                    &agent.machine("foreign-target").unwrap(),
+                    &record,
+                )
+                .is_err()
+            );
+            let plan = read(&provider, &path, 0).await;
+            assert!(Placement::project(&agent, &account, &path, &plan).is_err());
+            let selected = foreign.machine("generated-target").unwrap();
+            provider
+                .fork(ForkRequest {
+                    source: path.clone(),
+                    destination: selected.clone(),
+                    at_tail: Some(2),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            let inherited = read(&provider, &selected, 1).await;
+            let child = Placement::project(&foreign, &account, &selected, &inherited).unwrap();
+            assert_eq!(child.source.stream, selected.as_str());
+            assert_eq!(child.source.origin, path.as_str());
+            assert_eq!(child.source.commit_id, placement.source.commit_id);
+            assert_eq!(child.binding, placement.binding);
+            let mut invalid = record.clone();
+            let mut binding = placement.binding;
             binding.version ^= 1;
-            assert!(matches!(
-                Placement::project(binding_source, &binding),
-                Err(Error::Version)
-            ));
+            invalid.value = serde_json::to_vec(&binding).unwrap().into();
+            assert!(Placement::project(&agent, &account, &path, &invalid).is_err());
         }
         // Projection cost is independent of source payload size. Serialization
         // remains proportional to the visible output and is not measured here.
