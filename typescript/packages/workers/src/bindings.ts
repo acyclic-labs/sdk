@@ -37,8 +37,8 @@ function kind(binding: semantic.Binding) {
 }
 
 /** Materialize selected, host-admitted deployment declarations as typed env objects.
- * Complete canonical admission and producer availability checks before any host
- * factory runs. Retain those exact producers and their original receiver for the
+ * Complete canonical admission and require selected factory functions before any
+ * host factory runs. Retain those exact producers and their original receiver for the
  * batch. Resource producers keep the original grant and invocation. */
 export async function materializeBindings<A = never, H = never, M = never, S = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S>): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S>>>> {
   const selected = await admitDeploymentBindings(declarations);
@@ -48,7 +48,9 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
   function retain<K extends keyof BindingAuthority<A, H, M, S>>(key: K): void {
     if (Object.hasOwn(producers, key)) return;
     const producer = authority[key];
-    if (producer === undefined) throw new TypeError(`binding materialization: missing ${key} producer; recovery: supply the original admitted host producer before guest entry`);
+    const absent = producer === undefined || producer === null;
+    if (absent || (key !== "stateTransaction" && key !== "guestAdmission" && typeof producer !== "function"))
+      throw new TypeError(`binding materialization: ${absent ? "missing" : "non-callable"} ${key} producer; recovery: supply the original admitted host producer before guest entry`);
     producers[key] = producer;
   }
   for (const binding of selected) {
