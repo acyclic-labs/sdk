@@ -18,6 +18,10 @@ build = "build.rs"
 name = "agent-record-corpus"
 path = "examples/agent-record-corpus.rs"
 
+[[example]]
+name = "experiment-analysis"
+path = "examples/experiment-analysis.rs"
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

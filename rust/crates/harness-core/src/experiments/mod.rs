@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod analysis;
 pub mod probes;
 pub mod reports;
 pub mod stats;
@@ -15,6 +16,11 @@ pub enum Error {
         "analyze experiment observations: {0}; recovery: correct inputs and repeat the failed call to Observation::new, Observation::decode, Observation::difference, Observation::cost_difference, AssignedTrials::push/report, Cluster::push, PairedStats::push/estimate or required_clusters"
     )]
     Statistics(&'static str),
+    /// Invalid ordering, arm selection or incomplete input to the file analysis.
+    #[error(
+        "analyze observation stream: {0}; recovery: choose distinct arms, retain every declared assignment in strictly increasing (population, replicate) order with baseline then treatment, and call analysis::Contrast::new and Contrast::analyze again"
+    )]
+    Analysis(&'static str),
     /// Original observation decoder failure.
     #[error(
         "decode observation: {0}; recovery: correct the version-2 JSON object and call Observation::decode"
@@ -60,7 +66,7 @@ pub struct Observation(ObservationFile);
 impl Observation {
     /// Admit one complete version-2 JSON object before numerical analysis.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        Self::admit(crate::executor::json::decode_object(bytes)?)
+        Ok(serde_json::from_slice(bytes)?)
     }
 
     /// Admit a caller-built row without serializing its identity.
@@ -84,30 +90,17 @@ impl Observation {
     /// Score treatment minus baseline, or unknown if either score is missing.
     /// Pair identity is checked even for missing scores; admission is not repeated.
     pub fn difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {
-        self.check_pair(baseline)?;
-        let (Some(score), Some(baseline)) = (self.0.score, baseline.0.score) else {
-            return Ok(None);
-        };
-        let difference = score - baseline;
-        if !difference.is_finite() {
-            return Err(Error::Statistics("paired difference overflow"));
-        }
-        Ok(Some(difference))
+        self.pair(baseline)?.score()
     }
 
     /// Complete cost treatment minus baseline, independently of score validity.
     /// Unknown if either cost is missing. Admitted costs are finite/nonnegative,
     /// so their difference is finite without another numerical check.
     pub fn cost_difference(&self, baseline: &Self) -> Result<Option<f64>, Error> {
-        self.check_pair(baseline)?;
-        Ok(self
-            .0
-            .cost_usd
-            .zip(baseline.0.cost_usd)
-            .map(|(cost, baseline)| cost - baseline))
+        Ok(self.pair(baseline)?.cost())
     }
 
-    fn check_pair(&self, baseline: &Self) -> Result<(), Error> {
+    fn pair<'a>(&'a self, baseline: &'a Self) -> Result<Pair<'a>, Error> {
         let (row, baseline) = (&self.0, &baseline.0);
         if row.population != baseline.population
             || row.replicate != baseline.replicate
@@ -115,7 +108,7 @@ impl Observation {
         {
             return Err(Error::Statistics("observations are not a matched pair"));
         }
-        Ok(())
+        Ok(Pair { row, baseline })
     }
 
     fn admit(row: ObservationFile) -> Result<Self, Error> {
@@ -130,6 +123,39 @@ impl Observation {
             ));
         }
         Ok(Self(row))
+    }
+}
+
+impl<'de> Deserialize<'de> for Observation {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        let row = crate::executor::json::deserialize_object(decoder)?;
+        Self::admit(row).map_err(serde::de::Error::custom)
+    }
+}
+
+// One admission for callers consuming both contrasts; no row is copied.
+struct Pair<'a> {
+    row: &'a ObservationFile,
+    baseline: &'a ObservationFile,
+}
+
+impl Pair<'_> {
+    fn score(&self) -> Result<Option<f64>, Error> {
+        let (Some(score), Some(baseline)) = (self.row.score, self.baseline.score) else {
+            return Ok(None);
+        };
+        let difference = score - baseline;
+        if !difference.is_finite() {
+            return Err(Error::Statistics("paired difference overflow"));
+        }
+        Ok(Some(difference))
+    }
+
+    fn cost(&self) -> Option<f64> {
+        self.row
+            .cost_usd
+            .zip(self.baseline.cost_usd)
+            .map(|(cost, baseline)| cost - baseline)
     }
 }
 
