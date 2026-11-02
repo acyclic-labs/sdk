@@ -156,6 +156,104 @@ async fn off_markers_require_end_of_file_across_effective_reads_and_discovery() 
 }
 
 #[tokio::test]
+async fn effective_media_versions_require_current_source_authority() -> Result<()> {
+    use crate::{
+        Capabilities,
+        filesystem::FilesystemContentPublisher,
+        runtime::{Bindings, ContentBindings, RuntimeScope},
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let harness = open(directory.path()).await?;
+    let path = "authority-control.png";
+    let grant = ContentGrant::verify(
+        &harness.verifier,
+        &harness.signed,
+        &harness.scratch,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    // Reuse the recorded encoder output and its provenance in notebook-output.md.
+    let file = harness
+        .files
+        .put_content(
+            &harness.scratch,
+            &grant,
+            path,
+            include_bytes!("../../../../harness-core/tests/fixtures/notebook-output.png"),
+            "image/png",
+            path,
+            u64::MAX,
+            &IdempotencyKey::new("media-authority-control")?,
+            None,
+            ContentAccess::default(),
+        )
+        .await?;
+    let version =
+        serde_json::to_string(&file).map_err(|error| Error::Invalid(error.to_string()))?;
+    let private = || -> Result<_> {
+        Ok(ContentBindings {
+            volume: harness.journal.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(FilesystemContentPublisher::new(
+                harness.files.clone(),
+                &harness.journal,
+                &harness.verifier,
+                &harness.signed,
+                harness.limits.file_bytes,
+                None,
+            )?),
+        })
+    };
+    for (grants, authorized) in [
+        (Capabilities::default(), false),
+        (Capabilities::new([file.read_capability(&mut None)?]), false),
+        (
+            Capabilities::new([harness.scratch.directory_read_capability("", &mut None)?]),
+            true,
+        ),
+    ] {
+        let bindings = Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new(["tool:call:read"]),
+                harness.limits.clone(),
+            )?,
+            artifacts: Some(ContentBindings {
+                volume: harness.scratch.clone(),
+                reader: harness.client_reader()?,
+                writer: None,
+            }),
+            ..Bindings::local()
+        }
+        .build()?;
+        let task = Arc::new(bindings.agent_context(&grants, private()?)?);
+        let result = run(
+            task,
+            crate::tool::files::read()?,
+            json!({
+                "path": format!("{}{path}", crate::layers::EFFECTIVE_PATH),
+                "version": version, "selection": {"kind": "image", "detail": "auto"}
+            }),
+        )
+        .await;
+        if authorized {
+            let result = result?;
+            assert_eq!(
+                result.value["file"]["content"],
+                serde_json::to_value(&file).map_err(|error| Error::Invalid(error.to_string()))?
+            );
+        } else {
+            let error = result.expect_err("an old file reference cannot grant a mounted read");
+            assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn system_reads_keep_the_run_generation_and_require_original_authority() -> Result<()> {
     use crate::{
         Capabilities,
