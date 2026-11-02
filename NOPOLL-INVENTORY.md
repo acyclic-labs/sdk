@@ -19,8 +19,9 @@ operation's Server-mutex release and credential assertions.
 One real transport/HTTP fixture control omits device approval to exercise the
 original pre-HTTP login refusal, then separately aborts the original HTTP producer
 before entry observation. It requires `InvalidData` and `UnexpectedEof`, closes
-the original transport and joins its serving task. Execution is pending. Existing
-successful entry, blocked output, EOF, cancellation and fault controls remain.
+the original transport and joins its serving task. The named source-loss control
+passed on Linux x86_64 (one test, 0.01 s). Existing successful entry, blocked
+output, EOF, cancellation and fault controls remain unexecuted for this change.
 
 Area cleanup centralizes three entry waits, deletes the duplicate biased select,
 and replaces the shared fixture's coalescing entry Notify with a one-shot event.
