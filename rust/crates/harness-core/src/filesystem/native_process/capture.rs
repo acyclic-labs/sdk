@@ -77,11 +77,7 @@ type CaptureResult = std::io::Result<
 /// What the spawn turn left: a finished result, or a running capture.
 enum Started<H: acyclic_native_runtime::CaptureHandler> {
     Finished(CaptureResult, H),
-    Running(
-        acyclic_native_runtime::TaskHandle<
-            std::io::Result<acyclic_native_runtime::CaptureOutcome<H>>,
-        >,
-    ),
+    Running(acyclic_native_runtime::ProcessCapture<H>),
     Streaming(acyclic_native_runtime::ProcessCaptureStream<H>),
 }
 
@@ -171,44 +167,47 @@ pub async fn start_capture<H: acyclic_native_runtime::CaptureHandler>(
     // Spawning runs there too; the running child then holds no worker: the
     // capture awaits readiness between its turns.
     let spawner = acyclic_native_runtime::TaskSpawner::current();
-    let started =
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let schedule = invocation.schedule;
-                let maximum_output_bytes = invocation.maximum_output_bytes;
-                match start(invocation, &mut handler) {
-                    Ok(Ok((tree, input))) => {
-                        // Transfer physical custody before returning from the
-                        // worker. Losing the waiter cannot drop an unsubmitted tree.
-                        match retention {
-                            OutputRetention::Collect => Started::Running(spawner.spawn(
-                                tree.capture(schedule, maximum_output_bytes, input, handler),
-                            )),
-                            OutputRetention::Observe => Started::Streaming(tree.stream_capture(
-                                &spawner,
-                                schedule,
-                                maximum_output_bytes,
-                                input,
-                                handler,
-                            )),
-                        }
+    let started = acyclic_native_runtime::run_blocking_io(
+        move || {
+            let schedule = invocation.schedule;
+            let maximum_output_bytes = invocation.maximum_output_bytes;
+            match start(invocation, &mut handler) {
+                Ok(Ok((tree, input))) => {
+                    // Transfer physical custody before returning from the
+                    // worker. Losing the waiter cannot drop an unsubmitted tree.
+                    match retention {
+                        OutputRetention::Collect => Started::Running(tree.capture(
+                            &spawner,
+                            schedule,
+                            maximum_output_bytes,
+                            input,
+                            handler,
+                        )),
+                        OutputRetention::Observe => Started::Streaming(tree.stream_capture(
+                            &spawner,
+                            schedule,
+                            maximum_output_bytes,
+                            input,
+                            handler,
+                        )),
                     }
-                    Ok(Err(output)) => Started::Finished(Ok(output), handler),
-                    Err(error) => Started::Finished(Err(error), handler),
                 }
-            },
-            None,
-        )
-        .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
-        .await
-        .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
+                Ok(Err(output)) => Started::Finished(Ok(output), handler),
+                Err(error) => Started::Finished(Err(error), handler),
+            }
+        },
+        None,
+    )
+    .map_err(|error| Error::Storage(format!("native process capture admission: {error}")))?
+    .await
+    .map_err(|error| Error::Storage(format!("native process observer interrupted: {error}")))?;
     Ok(async move {
         let (output, handler) = match started {
             Started::Finished(output, handler) => (output, handler),
             Started::Running(capture) => {
                 // Ownership stays with the spawned capture until process cleanup
                 // finishes, even if its awaiting task is cancelled.
-                let outcome = capture.await.and_then(|outcome| outcome).map_err(|error| {
+                let outcome = capture.await.map_err(|error| {
                     Error::Storage(format!("native process observer interrupted: {error}"))
                 })?;
                 (Ok(outcome.result), outcome.handler)

@@ -150,12 +150,13 @@ pub(super) async fn run_hook(
             .map_err(Error::process_io)?;
             // Transfer physical custody before returning from the worker.
             // Cancelling its observer cannot drop an unsubmitted live tree.
-            Ok(spawner.spawn(tree.capture(
+            Ok(tree.capture(
+                &spawner,
                 timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
                 maximum_bytes,
                 Some(OwnedCaptureInput::Literal(input)),
                 handler,
-            )))
+            ))
         },
         None,
     )
@@ -164,10 +165,7 @@ pub(super) async fn run_hook(
     .map_err(Error::process_io)??;
     // The spawned capture keeps ownership of the tree until its cleanup
     // finishes, even if this hook's caller is cancelled.
-    let outcome = capture
-        .await
-        .and_then(|outcome| outcome)
-        .map_err(Error::process_io)?;
+    let outcome = capture.await.map_err(Error::process_io)?;
     let output = outcome.result.map_err(|failure| {
         Error::process_exit(
             failure.error,

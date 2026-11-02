@@ -57,10 +57,10 @@ pub use windows::terminal;
 pub use process_tree::PreparedClosedProcess;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
-    ControlledCapture, OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream,
-    ProcessChunk, ProcessCommand, ProcessControl, ProcessCustody, ProcessCustodyLease,
-    ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessStdio, ProcessTree,
-    ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome, ProcessWake,
+    ControlledCapture, OwnedCaptureInput, ProcessCapture, ProcessCaptureFailure,
+    ProcessCaptureStream, ProcessChunk, ProcessCommand, ProcessControl, ProcessCustody,
+    ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessStdio,
+    ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWaitOutcome, ProcessWake,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::{

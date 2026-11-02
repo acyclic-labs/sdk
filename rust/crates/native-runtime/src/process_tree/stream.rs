@@ -1,7 +1,7 @@
 //! Credit-driven output handoff from the same native capture pump.
 use super::*;
 use std::future::{Future, poll_fn};
-use std::pin::pin;
+use std::pin::{Pin, pin};
 use std::task::Poll;
 use tokio::sync::mpsc;
 
@@ -57,12 +57,29 @@ impl<H: CaptureHandler> Capture<H> {
     }
 }
 
+/// Completion of the original owned capture task. Dropping detaches its
+/// observer; the task retains physical custody through cleanup. Cancellation
+/// uses the original handler's stop event, never task abortion.
+pub struct ProcessCapture<H: CaptureHandler> {
+    pub(super) completion: crate::TaskHandle<io::Result<CaptureOutcome<H>>>,
+}
+
+impl<H: CaptureHandler> Future for ProcessCapture<H> {
+    type Output = io::Result<CaptureOutcome<H>>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().completion)
+            .poll(context)
+            .map(|result| result.and_then(std::convert::identity))
+    }
+}
+
 /// The output receiver and original cleanup owner of one process tree.
 /// Dropping it closes output credit, waking capture even for a quiet child.
 /// The detached owner still joins the original tree before releasing custody.
 pub struct ProcessCaptureStream<H: CaptureHandler> {
     receiver: mpsc::Receiver<ProcessChunk>,
-    completion: crate::TaskHandle<io::Result<CaptureOutcome<H>>>,
+    completion: ProcessCapture<H>,
 }
 
 impl<H: CaptureHandler> ProcessCaptureStream<H> {
@@ -87,16 +104,14 @@ impl<H: CaptureHandler> ProcessCaptureStream<H> {
         context: &mut std::task::Context<'_>,
     ) -> Poll<io::Result<CaptureOutcome<H>>> {
         self.receiver.close();
-        std::pin::Pin::new(&mut self.completion)
-            .poll(context)
-            .map(|result| result.and_then(std::convert::identity))
+        Pin::new(&mut self.completion).poll(context)
     }
 
     /// Joins physical cleanup and returns original callbacks and custody.
     /// Calling before output EOF cancels remaining output and the process.
     pub async fn finish(self) -> io::Result<CaptureOutcome<H>> {
         drop(self.receiver);
-        self.completion.await?
+        self.completion.await
     }
 }
 
@@ -116,13 +131,15 @@ impl ProcessTree {
         handler: H,
     ) -> ProcessCaptureStream<H> {
         let (sender, receiver) = mpsc::channel(1);
-        let completion = spawner.spawn(self.capture_driven(
-            schedule.into(),
-            max_bytes.into(),
-            input,
-            handler,
-            Some(sender),
-        ));
+        let completion = ProcessCapture {
+            completion: spawner.spawn(self.capture_driven(
+                schedule.into(),
+                max_bytes.into(),
+                input,
+                handler,
+                Some(sender),
+            )),
+        };
         ProcessCaptureStream {
             receiver,
             completion,
