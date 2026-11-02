@@ -20,13 +20,14 @@ import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
 import { qualification } from "./qualification.mjs";
-import { failureReport, publishReport } from "./report.mjs";
+import { failedCase, failureReport, finishCase, publishReport, retainCapture, verifyReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
 import { variants } from "./serial.mjs";
 import { conversation } from "./conversation.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
+const recovery = [process.execPath, ...process.argv.slice(1)];
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
 const binary = resolve(binaryArg), mock = resolve(mockArg);
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,7 @@ async function execute(test, prepared) {
   const begin = performance.now();
   const { fixture, artifact, seconds: preparationSeconds } = prepared;
   const captures = [], interrupted = [];
+  let result;
   try {
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
@@ -141,7 +143,7 @@ async function execute(test, prepared) {
         running.child.kill("SIGKILL");
         const result = await running.exited;
         assert.ok(result.signal || result.code !== 0);
-        interrupted.push(running.closed.then(capture => captures.push(capture)));
+        interrupted.push(retainCapture(running.closed, captures));
         continue;
       } else if (input.mode === "jsonl") {
         // Message `<operation>:e2e`: rerunning the operation replays its answer.
@@ -165,22 +167,22 @@ async function execute(test, prepared) {
     await checkTree(test);
     contexts.set(test.id, { test, fixture, captures, artifact });
     const productSeconds = (performance.now() - begin) / 1000;
-    return { case: test.id, platform: process.platform, status: "pass", seconds: preparationSeconds + productSeconds,
+    result = { case: test.id, platform: process.platform, status: "pass", seconds: preparationSeconds + productSeconds,
       preparation_seconds: preparationSeconds, product_seconds: productSeconds };
   } catch (error) {
     let treeFailure;
     try { await checkTree(test); } catch (treeError) { treeFailure = failureReport(treeError); }
     const productSeconds = (performance.now() - begin) / 1000;
-    return { case: test.id, platform: process.platform, status: "fail", phase: "run", seconds: preparationSeconds + productSeconds,
+    result = { case: test.id, platform: process.platform, status: "fail", phase: "run", seconds: preparationSeconds + productSeconds,
       preparation_seconds: preparationSeconds, product_seconds: productSeconds, ...failureReport(error),
       tree_failure: treeFailure, workspace: fixture.workspace };
   } finally {
-    await Promise.all(interrupted);
+    result = await finishCase(result, interrupted, recovery);
     evidence.set(test.id, { captures });
   }
+  return result;
 }
-async function verify(result, allRecords) {
-  const records = allRecords.filter(record => record.case === result.case);
+function verify(result, records) {
   if (result.status === "fail") return result;
   const { test, fixture, captures } = contexts.get(result.case);
   try {
@@ -233,22 +235,18 @@ try { execution = await withOwnedCase({ processes, signal: cancellation.signal, 
 } }); }
 catch (error) {
   const failure = failureReport(error);
-  const detail = `step=case-${failedPhase ?? currentPhase}: ${failure.error}\nrecovery command: ${JSON.stringify([process.execPath, ...process.argv.slice(1)])}`;
-  results = cases.map((test, index) => {
-    const result = results?.[index];
-    return { ...failure, ...result, case: test.id, platform: process.platform, status: "fail", phase: result?.phase ?? failedPhase ?? currentPhase,
-      ...(result?.error ? { lifecycle_failure: failure } : {}),
-      error: result?.error ? `${result.error}\n${detail}` : detail };
-  });
+  results = cases.map((test, index) => failedCase({ ...results?.[index], case: test.id, platform: process.platform },
+    failure, failedPhase ?? currentPhase ?? "setup", recovery));
   execution = { preparation_seconds: phases.preparation?.seconds };
 }
 finally { cancellation.dispose(); }
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
-const allRecords = port ? await recordedRequests(events, join(output, "requests.jsonl")) : [];
-results = await Promise.all(results.map(result => verify(result, allRecords)));
-results = results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
-  requests: allRecords.filter(record => record.case === result.case) } }));
+const verified = await verifyReport(results,
+  () => port ? recordedRequests(events, join(output, "requests.jsonl")) : [],
+  verify, recovery);
+results = verified.results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
+  ...(verified.requests ? { requests: verified.requests.get(result.case) ?? [] } : {}) } }));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, product_seconds: execution.seconds, preparation_seconds: execution.preparation_seconds,
   phases, limit_seconds: 10, results, output, roots,

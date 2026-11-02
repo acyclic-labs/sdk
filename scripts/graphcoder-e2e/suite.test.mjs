@@ -1,11 +1,87 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool } from "./process.mjs";
 import { commandCancellation, withOwnedCase } from "./suite.mjs";
+import { failureReport, finishCase, retainCapture } from "./report.mjs";
+
+test("capture failure preserves the case result and joins every original child", async () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "case-capture-"));
+  try {
+    for (const failed of [false, true]) {
+      const processes = new Processes({ onProgress(event) {
+        if (event.phase === "node-spawn") readFileSync(join(root, "missing-progress-sink"));
+      } });
+      let original;
+      try { readFileSync(join(root, "original-missing-input")); }
+      catch (error) { original = failureReport(error); }
+      const prior = { case: "native-capture", status: failed ? "fail" : "pass", ...(failed ? original : {}) };
+      const first = processes.start(process.execPath, ["-e", "process.exitCode=7"]);
+      const held = processes.start(process.execPath, ["-e", "process.stdin.resume()"]);
+      const captures = [], pending = [retainCapture(first.closed, captures), retainCapture(held.closed, captures)];
+      const recovery = [process.execPath, "--test", fileURLToPath(import.meta.url)];
+      let settled = false;
+      const finishing = finishCase(prior, pending, recovery);
+      finishing.then(() => settled = true, () => settled = true);
+      try {
+        await first.exited;
+        assert.equal(settled, false, "an earlier capture rejection cannot release a remaining producer");
+        held.child.stdin.end();
+        const result = await finishing;
+        assert.equal(result.status, "fail", "a failed capture cannot qualify a pass");
+        assert.equal(result.capture_failures.length, 2);
+        for (const failure of result.capture_failures) assert.match(failure.cause, /ENOENT/);
+        if (failed) {
+          assert.equal(result.error, original.error);
+          assert.equal(result.capture_failure.step, "case-capture");
+        } else {
+          assert.equal(result.phase, "capture");
+          assert.equal(result.error, result.capture_failures[0].error);
+        }
+        assert.equal(processes.children.size, 0);
+      } finally {
+        held.child.stdin.end();
+        await assert.rejects(processes.close(), error => error.name === "ProcessObservationFailed");
+        await finishing;
+      }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
+
+test("native retirement failure preserves the operation cause and remains fatal on its own", async () => {
+  const parent = realpathSync(tmpdir()), root = mkdtempSync(join(parent, "case-failure-"));
+  try {
+    for (const operationFails of [false, true]) {
+      const phases = [], processes = new Processes({ onProgress(event) {
+        if (event.phase === "node-spawn") readFileSync(join(root, "missing-progress-sink"));
+      } });
+      let original;
+      const running = withOwnedCase({ processes, onPhase: event => phases.push(event), run: async () => {
+        const child = processes.start(process.execPath, ["-e", "process.exitCode=7"]);
+        const result = await child.exited;
+        if (operationFails) {
+          try { assert.equal(result.code, 0, "original native exit"); }
+          catch (error) { original = error; throw error; }
+        }
+      } });
+      await assert.rejects(running, error => operationFails ? error === original
+        : error.name === "ProcessObservationFailed" && error.cause.code === "ENOENT");
+      assert.equal(processes.children.size, 0, "failure publication must follow physical retirement");
+      const retired = phases.find(event => event.phase === "retired" && event.outcome === "failed");
+      assert.match(retired.failure.error, /process observation failed at node-spawn/);
+      assert.match(retired.failure.cause, /ENOENT/);
+      if (operationFails) {
+        const run = phases.find(event => event.phase === "run" && event.outcome === "failed");
+        assert.equal(run.failure.error, original.stack);
+        assert.equal(run.failure.assertion.actual, "7");
+        assert.equal(run.failure.assertion.expected, "0");
+      }
+    }
+  } finally { rmSync(root, { recursive: true }); }
+});
 
 test("owned cases join cleanup before returning or propagating failure", async () => {
   for (const failed of [false, true]) {

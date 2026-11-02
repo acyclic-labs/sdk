@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
+import { failureReport } from "./report.mjs";
 
 // The command caller owns SIGINT and SIGTERM cancellation.
 export function commandCancellation() {
@@ -22,17 +23,23 @@ export function commandCancellation() {
  * @template Result
  * @param {{processes: {close(): unknown}, prepare?: () => any,
  * run: (prepared: any) => Result | Promise<Result>,
- * onPhase?: (event: {phase: string, outcome: string, seconds: number}) => void,
+ * onPhase?: (event: {phase: string, outcome: string, seconds: number, failure?: ReturnType<typeof failureReport>}) => void,
  * origin?: number, signal?: AbortSignal}} options
  */
 export async function withOwnedCase({ processes, prepare, run, onPhase, origin, signal = undefined }) {
   assert.ok(processes && typeof processes.close === "function" && typeof run === "function",
     "owned-case step=admit failed; recovery command: call withOwnedCase({processes,run}) with the caller's process scope");
   const entered = origin ?? performance.now();
-  let started, preparationSeconds = 0, phaseFailure;
-  const phase = (name, outcome) => {
-    try { onPhase?.({ phase: name, outcome, seconds: (performance.now() - entered) / 1000 }); }
-    catch (error) { phaseFailure ??= error; }
+  let started, preparationSeconds = 0, failure;
+  const phase = (name, outcome, error) => {
+    if (outcome === "failed") failure ??= { cause: error };
+    try {
+      if (onPhase) {
+        const event = { phase: name, outcome, seconds: (performance.now() - entered) / 1000 };
+        if (outcome === "failed") event.failure = failureReport(error);
+        onPhase(event);
+      }
+    } catch (error) { failure ??= { cause: error }; }
   };
   let result;
   /** @type {Promise<unknown> | undefined} */
@@ -60,25 +67,26 @@ export async function withOwnedCase({ processes, prepare, run, onPhase, origin, 
         prepared = await invoke(prepare);
         phase("preparation", "completed");
       }
-      catch (error) { phase("preparation", "failed"); throw error; }
+      catch (error) { phase("preparation", "failed", error); throw error; }
       preparationSeconds = (performance.now() - entered) / 1000;
     }
-    if (phaseFailure) throw phaseFailure;
+    if (failure) throw failure.cause;
     phase("admitted", "completed");
-    if (phaseFailure) throw phaseFailure;
+    if (failure) throw failure.cause;
     started = performance.now();
     phase("run", "entered");
-    if (phaseFailure) throw phaseFailure;
+    if (failure) throw failure.cause;
     try { result = await invoke(() => run(prepared)); phase("run", "completed"); }
-    catch (error) { phase("run", "failed"); throw error; }
+    catch (error) { phase("run", "failed", error); throw error; }
   }
+  catch (error) { failure ??= { cause: error }; }
   finally {
     phase("retired", "entered");
     try { await processes.close(); phase("retired", "completed"); }
-    catch (error) { phase("retired", "failed"); throw error; }
+    catch (error) { phase("retired", "failed", error); }
     finally { await pending?.catch(() => {}); }
   }
-  if (phaseFailure) throw phaseFailure;
+  if (failure) throw failure.cause;
   return { run: result, seconds: (performance.now() - started) / 1000,
     preparation_seconds: preparationSeconds, total_seconds: (performance.now() - entered) / 1000 };
 }
