@@ -16,6 +16,12 @@ mock, with no live model call. Codex 0.164.0 source
 `943c9d40e41c6a022a241ab19dab5431d7639aa8` retains its `result` line.
 No event fields were rewritten. Other events were omitted.
 
+The native session lifecycle controls replay the original full stdout from
+that capture, and this Pi refusal, into the settlement log. They read the
+committed bytes before and after replacing the workspace owner. This checks
+log retention and resume identity; it does not execute the installed hosts or
+restart the harness process.
+
 SHA-256:
 
 - Codex: `570f3b075daf21ce326fb22b28df4f512f1d21436d9152ec339ff0a147e9a160`.
