@@ -250,10 +250,10 @@ async function hook(run) {
   return code === 0 ? 0 : 1;
 }
 
-function git(cloud, args, options = {}) {
-  const result = spawnSync("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { encoding: "utf8", ...options });
+function git(cloud, args) {
+  const result = spawnSync("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud, ...args], { encoding: "utf8" });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${String(result.stderr).trim()}`);
-  return typeof result.stdout === "string" ? result.stdout.trim() : result.stdout;
+  return result.stdout.trim();
 }
 
 /** Untracked installed dependency directories, which a committed snapshot lacks. */
@@ -268,13 +268,51 @@ export function dependencyDirectories(root, relative = "") {
   return found;
 }
 
+/** Extract the committed tree through one OS pipe, joining both original children. */
+export async function extractSnapshot(cloud, destination) {
+  const children = [];
+  const failures = new Map();
+  const failed = (step, detail) => {
+    const first = failures.size === 0;
+    if (!failures.has(step)) failures.set(step, detail);
+    if (first) for (const child of children) child.kill("SIGKILL");
+  };
+  const completed = (child, step) => {
+    children.push(child);
+    return new Promise(resolve => {
+      child.once("error", error => failed(step, error.message));
+      child.once("close", (code, signal) => {
+        if (code !== 0) failed(step, `exit=${code ?? signal}`);
+        resolve();
+      });
+    });
+  };
+  const stop = () => failed("snapshot-cancel", "termination requested");
+  process.on("SIGINT", stop); process.on("SIGTERM", stop);
+  try {
+    const archive = spawn("git", ["--no-optional-locks", "-c", `safe.directory=${cloud}`, "-C", cloud,
+      "archive", "--format=tar", "HEAD"], { stdio: ["ignore", "pipe", "inherit"] });
+    const archived = completed(archive, "snapshot-archive");
+    let extracted;
+    try {
+      const tar = spawn("tar", ["-x", "-C", destination], { stdio: [archive.stdout, "inherit", "inherit"] });
+      extracted = completed(tar, "snapshot-extract");
+    } catch (error) { failed("snapshot-extract", error.message); }
+    finally { archive.stdout.destroy(); }
+    await Promise.all([archived, extracted]);
+  } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+  if (failures.size) {
+    const detail = [...failures].map(([step, result]) => `step=${step}; ${result}`).join("; ");
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+    throw new Error(`${detail}; recovery=git -C ${quote(cloud)} archive --format=tar HEAD | tar -x -C ${quote(destination)}`);
+  }
+}
+
 /** A private copy of the committed tree the binaries were built from. */
-function snapshot(cloud, destination) {
+async function snapshot(cloud, destination) {
   if (git(cloud, ["status", "--porcelain", "--untracked-files=no"])) throw new Error("the cloud checkout has uncommitted changes, so a snapshot would differ from its build");
   fs.mkdirSync(destination);
-  const archive = git(cloud, ["archive", "--format=tar", "HEAD"], { encoding: "buffer", maxBuffer: 1 << 30 });
-  const tar = spawnSync("tar", ["-x", "-C", destination], { input: archive });
-  if (tar.status !== 0) throw new Error(`snapshot extraction failed: ${tar.stderr}`);
+  await extractSnapshot(cloud, destination);
   for (const directory of dependencyDirectories(cloud)) {
     if (fs.existsSync(path.join(destination, path.dirname(directory)))) fs.symlinkSync(path.join(cloud, directory), path.join(destination, directory));
   }
@@ -291,7 +329,7 @@ async function main(options) {
   fs.mkdirSync(state, { mode: 0o700 });
   fs.mkdirSync(cache, { mode: 0o700 });
   const cloud = path.join(options.out, "cloud");
-  snapshot(options.cloud, cloud);
+  await snapshot(options.cloud, cloud);
   const { QUALIFICATION_BINARIES } = await import(pathToFileURL(path.join(cloud, "ops/local/qualification-binaries.mjs")).href);
   const bin = path.join(options.out, "bin");
   fs.mkdirSync(bin);
