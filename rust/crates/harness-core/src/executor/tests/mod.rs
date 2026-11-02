@@ -778,7 +778,7 @@ mod context_input_reuse;
 mod final_message;
 mod invocation_bounds;
 mod live_execution;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_tools;
 mod output_bounds;
 #[cfg(feature = "filesystem")]
