@@ -10,7 +10,7 @@ use std::{
     pin::pin,
     sync::Arc,
     task::{Context, Poll, Waker},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::Semaphore;
 use tracing_subscriber::prelude::*;
@@ -30,10 +30,7 @@ fn original_intervals_preserve_overlap_and_terminal_disposition()
 -> Result<(), Box<dyn std::error::Error>> {
     for details in [false, true] {
         for composition in 0..3 {
-            let origin = IntervalOrigin {
-                domain: [1; 16],
-                instant: Instant::now(),
-            };
+            let (origin, anchor) = IntervalOrigin::capture_unix([1; 16])?;
             let (export, mut output) = Export::channel(Arc::new(Semaphore::new(5)), details);
             let dispatch = match composition {
                 0 => {
@@ -84,6 +81,13 @@ fn original_intervals_preserve_overlap_and_terminal_disposition()
                         coordinates.finished_ns - coordinates.started_ns,
                         sample.elapsed.as_nanos()
                     );
+                    let unix = anchor.project(coordinates)?;
+                    assert_eq!(
+                        unix.finished_unix_ns - unix.started_unix_ns,
+                        sample.elapsed.as_nanos()
+                    );
+                    assert_eq!(unix.domain, coordinates.domain);
+                    assert_eq!(unix.read_window_ns, anchor.read_window_ns);
                 }
             }
             assert_eq!(first.sample().parent_id, root.id().as_ref());
@@ -111,11 +115,13 @@ fn original_intervals_preserve_overlap_and_terminal_disposition()
 
 #[test]
 fn interval_projection_refuses_foreign_origins_without_allocating() {
-    let instant = Instant::now();
-    let origin = IntervalOrigin {
-        domain: [2; 16],
-        instant,
-    };
+    let mut captured = None;
+    let setup = acyclic_test_support::measure(|| {
+        captured = Some(IntervalOrigin::capture_unix([2; 16]).unwrap());
+    });
+    assert_eq!((setup.count_total, setup.bytes_total), (0, 0));
+    let (origin, anchor) = captured.unwrap();
+    let instant = origin.instant;
     // Internally generated coordinates, not fabricated external observations.
     let interval = OperationInterval {
         started: instant + Duration::from_nanos(1),
@@ -157,6 +163,70 @@ fn interval_projection_refuses_foreign_origins_without_allocating() {
     let first = origin.project(interval).unwrap();
     let second = origin.project(shifted).unwrap();
     assert!(first.finished_ns < second.started_ns);
+    for count in [1, 100, 1000] {
+        let measured = acyclic_test_support::measure(|| {
+            for _ in 0..count {
+                let unix = anchor.project(first).unwrap();
+                assert_eq!(unix.finished_unix_ns - unix.started_unix_ns, 2);
+                assert_eq!(
+                    anchor.project(acyclic_observability::IntervalCoordinates {
+                        domain: [3; 16],
+                        ..first
+                    }),
+                    Err(IntervalError::ForeignDomain)
+                );
+                assert_eq!(
+                    anchor.project(acyclic_observability::IntervalCoordinates {
+                        started_ns: first.finished_ns,
+                        finished_ns: first.started_ns,
+                        ..first
+                    }),
+                    Err(IntervalError::Reversed)
+                );
+            }
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+    }
+    // Mutated original observations are refusal controls, not clock fixtures.
+    let zero = acyclic_observability::IntervalCoordinates {
+        started_ns: 0,
+        finished_ns: 0,
+        ..first
+    };
+    assert_eq!(
+        acyclic_observability::UnixClockAnchor {
+            observed_unix_ns: 0,
+            read_window_ns: 2,
+            ..anchor
+        }
+        .project(zero),
+        Err(IntervalError::UnixRange)
+    );
+    let extreme = acyclic_observability::UnixClockAnchor {
+        observed_unix_ns: u128::MAX,
+        read_window_ns: 2,
+        ..anchor
+    };
+    // Apply the midpoint before addition: the representable boundary succeeds.
+    assert_eq!(
+        extreme
+            .project(acyclic_observability::IntervalCoordinates {
+                started_ns: 1,
+                finished_ns: 1,
+                ..first
+            })
+            .unwrap()
+            .started_unix_ns,
+        u128::MAX
+    );
+    assert_eq!(
+        extreme.project(acyclic_observability::IntervalCoordinates {
+            started_ns: 2,
+            finished_ns: 2,
+            ..first
+        }),
+        Err(IntervalError::UnixRange)
+    );
     // A clock domain remains an original producer fact; projection never
     // silently replaces it with another process's identity.
     assert_ne!(
