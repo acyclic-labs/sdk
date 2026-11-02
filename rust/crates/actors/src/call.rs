@@ -367,6 +367,34 @@ pub struct Receipt {
     pub outcome: Outcome,
 }
 
+/// Borrowed original receipt from the call reader, without copying result bytes
+/// or failure text. The owned [`Receipt`] uses this same assembly boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReceiptRef<'a> {
+    /// The call's journal.
+    pub log: &'a StreamPath,
+    /// The committed request, when present.
+    pub request: Option<Committed>,
+    /// The original terminal, absent for a fenced call.
+    pub terminal: Option<Committed>,
+    /// The original acceptance's settling fence, when no terminal exists.
+    pub fence: Option<&'a StreamPath>,
+    /// The original reader's settled disposition.
+    pub outcome: &'a Outcome,
+}
+
+impl From<ReceiptRef<'_>> for Receipt {
+    fn from(receipt: ReceiptRef<'_>) -> Self {
+        Self {
+            log: receipt.log.clone(),
+            request: receipt.request,
+            terminal: receipt.terminal,
+            fence: receipt.fence.cloned(),
+            outcome: receipt.outcome.clone(),
+        }
+    }
+}
+
 /// A reader's fold of one journal, applied record by record in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Journal {
@@ -441,9 +469,17 @@ impl Journal {
     /// The call's committed receipt, once settled.
     #[must_use]
     pub fn receipt(&self, log: &StreamPath) -> Option<Receipt> {
-        let outcome = self.outcome.clone()?;
-        Some(Receipt {
-            log: log.clone(),
+        self.receipt_ref(log).map(Receipt::from)
+    }
+
+    /// Borrows the original committed receipt, once settled, with no allocation
+    /// or copy. Consumers must use this reader's disposition rather than decode
+    /// a cancellation terminal in isolation and lose its acceptance context.
+    #[must_use]
+    pub fn receipt_ref<'a>(&'a self, log: &'a StreamPath) -> Option<ReceiptRef<'a>> {
+        let outcome = self.outcome.as_ref()?;
+        Some(ReceiptRef {
+            log,
             request: self.request,
             terminal: self.terminal,
             fence: self
@@ -452,7 +488,7 @@ impl Journal {
                 .then(|| {
                     self.accepted
                         .as_ref()
-                        .and_then(|accepted| accepted.fence.clone())
+                        .and_then(|accepted| accepted.fence.as_ref())
                 })
                 .flatten(),
             outcome,

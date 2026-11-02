@@ -185,6 +185,7 @@ remain separate from this offline codec:
 | `agents` / `placement` | `metrics::placement::project` consumes the original settled `MachineBinding` v2 and stream envelope. Coverage is logical provider placement; physical location and resource measurements stay unknown. Requires `machines`. |
 | `edges` / `stream_record_shared` | `metrics::stream_records::project` preserves an authorized original record's account, origin, sequence and commit ID, separately from the selected destination. Coverage is logical record-value bytes; union original identities before summing. |
 | `turns` / `operation_interval` | Original operation binding, parent and collector clock domain with checked relative start/end coordinates. Unknown Unix placement stays unknown. Actual producer edges must establish causality. |
+| `outcomes` / `call_receipt` | `metrics::calls::project` borrows an original Actors `call::Journal` receipt and its authorized original terminal or fence record. Scope-owned calls need no agent. |
 
 Interval integration remains reserved. The stream projection
 accepts the original `Record`, selected `StreamPath` and authenticated
@@ -232,6 +233,38 @@ its selected source, encodes two typed references and formats at most one parent
 ID. It retains one row and one binding, with work proportional to their selected
 bytes rather than history or agent count. It adds no execution reads, provider
 requests, publication commits, durability barriers, flushes or waits.
+
+Call outcomes reuse that same original-envelope encoder. Supply the existing
+Actors call reader and `CallPath`, plus its original terminal record, or the
+original observed session-fence record when no terminal exists. The projection
+checks the selected caller/path and terminal sequence/commit binding; it does
+not replay the protocol or read its journal again. `Journal::receipt_ref` is the
+shared borrowed assembly boundary, also used by the owned receipt API; projection
+does not copy outcome text or result bytes. The caller remains responsible
+for source authorization and the original scope identity. Caller labels alone
+do not certify provenance.
+
+`scope_path` is independent of nullable `agent_path`. A scope-owned call has
+no fabricated SoftwareAgent in RDF. `caller`, `call_log` and `outcome` retain
+the original caller and folded disposition. A cancellation after acceptance is
+`indeterminate`, even when the raw terminal says `cancelled`. Missing request
+receipt remains null; request sequence/commit are known without claiming its
+unknown original origin. A settling `fence` has no `terminal_sequence`, distinct
+from a genuine terminal at sequence zero. Coverage is `original_call_terminal`
+or `original_call_fence`; `logical_value_bytes` measures that source record,
+including a fence marker when selected, rather than inferred callee output.
+RDF observation identity also includes the original call log: one session-fence
+record can settle many different calls, which remain distinct observations of
+that shared source.
+
+No model operation, content type, complete read set, physical work or clock is
+inferred from opaque call IDs or result bytes. Projection retains one row,
+borrows the original receipt and leaves its payload unread and uncopied. It
+encodes original account/commit metadata, scope/caller/log paths and fixed
+disposition fields, independently of chunk count, history and payload size.
+It adds zero execution operations, waits, workers, commits or barriers. Existing
+row constructors now share one base constructor and one envelope constructor;
+scope-only and agent-owned facts use the same schema and RDF path.
 
 Existing object identity or `AlreadyExists` alone never
 proves zero physical writes, and overlapping sibling durations are not added

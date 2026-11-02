@@ -52,7 +52,7 @@ pub fn project(
     {
         return Err(refuse("has a foreign source, target or version"));
     }
-    let mut row = Row::stream(agent.as_str(), account, selected, record, "placement");
+    let mut row = Row::stream(Some(agent.as_str()), account, selected, record, "placement");
     row.binding_version = Some(binding.version);
     row.provider = Some(
         serde_json::to_string(binding.machine.as_resource().provider()).map_err(export_error)?,

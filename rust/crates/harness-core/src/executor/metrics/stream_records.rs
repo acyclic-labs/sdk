@@ -27,7 +27,7 @@ pub fn project(
     record: &Record,
 ) -> Result<Batch> {
     let mut row = Row::stream(
-        agent_path,
+        Some(agent_path),
         account,
         selected,
         record,
