@@ -16,6 +16,16 @@ fn record<T: AgentRecord + std::fmt::Debug + PartialEq>(bytes: &[u8]) {
 /// Every accepted record or checkpoint must preserve its typed value.
 /// Parsers are synchronous; completion requires no producer or event.
 pub fn check(bytes: &[u8]) {
+    if let Ok(text) = std::str::from_utf8(bytes)
+        && let Ok(path) = AgentPath::try_from(text.to_owned())
+    {
+        assert!(path.depth() <= super::MAX_DEPTH);
+        assert_eq!(path.as_str(), text);
+        assert_eq!(
+            AgentPath::try_from(path.to_string()).expect("canonical path reopens"),
+            path
+        );
+    }
     record::<InboxRecord>(bytes);
     record::<StatusRecord>(bytes);
     record::<Closed>(bytes);

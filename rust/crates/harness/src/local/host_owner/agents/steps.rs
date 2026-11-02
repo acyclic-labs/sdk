@@ -19,6 +19,7 @@ pub(super) fn start(mut session: Session, inbox: u64, input: TurnInput) -> Resul
 /// The open turn's step: `session` in its checkpoint, awaiting the next hook.
 pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
     Ok(TurnStep {
+        reserved_children: 0,
         checkpoint: Some(serde_json::to_vec(session).map_err(storage)?),
         outs,
         wait: Wait::Host(HOST.into()),
@@ -28,6 +29,7 @@ pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
 
 pub(super) fn idle(outs: Vec<Out>) -> TurnStep {
     TurnStep {
+        reserved_children: 0,
         checkpoint: None,
         outs,
         wait: Wait::Input,
