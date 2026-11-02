@@ -209,6 +209,51 @@ async fn system_reads_keep_the_run_generation_and_require_original_authority() -
         assert!(!metadata.contains_key("value"));
     }
 
+    // A versioned effective read follows its original generation even after
+    // the home entry is replaced by an off marker. Ordinal reads use the same
+    // selection, while an unversioned read observes the new disabled entry.
+    let note = format!("{}notes.txt", crate::layers::EFFECTIVE_PATH);
+    write(&harness, "notes.txt", "first\nsecond\n").await?;
+    let before = run(
+        task.clone(),
+        crate::tool::files::read()?,
+        json!({"path": note}),
+    )
+    .await?;
+    let selected: FileReadSource = serde_json::from_value(before.value["file"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let FileReadSource::Authored(selected) = selected else {
+        panic!("authored home")
+    };
+    let version = format!(
+        "authored-file-v1:{}",
+        serde_json::to_string(&selected).map_err(|error| Error::Invalid(error.to_string()))?
+    );
+    write(&harness, "notes.txt", "off: true").await?;
+    let reread = run(
+        task.clone(),
+        crate::tool::files::read()?,
+        json!({
+            "path": note, "version": version
+        }),
+    )
+    .await?;
+    assert_eq!(reread.value, before.value);
+    let line = run(task.clone(), crate::tool::files::read()?, json!({
+        "path": note, "version": version, "selection": {"kind": "lines", "offset": 1, "limit": 1}
+    })).await?;
+    assert_eq!(line.value["text"], "second\n");
+    assert_eq!(line.value["file"], before.value["file"]);
+    assert!(
+        run(
+            task.clone(),
+            crate::tool::files::read()?,
+            json!({"path": note})
+        )
+        .await
+        .is_err()
+    );
+
     // Neither a home shadow nor a subsequent trusted host commit changes this run.
     write(&harness, path, "home shadow").await?;
     let reference = workspace_ref(

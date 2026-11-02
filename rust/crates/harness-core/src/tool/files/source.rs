@@ -23,7 +23,7 @@ impl FileReadSource {
         }
     }
 
-    pub(super) fn volume(&self) -> &crate::conversation::VolumeRef {
+    pub(crate) fn volume(&self) -> &crate::conversation::VolumeRef {
         match self {
             Self::Content(file) => file.volume(),
             Self::Authored(file) => &file.volume,
