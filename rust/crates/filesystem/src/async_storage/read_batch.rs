@@ -85,9 +85,7 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
             let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
             let read = R::read(store, request, &mut read_work).await;
             if !batch.is_native() {
-                batch.work = batch
-                    .work
-                    .with_backend(read_work.spent(), batch.allocations.live_bytes())?;
+                batch.record_completed(read_work.spent())?;
                 let retained = match &read {
                     Ok(ObjectRead {
                         retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
@@ -115,11 +113,7 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
         Ok(values)
     }
     .await;
-    if !context.is_native() {
-        context.work = context
-            .work
-            .with_backend(batch.spent(), context.allocations.live_bytes())?;
-    }
+    context.record_completed(batch.work)?;
     result.map(authority_parts)
 }
 

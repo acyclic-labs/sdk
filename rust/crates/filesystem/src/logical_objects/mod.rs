@@ -97,13 +97,7 @@ macro_rules! operate {
             let result = $body;
             (result, $work.spent())
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = $context.original.is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
-        if !native {
-            $context.work = $context.work.checked_add(spent)?;
-        }
+        $context.record_completed(spent)?;
         result.map_err(crate::async_storage::object_error)
     }};
 }

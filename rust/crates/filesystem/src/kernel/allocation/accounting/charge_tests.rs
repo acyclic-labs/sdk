@@ -171,7 +171,7 @@ fn exactly_one(locks: usize) -> Result<(), usize> {
 }
 
 #[test]
-fn each_kernel_charge_visits_the_original_leaf_once() {
+fn kernel_admission_visits_the_original_leaf_once() {
     let root_cancel = crate::CancellationToken::new();
     let caller_cancel = crate::CancellationToken::new();
     let root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &root_cancel).unwrap();
@@ -210,6 +210,19 @@ fn each_kernel_charge_visits_the_original_leaf_once() {
                     result.unwrap();
                     assert!(exactly_one(locks).is_err());
                 }
+                let accounting = KernelAccounting::native(&work, &caller_cancel);
+                let ((result, heap), locks) = root
+                    .state
+                    .count_locks(|| measured(|| accounting.remaining()));
+                result.unwrap();
+                exactly_one(locks).unwrap();
+                no_heap_work(heap).unwrap();
+                let (result, locks) = root.state.count_locks(|| {
+                    accounting.check()?;
+                    accounting.remaining()
+                });
+                result.unwrap();
+                assert!(exactly_one(locks).is_err());
             }
         }
     }
@@ -218,6 +231,11 @@ fn each_kernel_charge_visits_the_original_leaf_once() {
         KernelAccounting::native(&root, &caller_cancel).charge(WorkCounters::UNCHARGED)
     });
     assert!(result.is_err());
+    exactly_one(locks).unwrap();
+    let (result, locks) = root
+        .state
+        .count_locks(|| KernelAccounting::native(&root, &caller_cancel).remaining());
+    assert!(matches!(result, Err(crate::FsError::Cancelled(_))));
     exactly_one(locks).unwrap();
     let limited = root
         .native_volume_work(WorkBudget {
