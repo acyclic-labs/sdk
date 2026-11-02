@@ -332,12 +332,13 @@ fn archive_capture_keeps_dirty_publisher_vcs_separate_and_binds_catalog_identity
     assert!(validate_source_info(&false_archive.source, &false_archive.channel).is_err());
     let output = tempfile::tempdir().unwrap();
     write_bundle(&data, output.path(), true).unwrap();
-    let mut index = load_version_index(output.path()).unwrap();
+    let schema = DocsSchema::new().unwrap();
+    let mut index = load_version_index(output.path(), &schema).unwrap();
     index.releases[0].captured_source = Some(CapturedSource::Git {
         revision: data.source.revision.clone(),
     });
     index.latest = Some(index.releases[0].clone());
-    assert!(validate_version_index(&index, output.path())
+    assert!(validate_version_index(&index, output.path(), &schema)
         .unwrap_err()
         .to_string()
         .contains("captured source differs"));
@@ -373,7 +374,7 @@ fn immutable_yanked_prereleases_never_replace_latest_stable_and_bind_index_metad
         }
         let data = build(&input, &scope).unwrap();
         write_bundle(&data, output.path(), false).unwrap();
-        let unadmitted = load_version_index(output.path()).unwrap();
+        let unadmitted = load_version_index(output.path(), &DocsSchema::new().unwrap()).unwrap();
         assert!(!unadmitted
             .releases
             .iter()
@@ -387,7 +388,7 @@ fn immutable_yanked_prereleases_never_replace_latest_stable_and_bind_index_metad
             assert!(write_bundle(&changed, output.path(), true).is_err());
         }
     }
-    let mut index = load_version_index(output.path()).unwrap();
+    let mut index = load_version_index(output.path(), &DocsSchema::new().unwrap()).unwrap();
     assert_eq!(index.latest.as_ref().unwrap().version, "0.1.5");
     assert_eq!(index.historical_prereleases.len(), 1);
     assert!(index.historical_prereleases[0].released_packages[0].yanked);
@@ -397,10 +398,12 @@ fn immutable_yanked_prereleases_never_replace_latest_stable_and_bind_index_metad
         serde_json::to_vec(&index).unwrap(),
     )
     .unwrap();
-    assert!(load_version_index(output.path())
-        .unwrap_err()
-        .to_string()
-        .contains("immutable data"));
+    assert!(
+        load_version_index(output.path(), &DocsSchema::new().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("immutable data")
+    );
 }
 #[test]
 fn qualified_candidates_are_explicit_and_cannot_replace_actual_registry_latest() {
@@ -423,7 +426,7 @@ fn qualified_candidates_are_explicit_and_cannot_replace_actual_registry_latest()
         fs::read(output.path().join("sdk-docs-versions.v1.json")).unwrap()
     );
     super::super::write_bundle(&candidate, output.path(), false).unwrap();
-    let index = load_version_index(output.path()).unwrap();
+    let index = load_version_index(output.path(), &DocsSchema::new().unwrap()).unwrap();
     assert_eq!(index.latest.as_ref().unwrap().version, "0.1.5");
     assert_eq!(index.release_candidates.len(), 1);
     assert_eq!(
@@ -453,7 +456,8 @@ fn yanked_stable_is_selectable_immutable_and_never_latest() {
         scope.released_packages[0].yanked = yanked;
         let data = build(&input, &scope).unwrap();
         write_bundle(&data, output.path(), true).unwrap();
-        let mut index = load_version_index(output.path()).unwrap();
+        let schema = DocsSchema::new().unwrap();
+        let mut index = load_version_index(output.path(), &schema).unwrap();
         assert_eq!(index.latest.as_ref().unwrap().version, latest);
         assert!(index.releases.iter().any(|entry| entry.version == version));
         if yanked {
@@ -465,7 +469,7 @@ fn yanked_stable_is_selectable_immutable_and_never_latest() {
                 .iter()
                 .find(|entry| entry.version == version)
                 .cloned();
-            assert!(validate_version_index(&index, output.path())
+            assert!(validate_version_index(&index, output.path(), &schema)
                 .unwrap_err()
                 .to_string()
                 .contains("maximum release"));
