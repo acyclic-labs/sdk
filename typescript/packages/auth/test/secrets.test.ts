@@ -1,28 +1,48 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer, type RequestListener } from "node:http";
 import { SecretsClient } from "../src/secrets.js";
 import { CredentialCache, CredentialSnapshot } from "../src/credential.js";
 import { SecretsClient as WireClient } from "../src/wasm.js";
 import { SecretKind, SecretListRequestSchema } from "../generated/proto/auth/v1/auth_pb.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 
+async function serve(fetch: RequestListener) {
+  const server = createServer(fetch);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+  });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    async close() {
+      const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      server.closeAllConnections();
+      await closed;
+    },
+  };
+}
+
 test("WASM/TS secrets refuse missing invocation ownership before credentials and HTTP", async () => {
   const planted = "PLANTED_SECRET_DO_NOT_LOG_6547";
   let calls = 0;
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() {
+  const server = await serve((_request, response) => {
     calls++;
-    return new Response(planted, { status: 403 });
-  }});
+    response.writeHead(403).end(planted);
+  });
   let credentials = 0;
   const credential = () => { credentials++; return "allowed-fixture"; };
-  const client = new SecretsClient(server.url.origin, credential, undefined);
-  const wire = new WireClient(server.url.origin, credential, undefined, undefined);
+  const client = new SecretsClient(server.origin, credential, undefined);
+  const wire = new WireClient(server.origin, credential, undefined, undefined);
   async function refused(pending: Promise<unknown>) {
     const outcome = await pending.then(
       () => ({ code: "unexpected_success", message: "request admitted" }),
       (error: unknown) => error,
     );
-    expect(outcome).toMatchObject({ code: "missing_operation_context" });
-    expect(String(outcome)).not.toContain(planted);
+    assert.equal((outcome as { code: string }).code, "missing_operation_context");
+    assert(!String(outcome).includes(planted));
   }
   try {
     await refused(client.list({ scope: "fixture" }));
@@ -33,13 +53,13 @@ test("WASM/TS secrets refuse missing invocation ownership before credentials and
     // create() alone silently drops account: both original admission boundaries
     // must still reject unknown selectors without invoking the credential owner.
     const illegal = { scope: "fixture", account: planted };
-    expect(create(SecretListRequestSchema, illegal)).not.toHaveProperty("account");
-    await expect(client.list(illegal)).rejects.toThrow("invalid request");
+    assert(!Object.hasOwn(create(SecretListRequestSchema, illegal), "account"));
+    await assert.rejects(client.list(illegal), /invalid request/);
     const unknown = new Uint8Array([...canonical, 0x7a, 3, 98, 97, 100]);
-    await expect(wire.list(unknown)).rejects.toThrow("invalid request");
-    expect(credentials).toBe(0);
-    expect(calls).toBe(0);
-  } finally { client.free(); wire.free(); await server.stop(true); }
+    await assert.rejects(wire.list(unknown), /invalid request/);
+    assert.equal(credentials, 0);
+    assert.equal(calls, 0);
+  } finally { client.free(); wire.free(); await server.close(); }
 });
 
 function deferred<T>() {
@@ -57,20 +77,18 @@ test("original WASM/TS invocation owns successful HTTP, stopped inputs and open 
     const stopped = new AbortController();
     let calls = 0;
     let credentials = 0;
-    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
+    const server = await serve((request, response) => {
       calls++;
-      expect(request.headers.get("authorization")).toBe("Bearer allowed-fixture");
-      if (mode === "ready") return Response.json({ generation: 7, variables: [], nextCursor: null });
-      entered.resolve();
-      if (mode === "cancelled") {
-        await release.promise; // HTTP headers have not been published.
-        return new Response(planted);
+      assert.equal(request.headers.authorization, "Bearer allowed-fixture");
+      if (mode === "ready") {
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ generation: 7, variables: [], nextCursor: null }));
+        return;
       }
-      return new Response(new ReadableStream({ start(controller) {
-        controller.enqueue(new TextEncoder().encode("{"));
-        void release.promise.then(() => controller.close()).catch(() => {});
-      }})); // Success headers, but the original response body has no EOF.
-    }});
+      if (mode !== "cancelled") response.writeHead(200).write("{");
+      entered.resolve();
+      // Cancellation holds headers; other stops hold a response before EOF.
+      void release.promise.then(() => response.end());
+    });
     const credential = async () => {
       credentials++;
       if (mode === "credential") { entered.resolve(); await release.promise; }
@@ -81,14 +99,14 @@ test("original WASM/TS invocation owns successful HTTP, stopped inputs and open 
       return new CredentialSnapshot("allowed-fixture", "original", 100);
     }, () => ({ nowUnixSeconds: 1, revision: "original" }));
     if (mode === "pre-stopped") stopped.abort(planted);
-    const client = new SecretsClient(server.url.origin, mode === "credential-source" ? cache.provider : credential,
+    const client = new SecretsClient(server.origin, mode === "credential-source" ? cache.provider : credential,
       { deadlineUnixMillis, stopped: stopped.signal });
     try {
       const pending = client.list({ scope: "fixture" });
       if (mode === "ready") {
-        expect((await pending).generation).toBe(7n);
-        expect(calls).toBe(1);
-        expect(credentials).toBe(1);
+        assert.equal((await pending).generation, 7n);
+        assert.equal(calls, 1);
+        assert.equal(credentials, 1);
       } else {
         if (mode !== "pre-stopped") {
           // An early transport/credential failure must end this control too.
@@ -97,14 +115,14 @@ test("original WASM/TS invocation owns successful HTTP, stopped inputs and open 
           else stopped.abort(mode === "deadline" ? "deadline" : planted);
         }
         const outcome = await pending.then(() => undefined, error => error);
-        expect(outcome).toMatchObject({ code: mode === "credential-source" ? "credential_unavailable"
-          : mode === "deadline" ? "operation_deadline" : "operation_cancelled" });
-        expect(String(outcome)).not.toContain(planted);
-        if (mode === "pre-stopped") { expect(credentials).toBe(0); expect(calls).toBe(0); }
-        if (mode === "credential") expect(calls).toBe(0);
+        assert.equal(outcome?.code, mode === "credential-source" ? "credential_unavailable"
+          : mode === "deadline" ? "operation_deadline" : "operation_cancelled");
+        assert(!String(outcome).includes(planted));
+        if (mode === "pre-stopped") { assert.equal(credentials, 0); assert.equal(calls, 0); }
+        if (mode === "credential") assert.equal(calls, 0);
       }
     } finally {
-      release.resolve(); client.free(); await server.stop(true);
+      release.resolve(); client.free(); await server.close();
     }
   }
 });
