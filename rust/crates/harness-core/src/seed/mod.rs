@@ -49,6 +49,14 @@ const FILES: &[(&str, &[u8])] = &[
         "plugins/compaction/plugin.ts",
         include_bytes!("plugins/compaction/plugin.ts"),
     ),
+    (
+        "plugins/spawn/plugin.ts",
+        include_bytes!("plugins/spawn/plugin.ts"),
+    ),
+    (
+        "plugins/spawn/spawn.ts",
+        include_bytes!("plugins/spawn/spawn.ts"),
+    ),
     skill!("advisor-consultation"),
     skill!("candidate-search"),
     skill!("context-checkpoint"),
