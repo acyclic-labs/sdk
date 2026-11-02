@@ -46,7 +46,11 @@ mod prompt_files;
 #[cfg(feature = "tui")]
 mod prompt_input;
 #[cfg(feature = "tui")]
+mod query_controller;
+#[cfg(feature = "tui")]
 mod query_page;
+#[cfg(feature = "tui")]
+pub use query_controller::QueryController;
 #[cfg(feature = "tui")]
 pub use query_page::QueryPage;
 #[cfg(feature = "tui")]
