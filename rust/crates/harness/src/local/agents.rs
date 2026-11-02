@@ -531,7 +531,7 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
+        let runtime = crate::hosting::Runtime::start(Arc::clone(&server))?;
         Ok(Hosted { server, runtime })
     }
 }

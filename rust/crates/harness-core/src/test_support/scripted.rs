@@ -14,6 +14,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod native;
+
 /// One provider response. A string emits text followed by completion; an event
 /// list is replayed exactly, including errors, incomplete streams and metadata.
 #[derive(Clone, Debug, Serialize)]

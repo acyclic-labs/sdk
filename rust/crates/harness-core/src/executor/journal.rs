@@ -59,6 +59,14 @@ pub struct ExecutionJournalCacheId(OperationId);
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Retains the same journal authority for an independent summary operation.
+    /// The serving owner supplies cancellation; the foreground turn's stop and
+    /// approval state are not inherited. Unsupported hosts keep inline compaction.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn summary_journal(&self, _io: &PreparationIo) -> Result<Option<Arc<dyn ExecutionJournal>>> {
+        Ok(None)
+    }
+
     /// Authenticates private working cuts issued by this journal binding.
     /// Without this capability the original journal's content and compaction
     /// proof validation still bind its working cut; no signature is claimed.
@@ -334,6 +342,17 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn authenticate_summary<'a>(
         &'a self,
         _file: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(false) })
+    }
+
+    /// Checks the complete selected summary against its original publication.
+    /// A summary completed by another operation cannot use this turn's model
+    /// completion event as evidence.
+    fn authenticate_compaction_summary<'a>(
+        &'a self,
+        _summary: &'a crate::context::ContextSummary,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || async { Ok(false) })

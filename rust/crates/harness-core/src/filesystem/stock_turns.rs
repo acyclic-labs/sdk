@@ -129,6 +129,8 @@ impl TurnContext for Grants {
 /// the tools with the turn's agent tools bound to its effects, the limits and
 /// compaction, then the host's [`TurnContext`].
 pub struct StockExecutors {
+    #[cfg(not(target_arch = "wasm32"))]
+    session: super::session::SessionBinding,
     model: Model,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
@@ -221,6 +223,8 @@ impl StockExecutors {
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            session: super::session::SessionBinding::default(),
             model,
             provider,
             tools,
@@ -255,6 +259,11 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn admit_session(&self, session: &Arc<super::SessionWork>) -> Result<()> {
+        self.session.admit(session)
+    }
+
     fn render_bytes(&self) -> Option<u64> {
         Some(self.limits.render_bytes)
     }
@@ -325,6 +334,13 @@ impl TurnExecutors for StockExecutors {
             )
             .with_limits(self.limits)
             .with_compaction_policy(self.compaction.clone());
+            #[cfg(not(target_arch = "wasm32"))]
+            let executor = executor.with_session(
+                self.session
+                    .get()?
+                    .map(|session| session.agent(&agent.path.id()))
+                    .transpose()?,
+            );
             let executor = self
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)

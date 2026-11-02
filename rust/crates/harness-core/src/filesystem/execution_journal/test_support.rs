@@ -1,6 +1,6 @@
 use super::*;
 
-pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
+pub(crate) async fn journal() -> Result<(
     FilesystemExecutionJournal<
         acyclic_stream::MemoryStream,
         acyclic_fs::MemoryAuthorityBackend,

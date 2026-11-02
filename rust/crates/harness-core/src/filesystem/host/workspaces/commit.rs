@@ -265,12 +265,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match commit {
             TransactionCommit::Committed(generation)
             | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. }
-            | TransactionCommit::Fenced
-            | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
+            TransactionCommit::Conflict { .. } => Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Conflict,
-                "workspace publication conflicted or was fenced",
+                "workspace publication dependencies changed",
+            )),
+            TransactionCommit::Fenced => Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "workspace publication authority was fenced",
+            )),
+            TransactionCommit::IdempotencyConflict => Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Conflict,
+                "workspace publication key belongs to different input",
             )),
         }
     }

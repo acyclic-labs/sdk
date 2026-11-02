@@ -1,5 +1,597 @@
 use super::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn serving_summary_preserves_native_file_admission() -> Result<()> {
+    use crate::conversation::{BoundedContentFuture, ContentResidencyVerifier, VolumeOperation};
+    use crate::extension::{
+        ExtensionIdentity, ExtensionRegistry, ExtensionRuntime, NativeExtension,
+    };
+
+    struct Reader(Arc<dyn ExecutionJournal>);
+    impl ContentResidencyVerifier for Reader {
+        fn read<'a>(
+            &'a self,
+            file: &'a FileRef,
+            maximum: u64,
+            _: Option<&'a Capabilities>,
+            io: Option<&'a PreparationIo>,
+        ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if file.descriptor().byte_length() > maximum {
+                return Err(Error::Invalid("selected file exceeds read credit".into()));
+            }
+            self.0.load(file, io)
+        }
+    }
+    struct Options(ExtensionIdentity);
+    impl NativeExtension for Options {
+        fn identity(&self) -> ExtensionIdentity {
+            self.0.clone()
+        }
+    }
+
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let journal = Arc::new(journal);
+    let publication = OperationId::new();
+    let file = journal
+        .stage(publication, "image", b"image bytes", "image/png", None)?
+        .await?;
+    let options = journal
+        .stage(
+            publication,
+            "options",
+            b"{\"detail\":\"high\"}",
+            "application/json",
+            None,
+        )?
+        .await?;
+    let schema = json!({"type":"object", "properties":{"detail":{"const":"high"}}, "required":["detail"], "additionalProperties":false});
+    let identity = ExtensionIdentity::new("test.media", 1, [71; 32])?;
+    let mut schemas = crate::core::SchemaRegistry::new();
+    schemas.register(
+        "test.media",
+        1,
+        json!({"type":"object"}),
+        identity.digest,
+        crate::core::ExtensionForkPolicy::Inherit,
+        [],
+        Some(schema.clone()),
+    )?;
+    let binding = crate::model::NativeConfigurationBinding {
+        source: crate::core::EventReference {
+            authority: crate::core::Authority {
+                kind: crate::core::AggregateKind::Agent,
+                id: "native-summary".into(),
+            },
+            revision: 1,
+        },
+        configuration: crate::core::ExtensionConfiguration {
+            extension: crate::core::ExtensionDependency {
+                name: identity.name.clone(),
+                version: identity.version,
+            },
+            schema_digest: crate::executor::json::canonical_json_digest(
+                &schema,
+                u64::MAX,
+                &mut None,
+            )?,
+            content: options,
+        },
+        implementation_digest: identity.digest,
+    };
+    let admission = serde_json::from_value(json!({
+        "source": binding.source,
+        "selected": [binding.configuration.extension],
+        "configurations": [binding.configuration],
+    }))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let registry = ExtensionRegistry::default();
+    registry.install(Arc::new(Options(identity.clone())))?;
+    let runtime = ExtensionRuntime::activate(registry, [identity])?;
+    let volume = file.volume().clone();
+    let scope = crate::runtime::test_context::extension_scope(
+        RuntimeScope::new(
+            Capabilities::new([
+                "model:generate".into(),
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Limits::default(),
+        )?,
+        admission,
+        schemas,
+        runtime,
+    )?;
+    let context = agent_context(
+        scope.clone(),
+        Some(crate::runtime::ContentBindings {
+            volume: volume.clone(),
+            reader: Arc::new(Reader(journal.clone())),
+            writer: Some(Arc::new(PrivateVolume(volume))),
+        }),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = crate::filesystem::SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([84; 16]))?;
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("native summary".into())])
+            .with_token_counter(fixture_token_count),
+    );
+    let stock = StockExecutor::new(
+        Model::new("synthetic".into(), "native-summary".into(), "1".into())?,
+        provider.native(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_tool_authority(scope, allowed()?)?
+    .with_task_context(&context, OperationId::new())?
+    .with_session(Some(slot));
+    let execution = StockExecution::ordinary(&stock);
+    let source = crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file,
+                    policy: crate::model::FileProjectionPolicy::Native(Box::new(
+                        crate::model::NativeMediaPolicy {
+                            intent: crate::model::NativeMediaIntent::Image {
+                                detail: crate::model::ImageDetail::High,
+                            },
+                            maximum_bytes: 64,
+                            maximum_work: 64,
+                            configuration: Some(binding.clone()),
+                        },
+                    )),
+                }),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("recent input".into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let pending = execution
+        .background_summary(journal.as_ref(), &source, 1)?
+        .unwrap();
+    let (summary, _) = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&pending, &source) => result?,
+    };
+    assert_eq!(
+        journal.load(&summary.output, None)?.await?.as_ref(),
+        b"native summary"
+    );
+    assert!(
+        journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?
+    );
+    assert_eq!(
+        provider.requests()[0].messages[0].content,
+        source.messages[0].content
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        execution.demand_summary(&pending, &source).await?.0,
+        summary
+    );
+
+    // The source's native options cannot be retargeted to another admission.
+    let mut foreign = source;
+    let ModelContent::Part(ModelContentPart::File { policy, .. }) =
+        &mut foreign.messages[0].content
+    else {
+        unreachable!()
+    };
+    let crate::model::FileProjectionPolicy::Native(policy) = policy else {
+        unreachable!()
+    };
+    policy.configuration.as_mut().unwrap().source.revision += 1;
+    let refused = execution
+        .background_summary(journal.as_ref(), &foreign, 1)?
+        .unwrap();
+    let error = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&refused, &foreign) => result.unwrap_err(),
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "foreign options reached the model"
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn serving_summary_prefetch_failure_preserves_admitted_response_and_cancellation()
+-> Result<()> {
+    for failure in 0..4 {
+        let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let (_owner, session) = crate::filesystem::SessionWork::admit(work)?;
+        let slot = session.agent(&crate::agent::AgentId::from_bytes([83; 16]))?;
+        let counts = Arc::new(AtomicUsize::new(0));
+        let observed_counts = Arc::clone(&counts);
+        let cancelled = cancellation.clone();
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("admitted answer".into())])
+                .with_context_capacity(crate::context::ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: Some(4_096),
+                })
+                .with_token_counter(move |request| {
+                    if observed_counts.fetch_add(1, Ordering::SeqCst) > 0 {
+                        return Err(match failure {
+                            1 => Error::Cancelled,
+                            2 => Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                            _ => {
+                                if failure == 3 {
+                                    cancelled.cancel();
+                                }
+                                Error::ModelUnavailable {
+                                    failure: crate::ModelTransportFailure::Connect,
+                                    excerpt: String::new(),
+                                }
+                            }
+                        });
+                    }
+                    Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                        request.request_digest(),
+                        100,
+                        vec![15_000, 15_000, 10_000],
+                    ))
+                }),
+        );
+        let stock = StockExecutor::new(
+            Model::new("synthetic".into(), "prefetch-failure".into(), "1".into())?,
+            provider.native(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_session(Some(Arc::clone(&slot)));
+        let messages: Vec<_> = [ModelRole::User, ModelRole::Assistant, ModelRole::User]
+            .into_iter()
+            .map(|role| ModelMessage {
+                role,
+                content: ModelContent::Text("selected input".into()),
+            })
+            .collect();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: messages.last().unwrap().content.clone(),
+            selected_context: Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: 3,
+                    message_ids: (1..=3).map(uuid::Uuid::from_u128).collect(),
+                    checkpoint: None,
+                },
+                messages: messages.clone(),
+            }),
+            max_steps: 1,
+        };
+        let journal = journal.with_bound_selection(input.selected_context.clone().unwrap());
+        let mut execution = StockExecution::ordinary(&stock);
+        execution.io = Some(slot.preparation()?);
+        execution.ensure_started(&journal, &input).await?;
+        let prepared = execution
+            .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+            .await;
+        assert_eq!(
+            counts.load(Ordering::SeqCst),
+            2,
+            "optional count was not reached"
+        );
+        if failure == 0 {
+            assert_eq!(prepared?.request().messages, messages);
+            assert_eq!(
+                stock.execute(input.clone(), &journal).await?.text,
+                "admitted answer"
+            );
+            assert_eq!(
+                stock.execute(input, &journal).await?.text,
+                "admitted answer"
+            );
+            assert_eq!(
+                provider.requests().len(),
+                1,
+                "accepted response was regenerated"
+            );
+        } else {
+            assert_eq!(
+                prepared.unwrap_err().code(),
+                if failure == 2 {
+                    crate::wire::ErrorCode::InteractionCancelled
+                } else {
+                    crate::wire::ErrorCode::Cancelled
+                }
+            );
+            assert!(
+                provider.requests().is_empty(),
+                "cancelled request dispatched"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn serving_summary_recovers_transient_pre_dispatch_failure() -> Result<()> {
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = crate::filesystem::SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([82; 16]))?;
+    let counts = Arc::new(AtomicUsize::new(0));
+    let observed_counts = Arc::clone(&counts);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("recovered summary".into())])
+            .with_token_counter(move |request| {
+                if observed_counts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::ModelUnavailable {
+                        failure: crate::ModelTransportFailure::Connect,
+                        excerpt: String::new(),
+                    });
+                }
+                fixture_token_count(request)
+            }),
+    );
+    let stock = StockExecutor::new(
+        Model::new("synthetic".into(), "recovery".into(), "1".into())?,
+        provider.native(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_session(Some(slot));
+    let execution = StockExecution::ordinary(&stock);
+    let context = crate::context::Context {
+        messages: ["source", "recent"]
+            .into_iter()
+            .map(|text| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(text.into()),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let failed = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    let error = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&failed, &context) => result.unwrap_err(),
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unavailable);
+    assert!(provider.requests().is_empty(), "failure followed dispatch");
+    let resumed = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    assert!(!Arc::ptr_eq(&failed, &resumed), "failure pinned the slot");
+    let (summary, _) = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&resumed, &context) => result?,
+    };
+    assert_eq!(
+        journal.load(&summary.output, None)?.await?.as_ref(),
+        b"recovered summary"
+    );
+    assert!(counts.load(Ordering::SeqCst) >= 2);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(provider.reconciliations().is_empty());
+    let retained = execution
+        .background_summary(&journal, &context, 1)?
+        .unwrap();
+    assert!(Arc::ptr_eq(&resumed, &retained));
+    assert_eq!(
+        execution.demand_summary(&retained, &context).await?.0,
+        summary
+    );
+    assert_eq!(provider.requests().len(), 1, "completion was regenerated");
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn serving_summary_overlaps_turns_and_replays_exact_source() -> Result<()> {
+    use crate::filesystem::SessionWork;
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([81; 16]))?;
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [
+            ScriptedTurn::Text("first answer".into()),
+            ScriptedTurn::Text("retained summary".into()),
+            ScriptedTurn::Text("second answer".into()),
+            ScriptedTurn::Text("changed summary".into()),
+            ScriptedTurn::Text("changed answer".into()),
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Content {
+                delta: "partial summary".into(),
+            })]),
+            ScriptedTurn::Text("recovered answer".into()),
+            ScriptedTurn::Text("last foreground answer".into()),
+        ],
+        [ScriptedReconciliation {
+            orphan: false,
+            observed: vec![ModelEvent::Content {
+                delta: "partial summary".into(),
+            }],
+            continuation: Some(vec![
+                ModelEvent::Content {
+                    delta: " completed".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            ]),
+        }],
+    );
+    let source = |revision: &str| crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text("keep".into()),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("{revision}{}", "x".repeat(20_000))),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("y".repeat(20_000)),
+            },
+        ],
+        ..Default::default()
+    };
+    let executor = |revision: &str| {
+        StockExecutor::new(
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into()).unwrap(),
+            provider.native(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source(revision)),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        )
+        .with_session(Some(Arc::clone(&slot)))
+    };
+    let input = |bytes| TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("z".repeat(bytes)),
+        selected_context: None,
+        max_steps: 1,
+    };
+    let stock = executor("original");
+    assert_eq!(
+        stock
+            .execute(input(1_000), &journal)
+            .await
+            .expect("initial foreground turn")
+            .text,
+        "first answer"
+    );
+    // The foreground request completes while the retained producer has never
+    // been polled. A synchronous summary would consume the next scripted turn.
+    assert_eq!(provider.requests().len(), 1);
+    assert!(slot.summary.lock().unwrap().is_some());
+    let next = input(15_000);
+    let output = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = stock.execute(next.clone(), &journal) => result.expect("foreground demand while summary runs"),
+    };
+    assert_eq!(output.text, "second answer");
+    assert_eq!(provider.requests().len(), 3);
+    assert_eq!(
+        stock
+            .execute(next.clone(), &journal)
+            .await
+            .expect("completed foreground replay"),
+        output
+    );
+    assert_eq!(
+        provider.requests().len(),
+        3,
+        "replay redispatched an accepted model"
+    );
+    let records = journal
+        .replay(next.operation_id, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
+        .await?;
+    let compaction = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ContextCompacted { compaction, .. } => Some(compaction),
+            _ => None,
+        })
+        .expect("retained summary was installed");
+    let proof = load_json::<crate::context::CompactionReference>(&journal, compaction, None)
+        .await?
+        .0;
+    let mut summary = proof.summary.expect("original summary identity");
+    assert_eq!(summary.source_messages, 2, "recent suffix was summarized");
+    assert_ne!(summary.operation_id, next.operation_id);
+    assert!(
+        journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?
+    );
+    summary.source_digest[0] ^= 1;
+    assert!(
+        !journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?,
+        "changed source inherited the original result"
+    );
+    // A changed prefix must commission its own producer, preserving the old
+    // source/result rather than attaching it to the changed prefix.
+    let changed = executor("changed");
+    let changed_output = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = changed.execute(input(15_000), &journal) => result.expect("changed source demand"),
+    };
+    assert_eq!(changed_output.text, "changed answer");
+    assert_eq!(provider.requests().len(), 5);
+    let recovering = executor("recovering");
+    let recovery_input = input(15_000);
+    let interrupted = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = recovering.execute(recovery_input.clone(), &journal) => result,
+    };
+    assert!(matches!(interrupted, Err(Error::Indeterminate(_))));
+    assert_eq!(provider.requests().len(), 6);
+    let recovered = tokio::select! {
+        result = owner.drive() => return Err(result.err().unwrap_or_else(|| Error::Storage("serving owner stopped".into()))),
+        result = recovering.execute(recovery_input, &journal) => result.expect("accepted summary recovery"),
+    };
+    assert_eq!(recovered.text, "recovered answer");
+    assert_eq!(
+        provider.requests().len(),
+        7,
+        "accepted summary was regenerated"
+    );
+    assert_eq!(provider.reconciliations().len(), 1);
+    let lost = executor("lost");
+    assert_eq!(
+        lost.execute(input(1_000), &journal).await?.text,
+        "last foreground answer"
+    );
+    drop(owner);
+    let failed = lost.execute(input(15_000), &journal).await.unwrap_err();
+    assert_eq!(failed.code(), crate::wire::ErrorCode::Unavailable);
+    assert_eq!(
+        provider.requests().len(),
+        8,
+        "producer loss reran accepted work"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn incomplete_summaries_reconcile_until_completion_without_redispatch() -> Result<()> {
     for prefix in ["", "first-"] {

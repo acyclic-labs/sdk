@@ -212,8 +212,48 @@ pub trait HistoryIo: Send {
     fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
 }
 
+/// Physical sequence capacity admitted by the original history observer.
+pub(crate) trait HistoryBuffer<T> {
+    fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
+    fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> std::result::Result<(), std::collections::TryReserveError>;
+}
+
+impl<T> HistoryBuffer<T> for Vec<T> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> std::result::Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(additional)
+    }
+}
+
+impl<T> HistoryBuffer<T> for std::collections::VecDeque<T> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> std::result::Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(additional)
+    }
+}
+
 pub(crate) fn reserve<T>(
-    values: &mut Vec<T>,
+    values: &mut impl HistoryBuffer<T>,
     capacity: usize,
     observer: &mut dyn HistoryIo,
 ) -> Result<()> {

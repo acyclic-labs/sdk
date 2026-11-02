@@ -35,6 +35,8 @@ mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 #[cfg(feature = "test-support")]
 pub use execution_journal::codec_fuzz as execution_codec_fuzz;
+#[cfg(test)]
+pub(crate) use execution_journal::test_support::journal as test_execution_journal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use execution_journal::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,
@@ -53,6 +55,10 @@ mod fs_tools;
 pub use fs_tools::FilesystemTools;
 mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
+#[cfg(not(target_arch = "wasm32"))]
+mod session;
+#[cfg(not(target_arch = "wasm32"))]
+pub use session::{AgentSession, SessionOwner, SessionWork};
 mod agent_turns;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,

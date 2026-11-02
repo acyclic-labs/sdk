@@ -37,6 +37,27 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn summary_journal(&self, io: &PreparationIo) -> Result<Option<Arc<dyn ExecutionJournal>>> {
+        let mut journal = Self::new(
+            Arc::clone(&self.stream),
+            Arc::clone(&self.host),
+            super::super::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.scope,
+                io: Some(io),
+            },
+        )?;
+        if let Some(verifier) = &self.input_verifier {
+            journal = journal.with_input_verifier(Arc::clone(verifier));
+        }
+        let work = io
+            .original_native_work()
+            .ok_or_else(|| io.invalid("summary journal requires serving admission"))?;
+        Ok(Some(journal.into_native_shared(work)?))
+    }
+
     fn cache_identity(&self) -> Option<crate::executor::ExecutionJournalCacheId> {
         Some(self.cache_identity)
     }
@@ -399,7 +420,17 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_summary_with_io(file, io)
+            self.authenticate_summary_with_io(file, None, io)
+        })
+    }
+
+    fn authenticate_compaction_summary<'a>(
+        &'a self,
+        summary: &'a crate::context::ContextSummary,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.authenticate_summary_with_io(&summary.output, Some(summary), io)
         })
     }
 

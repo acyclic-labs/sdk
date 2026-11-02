@@ -44,7 +44,7 @@ pub(crate) fn stock_vec_push<T>(
 
 /// Reserves retained index storage, including a relocating allocation's peak.
 pub(crate) fn stock_vec_reserve<T>(
-    values: &mut Vec<T>,
+    values: &mut impl crate::store::history::HistoryBuffer<T>,
     capacity: usize,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
