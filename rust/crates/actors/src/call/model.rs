@@ -15,7 +15,7 @@ use acyclic_stream::{
     CommitOutcome, FollowRequest, FollowUpdate, MemoryStream, StreamProvider,
     StreamProviderExt as _,
 };
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Hop {
@@ -34,6 +34,7 @@ enum Fault {
     Settlement,
     Fence,
     Retry,
+    Producer,
 }
 
 struct Model {
@@ -238,9 +239,19 @@ impl Model {
             .follow(FollowRequest::new(path.clone(), from))
             .await
             .map_err(|error| error.to_string())?;
+        if self.fault == Fault::Producer {
+            // Withdraw the original delivery source after its commit; the
+            // common progress oracle must refuse rather than await forever.
+            follow = Box::pin(futures::stream::pending());
+        }
         let mut records = Vec::new();
         while from + (records.len() as u64) < tail {
-            match follow.next().await.ok_or("follow ended")? {
+            match follow
+                .next()
+                .now_or_never()
+                .ok_or("committed record has no ready delivery producer")?
+                .ok_or("follow ended")?
+            {
                 Ok(FollowUpdate::Record(record)) => records.push(record),
                 Ok(_) => {}
                 Err(error) => return Err(error.to_string()),
@@ -379,7 +390,12 @@ async fn explore(fault: Fault) -> Result<usize, String> {
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(Fault::None).await?, 0);
-    for fault in [Fault::Settlement, Fault::Fence, Fault::Retry] {
+    for fault in [
+        Fault::Settlement,
+        Fault::Fence,
+        Fault::Retry,
+        Fault::Producer,
+    ] {
         assert!(explore(fault).await? > 0);
     }
     Ok(())
