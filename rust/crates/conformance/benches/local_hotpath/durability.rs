@@ -284,9 +284,9 @@ mod tests {
             // A pipe reader cannot be flushed to stable storage. Preserve
             // this actual syscall's cause, independently of task outcomes.
             let (reader, _writer) = std::io::pipe()?;
-            #[unix]
+            #[cfg(unix)]
             let descriptor: std::os::fd::OwnedFd = reader.into();
-            #[windows]
+            #[cfg(windows)]
             let descriptor: std::os::windows::io::OwnedHandle = reader.into();
             let file = std::fs::File::from(descriptor);
             let error = acyclic_native_runtime::sync_file(
