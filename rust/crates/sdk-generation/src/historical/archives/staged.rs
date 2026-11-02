@@ -5,9 +5,18 @@ use std::io::{Seek, SeekFrom};
 /// snapshot, all member checks and the transport trailer have been accepted.
 pub(crate) struct StagedArchive {
     storage: tempfile::TempDir,
-    pub files: BTreeMap<String, String>,
+    pub files: BTreeMap<String, StagedMember>,
     limits: ArchiveLimits,
 }
+
+pub(crate) struct StagedMember {
+    pub sha256: String,
+    offset: u64,
+    length: u64,
+}
+
+#[cfg(test)]
+mod tests;
 
 impl StagedArchive {
     pub fn read(
@@ -27,7 +36,7 @@ impl StagedArchive {
             return Err("registry archive compressed-byte limit exceeded".into());
         }
         let mut snapshot = tempfile::tempfile().map_err(|e| e.to_string())?;
-        let digest = transfer(
+        let (digest, _) = transfer(
             &mut source,
             &mut snapshot,
             limits.compressed_bytes,
@@ -39,19 +48,30 @@ impl StagedArchive {
         snapshot
             .seek(SeekFrom::Start(0))
             .map_err(|e| e.to_string())?;
+        let mut payload = None;
+        let mut offset = 0;
         visit_archive_members(
             &mut snapshot,
             &release.package,
             &release.num,
             limits,
             |name, entry| {
-                let mut output = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(staged.path(name))
+                let output = payload
+                    .get_or_insert_with(|| fs::File::create(staged.storage.path().join("payload")))
+                    .as_mut()
                     .map_err(|e| e.to_string())?;
-                let digest = transfer(entry, &mut output, limits.member_bytes, "member-byte")?;
-                staged.files.insert(name.to_owned(), digest);
+                let (sha256, length) = transfer(entry, output, limits.member_bytes, "member-byte")?;
+                staged.files.insert(
+                    name.to_owned(),
+                    StagedMember {
+                        sha256,
+                        offset,
+                        length,
+                    },
+                );
+                offset = offset
+                    .checked_add(length)
+                    .ok_or("archive payload offset overflow")?;
                 Ok(())
             },
         )?;
@@ -59,17 +79,19 @@ impl StagedArchive {
         Ok(staged)
     }
 
-    fn path(&self, name: &str) -> std::path::PathBuf {
-        // Archive names never become staging paths. A digest collision refuses
-        // create_new rather than replacing a previously validated member.
-        self.storage
-            .path()
-            .join(crate::sha256_bytes(name.as_bytes()).trim_start_matches("sha256:"))
+    fn reader(&self, member: &StagedMember) -> Result<std::io::Take<fs::File>, String> {
+        // Each reader owns its cursor; the range cannot consume another member.
+        // Archive names never become staging paths.
+        let mut file =
+            fs::File::open(self.storage.path().join("payload")).map_err(|e| e.to_string())?;
+        file.seek(SeekFrom::Start(member.offset))
+            .map_err(|e| e.to_string())?;
+        Ok(file.take(member.length))
     }
 
     pub fn check_source(&self, release: &RegistryVersion, archive: &Path) -> Result<(), String> {
         let mut source = fs::File::open(archive).map_err(|e| e.to_string())?;
-        let digest = transfer(
+        let (digest, _) = transfer(
             &mut source,
             &mut std::io::sink(),
             self.limits.compressed_bytes,
@@ -82,17 +104,39 @@ impl StagedArchive {
     }
 
     pub fn vcs(&self) -> Result<Option<PublisherVcs>, String> {
-        let bytes = self
-            .files
-            .contains_key(".cargo_vcs_info.json")
-            .then(|| fs::read(self.path(".cargo_vcs_info.json")))
-            .transpose()
-            .map_err(|e| e.to_string())?;
-        parse_archive_vcs(bytes.as_deref())
+        let Some(member) = self.files.get(".cargo_vcs_info.json") else {
+            return Ok(None);
+        };
+        let mut reader = self.reader(member)?;
+        let mut bytes =
+            Vec::with_capacity(usize::try_from(reader.limit()).map_err(|e| e.to_string())?);
+        reader.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        if reader.limit() != 0 {
+            return Err("staged archive member is truncated".into());
+        }
+        parse_archive_vcs(Some(&bytes))
     }
 
-    pub fn matches(&self, name: &str, other: &Path) -> Result<bool, String> {
-        equal_files(&self.path(name), other)
+    pub fn matches(&self, member: &StagedMember, other: &Path) -> Result<bool, String> {
+        let mut right = fs::File::open(other).map_err(|e| e.to_string())?;
+        if right.metadata().map_err(|e| e.to_string())?.len() != member.length {
+            return Ok(false);
+        }
+        let mut left = self.reader(member)?;
+        let mut a = [0; 16 * 1024];
+        let mut b = [0; 16 * 1024];
+        loop {
+            let count = left.read(&mut a).map_err(|e| e.to_string())?;
+            right
+                .read_exact(&mut b[..count])
+                .map_err(|e| e.to_string())?;
+            if a[..count] != b[..count] {
+                return Ok(false);
+            }
+            if count == 0 {
+                return Ok(left.limit() == 0);
+            }
+        }
     }
 
     /// Installs complete members into the Cargo working tree with no-clobber
@@ -105,10 +149,10 @@ impl StagedArchive {
         for name in self.files.keys() {
             validate_import_path(&root, &root.join(directory).join(name))?;
         }
-        for name in self.files.keys() {
+        for (name, member) in &self.files {
             let path = root.join(directory).join(name);
             if path.exists() {
-                if self.matches(name, &path)? {
+                if self.matches(member, &path)? {
                     continue;
                 }
                 return Err(format!(
@@ -119,10 +163,13 @@ impl StagedArchive {
             let parent = path.parent().ok_or("archive destination has no parent")?;
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             let mut output = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-            let mut input = fs::File::open(self.path(name)).map_err(|e| e.to_string())?;
+            let mut input = self.reader(member)?;
             std::io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+            if input.limit() != 0 {
+                return Err("staged archive member is truncated".into());
+            }
             if let Err(error) = output.persist_noclobber(&path) {
-                if !self.matches(name, &path)? {
+                if !self.matches(member, &path)? {
                     return Err(error.error.to_string());
                 }
             }
@@ -136,7 +183,7 @@ fn transfer<R: Read + ?Sized, W: Write>(
     writer: &mut W,
     limit: u64,
     label: &str,
-) -> Result<String, String> {
+) -> Result<(String, u64), String> {
     let mut buffer = [0; 16 * 1024];
     let mut remaining = limit;
     let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
@@ -159,29 +206,5 @@ fn transfer<R: Read + ?Sized, W: Write>(
         result.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
         result.push(char::from(b"0123456789abcdef"[(byte & 15) as usize]));
     }
-    Ok(result)
-}
-
-fn equal_files(left: &Path, right: &Path) -> Result<bool, String> {
-    let mut left = fs::File::open(left).map_err(|e| e.to_string())?;
-    let mut right = fs::File::open(right).map_err(|e| e.to_string())?;
-    if left.metadata().map_err(|e| e.to_string())?.len()
-        != right.metadata().map_err(|e| e.to_string())?.len()
-    {
-        return Ok(false);
-    }
-    let mut a = [0; 16 * 1024];
-    let mut b = [0; 16 * 1024];
-    loop {
-        let count = left.read(&mut a).map_err(|e| e.to_string())?;
-        right
-            .read_exact(&mut b[..count])
-            .map_err(|e| e.to_string())?;
-        if a[..count] != b[..count] {
-            return Ok(false);
-        }
-        if count == 0 {
-            return Ok(true);
-        }
-    }
+    Ok((result, limit - remaining))
 }

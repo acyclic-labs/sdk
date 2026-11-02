@@ -158,11 +158,11 @@ pub(super) fn producer_dependencies(
             let logical = format!("{prefix}dependencies/{name}/{member}");
             let imported = root.join(&logical);
             if imported.canonicalize().map_err(|e| e.to_string())? != imported
-                || !members.matches(member, &imported)?
+                || !members.matches(digest, &imported)?
             {
                 return Err("dependency source differs or redirects".into());
             }
-            files.insert(logical, digest.clone());
+            files.insert(logical, digest.sha256.clone());
         }
         members.check_source(&release, &path)?;
     }

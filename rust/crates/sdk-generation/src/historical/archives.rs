@@ -57,7 +57,7 @@ pub fn archive_plan(
         members.publish(source_root, &directory)?;
         for (member, digest) in &members.files {
             plan.source_files
-                .insert(format!("{directory}/{member}"), digest.clone());
+                .insert(format!("{directory}/{member}"), digest.sha256.clone());
         }
         let manifest = source_root.join(&directory).join("Cargo.toml");
         let lock = manifest.with_file_name("Cargo.lock");
@@ -84,7 +84,7 @@ pub fn archive_plan(
             let config_digest = crate::sha256_file(&config).map_err(|e| e.to_string())?;
             let original_lock = match members.files.get("Cargo.lock") {
                 Some(bytes) => OriginalLock::Published {
-                    sha256: bytes.clone(),
+                    sha256: bytes.sha256.clone(),
                 },
                 None => OriginalLock::Absent,
             };
@@ -425,13 +425,16 @@ fn verify_staged_archive(
     for (member, digest) in &members.files {
         let path = format!("{directory}/{member}");
         let source = root.join(&path).canonicalize().map_err(|e| e.to_string())?;
-        if !source.starts_with(&root) || !members.matches(member, &source)? {
+        if !source.starts_with(&root) || !members.matches(digest, &source)? {
             return Err(format!("imported archive source differs: {path}"));
         }
-        files.insert(path, digest.clone());
+        files.insert(path, digest.sha256.clone());
     }
     let lock_path = format!("{directory}/Cargo.lock");
-    let lock_digest = members.files.get("Cargo.lock").cloned();
+    let lock_digest = members
+        .files
+        .get("Cargo.lock")
+        .map(|member| member.sha256.clone());
     match &identity.resolution_lock {
         ResolutionLock::Published { sha256 } if lock_digest.as_ref() == Some(sha256) => {}
         ResolutionLock::DocsProducer { sha256 }
