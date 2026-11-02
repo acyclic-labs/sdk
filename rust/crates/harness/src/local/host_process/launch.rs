@@ -110,17 +110,21 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
         let inherited_path = match (host, name.as_str()) {
             (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
             ("claude-code", "--settings") => !value.trim_start().starts_with('{'),
-            ("pi", "--extension") => {
-                ![
-                    "npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:",
-                ]
-                .iter()
-                .any(|prefix| value.trim().starts_with(prefix))
-                    && cwd.join(value.as_str()).exists()
-            }
+            ("pi", "--extension") => ![
+                "npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:",
+            ]
+            .iter()
+            .any(|prefix| value.trim().starts_with(prefix)),
             _ => false,
         };
-        if inherited_path && Path::new(value.as_str()).is_relative() {
+        if inherited_path
+            && !(host == "pi"
+                && (value.starts_with("file://")
+                    || value.as_str() == "~"
+                    || value.starts_with("~/")
+                    || (cfg!(windows) && value.starts_with("~\\"))))
+            && Path::new(value.as_str()).is_relative()
+        {
             *value = cwd
                 .join(value.as_str())
                 .to_str()

@@ -89,37 +89,68 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
         flags.first_chunk::<4>().ok_or("inline settings absent")?,
         &inline
     );
-    Ok(())
-}
-
-#[test]
-fn pi_package_sources_are_not_shadowed_by_local_filenames() -> Result {
-    let fixture = tempfile::tempdir()?;
-    let workspace = fixture.path();
-    for source in [
-        "npm:fixture-extension",
-        "builtin:fixture",
-        "git:example.com/fixture/extension",
-        "github:fixture/extension",
-        "http://example.com/fixture/extension",
-        "https://example.com/fixture/extension",
-        "ssh://example.com/fixture/extension",
+    for relative in [
+        "extensions/missing.ts",
+        "./extensions/missing.ts",
+        "../missing.ts",
+    ] {
+        let collision = view.join(relative);
+        std::fs::create_dir_all(collision.parent().ok_or("extension parent absent")?)?;
+        std::fs::write(&collision, "")?;
+        assert!(!workspace.join(relative).exists());
+        let flags = parent_flags("pi", &["--extension".into(), relative.into()], &workspace)?;
+        let arguments = child_arguments("pi", &flags, &view, None)?;
+        let inherited = arguments
+            .windows(2)
+            .find_map(|pair| match pair {
+                [name, value] if name == "--extension" => Some(PathBuf::from(value)),
+                _ => None,
+            })
+            .ok_or("inherited extension absent")?;
+        assert_eq!(inherited, workspace.join(relative));
+        assert!(
+            !view.join(inherited).exists(),
+            "a missing parent extension must not load the child's collision"
+        );
+    }
+    for (option, source) in [
+        ("--extension", "npm:fixture-extension"),
+        ("--extension", "builtin:fixture"),
+        ("--extension", "git:example.com/fixture/extension"),
+        ("--extension", "github:fixture/extension"),
+        ("--extension", "http://example.com/fixture/extension"),
+        ("--extension", "https://example.com/fixture/extension"),
+        ("--extension", "ssh://example.com/fixture/extension"),
+        ("--extension", "~"),
+        ("--extension", "~/extensions/shared.ts"),
+        ("--extension", "file:///shared/extension.ts"),
+        ("--session-dir", "~"),
+        ("--session-dir", "~/sessions"),
+        ("--session-dir", "file:///shared/sessions"),
     ] {
         #[cfg(unix)]
         {
             let collision = workspace.join(source);
-            std::fs::create_dir_all(collision.parent().ok_or("fixture parent absent")?)?;
-            std::fs::write(
-                collision,
-                "a local filename must not replace a package source",
-            )?;
+            if source == "~" {
+                std::fs::create_dir_all(&collision)?;
+            } else {
+                std::fs::create_dir_all(collision.parent().ok_or("fixture parent absent")?)?;
+                std::fs::write(collision, "")?;
+            }
         }
-        let supplied = ["--extension".into(), source.into()];
+        let supplied = [option.into(), source.into()];
         assert_eq!(
-            parent_flags("pi", &supplied, workspace)?,
+            parent_flags("pi", &supplied, &workspace)?,
             supplied,
-            "native package source must not become a local extension"
+            "package and intrinsic paths must not be rebound to the workspace"
         );
+    }
+    #[cfg(windows)]
+    {
+        for option in ["--extension", "--session-dir"] {
+            let supplied = [option.into(), "~\\shared".into()];
+            assert_eq!(parent_flags("pi", &supplied, &workspace)?, supplied);
+        }
     }
     Ok(())
 }
