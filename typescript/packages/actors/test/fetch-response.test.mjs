@@ -95,6 +95,70 @@ test("terminal rejection cancels a pending body read with the original cause", a
   assert.equal(closes,1);
 });
 
+test("queued body failure preserves the original response cause", async () => {
+  for (const terminalFails of [false, true]) {
+    const terminal = Promise.withResolvers();
+    const originalFailure = new Error("terminal producer failed");
+    const bodyFailure = new Error("body producer failed");
+    let controller, closes = 0;
+    const body = new ReadableStream({start(source) { controller = source; }});
+    const response = openGuestResponse({
+      status:200,headers:new Headers(),body,trailers:terminal.promise,
+      close() { closes++; },
+    });
+    const pending = response.frames[Symbol.asyncIterator]().next();
+    // Queue both original producer failures before either continuation runs.
+    // The terminal owner stops first, but cancellation cannot replace a read
+    // which the native stream has already rejected with another cause.
+    if (terminalFails) terminal.reject(originalFailure);
+    controller.error(bodyFailure);
+    const expected = terminalFails ? originalFailure : bodyFailure;
+    await assert.rejects(pending,error => error === expected);
+    assert.equal(closes,1);
+    assert.equal(body.locked,false);
+  }
+});
+
+test("response failure survives a throwing close callback", async () => {
+  for (const boundary of ["body", "consumer", "terminal", "pre-abort", "abort", "null-abort", "locked"]) {
+    const terminal = Promise.withResolvers();
+    const signal = new AbortController();
+    const failure = boundary === "null-abort" ? null : new Error(`${boundary} producer failed`);
+    const cleanupFailure = new Error("host close failed");
+    let controller, cancellation, closes = 0;
+    const body = new ReadableStream({
+      start(source) { controller = source; },
+      cancel(cause) { cancellation = cause; },
+    });
+    const originalReader = boundary === "locked" ? body.getReader() : undefined;
+    if (boundary === "pre-abort") signal.abort(failure);
+    let response;
+    assert.doesNotThrow(() => {
+      response = openGuestResponse({
+        status:200,headers:new Headers(),body,trailers:terminal.promise,
+        close() { closes++; throw cleanupFailure; },
+      },signal.signal);
+    });
+    const frames = response.frames[Symbol.asyncIterator]();
+    const sameCause = boundary === "locked"
+      ? cause => cause instanceof TypeError && cause.code === "ERR_INVALID_STATE"
+      : cause => cause === failure;
+    const pending = assert.rejects(frames.next(),sameCause);
+    let thrown;
+    if (boundary === "body") controller.error(failure);
+    else if (boundary === "terminal") terminal.reject(failure);
+    else if (boundary === "consumer") thrown = assert.rejects(frames.throw(failure),sameCause);
+    else if (boundary !== "pre-abort" && boundary !== "locked") signal.abort(failure);
+    await Promise.all([pending,thrown]);
+    assert.equal(closes,1);
+    assert.equal(body.locked,Boolean(originalReader));
+    if (originalReader) originalReader.releaseLock();
+    else if (boundary !== "body") assert.equal(cancellation,failure);
+    response.close();
+    assert.equal(closes,1);
+  }
+});
+
 test("terminal rejection before consumption closes the original producer once", async () => {
   const terminal = Promise.withResolvers(), cancelled = Promise.withResolvers();
   const failure = new Error("terminal failed before consumption");
@@ -118,16 +182,30 @@ test("native HTTP/2 keeps upload streaming, terminal trailers and original close
   const completed = Promise.withResolvers();
   const failures = [];
   const closes = new Map();
+  const cancellations = new Map();
   server.on("stream", (stream, request) => {
     const path = String(request[":path"]);
     stream.on("error", error => failures.push(error));
     const terminal = Promise.withResolvers();
     stream.once("end", () => terminal.resolve(new Headers({ "grpc-status": "0", "x-terminal": "original" })));
+    // Count calls to the actual native reader; cancelling an already-ended
+    // stream does not reach its underlying source, but still costs a promise.
+    const body = Readable.toWeb(Readable.from(stream, { objectMode: false }));
+    const getReader = body.getReader.bind(body);
+    body.getReader = () => {
+      const reader = getReader();
+      const cancel = reader.cancel.bind(reader);
+      reader.cancel = cause => {
+        cancellations.set(path, (cancellations.get(path) ?? 0) + 1);
+        return cancel(cause);
+      };
+      return reader;
+    };
     const exchange = openGuestResponse({
       status: 200, headers: new Headers({ "content-type": "application/grpc+proto" }),
       // toWeb on a Duplex waits for its writable completion too. This is the
       // original upload's readable iterator, independent of response EOF.
-      body: Readable.toWeb(Readable.from(stream, { objectMode: false })), trailers: terminal.promise,
+      body, trailers: terminal.promise,
       close() {
         closes.set(path, (closes.get(path) ?? 0) + 1);
         if (path === "/cancel") cancelled.resolve();
@@ -169,6 +247,7 @@ test("native HTTP/2 keeps upload streaming, terminal trailers and original close
     assert.equal(terminal["x-terminal"], "original");
     await completed.promise;
     assert.equal(closes.get("/complete"), 1);
+    assert.equal(cancellations.get("/complete") ?? 0, 0);
 
     const stopped = client.request({ ":method": "POST", ":path": "/cancel" }, { endStream: false });
     const received = once(stopped, "data");

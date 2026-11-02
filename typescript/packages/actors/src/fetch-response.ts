@@ -18,21 +18,28 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
   void stopped.catch(() => undefined);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let closed = false;
-  const terminate = (cause: unknown) => {
+  const terminate = (cause: unknown, cancelPending = true) => {
     if (closed) return;
     closed = true;
     signal?.removeEventListener("abort", close);
-    stop(cause);
-    if (reader) void reader.cancel(cause).catch(() => undefined);
-    else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
+    if (cancelPending) {
+      stop(cause);
+      if (reader) void reader.cancel(cause).catch(() => undefined);
+      else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
+    }
     if ("close" in response) response.close();
   };
-  const close = () => terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
+  const close = () => {
+    if (closed) return;
+    if (signal?.aborted) fail(signal.reason);
+    else terminate(new DOMException("fetch response closed", "AbortError"));
+  };
+  const fail = (cause: unknown) => {
+    try { terminate(cause); } catch { /* The original failure remains primary. */ }
+  };
   // A failed terminal producer must also wake an in-flight body read. One
   // lifetime handler retains the original cause; no reaction is added per chunk.
-  void terminal.catch(cause => {
-    try { terminate(cause); } catch { /* The producer failure remains primary. */ }
-  });
+  void terminal.catch(fail);
   signal?.addEventListener("abort", close, { once: true });
   if (signal?.aborted) close();
   let consumed = false;
@@ -44,15 +51,30 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
         for (;;) {
           // reader.cancel settles its pending read. Do not attach one more
           // reaction to a long-lived cancellation promise on every chunk.
-          const part = await reader.read();
+          let part: ReadableStreamReadResult<Uint8Array>;
+          try {
+            part = await reader.read();
+          } catch (cause) {
+            // A read can already be rejected when the original owner stops.
+            // Preserve that owner's first cause instead of the queued error.
+            if (closed) await stopped;
+            throw cause;
+          }
           if (closed) await stopped;
           if (part.done) break;
           yield { data: part.value };
         }
       }
       const trailers = await Promise.race([terminal, stopped]);
-      close();
+      // Both original producers completed. Retirement has no pending read to
+      // cancel and does not manufacture a failure after successful EOF.
+      terminate(undefined, false);
       yield { trailers };
+    } catch (cause) {
+      // Acquisition and reads share the same failure retirement. A borrowed,
+      // already-locked body must retain its native error and original reader.
+      fail(cause);
+      throw cause;
     } finally {
       close();
       reader?.releaseLock();
@@ -73,7 +95,7 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
           return iterator.return(value);
         },
         async throw(cause: unknown) {
-          terminate(cause);
+          fail(cause);
           return iterator.throw(cause);
         },
       };
