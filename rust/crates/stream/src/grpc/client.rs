@@ -235,11 +235,9 @@ impl StreamProvider for Client {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        Ok(Box::pin(
-            self.session()?
-                .follow_with_ack(request, self.acknowledge_deliveries)
-                .await?,
-        ))
+        self.session()?
+            .follow_with_ack(request, self.acknowledge_deliveries)
+            .await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {

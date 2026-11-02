@@ -933,12 +933,15 @@ where
         let from = cut.checkpoint.map_or(window, |at| at.max(window));
         let mut entries = Vec::new();
         if let Some(checkpoint) = cut.checkpoint.filter(|at| *at < from) {
-            entries.extend(
-                self.context_entries(&cut.path, checkpoint, checkpoint + 1)
-                    .await?,
-            );
+            entries
+                .extend((checkpoint..).zip(self.context_entries(&cut.path, checkpoint, 1).await?));
         }
-        entries.extend(self.context_entries(&cut.path, from, cut.tail).await?);
+        entries.extend(
+            (from..).zip(
+                self.context_entries(&cut.path, from, cut.tail - from)
+                    .await?,
+            ),
+        );
         Ok(entries)
     }
 

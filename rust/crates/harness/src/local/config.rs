@@ -61,7 +61,6 @@ pub struct LocalHarnessConfig {
     #[cfg(feature = "search-http")]
     pub(super) web_tools: bool,
     pub(super) limits: Limits,
-    pub(super) max_children: Option<u32>,
     pub(super) run_limits: TaskRunLimits,
     pub(super) compaction: Option<crate::context::CompactionPolicy>,
     #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -193,7 +192,6 @@ impl LocalHarnessConfig {
             #[cfg(feature = "search-http")]
             web_tools: false,
             limits: Limits::default(),
-            max_children: None,
             run_limits: TaskRunLimits::default(),
             compaction: None,
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]

@@ -188,16 +188,6 @@ impl futures::Stream for SubscriptionSource {
         self.records.as_mut().poll_next(cx)
     }
 }
-/// Drop progress frames through the shared synchronous projection while
-/// preserving each original provider record until its typed conversion.
-fn data_frames<S: futures::Stream<Item = Result<Frame, StreamError>>>(
-    source: S,
-) -> impl futures::Stream<Item = Result<Frame, StreamError>> {
-    crate::projection::filter_map(source, |item| match item {
-        Ok(frame) if matches!(frame.wire().body, Some(Body::Watermark(_))) => None,
-        item => Some(item),
-    })
-}
 
 enum Command {
     Credential {
@@ -466,10 +456,7 @@ impl Client {
     pub async fn follow(
         &self,
         request: crate::FollowRequest,
-    ) -> Result<
-        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
-        StreamError,
-    > {
+    ) -> Result<crate::FollowStream, StreamError> {
         self.follow_with_ack(request, true).await
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
