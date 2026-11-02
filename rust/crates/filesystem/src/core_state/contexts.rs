@@ -479,31 +479,16 @@ impl LocalCoreStateStore {
             )
         })?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root
-                    ._allocation
-                    .as_ref()
-                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                    .work();
-                root.with_log(|log| {
-                    native_records::load::<WorkspaceContext>(
-                        root,
-                        log,
-                        context_id,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| {
-                (
-                    crate::workspace_context::WorkspaceContextError::Store(error),
-                    None,
-                )
-            })
+        native_records::transaction!(self, original.clone(), |root, log, work| {
+            native_records::load::<WorkspaceContext>(&root, log, context_id, work, &cancellation)
+        })
+        .await
+        .map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })
     }
 
     /// Compares and updates a context on the original native ledger.
@@ -538,33 +523,24 @@ impl LocalCoreStateStore {
             )
         })?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root
-                    ._allocation
-                    .as_ref()
-                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                    .work();
-                root.with_log(|log| {
-                    native_records::compare_native_context(
-                        root,
-                        log,
-                        context_id,
-                        expected_revision,
-                        replacement,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| {
-                (
-                    crate::workspace_context::WorkspaceContextError::Store(error),
-                    None,
-                )
-            })
+        native_records::transaction!(self, original.clone(), |root, log, work| {
+            native_records::compare_native_context(
+                &root,
+                log,
+                context_id,
+                expected_revision,
+                replacement,
+                work,
+                &cancellation,
+            )
+        })
+        .await
+        .map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })
     }
 }
 
@@ -587,26 +563,17 @@ impl LocalCoreStateStore {
         native_records::check(original, cancellation)
             .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root
-                    ._allocation
-                    .as_ref()
-                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                    .work();
-                root.with_log(|log| {
-                    native_records::load::<WorkspaceLineageRecord>(
-                        root,
-                        log,
-                        workspace_id,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+        native_records::transaction!(self, original.clone(), |root, log, work| {
+            native_records::load::<WorkspaceLineageRecord>(
+                &root,
+                log,
+                workspace_id,
+                work,
+                &cancellation,
+            )
+        })
+        .await
+        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
     }
 
     /// Compares and updates lineage on the original native ledger.
@@ -632,27 +599,18 @@ impl LocalCoreStateStore {
         })
         .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone())
-            .transaction(move |root| {
-                let root = &root;
-                let work = root
-                    ._allocation
-                    .as_ref()
-                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
-                    .work();
-                root.with_log(|log| {
-                    native_records::compare_native_lineage(
-                        root,
-                        log,
-                        workspace_id,
-                        expected_revision,
-                        replacement,
-                        work,
-                        &cancellation,
-                    )
-                })
-            })
-            .await
-            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+        native_records::transaction!(self, original.clone(), |root, log, work| {
+            native_records::compare_native_lineage(
+                &root,
+                log,
+                workspace_id,
+                expected_revision,
+                replacement,
+                work,
+                &cancellation,
+            )
+        })
+        .await
+        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
     }
 }

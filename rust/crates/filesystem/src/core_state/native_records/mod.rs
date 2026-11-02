@@ -10,6 +10,23 @@ use crate::workspace_context::WorkspaceContextRoot;
 type Error = LocalCoreStateStoreError;
 type Owned<T> = (T, crate::NativeAllocation);
 
+// Enter the log only through the admitted namespace's retained native custody.
+macro_rules! transaction {
+    ($store:expr, $original:expr, |$root:ident, $log:ident, $work:ident| $operation:block) => {
+        ($store)
+            .materialization($original)
+            .transaction(move |$root| {
+                let $work = $root
+                    ._allocation
+                    .as_ref()
+                    .ok_or($crate::NativeTreeMaterializationError::MissingCustody)?
+                    .work();
+                $root.with_log(|$log| $operation)
+            })
+    };
+}
+pub(super) use transaction;
+
 pub(super) fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     cxl.check().map_err(|_| NativeError::Cancelled)?;
     work.cancellation()
