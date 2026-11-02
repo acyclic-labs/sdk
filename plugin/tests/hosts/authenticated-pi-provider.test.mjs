@@ -2,12 +2,18 @@ import assert from 'node:assert/strict';
 import {randomBytes,timingSafeEqual} from 'node:crypto';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
+import {rm} from 'node:fs/promises';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import {createModels} from '@earendil-works/pi-ai/models';
 import {createEventBus} from '@earendil-works/pi-coding-agent';
 import {nativeHost,nativeProvider} from './native-host.mjs';
 import register from './pi-provider.mjs';
 import {fuzz} from './native-proxy.fuzz.mjs';
+import {assertNativeCompletion,launchNativeHost} from './native-model.mjs';
+import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 
 // The native SDK produces the request; the real local server checks its issued
 // credential and returns an empty HTTP refusal, never authored provider wire.
@@ -31,6 +37,7 @@ test('pinned Pi uses the deterministic model capability without exposing it to c
  const url=`http://127.0.0.1:${server.address().port}/native-installed-pi-recursive/v1`;
  const saved={url:process.env.ACYCLIC_E2E_MODEL_URL,credential:process.env.ACYCLIC_E2E_MODEL_CAPABILITY,
   proxy:process.env.ACYCLIC_NATIVE_PROXY};
+ const root=hostFixtureDirectory('native-authenticated-'),scope=new Processes();
  try{
   delete process.env.ACYCLIC_NATIVE_PROXY;
   process.env.ACYCLIC_E2E_MODEL_URL=url;
@@ -60,9 +67,30 @@ test('pinned Pi uses the deterministic model capability without exposing it to c
   assert.equal(JSON.parse(requests[0].bytes).model,'tiny');
   assert.ok(!requests[0].bytes.includes(credential),'the credential must not enter model content');
   t.diagnostic(JSON.stringify({native_request:requests[0]}));
+  const env=environment(join(root,'profile'),{...process.env,ACYCLIC_E2E_MODEL_CAPABILITY:credential});
+  assert.ok(env.ACYCLIC_E2E_MODEL_CAPABILITY===undefined,'general setup commands cannot inherit model credentials');
+  const launch=await launchNativeHost('pi',{root,url,env,prompt:'NATIVE_PLUGIN_MODEL'});
+  assert.ok(!JSON.stringify(launch).includes(credential),'the credential must not enter native argv/policy');
+  const completed=await scope.runOwned(native.program,[...native.args,...launch.args],
+   {cwd:root,env:{...env,ACYCLIC_E2E_MODEL_CAPABILITY:credential}});
+  if(requestFailure)throw requestFailure;
+  assert.equal(completed.code,0,'retain the original native zero-exit convention for a model refusal');
+  assert.equal(completed.signal,null);
+  assert.throws(()=>assertNativeCompletion('pi',completed,'NATIVE_PLUGIN_MODEL_DONE'),error=>
+   error.code==='NATIVE_HOST_MODEL_FAILED'&&error.cause.stopReason==='error'&&!!error.cause.errorMessage);
+  assert.equal(requests.length,2,'one request each through the original SDK and CLI, without replay');
+  assert.equal(requests[1].url,requests[0].url);
+  assert.equal(JSON.parse(requests[1].bytes).model,'tiny');
+  assert.ok(!requests[1].bytes.includes(credential),'native CLI content must not contain its credential');
+  assert.ok(!completed.stdout.includes(credential)&&!completed.stderr.includes(credential),
+   'native session and diagnostic output must not contain its credential');
  }finally{
   for(const [key,value] of [['ACYCLIC_E2E_MODEL_URL',saved.url],['ACYCLIC_E2E_MODEL_CAPABILITY',saved.credential],
    ['ACYCLIC_NATIVE_PROXY',saved.proxy]])if(value===undefined)delete process.env[key];else process.env[key]=value;
-  await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+  try{await scope.close();}
+  finally{
+   await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve()));
+   await rm(root,{recursive:true,force:true});
+  }
  }
 });
