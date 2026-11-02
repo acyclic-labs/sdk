@@ -90,6 +90,7 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
 struct PendingTool {
     calls: AtomicUsize,
     result: Mutex<Option<ToolResult>>,
+    accepted: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl crate::tool::ToolExecutor for PendingTool {
@@ -99,6 +100,9 @@ impl crate::tool::ToolExecutor for PendingTool {
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<ToolResult>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(accepted) = self.accepted.lock().unwrap().take() {
+            accepted.send(()).unwrap();
+        }
         Box::pin(std::future::pending())
     }
     fn reconcile<'a>(
@@ -115,9 +119,11 @@ impl crate::tool::ToolExecutor for PendingTool {
 async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());
+    let (accepted, acceptance) = tokio::sync::oneshot::channel();
     let tool = Arc::new(PendingTool {
         calls: AtomicUsize::new(0),
         result: Mutex::new(None),
+        accepted: Mutex::new(Some(accepted)),
     });
     let tools = echo_tools(
         tool.clone(),
@@ -140,7 +146,10 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     )?;
     let input = input();
     let mut first = Box::pin(executor.execute(input.clone(), &journal));
-    assert!(first.as_mut().now_or_never().is_none());
+    tokio::select! {
+        outcome = &mut first => panic!("execution ended before tool acceptance: {outcome:?}"),
+        accepted = acceptance => accepted.expect("tool acceptance producer was dropped"),
+    }
     assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     let before = journal.replay(input.operation_id, 0, 100, None)?.await?;
     assert!(matches!(
