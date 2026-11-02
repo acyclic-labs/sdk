@@ -58,7 +58,7 @@ macro_rules! timed {
             let start = Instant::now();
             let result = future.await;
             let elapsed = start.elapsed();
-            $rows.record_terminal($name, $floor, (elapsed, before), identity, result)?
+            $rows.record_terminal($name, $floor, (elapsed, before), identity, result, emit)?
         } else {
             future.await
         }

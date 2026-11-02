@@ -389,6 +389,8 @@ pub(super) fn check_observations() -> Result {
     let failed_identity = serde_json::json!({"path": missing_path});
     let missing = std::fs::read(&missing_path).unwrap_err();
     let original_code = missing.raw_os_error();
+    let original_error = missing.to_string();
+    let mut failed = Vec::new();
     let before = cohort.start(None);
     let returned = cohort
         .record_terminal(
@@ -397,15 +399,32 @@ pub(super) fn check_observations() -> Result {
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(missing),
+            |receipt| emit_to(&mut failed, receipt),
         )?
         .unwrap_err();
     if returned.raw_os_error() != original_code {
         return Err("failed observation replaced the original OS cause".into());
     }
+    let receipt: serde_json::Value = serde_json::from_slice(&failed)?;
+    if receipt["kind"] != "failed_operation"
+        || receipt["operation"] != Operation::ObjectGet.name()
+        || receipt["identity"] != failed_identity
+        || receipt["error"] != original_error
+        || receipt.get("observation_error") != Some(&serde_json::Value::Null)
+        || receipt["work"] != serde_json::json!([null, null, null, null, 0, null, null, null])
+        || receipt["provider_request_counts"] != serde_json::to_value([0; 7])?
+        || receipt.get("native_attempt_counts") != Some(&serde_json::Value::Null)
+        || receipt.get("physical_admission_binding") != Some(&serde_json::Value::Null)
+        || receipt["ratio_qualified"] != false
+        || receipt["raw_ns"] != 0.0
+    {
+        return Err("failed receipt lost its original error, identity or observed work".into());
+    }
     let row = &cohort.rows[&Operation::ObjectGet];
     if row.work != full || [row.raw_ns.len(), row.observations.len()] != [2; 2] {
         return Err("failed terminal changed the successful observation inventory".into());
     }
+    failed.clear();
     let before = cohort.start(Some(RequestClass::Head));
     let returned = cohort
         .record_terminal(
@@ -414,21 +433,57 @@ pub(super) fn check_observations() -> Result {
             (Duration::ZERO, before),
             failed_identity.clone(),
             Err::<(), _>(returned),
+            |receipt| emit_to(&mut failed, receipt),
         )?
         .unwrap_err();
     if returned.raw_os_error() != original_code {
         return Err("sampler refusal replaced the original operation cause".into());
     }
+    let receipt: serde_json::Value = serde_json::from_slice(&failed)?;
+    let retains_refusal = |receipt: &serde_json::Value| {
+        receipt["identity"] == failed_identity
+            && receipt["error"] == original_error
+            && receipt["observation_error"] == "requested query has no original provider dispatch"
+            && [
+                "work",
+                "provider_request_counts",
+                "coordinator_allocations_count_and_bytes",
+                "native_attempt_counts",
+            ]
+            .iter()
+            .all(|field| receipt.get(*field) == Some(&serde_json::Value::Null))
+    };
+    if !retains_refusal(&receipt) {
+        return Err("failed receipt hid observer refusal metadata or fabricated work".into());
+    }
+    // Remove one field from the actual encoded receipt, rather than inventing
+    // a wire fixture. The same oracle must refuse this loss independently of
+    // the preserved operation error and identity.
+    let mut dropped = receipt;
+    dropped
+        .as_object_mut()
+        .ok_or("failed receipt was not an object")?
+        .remove("observation_error");
+    if retains_refusal(&dropped) {
+        return Err("refusal metadata oracle admitted a dropped original field".into());
+    }
     let before = cohort.start(Some(RequestClass::Head));
-    if cohort
-        .record_terminal(
-            Operation::ObjectGet,
-            floor,
-            (Duration::ZERO, before),
-            failed_identity,
-            Ok::<_, std::io::Error>(()),
-        )
-        .is_ok()
+    let mut published_success = false;
+    let success_refusal = cohort.record_terminal(
+        Operation::ObjectGet,
+        floor,
+        (Duration::ZERO, before),
+        failed_identity,
+        Ok::<_, std::io::Error>(()),
+        |_| {
+            published_success = true;
+            Ok(())
+        },
+    );
+    if published_success
+        || success_refusal.err().is_none_or(|error| {
+            error.to_string() != "requested query has no original provider dispatch"
+        })
     {
         return Err("successful operation hid its sampler refusal".into());
     }
@@ -807,12 +862,13 @@ impl Measurements {
         interval: (Duration, Before),
         identity: serde_json::Value,
         result: std::result::Result<T, E>,
+        publish: impl FnOnce(serde_json::Value) -> Result,
     ) -> Result<std::result::Result<T, E>> {
         let (elapsed, before) = interval;
         let observed = self.stop(before);
         let diagnostic = if let Err(error) = &result {
             let observation = observed.as_ref().ok();
-            emit(serde_json::json!({
+            publish(serde_json::json!({
                 "schema": 1, "kind": "failed_operation", "operation": operation.name(),
                 "agents": self.agents, "identity": identity, "raw_ns": ns(elapsed),
                 "error": error.to_string(),
