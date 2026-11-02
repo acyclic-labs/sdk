@@ -11,7 +11,7 @@
 //! The custodian is the owner's own executable, started once, detached from
 //! any console, with [`SWITCH`] set: a CRT initializer runs it before the
 //! host's `main`, in every executable that links this crate, so no host has
-//! to dispatch it. A tree costs the owner one line on the custodian's input
+//! to dispatch it. A tree costs the owner one frame on the custodian's input
 //! and one wait for its acknowledgment, which arrives before the tree's first
 //! instruction runs. Kill-on-close stays on the Job, so a killed custodian
 //! leaves the owner's handle to kill the tree when the owner exits, and the
@@ -346,7 +346,7 @@ impl Custodian {
             let mut input = self.input.lock().map_err(|_| poisoned())?;
             let output = input.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
             if let Err(error) = handoff.publish(output, tree, secret) {
-                // A partial line is never followed by another handover. EOF
+                // A partial frame is never followed by another handover. EOF
                 // withdraws that publication; subsequent callers fail closed.
                 drop(input.take());
                 return Err(error);
@@ -406,15 +406,18 @@ impl Handoff {
         if self.count != self.handles.len() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        writeln!(
-            output,
-            "{tree} {} {} {} {} {}",
-            self.handles[0].expose_provenance(),
-            self.handles[1].expose_provenance(),
-            self.handles[2].expose_provenance(),
-            self.handles[3].expose_provenance(),
-            admission::encode(secret)
-        )?;
+        let frame = Opened {
+            tree,
+            job: self.handles[0],
+            process: self.handles[1],
+            ready: self.handles[2],
+            done: self.handles[3],
+            secret: *secret,
+        }
+        .encode();
+        crate::io_progress::write_all(&mut [io::IoSlice::new(&frame)], |buffers| {
+            output.write(&buffers[0])
+        })?;
         self.count = 0;
         Ok(())
     }
@@ -630,23 +633,51 @@ struct Opened {
 unsafe impl Send for Opened {}
 
 impl Opened {
-    fn parse(line: &str) -> Option<Self> {
-        let mut fields = line.split(' ');
-        let tree = fields.next()?.parse().ok()?;
-        let mut handle = || handle_value(fields.next()?).filter(|handle| !handle.is_null());
-        let opened = Self {
+    /// Version one, five little-endian identities, and the original secret.
+    const SECRET_OFFSET: usize = 1 + 5 * size_of::<u64>();
+    const FRAME_BYTES: usize = Self::SECRET_OFFSET + size_of::<Secret>();
+
+    fn encode(self) -> [u8; Self::FRAME_BYTES] {
+        let mut frame = [0; Self::FRAME_BYTES];
+        frame[0] = 1;
+        for (slot, value) in frame[1..Self::SECRET_OFFSET].chunks_exact_mut(8).zip([
+            self.tree,
+            self.job.expose_provenance(),
+            self.process.expose_provenance(),
+            self.ready.expose_provenance(),
+            self.done.expose_provenance(),
+        ]) {
+            slot.copy_from_slice(&(value as u64).to_le_bytes());
+        }
+        frame[Self::SECRET_OFFSET..].copy_from_slice(&self.secret);
+        frame
+    }
+
+    fn decode(frame: &[u8; Self::FRAME_BYTES]) -> Option<Self> {
+        if frame[0] != 1 {
+            return None;
+        }
+        let mut fields = frame[1..Self::SECRET_OFFSET]
+            .chunks_exact(8)
+            .map(|slot| usize::try_from(u64::from_le_bytes(slot.try_into().ok()?)).ok());
+        let tree = fields.next()??;
+        let mut handle = || {
+            let value = fields.next()??;
+            (value != 0 && value != usize::MAX)
+                .then(|| std::ptr::with_exposed_provenance_mut(value))
+        };
+        Some(Self {
             tree,
             job: handle()?,
             process: handle()?,
             ready: handle()?,
             done: handle()?,
-            secret: admission::decode(fields.next()?)?,
-        };
-        fields.next().is_none().then_some(opened)
+            secret: frame[Self::SECRET_OFFSET..].try_into().ok()?,
+        })
     }
 }
 
-/// Decode the private handover's native handle representation once. Null is
+/// Decode the startup header's native handle representation once. Null is
 /// allowed only for an absent inherited output; required owners reject it at
 /// admission. INVALID_HANDLE_VALUE can never transfer an owned kernel object.
 fn handle_value(value: &str) -> Option<HANDLE> {
