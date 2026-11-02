@@ -104,7 +104,7 @@ class RustStreamProvider implements StreamProvider {
       const inner = await this.#inner;
       signal.throwIfAborted();
       return operation === "read" ? inner.read(input) : inner.open_follow(input);
-    }, path, operation === "read" ? options as ReadOptions : undefined, signal);
+    }, path, operation, operation === "read" ? options as ReadOptions : undefined, signal);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {

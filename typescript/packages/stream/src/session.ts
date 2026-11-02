@@ -88,7 +88,7 @@ export class StreamSessions {
       const input = await validateWireRequest({ kind: "read", path, ...authored });
       signal.throwIfAborted();
       return this.#inner.read(input);
-    }, path, authored, undefined, maximumResponseBytes);
+    }, path, "session", authored, undefined, maximumResponseBytes);
   }
   follow(path: string, options: FollowOptions & SessionOptions): Opened {
     const subscription = this.#followSubscription(create(wire.SessionFollowSchema, {

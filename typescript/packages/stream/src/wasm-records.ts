@@ -55,12 +55,12 @@ export async function openWasmCursor(
 /** Owns the same Rust request through registration, receipt and cursor disposal. */
 export function wasmRecords(
   open: (signal: AbortSignal) => Promise<WasmProviderRequest>, path: string,
+  operation: "read" | "follow" | "session",
   read?: ReadOptions, signal?: AbortSignal, maximumResponseBytes?: number,
 ): Opened {
   if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) {
     throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
-  const operation = read === undefined ? "follow" : "read";
   return new Opened(async signal => {
     let owned: Awaited<ReturnType<typeof openWasmCursor>> | undefined;
     try {

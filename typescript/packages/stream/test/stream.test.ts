@@ -937,7 +937,7 @@ describe("website Stream contract", () => {
     }
   });
 
-  test("hosted follow stops on malformed frames and canonical channel errors", async () => {
+  test("hosted cursors stop on malformed frames and canonical channel errors", async () => {
     for (const mode of ["protobuf", "item", "cursor"] as const) {
       const socket = new SessionSocket();
       socket.node.append("events");
@@ -957,14 +957,16 @@ describe("website Stream contract", () => {
         expect(socket.sockets.length).toBe(1);
       } finally { socket.close(); }
     }
-    for (const phase of ["opened", "data"] as const) {
+    for (const [operation, phase] of [
+      ["read", "opened"], ["read", "data"], ["follow", "opened"], ["follow", "data"],
+    ] as const) {
       for (const failure of [
         { wireCode: "not_found", code: "stream_not_found" },
         { wireCode: "access_denied", code: "access_denied" },
         { wireCode: "capacity", code: "capacity_exhausted" },
       ]) {
         const socket = new SessionSocket();
-        socket.node.append("events");
+        socket.node.append("events", operation === "read" ? 2 : 1);
         socket.transform = output => {
           if (output.body.case === phase && (phase === "opened" ||
               (output.body.case === "data" && output.body.value.item.case === "record" && output.body.value.item.value.sequence === 1n))) {
@@ -974,12 +976,12 @@ describe("website Stream contract", () => {
         };
         try {
           const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", webSocketFactory: socket.factory,
-            fetcher: async () => { throw new Error("follow must not fetch"); } });
-          const opened = provider.follow("events", { from: 0n });
+            fetcher: async () => { throw new Error("session cursor must not fetch"); } });
+          const opened = operation === "read" ? provider.read("events", { from: 0n, limit: 2 }) : provider.follow("events", { from: 0n });
           if (phase === "data") {
             await opened.opened;
             await expect(opened.next()).resolves.toMatchObject({ done: false, value: { sequence: 0n } });
-            socket.node.append("events");
+            if (operation === "follow") socket.node.append("events");
           }
           const error = await opened.next().catch(error => error);
           expect(error).toBeInstanceOf(StreamError);
