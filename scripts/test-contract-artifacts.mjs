@@ -57,7 +57,7 @@ test("compiler artifact discovery rejects identity substitution and partial comp
     assert.throws(build, SyntaxError);
     put("build", 'console.log(JSON.stringify({reason:"compiler-message",message:{rendered:"fixture compiler diagnostic"}})); process.exit(7);');
     assert.throws(build, error => {
-      assert.match(error.message, /Rust contract command failed with status 7/);
+      assert.match(error.message, /STEP_FAILED contract-build:.*failed with status 7/);
       assert.match(error.message, /fixture compiler diagnostic/);
       return true;
     });

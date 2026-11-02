@@ -3,6 +3,21 @@ import { join } from "node:path";
 
 const identity = target => JSON.stringify(target);
 
+export function captureContractCommand(root, executable, args, phase) {
+  const result = spawnSync(executable, args, {
+    cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (result.error || result.status !== 0) {
+    // Cargo diagnostics and exporter refusals share stdout. Keep the original
+    // completion metadata as well as its text, including signal-only exits.
+    throw Object.assign(new Error(
+      `STEP_FAILED contract-${phase}: ${executable} failed with status ${result.status ?? "unknown"}, signal ${result.signal ?? "none"}${result.error ? `; ${result.error.message}` : ""}; recovery: bun scripts/generate-contracts.mjs check\n${result.stdout ?? ""}`,
+      { cause: result.error },
+    ), { executable, args, status: result.status, signal: result.signal, stdout: result.stdout });
+  }
+  return result.stdout;
+}
+
 // Cargo remains the authority for source, toolchain, lockfile and feature
 // freshness. Never discover or execute a binary by guessing its target path.
 /** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, rustc_error?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
@@ -12,18 +27,12 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     report.phase = phase;
     saveProgress();
     const started = performance.now();
-    const result = spawnSync(executable, args, {
-      cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"],
-    });
-    report[`${phase}_ms`] = performance.now() - started;
-    saveProgress();
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      // Cargo's JSON diagnostics are on stdout, so discarding a failed capture
-      // would erase the compiler error while retaining only its exit status.
-      throw new Error(`Rust contract command failed with status ${result.status ?? "unknown"}\n${result.stdout}`);
+    try {
+      return captureContractCommand(root, executable, args, phase);
+    } finally {
+      report[`${phase}_ms`] = performance.now() - started;
+      saveProgress();
     }
-    return result.stdout;
   };
   const manifest = ["--manifest-path", join(root, "Cargo.toml"), "--locked"];
   report.cargo_version = capture("toolchain", ["--version"]).trim();
@@ -87,10 +96,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
 }
 
 export function runContractTarget(root, executable) {
-  const result = spawnSync(executable, { cwd: root, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "inherit"] });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`Rust contract target ${executable} failed with status ${result.status ?? "unknown"}`);
-  return result.stdout;
+  return captureContractCommand(root, executable, [], "run");
 }
 
 // Slots identify executables admitted by the same Cargo build. The selected

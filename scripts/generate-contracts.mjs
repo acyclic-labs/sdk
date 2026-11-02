@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildContractTargets, contractTargetOutputs } from "./contract-targets.mjs";
+import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
@@ -65,9 +64,7 @@ saveReport();
 try {
   report.phase = "source";
   saveReport();
-  const source = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
-  if (source.error || source.status !== 0) throw new Error("cannot identify contract source checkout");
-  report.source_commit = source.stdout.trim();
+  report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
   if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
   report.phase = "imports";
   saveReport();

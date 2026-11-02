@@ -5,7 +5,88 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { buildContractTargets, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
+import { buildContractTargets, captureContractCommand, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
+
+test("contract command refusals retain original native diagnostics and terminal metadata", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-contract-refusal-"));
+  const previousOptions = process.env.NODE_OPTIONS;
+  try {
+    const producer = join(root, "producer.mjs");
+    // This native producer records its actual OS refusal; no Cargo or provider
+    // wire response is invented. Both public capture paths must preserve it.
+    writeFileSync(producer, `import { readFileSync, writeSync } from "node:fs";
+      try { readFileSync("original-missing-input"); }
+      catch (error) { writeSync(1, JSON.stringify({code:error.code, syscall:error.syscall, path:error.path, message:error.message})); }
+      process.exitCode = 37;
+    `);
+    process.env.NODE_OPTIONS = `--import=${pathToFileURL(producer).href}`;
+    const original = spawnSync(process.execPath, [], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+    assert.equal(original.status, 37);
+    assert.equal(JSON.parse(original.stdout).code, "ENOENT");
+    const retainsRefusal = error => {
+      assert.equal(error.stdout, original.stdout);
+      assert.equal(error.status, original.status);
+      assert.equal(error.signal, original.signal);
+      assert.equal(error.executable, process.execPath);
+      assert.match(error.message, /STEP_FAILED contract-.*recovery: bun scripts\/generate-contracts\.mjs check/);
+      assert.ok(error.message.includes(original.stdout));
+      return true;
+    };
+    assert.throws(() => runContractTarget(root, process.execPath), retainsRefusal);
+    // Removing diagnostic metadata must fail even with an unchanged message.
+    assert.throws(() => retainsRefusal(new Error(`STEP_FAILED contract-run; recovery: bun scripts/generate-contracts.mjs check\n${original.stdout}`)));
+
+    writeFileSync(producer, 'import { writeSync } from "node:fs"; writeSync(1, "before-signal"); process.kill(process.pid, "SIGTERM");\n');
+    const signaled = spawnSync(process.execPath, [], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+    assert.notEqual(signaled.status, 0);
+    assert.throws(() => runContractTarget(root, process.execPath), error => {
+      assert.equal(error.stdout, signaled.stdout);
+      assert.equal(error.status, signaled.status);
+      assert.equal(error.signal, signaled.signal);
+      return true;
+    });
+    const missing = join(root, "original-missing-command");
+    const retainsSpawnError = error => {
+      assert.equal(error.cause.code, "ENOENT");
+      assert.equal(error.cause.path, missing);
+      assert.equal(error.executable, missing);
+      assert.match(error.message, /STEP_FAILED contract-(run|toolchain):.*recovery:/);
+      assert.match(String(error), /ENOENT/);
+      return true;
+    };
+    assert.throws(() => runContractTarget(root, missing), retainsSpawnError);
+    const report = {};
+    assert.throws(() => buildContractTargets(root, [["unused", "bin", "unused"]], missing, report), retainsSpawnError);
+    assert.equal(report.phase, "toolchain");
+    assert.equal(typeof report.toolchain_ms, "number");
+  } finally {
+    if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previousOptions;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("contract source lookup keeps the real Git refusal and exact selected source", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-contract-source-"));
+  try {
+    const repository = fileURLToPath(new URL("..", import.meta.url));
+    const args = ["rev-parse", "HEAD"];
+    const original = spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    assert.equal(original.status, 0, original.stderr);
+    assert.equal(captureContractCommand(repository, "git", args, "source"), original.stdout);
+    const refused = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    assert.notEqual(refused.status, 0);
+    assert.throws(() => captureContractCommand(root, "git", args, "source"), error => {
+      assert.equal(error.stdout, refused.stdout);
+      assert.equal(error.status, refused.status);
+      assert.equal(error.signal, refused.signal);
+      assert.deepEqual(error.args, args);
+      assert.equal(error.executable, "git");
+      assert.match(error.message, /STEP_FAILED contract-source:.*recovery:/);
+      return true;
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test("contract outputs retire at their selected last consumer without rerunning the producer", () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-consumers-"));
@@ -157,7 +238,7 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.deepEqual(run(build()), ["changed:false:false", "beta:true:false"]);
     const goodSource = readFileSync(join(root, "alpha/src/main.rs"));
     put("alpha/src/main.rs", "this is not Rust\n");
-    assert.throws(build, /Rust contract command failed/);
+    assert.throws(build, /STEP_FAILED contract-build:/);
     put("alpha/src/main.rs", goodSource);
     assert.deepEqual(run(build()), ["changed:false:false", "beta:true:false"]);
 

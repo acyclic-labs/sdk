@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { tarEntries, tarPayload } from "./archive-utils.mjs";
+import { fuzz as fuzzTar } from "./archive-utils.fuzz.mjs";
 import { verifyArchive as verifyGoArchive } from "../tools/sdk-generator/backends/go/src/qualify.mjs";
 import { readDependencies } from "../tools/sdk-generator/backends/elixir/src/provenance.mjs";
 
@@ -75,6 +76,19 @@ test("native tar admission visits one member at a time and rejects late corrupti
     trailer[trailer.length - 1] = 1;
     assert.throws(() => tarPayload(trailer, () => true), /invalid end marker/);
     assert.throws(() => tarPayload(bytes.subarray(0, names.length * 1024), () => true), /lacks an end marker/);
+    // Keep the byte target on the exact native producer capture. Exercise each
+    // header field, body boundary and end marker, rather than a second parser.
+    assert.equal(fuzzTar(bytes), true);
+    for (const start of [0, (names.length - 1) * 1024]) {
+      for (const field of [0, 99, 100, 124, 135, 148, 155, 156, 257, 345, 499, 511, 512, 513, 1023]) {
+        const mutation = Buffer.from(bytes);
+        mutation[start + field] ^= 255;
+        fuzzTar(mutation);
+        fuzzTar(bytes.subarray(0, start + field));
+      }
+    }
+    assert.equal(fuzzTar(trailer), false);
+    assert.equal(fuzzTar(bytes.subarray(0, names.length * 1024)), false);
     t.diagnostic(JSON.stringify({ members: names.length, first_member_headers: 1, aggregate_headers: names.length + 1 }));
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
