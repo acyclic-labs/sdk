@@ -325,7 +325,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             return Ok(());
         }
         self.fenced = true;
-        let effects = self.effects(AlarmChange::Keep)?;
+        let effects = self.effects(AlarmChange::Keep, None)?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
         self.snapshot = self
@@ -364,7 +364,9 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 "guest effect targets the host's actor journal",
             ));
         }
-        transition.effects.extend(self.effects(transition.alarm)?);
+        transition
+            .effects
+            .extend(self.effects(transition.alarm, Some(&journal))?);
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let mut prepared = self.store.prepare_publication(
             &self.snapshot,
@@ -381,11 +383,18 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         Ok(prepared)
     }
 
-    fn effects(&mut self, alarm: AlarmChange) -> Result<Vec<Effect>, Error> {
+    fn effects(
+        &mut self,
+        alarm: AlarmChange,
+        journal: Option<&StreamPath>,
+    ) -> Result<Vec<Effect>, Error> {
         let mut effects = if self.journal.is_empty() {
             Vec::new()
         } else {
-            let path = self.journal_path()?;
+            let path = match journal {
+                Some(path) => path.clone(),
+                None => self.journal_path()?,
+            };
             vec![Effect {
                 conditions: vec![CommitCondition::Tail {
                     path: path.clone(),

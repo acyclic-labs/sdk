@@ -146,6 +146,39 @@ async fn publication_and_reopen() -> TestResult {
         update.checkpoint.bytes = Bytes::from(vec![7; 128]);
         let journal_path = StreamPath::new(format!("{}/journal", store.path(&address)?))?;
         let mut prepared = binding.prepare_publish(&record(0), None, update, key("hot/joined")?)?;
+        let retained = prepared.journal.as_ref().ok_or("missing journal fence")?;
+        let appended = prepared
+            .request()
+            .mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                CommitMutation::Append { path, .. } if path == retained => Some(path),
+                _ => None,
+            })
+            .ok_or("missing journal append")?;
+        assert_eq!(
+            appended.as_str().as_ptr(),
+            retained.as_str().as_ptr(),
+            "the journal append must retain the already validated fence path"
+        );
+        let shared = acyclic_test_support::measure(|| {
+            std::hint::black_box(retained.clone());
+        });
+        // Negative control reconstructs the same path as the former append
+        // preparation did, including its temporary formatting buffer.
+        let duplicated = acyclic_test_support::measure(|| {
+            std::hint::black_box(
+                StreamPath::new(format!("{}/journal", prepared.own.as_ref().unwrap())).unwrap(),
+            );
+        });
+        assert_eq!(shared.count_total, 0);
+        assert_eq!(shared.bytes_total, 0);
+        assert!(duplicated.count_total >= 2);
+        assert!(duplicated.bytes_total >= u64::try_from(2 * retained.as_str().len())?);
+        println!(
+            "journal_path_reuse_allocations={} reconstructed_allocations={} reconstructed_bytes={}",
+            shared.count_total, duplicated.count_total, duplicated.bytes_total
+        );
         assert!(matches!(
             prepared.join(Effect {
                 conditions: Vec::new(),
