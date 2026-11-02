@@ -88,6 +88,7 @@ pub(super) mod linux {
 
     struct Session {
         child: Child,
+        errors: io::PipeReader,
     }
     impl Drop for Session {
         fn drop(&mut self) {
@@ -97,11 +98,7 @@ pub(super) mod linux {
     }
     impl Session {
         fn wait(&self, source: &impl AsFd, deadline: Instant) -> io::Result<()> {
-            let stderr = self
-                .child
-                .stderr
-                .as_ref()
-                .ok_or(io::ErrorKind::BrokenPipe)?;
+            let stderr = &self.errors;
             let mut fds = [
                 PollFd::new(stderr, PollFlags::IN),
                 PollFd::new(source, PollFlags::IN),
@@ -122,9 +119,14 @@ pub(super) mod linux {
                     }
                 }
                 if !fds[0].revents().is_empty() {
+                    let mut bytes = [0; 4096];
+                    let count = rustix::io::read(stderr, &mut bytes)?;
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "emulator producer closed or reported an error; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                        format!(
+                            "emulator producer closed or reported an error: {}; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture",
+                            String::from_utf8_lossy(&bytes[..count])
+                        ),
                     ));
                 }
                 if fds[1]
@@ -194,6 +196,7 @@ pub(super) mod linux {
         let root = dir.path();
         let dump = root.join("screen.txt");
         let config = root.join("tmux.conf");
+        let socket = root.join("tmux.sock");
         std::fs::write(root.join("frame.bin"), bytes).unwrap();
         let listener = UnixListener::bind(root.join("control")).unwrap();
         let name = format!(
@@ -210,41 +213,85 @@ pub(super) mod linux {
             }
         );
         let binary = std::env::current_exe().unwrap();
+        let (errors, error_writer) = io::pipe().unwrap();
         let mut command = Command::new(tool);
-        if tool == "tmux" {
+        command.env("TERM", "xterm-256color").env("SCREENDIR", root);
+        command.stdout(if tool == "screen" {
+            Stdio::from(error_writer.try_clone().unwrap())
+        } else {
+            Stdio::null()
+        });
+        let watch = if tool == "tmux" {
+            std::fs::write(&config, "set -g status off\n").unwrap();
+            let watch =
+                rustix::fs::inotify::init(rustix::fs::inotify::CreateFlags::CLOEXEC).unwrap();
+            rustix::fs::inotify::add_watch(&watch, root, rustix::fs::inotify::WatchFlags::CREATE)
+                .unwrap();
+            command.args([
+                "-D",
+                "-S",
+                socket.to_str().unwrap(),
+                "-f",
+                config.to_str().unwrap(),
+            ]);
+            Some(watch)
+        } else {
+            command.args(["-c", "/dev/null", "-DmS", &name]);
+            command.arg(&binary).args(["--exact", &test, "--nocapture"]);
+            None
+        };
+        let child = command
+            .env(CHILD_ROOT, root)
+            .stdin(Stdio::null())
+            .stderr(error_writer)
+            .spawn()
+            .unwrap();
+        // Explicitly release the parent's diagnostic write ends before waiting.
+        drop(command);
+        let session = Session { child, errors };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        if let Some(watch) = watch.as_ref() {
+            let mut buffer = [std::mem::MaybeUninit::uninit(); 4096];
+            let mut events = rustix::fs::inotify::Reader::new(&watch, &mut buffer);
+            while !socket.exists() {
+                session.wait(&watch, deadline).unwrap();
+                let event = events.next().unwrap();
+                assert!(
+                    !event.events().intersects(
+                        rustix::fs::inotify::ReadFlags::IGNORED
+                            | rustix::fs::inotify::ReadFlags::QUEUE_OVERFLOW
+                    ),
+                    "emulator socket watch lost; recovery: cargo test -p acyclic-harness-tui --features tui --test main terminal_regions::native_profiles::linux -- --nocapture"
+                );
+            }
             let shell = format!(
                 "exec {} --exact {} --nocapture",
                 shell_words::quote(binary.to_str().unwrap()),
                 test
             );
-            std::fs::write(
-                &config,
-                format!(
-                    "set -g status off\nnew-session -d -x 24 -y 8 {}\n",
-                    shell_words::quote(&shell)
-                ),
-            )
-            .unwrap();
-            // The original foreground server owns stderr for the whole wait.
-            command.args(["-D", "-L", &name, "-f", config.to_str().unwrap()]);
-        } else {
-            command.args(["-c", "/dev/null", "-DmS", &name]);
-            command.arg(&binary).args(["--exact", &test, "--nocapture"]);
+            checked(Command::new(tool).env("SCREENDIR", root).args([
+                "-S",
+                socket.to_str().unwrap(),
+                "new-session",
+                "-d",
+                "-x",
+                "24",
+                "-y",
+                "8",
+                &shell,
+            ]));
         }
-        let session = Session {
-            child: command
-                .env(CHILD_ROOT, root)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap(),
-        };
-        let deadline = Instant::now() + Duration::from_secs(2);
         session.wait(&listener, deadline).unwrap();
         let (mut control, _) = listener.accept().unwrap();
         if tool == "screen" {
-            checked(Command::new(tool).args(["-S", &name, "-X", "eval", "width 24 8", "stuff G"]));
+            checked(Command::new(tool).env("SCREENDIR", root).args([
+                "-S",
+                &name,
+                "-X",
+                "eval",
+                "width 24 8",
+                "stuff G",
+            ]));
         }
         control
             .write_all(if tool == "screen" { b"S" } else { b"G" })
@@ -257,9 +304,9 @@ pub(super) mod linux {
             "original emulator consumption acknowledgement"
         );
         let text = if tool == "tmux" {
-            String::from_utf8(checked(Command::new(tool).args([
-                "-L",
-                &name,
+            String::from_utf8(checked(Command::new(tool).env("SCREENDIR", root).args([
+                "-S",
+                socket.to_str().unwrap(),
                 "capture-pane",
                 "-p",
                 "-t",
@@ -268,7 +315,11 @@ pub(super) mod linux {
             .unwrap()
         } else {
             let hardcopy = format!("hardcopy {}", shell_words::quote(dump.to_str().unwrap()));
-            checked(Command::new(tool).args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]));
+            checked(
+                Command::new(tool)
+                    .env("SCREENDIR", root)
+                    .args(["-S", &name, "-X", "eval", &hardcopy, "stuff H"]),
+            );
             session.wait(&control, deadline).unwrap();
             control.read_exact(&mut consumed).unwrap();
             assert_eq!(
@@ -284,14 +335,16 @@ pub(super) mod linux {
     }
     #[test]
     fn emulator_loss_wins_over_a_ready_consumer() {
+        let (errors, writer) = io::pipe().unwrap();
         let mut session = Session {
             child: Command::new("sh")
                 .args(["-c", "read hold"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
-                .stderr(Stdio::piped())
+                .stderr(writer)
                 .spawn()
                 .unwrap(),
+            errors,
         };
         let (reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"R").unwrap();
