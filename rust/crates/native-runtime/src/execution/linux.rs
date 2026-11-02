@@ -397,6 +397,9 @@ fn syscall(call: impl FnOnce() -> libc::c_long) -> io::Result<libc::c_long> {
 
 const LOAD: u16 = 0x20;
 const EQUAL: u16 = 0x15;
+const GREATER: u16 = 0x25;
+const GREATER_EQUAL: u16 = 0x35;
+const JUMP: u16 = 0x05;
 const AND: u16 = 0x54;
 const RETURN: u16 = 0x06;
 const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
@@ -487,7 +490,7 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     ]);
     // Reject the x32 ABI before comparing native syscall numbers.
     code.extend(&[
-        instruction(0x35, 0, 1, 0x4000_0000),
+        instruction(GREATER_EQUAL, 0, 1, 0x4000_0000),
         instruction(RETURN, 0, 0, DENY),
     ]);
     // The common data path returns before the less frequent control
@@ -512,13 +515,8 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
     ]);
     control_filter(&mut code);
     socket_filter(&mut code, network);
-    let calls = allowed_syscalls();
-    let mut at = 0;
-    while at < calls.len() {
-        verdict(&mut code, calls[at], ALLOW);
-        at += 1;
-    }
-    code.push(instruction(RETURN, 0, 0, DENY));
+    const RANGES: SyscallRanges = syscall_ranges();
+    syscall_dispatch(&mut code, RANGES.ranges.split_at(RANGES.len).0);
     assert!(N == 0 || code.len == N, "invalid execution filter length");
     assert!(
         code.len <= u16::MAX as usize,
@@ -660,6 +658,83 @@ const fn verdict<const N: usize>(code: &mut Filter<N>, call: libc::c_long, resul
         instruction(EQUAL, 0, 1, number(call)),
         instruction(RETURN, 0, 0, result),
     ]);
+}
+
+#[derive(Clone, Copy)]
+struct SyscallRange {
+    first: u32,
+    last: u32,
+}
+
+struct SyscallRanges {
+    ranges: [SyscallRange; allowed_syscalls().len()],
+    len: usize,
+}
+
+/// Sort and coalesce only during constant evaluation. No runtime table,
+/// sorting, allocation or additional policy representation is retained.
+const fn syscall_ranges() -> SyscallRanges {
+    let calls = allowed_syscalls();
+    let mut sorted = [0; allowed_syscalls().len()];
+    let mut at = 0;
+    while at < calls.len() {
+        let call = number(calls[at]);
+        let mut insert = at;
+        while insert != 0 && sorted[insert - 1] > call {
+            sorted[insert] = sorted[insert - 1];
+            insert -= 1;
+        }
+        sorted[insert] = call;
+        at += 1;
+    }
+    let mut result = SyscallRanges {
+        ranges: [SyscallRange { first: 0, last: 0 }; allowed_syscalls().len()],
+        len: 0,
+    };
+    at = 0;
+    while at < sorted.len() {
+        let call = sorted[at];
+        if result.len != 0 && call <= result.ranges[result.len - 1].last + 1 {
+            result.ranges[result.len - 1].last = call;
+        } else {
+            result.ranges[result.len] = SyscallRange {
+                first: call,
+                last: call,
+            };
+            result.len += 1;
+        }
+        at += 1;
+    }
+    result
+}
+
+/// Every branch moves forward and halves the remaining ranges. Leaves check
+/// both bounds, so holes and future syscall numbers retain the same denial.
+const fn syscall_dispatch<const N: usize>(code: &mut Filter<N>, ranges: &[SyscallRange]) {
+    assert!(!ranges.is_empty(), "empty execution syscall declaration");
+    if ranges.len() == 1 {
+        let range = ranges[0];
+        if range.first == range.last {
+            code.push(instruction(EQUAL, 0, 1, range.first));
+        } else {
+            code.push(instruction(GREATER_EQUAL, 0, 2, range.first));
+            code.push(instruction(GREATER, 1, 0, range.last));
+        }
+        code.push(instruction(RETURN, 0, 0, ALLOW));
+        code.push(instruction(RETURN, 0, 0, DENY));
+        return;
+    }
+    let (left, right) = ranges.split_at(ranges.len() / 2);
+    code.push(instruction(GREATER_EQUAL, 0, 1, right[0].first));
+    let branch = code.len;
+    code.push(instruction(JUMP, 0, 0, 0));
+    syscall_dispatch(code, left);
+    if N != 0 {
+        // Classic BPF's unconditional jump carries a full 32-bit offset;
+        // it cannot truncate a large subtree to an eight-bit branch.
+        code.instructions[branch].k = (code.len - branch - 1) as u32;
+    }
+    syscall_dispatch(code, right);
 }
 
 const fn allowed_syscalls() -> &'static [libc::c_long] {

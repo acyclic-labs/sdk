@@ -105,9 +105,20 @@ const ARCH: u32 = 0xc000_003e;
 const ARCH: u32 = 0xc000_00b7;
 
 fn evaluate(code: &[Instruction], arch: u32, syscall: u32, arguments: [u64; 6]) -> u32 {
+    evaluate_work(code, arch, syscall, arguments).0
+}
+
+fn evaluate_work(
+    code: &[Instruction],
+    arch: u32,
+    syscall: u32,
+    arguments: [u64; 6],
+) -> (u32, usize) {
     let mut accumulator = 0;
     let mut at = 0;
+    let mut steps = 0;
     while let Some(instruction) = code.get(at) {
+        steps += 1;
         match instruction.code {
             LOAD => {
                 accumulator = match instruction.k {
@@ -120,21 +131,74 @@ fn evaluate(code: &[Instruction], arch: u32, syscall: u32, arguments: [u64; 6]) 
                     offset => panic!("invalid seccomp data load at {offset}"),
                 };
             }
-            EQUAL | 0x35 => {
+            EQUAL | GREATER_EQUAL | GREATER => {
                 let yes = if instruction.code == EQUAL {
                     accumulator == instruction.k
+                } else if instruction.code == GREATER {
+                    accumulator > instruction.k
                 } else {
                     accumulator >= instruction.k
                 };
                 at += usize::from(if yes { instruction.jt } else { instruction.jf });
             }
+            JUMP => at += instruction.k as usize,
             AND => accumulator &= instruction.k,
-            RETURN => return instruction.k,
+            RETURN => return (instruction.k, steps),
             opcode => panic!("unchecked filter instruction {opcode}"),
         }
         at += 1;
     }
     panic!("filter fell through without a verdict");
+}
+
+#[test]
+fn syscall_dispatch_preserves_classification_with_bounded_work() {
+    const fn dispatch<const N: usize>() -> Filter<N> {
+        let mut code = Filter::new();
+        code.push(instruction(LOAD, 0, 0, 0));
+        const RANGES: SyscallRanges = syscall_ranges();
+        syscall_dispatch(&mut code, RANGES.ranges.split_at(RANGES.len).0);
+        code
+    }
+    const LEN: usize = dispatch::<0>().len;
+    const CODE: [Instruction; LEN] = dispatch::<LEN>().instructions;
+    let ranges = syscall_ranges();
+    let bound = 1 + 2 * ranges.len.next_power_of_two().ilog2() as usize + 4;
+    let last = ranges.ranges[ranges.len - 1].last;
+    let mut maximum = 0;
+    // Exhaust every current number and gap, both outer boundaries, and the
+    // largest future number. The unchanged declaration is the independent
+    // classification oracle; range generation cannot widen it unnoticed.
+    for call in (0..=last + 1).chain([u32::MAX]) {
+        let (result, steps) = evaluate_work(&CODE, ARCH, call, [0; 6]);
+        assert_eq!(
+            result,
+            if allowed_syscalls().contains(&libc::c_long::from(call)) {
+                ALLOW
+            } else {
+                DENY
+            },
+            "syscall {call}"
+        );
+        assert!(steps <= bound, "syscall {call}: {steps} > {bound}");
+        maximum = maximum.max(steps);
+    }
+    // The former linear dispatcher is a cost negative control, using the
+    // original declaration and encoding rather than a fabricated receipt.
+    let mut linear = Filter::<{ 2 * allowed_syscalls().len() + 2 }>::new();
+    linear.push(instruction(LOAD, 0, 0, 0));
+    for call in allowed_syscalls() {
+        verdict(&mut linear, *call, ALLOW);
+    }
+    linear.push(instruction(RETURN, 0, 0, DENY));
+    assert!(evaluate_work(&linear.instructions, ARCH, u32::MAX, [0; 6]).1 > bound);
+    assert!(CODE.len() < linear.len);
+    eprintln!(
+        "syscall dispatch: instructions {} -> {}, maximum steps {} -> {maximum}, bound={bound}",
+        linear.len,
+        CODE.len(),
+        allowed_syscalls().len() + 2
+    );
 }
 
 proptest! {
@@ -169,10 +233,14 @@ proptest! {
             control[1] = command as u64;
             prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control), ALLOW);
         }
-        // Restore the old permissive default in the actual generated program.
+        // Restore a permissive default in the actual generated program.
         // The same host IPC operation is then admitted without any path or FD.
         let mut permissive = code.to_vec();
-        permissive.last_mut().unwrap().k = ALLOW;
+        for instruction in &mut permissive {
+            if instruction.code == RETURN && instruction.k == DENY {
+                instruction.k = ALLOW;
+            }
+        }
         prop_assert_eq!(evaluate(&permissive, ARCH, libc::SYS_shmat as u32, arguments), ALLOW);
     }
 

@@ -253,6 +253,18 @@ retains its `Interrupted` classification. Refusals carry exactly one
 Conformance checks verify that refusal and the absence of guest effects on
 unsupported kernels; kernel enforcement requires a supported kernel.
 
+The ordinary Linux syscall declaration compiles into a balanced decision tree
+over contiguous allowed ranges. Every leaf checks both endpoints, including
+gaps and future syscall numbers. Sorting, range construction and branch layout
+run during constant evaluation; grants still share only the resulting native
+filter bytes. Dispatch takes at most two instructions per tree level and four
+at a leaf, independent of agent count or execution history. The architecture,
+clone, descriptor-control and network checks still precede this dispatcher;
+ordinary read and write retain their early return. All branches move forward,
+so every syscall reaches an allow or deny verdict without a wait. This replaces
+the linear per-syscall comparison chain without an additional runtime table,
+allocation, syscall, descriptor, barrier or round trip.
+
 macOS and Windows currently return a typed unsupported refusal before creating
 a confined process. A path-based Seatbelt profile alone does not establish the
 object-bound grant or fence inherited descriptors. No partial macOS adapter is
