@@ -109,6 +109,27 @@ impl PreparationIo {
         }
     }
 
+    /// Moves an input's existing custody into a fallible attempt on this ledger.
+    pub(in crate::filesystem) fn scoped_with_input(&self, bytes: u64) -> Result<Self> {
+        match self {
+            Self::Owned {
+                budget,
+                work,
+                custody,
+                cancellation,
+            } => Ok(Self::Owned {
+                budget: *budget,
+                work: Arc::clone(work),
+                custody: custody
+                    .split_off(bytes)
+                    .map_err(acyclic_fs::FsError::from)?,
+                cancellation: cancellation.clone(),
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { .. } => Ok(Self::from_native_custody(self.take_native_custody(bytes)?)),
+        }
+    }
+
     fn owned(budget: WorkBudget, work: StandaloneLedger, cancellation: CancellationToken) -> Self {
         let custody = StandaloneCustody::new(Arc::clone(&work));
         Self::Owned {

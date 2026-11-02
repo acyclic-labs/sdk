@@ -204,10 +204,7 @@ impl RetainedModelStep {
                     - size_of::<crate::model::PreparedModelRequest>() as u64,
             )?;
         }
-        bytes = native_size_add(
-            bytes,
-            native_events_owned_bytes(&self.events)? - size_of::<Vec<ModelEvent>>() as u64,
-        )?;
+        bytes = native_size_add(bytes, stock_events_payload_bytes(&self.events)?)?;
         for call in &self.admission.calls {
             bytes = native_size_add(bytes, call.capacity() as u64)?;
         }

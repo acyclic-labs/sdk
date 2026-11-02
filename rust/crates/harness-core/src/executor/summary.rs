@@ -132,9 +132,27 @@ impl StockExecution<'_> {
     }
 
     fn collect_summary_text(&self, events: Vec<ModelEvent>) -> Result<String> {
+        #[cfg(feature = "filesystem")]
+        let scope = crate::filesystem::PreparationScope::with_input(
+            self.io,
+            self.io
+                .map(|_| stock_events_payload_bytes(&events))
+                .transpose()?
+                .unwrap_or(0),
+        )?;
+        #[cfg(feature = "filesystem")]
+        let io = scope.io();
+        #[cfg(not(feature = "filesystem"))]
+        let io = self.io;
+        // Input and output die before the scope on every early return.
+        let events = events;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
         let completed_message = self.has_completed_message(&events)?;
         let mut text = String::new();
-        for event in stock_into_iter(events, self.io)? {
+        for event in stock_into_iter(events, io)? {
             match event {
                 ModelEvent::Content { delta } if !completed_message => {
                     stock_string_push(
@@ -142,44 +160,44 @@ impl StockExecution<'_> {
                         &delta,
                         self.stock.limits.render_bytes,
                         "summary output exceeds caller render budget",
-                        self.io,
+                        io,
                     )?;
-                    self.retire_step_text(delta)?;
+                    stock_retire_text(delta, io)?;
                 }
                 ModelEvent::MessageCompleted { text: completed } => {
                     if completed.len() as u64 > self.stock.limits.render_bytes {
-                        self.retire_step_text(completed)?;
-                        self.retire_step_text(text)?;
                         return Err(stock_boundary(
-                            self.io,
+                            io,
                             crate::wire::ErrorCode::Invalid,
                             "summary output exceeds caller render budget",
                         ));
                     }
-                    self.retire_step_text(text)?;
+                    stock_retire_text(text, io)?;
                     text = completed;
                 }
                 ModelEvent::ToolCall(_) => {
                     return Err(stock_boundary(
-                        self.io,
+                        io,
                         crate::wire::ErrorCode::Invalid,
                         "summary requested a tool operation",
                     ));
                 }
-                ModelEvent::Content { delta } => self.retire_step_text(delta)?,
-                ModelEvent::TextPart { .. }
+                event @ (ModelEvent::Content { .. }
+                | ModelEvent::TextPart { .. }
                 | ModelEvent::Reasoning { .. }
                 | ModelEvent::ReasoningBlock { .. }
-                | ModelEvent::Completed { .. } => {}
+                | ModelEvent::Completed { .. }) => stock_retire_event(event, io)?,
             }
         }
         if text.is_empty() {
             return Err(stock_boundary(
-                self.io,
+                io,
                 crate::wire::ErrorCode::Invalid,
                 "summary operation returned no content",
             ));
         }
+        #[cfg(feature = "filesystem")]
+        scope.finish(text.capacity() as u64)?;
         Ok(text)
     }
 

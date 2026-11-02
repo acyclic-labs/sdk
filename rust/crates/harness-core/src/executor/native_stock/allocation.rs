@@ -27,6 +27,61 @@ pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Resu
     Ok(copied)
 }
 
+pub(crate) fn stock_retire_text(text: String, io: Option<&PreparationIo>) -> Result<()> {
+    let bytes = text.capacity() as u64;
+    stock_retire(text, bytes, io)
+}
+
+fn stock_retire<T>(value: T, bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let custody = io
+        .filter(|_| bytes != 0)
+        .map(|io| io.guard_owned(bytes))
+        .transpose()?;
+    #[cfg(not(feature = "filesystem"))]
+    let _ = (io, bytes);
+    drop(value);
+    #[cfg(feature = "filesystem")]
+    drop(custody);
+    Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+pub(in crate::executor) fn stock_events_payload_bytes(events: &Vec<ModelEvent>) -> Result<u64> {
+    events.iter().try_fold(
+        (events.capacity() as u64)
+            .checked_mul(std::mem::size_of::<ModelEvent>() as u64)
+            .ok_or_else(|| {
+                stock_boundary(
+                    None,
+                    crate::wire::ErrorCode::Invalid,
+                    "event storage overflows",
+                )
+            })?,
+        |bytes, event| {
+            crate::core::owned_sum([
+                bytes,
+                event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64,
+            ])
+        },
+    )
+}
+
+pub(in crate::executor) fn stock_retire_event(
+    event: ModelEvent,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    #[cfg(feature = "filesystem")]
+    let bytes = if io.is_some() {
+        event.retained_owned_bytes()? - std::mem::size_of::<ModelEvent>() as u64
+    } else {
+        0
+    };
+    #[cfg(not(feature = "filesystem"))]
+    let bytes = 0;
+    stock_retire(event, bytes, io)
+}
+
 pub(crate) fn stock_vec_push<T>(
     values: &mut Vec<T>,
     value: T,

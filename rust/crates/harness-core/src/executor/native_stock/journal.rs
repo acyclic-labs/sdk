@@ -108,23 +108,3 @@ pub(in crate::executor) fn native_size_slots(capacity: usize, size: usize) -> Re
             reason: "native stock logical payload size overflow",
         })
 }
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) fn native_events_owned_bytes(events: &Vec<ModelEvent>) -> Result<u64> {
-    let slots = native_size_slots(events.capacity(), std::mem::size_of::<ModelEvent>())?;
-    events.iter().try_fold(
-        native_size_add(std::mem::size_of::<Vec<ModelEvent>>() as u64, slots)?,
-        |bytes, event| {
-            native_size_add(
-                bytes,
-                event
-                    .logical_owned_bytes()?
-                    .checked_sub(std::mem::size_of::<ModelEvent>() as u64)
-                    .ok_or_else(|| crate::Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Storage,
-                        reason: "native event metadata extent differs",
-                    })?,
-            )
-        },
-    )
-}
