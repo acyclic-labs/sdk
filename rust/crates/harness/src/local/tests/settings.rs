@@ -143,3 +143,79 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens() -> Result<()> {
+    use crate::model::{
+        Model, ModelDispatch, ModelEvent, ModelProfileBinding, ModelProvider, PreparedModelRequest,
+    };
+    use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
+    use std::sync::Arc;
+
+    struct Bound(ModelProfileBinding);
+    impl ModelProvider for Bound {
+        fn model_profile(&self, _: &Model) -> Result<Option<ModelProfileBinding>> {
+            Ok(Some(self.0))
+        }
+        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
+            Ok(self.0.capacity())
+        }
+        fn generate<'a>(
+            &'a self,
+            _: &'a PreparedModelRequest,
+            _: ModelDispatch,
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
+            panic!("settings admission must not dispatch a model")
+        }
+    }
+
+    let capacity = super::capacity();
+    let model = ModelProfile::parse(
+        "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\nsampling: {temperature: 0.25}\ncache: automatic\nbudget_tokens: 8192\nwatermark_tokens: 4096\n---\n",
+        "---\nversion: 1\nkey: scripted/test\n---\n",
+        capacity,
+        "test-renderer",
+    )?;
+    let role = RoleFile::parse(
+        "---\nversion: 1\nname: worker\nmodel: scripted/test\ncontext: fork\nmay_spawn: []\n---\n",
+    )?;
+    let project = ProjectLayer::parse("---\nversion: 1\n---\n")?;
+    let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
+    let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
+    let binding =
+        resolve(&model, &role, &project, &agent)?.bind_model(&super::model()?, capacity)?;
+    let provider = Arc::new(Bound(binding));
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let volume = volume(directory.path()).await?;
+    let config = || {
+        volume_config(directory.path(), volume.clone(), provider.clone())
+            .map(|config| config.compaction(crate::context::CompactionPolicy::Disabled))
+    };
+    let mut harness = LocalHarness::open(config()?).await?;
+    for (temperature, expected) in [
+        (0.25, AdmissionStatus::Applied),
+        (0.75, AdmissionStatus::Rejected),
+    ] {
+        let version = write(
+            &harness,
+            &format!(
+                "export default (base) => ({{...base, sampling: {{temperature: {temperature}}}}});"
+            ),
+        )
+        .await?;
+        drop(harness);
+        harness = LocalHarness::open(config()?).await?;
+        let record = admission(&harness, &version).await?;
+        assert_eq!(record.status, expected);
+        if expected == AdmissionStatus::Rejected {
+            assert_eq!(harness.sampling, None);
+            assert!(
+                record
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("pinned profile"))
+            );
+        }
+    }
+    Ok(())
+}
