@@ -345,7 +345,7 @@ impl LocalHarness {
                 executors: self.executors(),
                 limits: TurnLimits {
                     maximum_bytes: self.limits.file_bytes,
-                    history_turns: None,
+                    history_turns: Some(TurnLimits::HISTORY_PAGE_SIZE),
                 },
                 actors: ActorLimits::new(None, None, None).map_err(storage)?,
                 clock: Arc::new(SystemClock),
@@ -419,7 +419,7 @@ impl LocalHarness {
             executors: self.executors(),
             limits: TurnLimits {
                 maximum_bytes: self.limits.file_bytes,
-                history_turns: None,
+                history_turns: Some(TurnLimits::HISTORY_PAGE_SIZE),
             },
             actors: ActorLimits::new(None, None, None).map_err(storage)?,
             clock: Arc::new(SystemClock),

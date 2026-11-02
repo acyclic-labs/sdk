@@ -198,7 +198,6 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.stock.limits.validate(&mut None)?;
-        self.model_capacity()?;
         if input.max_steps == Some(0) {
             return Err(stock_boundary(
                 self.io,

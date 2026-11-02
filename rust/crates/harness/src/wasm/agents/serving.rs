@@ -129,7 +129,7 @@ impl WasmAgentServer {
                 executors: Arc::new(Providers::executors(&options, registry)?),
                 limits: TurnLimits {
                     maximum_bytes: limits.file_bytes,
-                    history_turns: None,
+                    history_turns: Some(TurnLimits::HISTORY_PAGE_SIZE),
                 },
                 actors: ActorLimits::new(options.handler_timeout_ms, None, None)
                     .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
