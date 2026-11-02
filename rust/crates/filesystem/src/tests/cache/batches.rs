@@ -13,7 +13,15 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         object_id,
         maximum_bytes: bytes.len() as u64,
     });
-    for exit in 0..4 {
+    let mut first = AuthorityWork::new(B, &setup);
+    drop(
+        inner
+            .read(requests[0].object_id, requests[0].maximum_bytes, &mut first)
+            .await?,
+    );
+    let first = first.spent();
+    for exit in 0..6 {
+        let completed_reads = u64::from(exit >= 4);
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(
             WorkBudget {
@@ -34,6 +42,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         let (producer, receiver) = futures::channel::oneshot::channel();
         let reads = Arc::new(AtomicUsize::new(0));
         let store = GatedStore {
+            reads_before_gate: completed_reads as usize,
             inner: Arc::clone(&inner),
             gate: futures::FutureExt::shared(receiver),
             reads: Arc::clone(&reads),
@@ -42,7 +51,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
             &store, &requests, &mut work,
         ));
         assert!(futures::poll!(batch.as_mut()).is_pending());
-        assert_eq!(reads.load(Ordering::Acquire), 1);
+        assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
         let mut sibling = AuthorityWork::new(B, &setup);
         assert!(inner.contains(requests[0].object_id, &mut sibling).await?);
         match exit {
@@ -65,7 +74,7 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 ));
             }
             _ => {
-                if exit == 3 {
+                if exit == 3 || exit == 5 {
                     cancellation.cancel();
                 }
                 drop(batch);
@@ -84,9 +93,17 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
             assert_eq!(completed.backend_read_operations, 2);
             assert_eq!(completed.items_returned, 2);
         } else {
-            assert_eq!(reads.load(Ordering::Acquire), 1);
-            assert_eq!(completed.items_examined, before.items_examined + 2);
-            assert_eq!(completed.backend_read_operations, 0);
+            assert_eq!(reads.load(Ordering::Acquire), 1 + completed_reads as usize);
+            assert_eq!(
+                completed.items_examined,
+                before.items_examined + 2 + completed_reads * first.items_examined
+            );
+            assert_eq!(completed.backend_read_operations, completed_reads);
+            assert_eq!(
+                completed.object_bytes_read,
+                completed_reads * first.object_bytes_read
+            );
+            assert_eq!(completed.bytes_hashed, completed_reads * first.bytes_hashed);
             assert_eq!(completed.items_returned, 0);
         }
         assert_eq!(earlier.value, [7; 31]);
