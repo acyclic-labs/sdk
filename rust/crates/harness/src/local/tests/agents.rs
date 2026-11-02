@@ -361,22 +361,31 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
                 id: crate::agent::IntentId::try_from("settled-child").map_err(agent)?,
                 brief: crate::model::ModelContent::Text("finish the trial".into()),
                 role: "worker".into(),
+                profile_snapshot: None,
             }
         ).await? else {
             return Err(Error::Invalid("trial child was not created".into()));
         };
         settled(agents, &child).await?;
-        let selected = agents.state(&child).await.map_err(agent)?.status_tail - 1;
+        let mut statuses = connection.controls.observe_status(child.clone()).map_err(agent)?;
+        let original = statuses.next().await.map_err(agent)?;
+        let selected = original.sequence;
+        let expected_cut = (original.status.cursor, original.status.conversation);
         let client = Conversation::open(connection.clone())?;
         let mut events = client.observe(0).await?;
         let inbox = client.send("lost-producer", "hello").await?;
         entering.await.map_err(agent)?;
-        let archive = acyclic_harness_client::AgentCommand::Archive {
+        let retained = crate::population::CompletedRun {
+            version: 1,
+            population: "producer-loss".into(),
+            replicate: 0,
+            arm: "baseline".into(),
             agent: child.clone(),
             id: crate::agent::IntentId::try_from("close-settled-trial").map_err(agent)?,
-            status: selected,
+            status_sequence: selected,
+            status: original.status,
         };
-        let releasing = connection.execute(&archive);
+        let releasing = crate::population::release(&connection.controls, retained);
         tokio::pin!(releasing);
         assert!(futures::poll!(&mut releasing).is_pending(), "release waits for parent consumption");
         let mut close = acyclic_stream::FollowRequest::new(child.closed().map_err(agent)?, 0);
@@ -413,6 +422,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             id: crate::agent::IntentId::try_from("pending-spawn").map_err(agent)?,
             brief: crate::model::ModelContent::Text("work".into()),
             role: "worker".into(),
+            profile_snapshot: None,
         };
         let spawning = connection.execute(&spawn);
         tokio::pin!(spawning);
@@ -430,7 +440,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let observed = waiting.await;
         assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
         assert!(matches!(spawning.await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "spawn outcome lost the runtime cause");
-        assert!(matches!(releasing.await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "release receipt lost the runtime cause");
+        let Err(crate::population::Error::Release { run, cause }) = releasing.await else {
+            return Err(Error::Conflict("release lost its retained original result".into()));
+        };
+        assert_eq!(run.status_sequence, selected);
+        assert_eq!((run.status.cursor, run.status.conversation), expected_cut);
+        assert!(matches!(&cause, crate::population::CommandFailure::Exchange {
+            cause: acyclic_harness_client::AgentExchangeError::Session(acyclic_stream::StreamError::Unavailable), ..
+        }), "release must retain the canonical session loss: {cause:?}");
+        assert!(matches!(connection.stream_failure(cause), Error::Storage(reason) if reason.contains("model producer closed")), "release receipt lost the runtime cause");
         let hosted = harness.agents.get().unwrap();
         assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
         assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");

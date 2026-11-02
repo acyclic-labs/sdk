@@ -47,7 +47,7 @@ the replicate count is the user's reservation. Arm order rotates between
 replicates to reduce a fixed temporal ordering effect.
 
 `experiments::Population::admit` checks the version, identities, role context and
-actual model selection before execution. All executable roles in the host's
+declared model selection before execution. All executable roles in the host's
 snapshot must use `openai/gpt-6-luna`, `anthropic/claude-haiku-5-5`, or
 `google/gemini-3.8-flash`. This includes descendant roles, so the stock profile
 snapshot with its more expensive advisor/reviewer is refused. The parent must
@@ -56,20 +56,31 @@ admitted whole-role snapshot identity. The host compares it before history,
 staging or activation and refuses a mismatch with a recovery instruction.
 Every adopted role pin also binds that snapshot: changing only a future
 descendant's policy refuses resumed turns and spawns under the new snapshot.
+This admission validates role files. The executor must also bind each admitted
+role to its actual provider/model before activation; a host-wide provider alone
+does not enforce the declared cheap-model policy. That shared binding remains
+a prerequisite for running these populations.
 
-`population::run` (features `filesystem` and `hosting`) returns a stream of
-completed runs. Supply the existing authenticated `AgentControls` and explicit
-nonzero in-flight credit. Read the arms file through the volume owner and append
-each yielded row to a results file through that same owner. The runner adds no
+`population::run` (features `filesystem` and `hosting`) returns released runs.
+Supply authenticated `AgentControls`, explicit nonzero in-flight credit and an
+async `retain(&CompletedRun)` callback. Read and score the selected original
+output, then durably append its run ticket and score through the volume owner
+before returning from that callback. Its wait belongs to that owner's commit
+event and must return a typed error if the owner closes. The runner adds no
 command tool, transport, background thread, directory scan or timer.
 
 Each trial has an intent derived from the complete arms file, role snapshot,
-arm position and replicate. Resuming the identical experiment reuses its
-committed forks. Changing an intervention creates a different experiment
+arm position and replicate. Retrying a fork reuses its committed child. Changing
+an intervention creates a different experiment
 identity. Dropping the stream releases observations; already committed agents
 retain their ordinary lifecycle. Record failures as well as completed rows.
 An uncertain control failure retains its exact prepared invocation for explicit
-replay.
+replay. Save the original status sequence with the run ticket. Recover pending
+releases by reading those tickets and calling `population::release`; an archive's
+latest status cannot stand in for the original output. This API does not infer
+that sequence from a settlement query or conversation length. The first failure
+stops admission and drops other active futures; reconcile any outstanding fork
+intents and retained tickets before restarting a population.
 
 Completion is a committed `Done` status, or `Idle` after at least one new
 conversation entry beyond the inherited prefix. The adoption's initial idle
@@ -79,13 +90,14 @@ or transfer the transcript. Producer/session loss returns the session adapter's
 typed error. The producer of each subsequent wake is the fork's own actor step,
 which commits status with its turn.
 
-This runner is a draft pending the shared lifecycle contract: an idle child
-still occupies its parent's open-child membership. In-flight credit bounds
-active observations, but does not reclaim that membership. Executing larger
-populations therefore needs a shared close operation with a release
-acknowledgment, preserving the original settlement for resume. Merely observing
-the child's archived status would not prove that its parent consumed the release.
-Do not launch populations through this adapter until that contract is available.
+After retention, one `Archive` command fences the exact original status. Credit
+stays held until `Released` proves the parent consumed the terminal report and
+removed membership. The returned status, inbox cursor and conversation cut must
+all match the retained result. Merely observing the child's archive publication
+cannot complete a trial. Retention failure leaves the child open and returns its
+original ticket; release failure preserves that ticket and any uncertain command.
+The runner remains a draft until the shared membership/layout primitives are
+complete, including paused-turn reservations. Do not launch populations yet.
 
 ## Results and cost
 
@@ -135,11 +147,17 @@ Trial enumeration and rotation take O(1) work, allocate nothing, and
 never multiply the replicate count by the arm count. Intent derivation hashes
 fixed-size identity fields. Streaming statistics allocate nothing per update.
 
-Per trial, the orchestration prepares one ordinary fork command and one
-invocation, makes one control exchange, and follows one status stream. It copies
+Per trial, the orchestration now prepares two commands and invocations (fork
+and exact-cut release) and makes two control exchanges, up from one each. The
+added exchange buys parent-acknowledged membership release before credit reuse.
+It follows one status stream and transfers no transcript. It copies
 the input brief once into the command and returns one result identity and arm
 name. It adds zero direct syscalls, durability barriers, extra commits or model
-calls. The shared fork owner retains its existing staging and commit costs.
+calls. Each command owns its agent/intent identity; the release command adds
+one agent-path and one intent copy. Retention commits the caller's output once,
+before closure; it is required for crash recovery. The shared fork/release owners
+retain their existing commit costs. The retention callback's future is inlined,
+with zero wrapper allocations; only failures box retained custody.
 The snapshot precondition copies one 32-byte identity into each trial command,
 serialized in its existing JSON exchange. Its field adds 85–149 JSON bytes,
 depending on the digest's decimal digits. The host performs one fixed-width
@@ -150,10 +168,11 @@ Using ordinary full agent observation would open two follows and transfer
 conversation records; lifecycle-only observation opens one and transfers zero
 conversation records.
 
-The existing host fork receipt resolver searches actor history in O(log history).
-The population layer does not conceal that cost or claim constant-time complete
-fork admission. A direct receipt committed with the spawning step is needed to
-meet that stronger contract in the shared primitive.
+The shared fork receipt is one immutable outcome followed directly from its
+original spawn commit. Release adds one original-status read, its fenced archive
+commit and one parent-owned receipt follow in that shared implementation. These
+receipts add no separate commit or durability barrier. Complete fork complexity
+still depends on the unfinished membership/layout primitives.
 
 Focused validation commands:
 

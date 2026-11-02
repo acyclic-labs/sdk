@@ -21,6 +21,11 @@ pub enum AgentClientError {
     /// A bounded agent record failed its canonical decoder.
     #[error(transparent)]
     Record(#[from] acyclic_harness_core::agent::Error),
+    /// A projected status omitted its original record position.
+    #[error(
+        "decode status position: missing original sequence; recovery: reopen AgentControls::observe_status against the canonical session endpoint"
+    )]
+    StatusPosition,
     /// A selected stream ended; the client must not invent an idle status.
     #[error("selected agent stream ended: {0}")]
     Closed(StreamPath),
@@ -46,6 +51,7 @@ impl AgentClientError {
         match self {
             Self::Session(cause) => cause.code(),
             Self::Record(cause) => cause.code(),
+            Self::StatusPosition => "invalid_status_position",
             Self::Closed(_) => "agent_stream_closed",
             Self::ResourceClosed(_) => "agent_resource_closed",
             Self::Refused { .. } => "agent_follow_refused",
@@ -74,6 +80,8 @@ pub enum AgentEvent {
         /// Originating selected agent; never inferred from a relative suffix.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Original zero-based position in this agent's status stream.
+        sequence: u64,
         /// Exact status published by the agent host.
         status: StatusRecord,
     },
@@ -118,6 +126,15 @@ pub struct AgentClient {
 /// Its surface excludes conversation access because no transcript is followed.
 pub struct AgentStatus(AgentClient);
 
+/// One original lifecycle record, retaining the cut required by child release.
+#[derive(Debug, PartialEq)]
+pub struct StatusObservation {
+    /// Zero-based status position, independent of inbox/conversation cursors.
+    pub sequence: u64,
+    /// Exact host-published state at that position.
+    pub status: StatusRecord,
+}
+
 impl AgentStatus {
     pub(crate) fn new(
         client: Client,
@@ -129,10 +146,13 @@ impl AgentStatus {
 
     /// Wait for the next committed lifecycle state. Producer/session loss
     /// returns the original typed error from the ordinary session adapter.
-    pub async fn next(&mut self) -> Result<StatusRecord, AgentClientError> {
+    pub async fn next(&mut self) -> Result<StatusObservation, AgentClientError> {
         loop {
-            if let AgentEvent::Status { status, .. } = self.0.next().await? {
-                return Ok(status);
+            if let AgentEvent::Status {
+                sequence, status, ..
+            } = self.0.next().await?
+            {
+                return Ok(StatusObservation { sequence, status });
             }
         }
     }
@@ -613,14 +633,26 @@ impl AgentClient {
         let event = match &delivery.frame.body {
             Some(wire::session_frame::Body::Data(data)) => {
                 if *status {
-                    let value = match &data.item {
-                        Some(wire::session_data::Item::LatestValue(value)) => &value.value,
-                        Some(wire::session_data::Item::Record(record)) => &record.value,
+                    let (sequence, value) = match &data.item {
+                        Some(wire::session_data::Item::LatestValue(value)) => {
+                            // Session projection preserves the source record's
+                            // exclusive position, even when older values coalesce.
+                            let sequence = data
+                                .after
+                                .as_ref()
+                                .and_then(|after| after.next.checked_sub(1))
+                                .ok_or(AgentClientError::StatusPosition)?;
+                            (sequence, &value.value)
+                        }
+                        Some(wire::session_data::Item::Record(record)) => {
+                            (record.sequence, &record.value)
+                        }
                         _ => return Err(WireSessionError::InvalidSubscription.into()),
                     };
                     return StatusRecord::decode(value)
                         .map(|status| AgentEvent::Status {
                             agent: agent.clone(),
+                            sequence,
                             status,
                         })
                         .map_err(AgentClientError::Record);

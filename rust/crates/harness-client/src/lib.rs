@@ -48,6 +48,7 @@ pub use acyclic_harness_core::{
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use agents::{
     AgentClient, AgentClientError, AgentDelivery, AgentEvent, AgentSelection, AgentStatus,
+    StatusObservation,
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub mod acp;

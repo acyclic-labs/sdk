@@ -102,6 +102,7 @@ pub async fn verify<P: StreamProvider + ?Sized>(
             AgentEvent::Status {
                 agent,
                 status: actual,
+                ..
             } => {
                 if status || agent != observed.agent || actual != observed.status {
                     return Err(failure(

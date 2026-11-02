@@ -27,6 +27,33 @@ impl transport::Transport for Endpoint {
     }
 }
 
+/// The real session loses its producer when this one-shot sender is dropped.
+struct EndingEndpoint {
+    inner: Endpoint,
+    end: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+impl transport::Transport for EndingEndpoint {
+    fn session(
+        &self,
+        source: transport::Requests,
+    ) -> BoxProviderFuture<'_, std::result::Result<transport::Responses, StreamError>> {
+        Box::pin(async move {
+            let end = self
+                .end
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take()
+                .ok_or(StreamError::Unavailable)?;
+            let responses = self.inner.session(source).await?;
+            Ok(responses
+                .take_until(async move {
+                    let _ = end.await;
+                })
+                .boxed())
+        })
+    }
+}
+
 async fn append(
     memory: &MemoryStream,
     path: StreamPath,
@@ -61,33 +88,51 @@ async fn lifecycle_observation_bootstraps_latest_then_waits_for_the_committed_st
         .map(|cursor| {
             StatusRecord {
                 phase: Phase::Running,
-                cursor,
-                conversation: cursor,
+                cursor: cursor + 1_000,
+                conversation: cursor + 2_000,
             }
             .append_record()
         })
         .collect::<Result<Vec<_>, _>>()?;
     append(&memory, path.clone(), records).await?;
+    let (producer, ended) = tokio::sync::oneshot::channel();
     let pool = Client::with_transport(
-        Arc::new(Endpoint(memory.clone())),
+        Arc::new(EndingEndpoint {
+            inner: Endpoint(memory.clone()),
+            end: std::sync::Mutex::new(Some(ended)),
+        }),
         Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
         Arc::new(PlatformExecutor),
     );
     pool.register_credential(0, session::testing::credential())?;
     let mut observer = AgentStatus::new(pool, agent, 0)?;
-    assert_eq!(observer.next().await?.cursor, 127);
+    let initial = observer.next().await?;
+    assert_eq!(initial.sequence, 127);
+    assert_eq!(initial.status.cursor, 1_127);
+    assert_eq!(initial.status.conversation, 2_127);
     let settled = StatusRecord {
         phase: Phase::Idle,
-        cursor: 128,
-        conversation: 128,
+        cursor: 3_000,
+        conversation: 4_000,
     };
     let waiting = observer.next();
-    let produce = append(&memory, path, vec![settled.append_record()?]);
+    let produce = append(&memory, path.clone(), vec![settled.append_record()?]);
     let (observed, committed) = futures::join!(waiting, produce);
     committed?;
-    assert_eq!(observed?, settled);
+    assert_eq!(
+        observed?,
+        StatusObservation {
+            sequence: 128,
+            status: settled
+        }
+    );
     // No conversation stream exists; a transcript follow would fail or wait.
     assert_eq!(observer.0.residency().0, 1);
+    // Closing the actual status producer terminates its pending follow;
+    // neither an invented settlement nor a retry subscription is allowed.
+    let waiting = observer.next();
+    drop(producer);
+    assert!(matches!(waiting.await, Err(AgentClientError::Session(_))));
     Ok(())
 }
 

@@ -187,6 +187,7 @@ async fn verify_observation(
             AgentEvent::Status {
                 agent,
                 status: observed,
+                ..
             } => {
                 if status || agent != fixture.agent || observed != fixture.status {
                     return Err(failure(
