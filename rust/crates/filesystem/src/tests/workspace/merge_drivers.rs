@@ -80,6 +80,33 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             .await
     )?;
     let staging = unbounded!(fs, create_workspace("directory-staging"))?;
+    // Adopting an advanced cursor would silently omit its earlier rows while
+    // plan.json still advertised the original complete conflict count.
+    for clean in [false, true] {
+        let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
+        let mut advanced = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        if clean {
+            advanced
+                .clean_step()
+                .await
+                .map_err(|failure| failure.error)?;
+        } else {
+            assert!(
+                advanced
+                    .next_conflict()
+                    .map_err(|failure| failure.error)?
+                    .value
+                    .is_some()
+            );
+        }
+        assert!(matches!(
+            advanced.directory(staging.clone(), IdempotencyKey::new().operation_id()),
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
     let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
     let mut conflict_paths = BTreeMap::new();
     for name in ["text", "binary", "deleted", "pkg", "replaced"] {
@@ -577,6 +604,29 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         )
         .await?;
     let staged = unbounded!(staging, head())?;
+    // Stable workspace labels are not authority to read another deployment's
+    // proposal, even when both labels derive the same workspace identity.
+    let foreign_fs = Fs::memory();
+    let foreign_staging = unbounded!(foreign_fs, create_workspace("directory-staging"))?;
+    assert_eq!(foreign_staging.id(), staging.id());
+    {
+        let mut transaction =
+            unbounded!(foreign_staging, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(transaction, create_dir_all(&format!("{root}/conflicts")))?;
+        unbounded!(
+            transaction,
+            write(
+                &format!("{}.resolve.json", conflict_paths["binary"]),
+                br#"{"take":"ours"}"#.to_vec()
+            )
+        )?;
+        commit(&mut transaction).await?;
+    }
+    let foreign = unbounded!(foreign_staging, head())?;
+    assert!(matches!(
+        directory.resolution(&foreign, binary_key).await,
+        Err(DrivenJoinError::StaleCandidate)
+    ));
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
         resolutions.insert(
@@ -658,6 +708,131 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         JoinOutcome::StaleTarget(_)
     ));
     assert_eq!(unbounded!(main, head())?.id(), published);
+    merge_directory_opaque_bindings().await?;
+    Ok(())
+}
+
+async fn merge_directory_opaque_bindings() -> Result<(), Box<dyn Error>> {
+    use crate::kernel::{LogicalName, NameEncoding};
+
+    for (profile, encoding, bytes) in [
+        (
+            crate::model::FilesystemProfile::Posix,
+            NameEncoding::PosixBytes,
+            vec![0xff],
+        ),
+        (
+            crate::model::FilesystemProfile::Windows,
+            NameEncoding::WindowsUtf16Le,
+            0xd800_u16.to_le_bytes().to_vec(),
+        ),
+    ] {
+        let fs = Fs::memory();
+        let config = VolumeConfig {
+            profile,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        };
+        let main = unbounded!(fs, create_workspace_with_config("opaque-merge", config))?;
+        let agent = fork_workspace(
+            &main,
+            "opaque-child",
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        let path = NamespacePath::new(
+            vec![LogicalName::new(
+                encoding,
+                bytes.clone(),
+                config.limits.maximum_component_bytes,
+            )?],
+            config.limits,
+        )?;
+        let cancellation = CancellationToken::new();
+        for (workspace, content) in [(&main, "ours"), (&agent, "theirs")] {
+            let mut transaction = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+            transaction
+                .checkout
+                .create(
+                    crate::AuthoredMutation::CreateFile {
+                        path: path.clone(),
+                        bytes: Bytes::copy_from_slice(content.as_bytes()).into(),
+                        metadata: FileMetadata::default(),
+                    },
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?;
+            commit(&mut transaction).await?;
+        }
+        let join = unbounded!(agent.join_into(&main), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } = join
+            .apply(
+                options,
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?
+        else {
+            return Err("opaque binding did not produce a real merge conflict".into());
+        };
+        let typed = join.describe_conflicts(conflicts, truncated).await?;
+        assert_eq!(typed.conflicts.len(), 1);
+        let view = &typed.conflicts[0];
+        assert_eq!(
+            view.path, None,
+            "opaque names must not be projected lossily"
+        );
+        let ConflictKey::Binding { name, .. } = &view.key else {
+            return Err("opaque binding lost its exact key".into());
+        };
+        assert_eq!(name[0], encoding.tag());
+        assert_eq!(&name[1..], bytes);
+        let staging = unbounded!(fs, create_workspace("opaque-staging"))?;
+        let preview = value!(
+            join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+        )?;
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+        while !directory.plan().complete {
+            let section = if directory.plan().conflicts_complete {
+                MergeDirectorySection::Clean
+            } else {
+                MergeDirectorySection::Conflicts
+            };
+            directory
+                .write_page(section, step, crate::PublicationPermit::Unrestricted)
+                .await?;
+        }
+        let proposal = directory.conflict_file_path(&view.key)?;
+        let bytes = unbounded!(staging, read(&format!("{proposal}.conflict.json"), 16384))?;
+        let decoded: MergeConflictFile = serde_json::from_slice(&bytes)?;
+        assert_eq!(decoded.conflict, *view);
+        staging
+            .write_text(&format!("{proposal}.resolve.json"), r#"{"take":"theirs"}"#)
+            .await?;
+        let staged = unbounded!(staging, head())?;
+        let resolution = directory.resolution(&staged, &view.key).await?;
+        let candidate = crate::UnpublishedMergeCandidate {
+            plan: typed.clone(),
+            resolutions: BTreeMap::from([(view.key.clone(), resolution)]),
+        };
+        assert!(matches!(
+            directory
+                .join()
+                .apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted)
+                .await?,
+            JoinOutcome::Applied(_)
+        ));
+    }
     Ok(())
 }
 
