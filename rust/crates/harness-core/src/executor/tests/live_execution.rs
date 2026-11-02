@@ -86,14 +86,19 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
     Ok(())
 }
 
-struct PendingTool(AtomicUsize);
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+struct PendingTool {
+    calls: AtomicUsize,
+    result: Mutex<Option<ToolResult>>,
+}
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl crate::tool::ToolExecutor for PendingTool {
     fn execute<'a>(
         &'a self,
         _: ToolInvocation,
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<ToolResult>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(std::future::pending())
     }
     fn reconcile<'a>(
@@ -101,15 +106,19 @@ impl crate::tool::ToolExecutor for PendingTool {
         _: ToolInvocation,
         _: Option<crate::runtime::ToolContext>,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(None) })
+        Box::pin(async { Ok(self.result.lock().unwrap().clone()) })
     }
 }
 
 #[tokio::test]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
-    let journal = Journal::default();
+    let (journal, _issuer) = super::publication_observation::journal().await?;
     let provider = Arc::new(scripted_model());
-    let tool = Arc::new(PendingTool(AtomicUsize::new(0)));
+    let tool = Arc::new(PendingTool {
+        calls: AtomicUsize::new(0),
+        result: Mutex::new(None),
+    });
     let tools = echo_tools(
         tool.clone(),
         json!({"type":"object"}),
@@ -132,40 +141,60 @@ async fn a_live_tool_retry_cannot_settle_or_repeat_the_effect() -> Result<()> {
     let input = input();
     let mut first = Box::pin(executor.execute(input.clone(), &journal));
     assert!(first.as_mut().now_or_never().is_none());
-    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
-    let before = journal.0.lock().unwrap().clone();
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    let before = journal.replay(input.operation_id, 0, 100, None)?.await?;
     assert!(matches!(
         executor.execute(input.clone(), &journal).await,
         Err(Error::Conflict(_))
     ));
-    assert_eq!(*journal.0.lock().unwrap(), before);
+    assert_eq!(
+        journal.replay(input.operation_id, 0, 100, None)?.await?,
+        before
+    );
     assert_eq!(provider.requests().len(), 1);
-    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     drop(first);
     assert!(matches!(
-        executor.execute_progress(input.clone(), &journal).await?,
-        ExecutionProgress::Failed(ToolFailureKind::Interrupted)
+        executor.execute_progress(input.clone(), &journal).await,
+        Err(Error::Indeterminate(operation)) if operation == input.operation_id
     ));
-    let settled = journal.0.lock().unwrap().clone();
+    // Neither cancellation nor an inconclusive reconciliation authorizes a
+    // terminal result. The original serialized invocation remains recoverable.
     assert_eq!(
-        settled
-            .iter()
-            .filter(|record| matches!(
-                record.event,
-                ExecutionEvent::ToolFailed {
-                    reason: ToolFailureKind::Interrupted,
-                    ..
-                }
-            ))
-            .count(),
-        1
+        journal.replay(input.operation_id, 0, 100, None)?.await?,
+        before
     );
     assert!(matches!(
-        executor.execute_progress(input, &journal).await?,
-        ExecutionProgress::Failed(ToolFailureKind::Interrupted)
+        executor.execute_progress(input.clone(), &journal).await,
+        Err(Error::Indeterminate(operation)) if operation == input.operation_id
     ));
-    assert_eq!(*journal.0.lock().unwrap(), settled);
-    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        journal.replay(input.operation_id, 0, 100, None)?.await?,
+        before
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
+    // A later outcome of that exact invocation can still settle normally.
+    *tool.result.lock().unwrap() = Some(ToolResult {
+        value: json!({"value":"hello"}),
+    });
+    assert_eq!(
+        executor.execute(input.clone(), &journal).await?.text,
+        "done"
+    );
+    let completed = journal.replay(input.operation_id, 0, 100, None)?.await?;
+    assert_eq!(&completed[..before.len()], before.as_slice());
+    assert!(
+        completed
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+    );
+    assert!(
+        !completed
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+    );
+    assert_eq!(tool.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
