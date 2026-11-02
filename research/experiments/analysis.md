@@ -1,8 +1,9 @@
 # Offline paired experiment analysis
 
 `acyclic_harness::experiments` analyzes trial observations independently of the
-execution engine. Observation rows are version 2; reports, scorers and decisions
-remain version 1. The module provides paired differences, ordinary paired
+execution engine. Observation rows and paired analysis reports are version 2;
+assigned-trial reports, arm cost summaries, scorers and decisions remain version 1.
+The module provides paired differences, ordinary paired
 standard errors, intercept-only CR1
 clustered standard errors, normal-approximation power planning and an objective
 integer scorer and assigned-trial summaries for organism probes.
@@ -138,12 +139,26 @@ remain the producer's responsibility. A population digest alone proves none of
 those facts. For primary correctness, predeclare unscored outputs as failures;
 conditional score estimates with missing rows do not replace assigned-trial rates.
 
-The version-1 output counts all assigned pairs and cuts, with separate known-pair
+The version-2 output counts all assigned pairs and cuts, with separate known-pair
 and contributing-cut counts for score and cost. A cut with no known values for a
 metric stays in assigned coverage and does not enter that metric's estimator.
 Fewer than two contributing cuts yields an unknown estimate, even when many
 assigned cuts were empty. Manual consumers must likewise skip empty score and
 cost clusters and retain their assignments in coverage counts.
+
+`baseline_cost` and `treatment_cost` each contain a version-1 `CostReport`:
+assigned trials, fully priced trials, the known-cost sum, complete total and USD
+per assigned trial. All assignments contribute, regardless of scoring or matched
+cost availability. If baseline accounting is incomplete, its total and mean stay
+unknown even when treatment is fully priced. A treatment cost without its matched
+baseline cost still contributes to the treatment summary. It does not enter the
+paired cost estimate. Empty input has a zero total and unknown mean.
+
+`AssignedTrials` and this pipeline share one cost accumulator and complete-cost
+rule. The existing flat version-1 assigned-trial report is unchanged. The paired
+analysis report advances to version 2 for its two new arm summaries; no format
+migration path is provided. An overflowing known-cost sum refuses the report
+instead of publishing a nonfinite total or silently treating it as missing.
 
 `analysis::Contrast::new` admits distinct arms before opening input;
 `Contrast::analyze` shares the pipeline with other callers. It checks a pair once
@@ -188,6 +203,12 @@ syscalls depend on input bytes; JSON decoding can reuse scratch space for the
 current token. Neither buffer nor parser retains earlier rows. EOF with a partial
 row or pair is an error, and a complete stream must match the declared count.
 
+Each arm summary adds only a priced count and known-cost sum: four scalar fields
+for the comparison, independent of trial count. It reuses the checked assignment
+count. A known cost adds one sum/overflow check and one counter increment; unknown
+cost adds neither. Cost admission is shared and occurs once at each public input
+boundary. The assigned-trial summary still retains six scalar fields.
+
 Controls cover mismatched pairs even with missing values, unscored but fully
 priced trials, unknown versus zero costs, malformed/ambiguous objects, nonfinite
 inputs, overflow, false independence, unequal cluster sizes and large common offsets.
@@ -202,7 +223,9 @@ cargo test --locked -p acyclic-harness-core --lib experiments::stats::tests::clu
 cargo test --locked -p acyclic-harness-core --lib experiments::reports::tests::unscored_trials_and_unknown_cost_remain_in_assigned_denominators
 cargo test --locked -p acyclic-harness-core --lib experiments::tests::paired_cost_retains_unscored_trials_without_imputing_unknown_values
 cargo test --locked -p acyclic-harness-core --lib experiments::analysis::tests::empty_cuts_and_unscored_paid_trials_keep_separate_coverage
+cargo test --locked -p acyclic-harness-core --lib experiments::analysis::tests::arm_costs_keep_unmatched_and_unscored_assignments_without_inventing_totals
 cargo kani -p acyclic-harness-core --harness objective_success_and_injection_adoption_are_exclusive
 cargo kani -p acyclic-harness-core --harness admitted_cost_difference_is_finite_even_without_scores
 cargo kani -p acyclic-harness-core --harness ordered_pair_admission_rejects_reuse_without_changing_the_last_key
+cargo kani -p acyclic-harness-core --harness incomplete_cost_coverage_never_claims_a_full_total_or_mean
 ```
