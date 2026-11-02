@@ -1,7 +1,8 @@
 //! Cache boundaries through the original request producer, including its role fold.
 use crate::{Adapter, ResolvedModel};
 use acyclic_harness_core::model::{
-    ModelContent, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+    ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
+    ToolCall, ToolResultContent,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json, value::RawValue};
@@ -86,14 +87,35 @@ proptest! {
             } else { &value[control] };
             prop_assert_eq!(limit, &json!(output));
 
-            // A completed user turn remains an exact prefix when a subsequent
-            // assistant/user pair is appended by the real semantic producer.
+            // The completed user turn survives a real tool exchange, including
+            // the protocol's call/result grouping, followed by another turn.
             request.messages.extend([
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+                        "call_0".into(), "code".into(), json!({"source":first}),
+                    ))),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call_0".into(), name: "code".into(),
+                        content: ToolResultContent::Json { value: json!({"accepted":next}) },
+                    }),
+                },
                 text(ModelRole::Assistant, "accepted answer".into()),
                 text(ModelRole::User, format!("next:{next}")),
             ]);
             let appended = encode(&provider, &request);
             prop_assert!(prefix(&appended, family).starts_with(frozen));
+            let accepted = request.messages[3].content.clone();
+            let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
+                &mut request.messages[3].content else { unreachable!() };
+            *content = ToolResultContent::Json { value: json!({"changed":next}) };
+            let wrong_result = encode(&provider, &request);
+            prop_assert!(!prefix(&wrong_result, family).starts_with(prefix(&appended, family)),
+                "changing an accepted result must fail the same prefix oracle");
+            request.messages[3].content = accepted;
             request.messages[1] = text(ModelRole::User, format!("changed:{first}"));
             let mutated = encode(&provider, &request);
             prop_assert!(!prefix(&mutated, family).starts_with(frozen),
