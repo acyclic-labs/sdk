@@ -131,6 +131,20 @@ mod tests {
             directive.messages[0].content,
             crate::model::ModelContent::Text("Retain this exact directive.".into())
         );
+        // A child reads its original parent-home template by the same exact
+        // external-file grant its turn uses, without gaining that whole volume.
+        let child = path
+            .child(&AgentId::from_bytes([93; 16]))
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        let child_private = super::super::private_volume(home.provider().clone(), &child.id())?;
+        host.create_volume(&child_private).await?;
+        let child_volumes = [VolumeBinding {
+            name: super::super::PRIVATE_VOLUME.into(),
+            volume: child_private,
+        }];
+        templates
+            .child(&selected, &child, &child_volumes, "worker", None)
+            .await?;
         // Capability lists remain in the pinned source even when much larger
         // than a stream frame; only its bounded reference enters records.
         let large = format!(
@@ -343,8 +357,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> SpawnTempl
     ) -> BoxProviderFuture<'a, Result<CreationConfig>> {
         Box::pin(async move {
             crate::templates::name_component(name)?;
-            let authority =
-                agent_authority(&self.issuer, &self.admission, path, volumes, &[]).await?;
+            let authority = agent_authority(
+                &self.issuer,
+                &self.admission,
+                path,
+                volumes,
+                creation.template.as_slice(),
+            )
+            .await?;
             let home = volumes
                 .iter()
                 .find(|binding| binding.name == super::HOME_VOLUME)
