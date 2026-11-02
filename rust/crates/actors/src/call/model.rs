@@ -265,9 +265,97 @@ async fn explore(guarded: bool) -> Result<usize, String> {
     Ok(violations)
 }
 
+/// An executor terminal names the original acceptance's session. Other hops
+/// may settle without a session, including before any executor accepts.
+async fn terminal_sessions() -> Result<(), String> {
+    for accepted in [false, true] {
+        for session in [None, Some(true), Some(false)] {
+            for terminal in [
+                Outcome::Ok(OwnedBytes::from(&b"done"[..])),
+                Outcome::Error("failed".into()),
+                Outcome::Cancelled("stop".into()),
+                Outcome::Indeterminate("lost".into()),
+            ] {
+                let mut model = Model::new(true, false, false);
+                let mut journal = Journal::default();
+                if accepted {
+                    model.step(Hop::Executor).await?;
+                    for record in model.records(model.call.log()).await? {
+                        journal.apply(&record).map_err(|error| error.to_string())?;
+                    }
+                    model.step(Hop::Executor).await?;
+                    let records = model.records(model.call.log()).await?;
+                    let chunk = records.last().ok_or("missing committed chunk")?;
+                    let work = acyclic_test_support::measure(|| {
+                        assert!(matches!(journal.apply(chunk), Ok(Entry::Chunk(_))));
+                    });
+                    assert_eq!(work.count_total, 0, "a chunk must borrow its session");
+                    assert_eq!(work.bytes_total, 0);
+                    if session.is_none() && matches!(terminal, Outcome::Ok(_)) {
+                        // Restoring the second path decode to the original chunk
+                        // check fails the zero-allocation assertion above.
+                        let duplicate = acyclic_test_support::measure(|| {
+                            assert_eq!(fence(chunk).unwrap().as_ref(), Some(&model.fence));
+                        });
+                        assert!(duplicate.count_total > 0);
+                        println!(
+                            "chunk_session_allocations={} chunk_session_bytes={} duplicate_decode_allocations={} duplicate_decode_bytes={}",
+                            work.count_total,
+                            work.bytes_total,
+                            duplicate.count_total,
+                            duplicate.bytes_total
+                        );
+                    }
+                }
+                let original = journal.clone();
+                let other = StreamPath::new("executor/sessions/other/ended")
+                    .map_err(|error| error.to_string())?;
+                let fence = session.map(|same| if same { &model.fence } else { &other });
+                let publication = model
+                    .call
+                    .settle(fence, &terminal)
+                    .map_err(|error| error.to_string())?;
+                assert!(model.publish(publication).await?);
+                let records = model.records(model.call.log()).await?;
+                let record = records.last().ok_or("missing committed terminal")?;
+                let outcome = journal.apply(record);
+                if session.is_none() || (accepted && session == Some(true)) {
+                    let expected = match terminal {
+                        Outcome::Cancelled(reason) if accepted => {
+                            Outcome::Indeterminate(format!("cancelled after acceptance: {reason}"))
+                        }
+                        terminal => terminal,
+                    };
+                    assert_eq!(
+                        outcome.map_err(|error| error.to_string())?,
+                        Entry::Terminal(expected)
+                    );
+                    assert_eq!(journal.next(), record.sequence + 1);
+                    assert_eq!(
+                        journal
+                            .receipt(model.call.log())
+                            .map(|receipt| receipt.terminal),
+                        Some(Some(Committed::of(record)))
+                    );
+                } else {
+                    // Removing only the terminal's session check admits this real
+                    // committed record and fails the original-reader assertion.
+                    assert!(matches!(
+                        outcome,
+                        Err(Error::Malformed("call terminal from another session"))
+                    ));
+                    assert_eq!(journal, original, "refusal changed the original reader");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn every_interleaving_settles_once_and_cancel_never_waits() -> Result<(), String> {
     assert_eq!(explore(true).await?, 0);
+    terminal_sessions().await?;
     // Remove only acceptance's settled guard from the original cancelled,
     // requestless call. The stale flag then permits a post-terminal append.
     let mut model = Model::new(true, false, true);
