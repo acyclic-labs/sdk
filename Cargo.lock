@@ -1175,6 +1175,7 @@ dependencies = [
  "acyclic-plugin-identity",
  "acyclic-stream",
  "acyclic-test-support",
+ "axum",
  "blake3",
  "clap",
  "futures",
@@ -3798,21 +3799,6 @@ checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
 dependencies = [
  "arraydeque",
  "smallvec",
-]
-
-[[package]]
-name = "graphcoder"
-version = "0.2.0"
-dependencies = [
- "acyclic-harness",
- "acyclic-harness-providers",
- "acyclic-native-runtime",
- "acyclic-plugin",
- "acyclic-test-support",
- "axum",
- "serde_json",
- "tempfile",
- "tokio",
 ]
 
 [[package]]

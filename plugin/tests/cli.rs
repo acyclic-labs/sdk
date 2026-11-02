@@ -1,6 +1,7 @@
 //! The shipping binary over a loopback model: argv, provider catalog, the local
 //! harness and its root agent, end to end.
 use acyclic_native_runtime::{ProcessCommand as Command, ProcessStdio as Stdio};
+use axum::response::IntoResponse as _;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
@@ -19,7 +20,7 @@ mod build_metadata {
         clippy::disallowed_macros,
         reason = "Cargo-provided executable metadata for this integration crate"
     )]
-    pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
+    pub(super) const EXECUTABLE: &str = env!("CARGO_BIN_EXE_acyclic");
 }
 
 /// A loopback Responses endpoint; it records every generation request body.
@@ -31,6 +32,14 @@ struct Model {
 }
 
 async fn model(directory: &Path) -> Model {
+    model_response(directory, axum::http::StatusCode::OK, ANSWER).await
+}
+
+async fn model_response(
+    directory: &Path,
+    status: axum::http::StatusCode,
+    response: &'static str,
+) -> Model {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -38,13 +47,26 @@ async fn model(directory: &Path) -> Model {
     let app = Router::new()
         .route(
             "/count",
-            post(|| async { Json(json!({"input_tokens": 64})) }),
+            post(move || async move {
+                if status.is_success() {
+                    Json(json!({"input_tokens": 64})).into_response()
+                } else {
+                    (status, [("content-type", "application/json")], response).into_response()
+                }
+            }),
         )
         .route(
             "/responses",
             post(move |Json(body): Json<Value>| {
                 recorded.lock().unwrap().push(body);
-                async { ([("content-type", "text/event-stream")], ANSWER) }
+                async move {
+                    let content_type = if status.is_success() {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    };
+                    (status, [("content-type", content_type)], response)
+                }
             }),
         );
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -344,6 +366,65 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
 }
 
 #[tokio::test]
+async fn execution_recorded_provider_refusal_settles_through_the_shipping_binary() {
+    // Unmodified llama.cpp HTTP 401 captured on 2026-10-26; its request,
+    // response headers, digest and provenance remain beside the original body.
+    let refusal =
+        include_str!("../../rust/crates/conformance/fixtures/inference/llamacpp/auth.body");
+    for versioned in [false, true] {
+        let fixture = fixture();
+        let model = model_response(
+            fixture._directory.path(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            refusal,
+        )
+        .await;
+        let mut args = vec![
+            "run",
+            "--operation",
+            "recorded-refusal",
+            "--input-format",
+            "jsonl",
+        ];
+        if versioned {
+            args.extend(["--output-format", "jsonl"]);
+        }
+        let output = graphcoder(
+            &fixture,
+            &model.catalog,
+            args,
+            "{\"id\":\"refused\",\"prompt\":\"hello\"}\n",
+        )
+        .await;
+        assert!(!output.status.success(), "{output:?}");
+        let records = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let result = records
+            .iter()
+            .find(|record| record["id"] == "refused")
+            .unwrap();
+        assert!(
+            result["error"].as_str().unwrap().contains("401"),
+            "{result}"
+        );
+        assert!(result.get("text").is_none(), "{result}");
+        if versioned {
+            let completed = records.last().unwrap();
+            assert_eq!(completed["kind"], "completed");
+            assert_eq!(completed["success"], false);
+        }
+        assert_eq!(
+            model.generated(),
+            0,
+            "count refusal must prevent generation"
+        );
+        model.close().await;
+    }
+}
+
+#[tokio::test]
 async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
@@ -397,7 +478,7 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
     for (args, diagnostic) in [
-        (vec!["exec"], "recovery: graphcoder"),
+        (vec!["exec"], "recovery: acyclic"),
         (vec!["--output-format", "jsonl"], "no task or JSONL input"),
         (
             vec!["--event-cursor", "cursor.json", "exec", "hello"],

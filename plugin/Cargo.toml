@@ -37,6 +37,7 @@ tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "io-std", "io-util", "net", "signal", "time"] }
 
 [dev-dependencies]
+axum.workspace = true
 acyclic-test-support = { path = "../rust/crates/test-support" }
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
@@ -48,3 +49,11 @@ workspace = true
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[[example]]
+name = "embedded"
+path = "examples/embedded.rs"

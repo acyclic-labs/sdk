@@ -35,8 +35,8 @@ class Artifact:
         digest(sha256, 64)
         digest(source_sha, 40)
         binary = Path(path)
-        if binary.name != "graphcoder" or binary.is_symlink():
-            raise ValueError("select the regular Linux graphcoder build artifact")
+        if binary.name != "acyclic" or binary.is_symlink():
+            raise ValueError("select the regular Linux acyclic build artifact")
         return cls(binary.read_bytes(), sha256, source_sha)
 
 
@@ -76,7 +76,7 @@ def run_command(binary: str, state: str, logs: str, model: str, instruction: str
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
         "XDG_STATE_HOME=" + home, "XDG_CACHE_HOME=" + home,
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
-        binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
+        binary, "run", "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
         "--prompt=" + instruction,
     ]

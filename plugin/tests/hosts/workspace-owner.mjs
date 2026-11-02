@@ -14,7 +14,7 @@ export async function startWorkspaceOwner({scope,binary,workspace,state,env,root
  const watcher=watch(workspace,{recursive:true});
  watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
  try {
-  const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
+  const owner=scope.startOwned(binary,['run','--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
    {cwd:workspace,env,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
   owner.closed.then(record=>{capture(record);failed(new Error('workspace owner exited before descriptor'));},failed);
   if(existsSync(descriptor))ready();

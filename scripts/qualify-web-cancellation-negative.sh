@@ -13,11 +13,11 @@ old='fn cancellable_on_drop(&self) -> bool {\n        true\n    }'
 assert s.count(old)==1
 p.write_text(s.replace(old,old.replace('true','false')))
 PY
-cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+cargo build --locked -p acyclic-plugin -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
 source .sessions-binaries.env
 for name in pty-search-cancel-resume held-fetch; do
- python3 - "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$proof" "$name" <<'PY'
+ python3 - "$SESSIONS_ACYCLIC_BINARY" "$SESSIONS_MOCK_BINARY" "$proof" "$name" <<'PY'
 import os,pathlib,re,signal,subprocess,sys,time
 binary,mock,proof,name=sys.argv[1:];start=time.monotonic()
 command=['node','scripts/qualify-fetch-cancellation.mjs',binary] if name=='held-fetch' else ['node','scripts/graphcoder-e2e/run.mjs',binary,mock,name]
@@ -45,15 +45,15 @@ PY
 done
 restore
 trap - EXIT
-cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+cargo build --locked -p acyclic-plugin -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
 python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
 source .sessions-binaries.env
 for name in pty-search-cancel-resume held-fetch; do
  if [ "$name" = held-fetch ]; then
-  E2E_OUTPUT="$proof/restored-$name" node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_GRAPHCODER_BINARY"
+  E2E_OUTPUT="$proof/restored-$name" node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_ACYCLIC_BINARY"
  else
-  E2E_OUTPUT="$proof/restored-$name" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$name"
+  E2E_OUTPUT="$proof/restored-$name" node scripts/graphcoder-e2e/run.mjs "$SESSIONS_ACYCLIC_BINARY" "$SESSIONS_MOCK_BINARY" "$name"
  fi
 done
-E2E_OUTPUT="$proof/restored-lifecycle" node scripts/qualify-web-lifecycle.mjs "$SESSIONS_GRAPHCODER_BINARY"
+E2E_OUTPUT="$proof/restored-lifecycle" node scripts/qualify-web-lifecycle.mjs "$SESSIONS_ACYCLIC_BINARY"
 echo SESSIONS_WEB_CANCELLATION_CONTROLS_PASS

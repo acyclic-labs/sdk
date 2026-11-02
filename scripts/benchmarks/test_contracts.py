@@ -21,7 +21,7 @@ class BenchmarkContracts(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="predictor-contracts-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.binary = self.root / "graphcoder"
+        self.binary = self.root / "acyclic"
         # Stand-in process records the actual OS argv/env, without a model.
         self.binary.write_text("#!/usr/bin/python3\nimport json,os,sys\n"
                                "print(json.dumps({'argv':sys.argv[1:],'env':dict(os.environ)}))\n"
