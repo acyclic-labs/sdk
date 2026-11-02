@@ -51,16 +51,19 @@ pub struct ModelCacheObservation {
 }
 
 impl ModelCacheObservation {
+    /// The one layout accepted by request producers and observation readers.
+    pub const VERSION: u32 = 1;
+
     /// Reads only the adapter's fixed-size cache value. Missing, unsupported or
     /// malformed observations remain unknown; usage counters are kept separately.
     pub fn reported(metadata: &serde_json::Value) -> Option<Self> {
         let observation = Self::deserialize(metadata.get("cache")?).ok()?;
-        (observation.version == 1).then_some(observation)
+        (observation.version == Self::VERSION).then_some(observation)
     }
 
     /// Residency joins require both a known account scope and an exact prefix.
     pub fn key(&self) -> Option<ModelCacheKey> {
-        (self.version == 1).then_some(ModelCacheKey {
+        (self.version == Self::VERSION).then_some(ModelCacheKey {
             credential_scope: self.credential_scope?,
             prefix_digest: self.breakpoint?.digest,
         })
@@ -83,10 +86,13 @@ pub struct ModelCacheKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCacheResidency {
-    /// Residency projection format, currently one.
+    /// Residency projection format; older layouts are rebuilt, never migrated.
     pub version: u32,
     /// Scope and prefix to which every update must belong.
     pub key: ModelCacheKey,
+    /// Original monotonic clock domain for every timestamp in this estimate.
+    /// Equal prefixes do not make different machines' clocks comparable.
+    pub clock_domain: [u8; 16],
     /// Last event's original timestamp in a caller-selected monotonic time domain.
     pub observed_at_ns: u64,
     /// Original last write timestamp; None means no observed write.
@@ -119,6 +125,11 @@ pub enum ModelCacheError {
     /// An index must never combine accounts or unrelated prefixes.
     #[error("cache event changes its scope or prefix; select the residency entry by its exact key")]
     KeyMismatch,
+    /// An unrelated clock cannot update a retained deadline or last-hit time.
+    #[error(
+        "cache event changes its clock domain; select an estimate in the original clock domain"
+    )]
+    ClockMismatch,
     /// Original source events must be consumed in timestamp order.
     #[error("cache event precedes its prior observation; consume events in source order")]
     TimeReversed,
@@ -127,23 +138,33 @@ pub enum ModelCacheError {
     DeadlineOverflow,
     /// Persisted projection layouts are not migrated.
     #[error(
-        "unsupported cache residency version; rebuild the projection from original observations"
+        "unsupported cache residency version; rebuild only with original clock-domain observations"
     )]
     Version,
 }
 
 impl ModelCacheResidency {
+    /// The one persisted residency layout; version one lacked clock identity.
+    pub const VERSION: u32 = 2;
+
     /// One fixed-size transition, without IO, allocation, copying payloads,
     /// history scans, clocks or waits. A dropped source requires no cleanup task.
+    /// The caller supplies the original clock identity, not a domain inferred
+    /// from an agent, provider or prefix. Missing clock evidence cannot create
+    /// an estimate. No synchronization between domains is inferred.
     pub fn observe(
         key: ModelCacheKey,
         previous: Option<Self>,
+        clock_domain: [u8; 16],
         at_ns: u64,
         access: ModelCacheAccess,
     ) -> Result<Self, ModelCacheError> {
         if let Some(previous) = previous {
-            if previous.version != 1 {
+            if previous.version != Self::VERSION {
                 return Err(ModelCacheError::Version);
+            }
+            if previous.clock_domain != clock_domain {
+                return Err(ModelCacheError::ClockMismatch);
             }
             if at_ns < previous.observed_at_ns {
                 return Err(ModelCacheError::TimeReversed);
@@ -153,8 +174,9 @@ impl ModelCacheResidency {
             }
         }
         let mut next = previous.unwrap_or(Self {
-            version: 1,
+            version: Self::VERSION,
             key,
+            clock_domain,
             observed_at_ns: at_ns,
             written_at_ns: None,
             last_hit_at_ns: None,
@@ -183,10 +205,15 @@ impl ModelCacheResidency {
 
     /// An unexpired estimate is still subject to provider eviction. Unknown
     /// retention stays unknown; a deadline is exclusive.
-    pub fn estimated_resident_at(&self, at_ns: u64) -> Option<bool> {
-        (self.version == 1 && at_ns >= self.observed_at_ns)
-            .then(|| self.expires_at_ns.map(|expiry| at_ns < expiry))
-            .flatten()
+    /// Queries from a foreign clock remain unknown, even at equal timestamps.
+    pub fn estimated_resident_at(&self, clock_domain: [u8; 16], at_ns: u64) -> Option<bool> {
+        if self.version != Self::VERSION
+            || self.clock_domain != clock_domain
+            || at_ns < self.observed_at_ns
+        {
+            return None;
+        }
+        self.expires_at_ns.map(|expiry| at_ns < expiry)
     }
 }
 
@@ -201,6 +228,89 @@ fn deadline(at_ns: u64, ttl: ModelCacheTtl) -> Result<Option<u64>, ModelCacheErr
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn residency_preserves_original_clock_and_checked_deadline() {
+        let key = ModelCacheKey {
+            credential_scope: kani::any(),
+            prefix_digest: kani::any(),
+        };
+        let clock_domain: [u8; 16] = kani::any();
+        let at_ns: u64 = kani::any();
+        let seconds: u64 = kani::any();
+        let explicit: bool = kani::any();
+        let ttl = if explicit {
+            ModelCacheTtl::Explicit { seconds }
+        } else {
+            ModelCacheTtl::ProviderManaged
+        };
+        // Wider arithmetic independently detects either u64 overflow boundary.
+        let wide_deadline = u128::from(at_ns) + u128::from(seconds) * 1_000_000_000;
+        let result = ModelCacheResidency::observe(
+            key,
+            None,
+            clock_domain,
+            at_ns,
+            ModelCacheAccess::Write(ttl),
+        );
+        if explicit && wide_deadline > u128::from(u64::MAX) {
+            assert_eq!(result, Err(ModelCacheError::DeadlineOverflow));
+            return;
+        }
+        let written = result.unwrap();
+        assert_eq!(written.version, ModelCacheResidency::VERSION);
+        assert_eq!(written.key, key);
+        assert_eq!(written.clock_domain, clock_domain);
+        assert_eq!(written.written_at_ns, Some(at_ns));
+        assert_eq!(written.last_hit_at_ns, None);
+        let expiry = if explicit {
+            Some(u64::try_from(wide_deadline).unwrap())
+        } else {
+            None
+        };
+        assert_eq!(written.expires_at_ns, expiry);
+        let query: u64 = kani::any();
+        let expected = if query < at_ns {
+            None
+        } else {
+            expiry.map(|expiry| query < expiry)
+        };
+        assert_eq!(written.estimated_resident_at(clock_domain, query), expected);
+
+        let mut foreign_domain = clock_domain;
+        foreign_domain[0] ^= 1;
+        assert_eq!(written.estimated_resident_at(foreign_domain, query), None);
+        assert_eq!(
+            ModelCacheResidency::observe(
+                key,
+                Some(written),
+                foreign_domain,
+                at_ns,
+                ModelCacheAccess::Miss,
+            ),
+            Err(ModelCacheError::ClockMismatch)
+        );
+        let version: u32 = kani::any();
+        if version != ModelCacheResidency::VERSION {
+            let unsupported = ModelCacheResidency { version, ..written };
+            assert_eq!(unsupported.estimated_resident_at(clock_domain, query), None);
+            assert_eq!(
+                ModelCacheResidency::observe(
+                    key,
+                    Some(unsupported),
+                    clock_domain,
+                    at_ns,
+                    ModelCacheAccess::Miss,
+                ),
+                Err(ModelCacheError::Version)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,48 +320,60 @@ mod tests {
         #[test]
         fn cache_residency_transitions_preserve_unknowns_and_source_order(
             start in 1u64..1_000_000_000, seconds in 1u64..100_000,
+            clock_domain in any::<[u8; 16]>(),
         ) {
             let key = ModelCacheKey { credential_scope: [1; 32], prefix_digest: [2; 32] };
             let ttl = ModelCacheTtl::Explicit { seconds };
             let expiry = start + seconds * 1_000_000_000;
-            let written = ModelCacheResidency::observe(key, None, start, ModelCacheAccess::Write(ttl)).unwrap();
-            prop_assert_eq!(written.estimated_resident_at(start), Some(true));
-            prop_assert_eq!(written.estimated_resident_at(expiry), Some(false));
-            prop_assert_eq!(written.estimated_resident_at(start - 1), None);
-            let hit = ModelCacheResidency::observe(key, Some(written), start + 1,
+            let written = ModelCacheResidency::observe(key, None, clock_domain, start, ModelCacheAccess::Write(ttl)).unwrap();
+            prop_assert_eq!(written.estimated_resident_at(clock_domain, start), Some(true));
+            prop_assert_eq!(written.estimated_resident_at(clock_domain, expiry), Some(false));
+            prop_assert_eq!(written.estimated_resident_at(clock_domain, start - 1), None);
+            let mut foreign_domain = clock_domain;
+            foreign_domain[0] ^= 1;
+            prop_assert_eq!(written.estimated_resident_at(foreign_domain, start), None);
+            prop_assert_eq!(ModelCacheResidency::observe(key, Some(written), foreign_domain, start,
+                ModelCacheAccess::Miss), Err(ModelCacheError::ClockMismatch));
+            let hit = ModelCacheResidency::observe(key, Some(written), clock_domain, start + 1,
                 ModelCacheAccess::Hit { refresh: None }).unwrap();
             prop_assert_eq!(hit.expires_at_ns, written.expires_at_ns);
             prop_assert_eq!(hit.last_hit_at_ns, Some(start + 1));
-            let refreshed = ModelCacheResidency::observe(key, Some(hit), start + 2,
+            let refreshed = ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
                 ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap();
             prop_assert_eq!(refreshed.expires_at_ns, Some(expiry + 2));
-            let miss = ModelCacheResidency::observe(key, Some(refreshed), start + 3, ModelCacheAccess::Miss).unwrap();
-            prop_assert_eq!(miss.estimated_resident_at(start + 3), Some(false));
-            let unknown = ModelCacheResidency::observe(key, Some(miss), start + 4,
+            let miss = ModelCacheResidency::observe(key, Some(refreshed), clock_domain, start + 3, ModelCacheAccess::Miss).unwrap();
+            prop_assert_eq!(miss.estimated_resident_at(clock_domain, start + 3), Some(false));
+            let unknown = ModelCacheResidency::observe(key, Some(miss), clock_domain, start + 4,
                 ModelCacheAccess::Write(ModelCacheTtl::ProviderManaged)).unwrap();
-            prop_assert_eq!(unknown.estimated_resident_at(start + 4), None);
-            prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), start,
+            prop_assert_eq!(unknown.estimated_resident_at(clock_domain, start + 4), None);
+            prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), clock_domain, start,
                 ModelCacheAccess::Miss), Err(ModelCacheError::TimeReversed));
             let foreign = ModelCacheKey { credential_scope: [3; 32], ..key };
-            prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(hit), start + 2,
+            prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(hit), clock_domain, start + 2,
                 ModelCacheAccess::Miss), Err(ModelCacheError::KeyMismatch));
             let foreign = ModelCacheKey { prefix_digest: [3; 32], ..key };
-            prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(hit), start + 2,
+            prop_assert_eq!(ModelCacheResidency::observe(foreign, Some(hit), clock_domain, start + 2,
                 ModelCacheAccess::Miss), Err(ModelCacheError::KeyMismatch));
-            let late_hit = ModelCacheResidency::observe(key, Some(written), expiry,
+            let late_hit = ModelCacheResidency::observe(key, Some(written), clock_domain, expiry,
                 ModelCacheAccess::Hit { refresh: None }).unwrap();
-            prop_assert_eq!(late_hit.estimated_resident_at(expiry), None);
-            prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), u64::MAX,
+            prop_assert_eq!(late_hit.estimated_resident_at(clock_domain, expiry), None);
+            prop_assert_eq!(ModelCacheResidency::observe(key, Some(hit), clock_domain, u64::MAX,
                 ModelCacheAccess::Write(ttl)), Err(ModelCacheError::DeadlineOverflow));
-            let mut unsupported = hit;
-            unsupported.version = 2;
-            prop_assert_eq!(ModelCacheResidency::observe(key, Some(unsupported), start + 2,
-                ModelCacheAccess::Miss), Err(ModelCacheError::Version));
-            let measured = acyclic_test_support::measure(|| {
-                std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), start + 2,
-                    ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
-            });
-            prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            for version in [1, ModelCacheResidency::VERSION + 1] {
+                let unsupported = ModelCacheResidency { version, ..hit };
+                prop_assert_eq!(unsupported.estimated_resident_at(clock_domain, start + 2), None);
+                prop_assert_eq!(ModelCacheResidency::observe(key, Some(unsupported), clock_domain, start + 2,
+                    ModelCacheAccess::Miss), Err(ModelCacheError::Version));
+            }
+            for count in [1, 100, 1000] {
+                let measured = acyclic_test_support::measure(|| {
+                    for _ in 0..count {
+                        std::hint::black_box(ModelCacheResidency::observe(key, Some(hit), clock_domain, start + 2,
+                            ModelCacheAccess::Hit { refresh: Some(ttl) }).unwrap());
+                    }
+                });
+                prop_assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+            }
             let control = acyclic_test_support::measure(|| {
                 std::hint::black_box(Box::new(hit));
             });
