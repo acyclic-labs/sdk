@@ -4,7 +4,7 @@ use super::{Form, Link};
 use crate::{Error, Result, layers::Layer};
 use futures::future::BoxFuture;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
@@ -159,44 +159,45 @@ async fn closure(
     source: &[u8],
     tree: &dyn Tree,
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
-    let mut modules = BTreeMap::new();
-    match compile_module(path, source) {
-        Ok(module) => modules.insert(path.to_owned(), module),
+    let mut root = match compile_module(path, source) {
+        Ok(module) => module,
         Err(error) => return Ok(Err(error)),
     };
-    // Depth-first, so an import of a module still on the path is a cycle.
-    let mut stack = vec![(path.to_owned(), 0_usize)];
+    let imports = std::mem::take(&mut root.imports).into_iter();
+    // False means the module is still on the depth-first path. Completed
+    // modules remain indexed, so shared imports need neither a read nor a scan.
+    let mut complete = HashMap::from([(path.to_owned(), false)]);
+    let mut stack = vec![(path.to_owned(), root, imports)];
     let mut order = Vec::new();
-    while let Some((current, index)) = stack.last().cloned() {
-        let Some(next) = modules[&current].imports.get(index).cloned() else {
-            stack.pop();
-            order.push(current);
+    while let Some((current, _, imports)) = stack.last_mut() {
+        let Some(next) = imports.next() else {
+            if let Some(done) = complete.get_mut(current.as_str()) {
+                *done = true;
+            }
+            if let Some((name, module, _)) = stack.pop() {
+                order.push((name, module));
+            }
             continue;
         };
-        if let Some(top) = stack.last_mut() {
-            top.1 += 1;
-        }
-        if stack.iter().any(|(name, _)| *name == next) {
-            return Ok(Err(format!("import cycle through {next}")));
-        }
-        if modules.contains_key(&next) {
-            continue;
+        match complete.get(&next) {
+            Some(false) => return Ok(Err(format!("import cycle through {next}"))),
+            Some(true) => continue,
+            None => {}
         }
         let Some(bytes) = tree.read(&next).await? else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"
             )));
         };
-        match compile_module(&next, &bytes) {
-            Ok(module) => modules.insert(next.clone(), module),
+        let mut module = match compile_module(&next, &bytes) {
+            Ok(module) => module,
             Err(error) => return Ok(Err(error)),
         };
-        stack.push((next, 0));
+        let imports = std::mem::take(&mut module.imports).into_iter();
+        complete.insert(next.clone(), false);
+        stack.push((next, module, imports));
     }
-    Ok(Ok(order
-        .into_iter()
-        .filter_map(|name| modules.remove(&name).map(|module| (name, module)))
-        .collect()))
+    Ok(Ok(order))
 }
 
 /// `path`'s source as a JavaScript module and its resolved static imports.

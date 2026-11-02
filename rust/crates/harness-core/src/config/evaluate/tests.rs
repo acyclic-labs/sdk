@@ -37,12 +37,21 @@ async fn error(source: &str, surface: Surface) -> String {
 
 #[tokio::test]
 async fn layers_fold_values_and_functions_with_static_imports() -> Result<()> {
+    struct CountedTree(AtomicU64);
+    impl Tree for CountedTree {
+        fn read<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            TREE.read(path)
+        }
+    }
+    let tree = CountedTree(AtomicU64::new(0));
     let seed = "import type { AgentConfig } from 'sys/types/config';\n\
                 export default (base: AgentConfig): AgentConfig => base;";
     let home = "import { fast } from './reexports.ts';\n\
+                import { fast as direct } from './models.ts';\n\
                 import defaults from 'sys/defaults.json';\n\
                 interface Unused { x: number }\n\
-                export default (base: { model: string }) => ({ ...base, model: fast, sampling: defaults });";
+                export default (base: { model: string }) => ({ ...base, model: fast === direct ? fast : 'wrong', sampling: defaults });";
     let layers = [
         Layer {
             name: "seed",
@@ -55,7 +64,10 @@ async fn layers_fold_values_and_functions_with_static_imports() -> Result<()> {
             bytes: Some(home.as_bytes()),
         },
     ];
-    let (value, chain) = compose("agent.ts", &layers, &TREE, json!({"model": "p/base"})).await?;
+    let (value, chain) = compose("agent.ts", &layers, &tree, json!({"model": "p/base"})).await?;
+    // The shared dependency is read once, and the erased type imports never
+    // reach the tree. Re-exporting a completed module is not a cycle.
+    assert_eq!(tree.0.load(Ordering::Relaxed), 3);
     assert_eq!(
         value,
         json!({"model": "p/fast", "sampling": {"temperature": 0.5}})
@@ -80,6 +92,13 @@ async fn layers_fold_values_and_functions_with_static_imports() -> Result<()> {
         (replaced.value, replaced.form),
         (json!({"model": "p/x"}), Form::Value)
     );
+    // A back edge to an active module is refused, unlike the shared import.
+    let message = error(
+        "import x from './loop/a.ts'; export default x;",
+        Surface::Compose,
+    )
+    .await;
+    assert!(message.contains("cycle through loop/a.ts"), "{message}");
     Ok(())
 }
 
@@ -122,7 +141,6 @@ async fn every_unusable_module_is_invalid_with_its_reason() {
             "import x from './missing.ts'; export default x;",
             "no layer holds",
         ),
-        ("import x from './loop/a.ts'; export default x;", "cycle"),
         ("export default {", "agent.ts"),
     ] {
         let message = error(source, Surface::Compose).await;
