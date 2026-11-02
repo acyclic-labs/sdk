@@ -42,7 +42,8 @@ fn agrees(
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let cache = Cache::default();
-    let mode = bytes.first().copied().unwrap_or_default() % 11;
+    let mode = bytes.first().copied().unwrap_or_default() % 12;
+    let pending = mode == 11 && bytes.get(1).copied().unwrap_or_default() & 1 == 0;
     let literal = json!({
         "text": String::from_utf8_lossy(bytes),
         "bytes": bytes,
@@ -133,7 +134,7 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     Form::Value,
                     false,
                 ),
-                _ => (
+                10 => (
                     [
                         "Number.isFinite = () => true; export default NaN;",
                         "Object.getPrototypeOf = () => Object.prototype; export default new Map();",
@@ -143,14 +144,32 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                     Form::Value,
                     false,
                 ),
+                _ => (
+                    if pending {
+                        "await new Promise(() => {}); export default null;".to_owned()
+                    } else {
+                        format!("export default await Promise.resolve(({encoded}));")
+                    },
+                    literal.clone(),
+                    Form::Value,
+                    false,
+                ),
             };
-            let expected = (mode < 4 || mode == 7)
+            let expected = (mode < 4 || mode == 7 || (mode == 11 && !pending))
                 .then(|| (value.clone(), form))
                 .filter(|_| !(functions && surface == Surface::Data));
             let cold = observed(
                 evaluate_cached("agent.ts", source.as_bytes(), &tree, &base, surface, &cache).await,
             );
             agrees(&cold, expected.as_ref())?;
+            if pending
+                && !cold
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.contains("a top-level await never settles"))
+            {
+                return Err("top-level await lost its pending-producer refusal".into());
+            }
             if mode == 8
                 && cold
                     .as_ref()
@@ -222,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn generated_settings_match_fresh_evaluation_and_reject_corrupt_cache() {
-        for mode in 0..11 {
+        for mode in 0..12 {
             let variants = if mode == 4 { 8 } else { 4 };
             for variant in 0..variants {
                 check(&[mode, variant, b'\"', b'\\', 0, 255]).await.unwrap();
