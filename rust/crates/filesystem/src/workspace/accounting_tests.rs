@@ -1,7 +1,7 @@
 use super::*;
 use crate::facade::FsWork;
 use crate::kernel::allocation::retained::Retained;
-use crate::{Fs, WorkCounters};
+use crate::{AuthorityStoreError, AuthorityWork, Fs, WorkCounters};
 use std::sync::Mutex;
 
 pub(super) struct Prefunded {
@@ -204,4 +204,101 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
     assert_eq!(earlier.value, [7]);
     earlier.retire(&mut accounting)?;
     Ok(())
+}
+
+pub(super) struct Observation {
+    pub(super) minimum: u64,
+    pub(super) completion: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+#[derive(Default)]
+pub(super) struct ObservedAuthority {
+    inner: crate::MemoryAuthorityStore,
+    pub(super) observation: Mutex<Option<Observation>>,
+}
+
+impl AsyncAuthorityStore for ObservedAuthority {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
+    fn actor_scope(&self) -> [u8; 16] {
+        self.inner.actor_scope()
+    }
+
+    fn policy_owner(&self) -> crate::PolicyOwner {
+        self.inner.policy_owner()
+    }
+
+    async fn create_authority<G: crate::AuthorityGuard>(
+        &self,
+        authority: crate::AuthorityId,
+        epoch: crate::Epoch,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+        self.inner
+            .create_authority(authority, epoch, work, guard)
+            .await
+    }
+
+    async fn create_first_record<G: crate::AuthorityGuard>(
+        &self,
+        authority: crate::AuthorityId,
+        commit: crate::ProposedCommit,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<bool, crate::AuthorityError<G::Error>> {
+        self.inner
+            .create_first_record(authority, commit, work, guard)
+            .await
+    }
+
+    async fn compare_and_append<G: crate::AuthorityGuard>(
+        &self,
+        request: crate::GuardedAppend,
+        work: &mut AuthorityWork<'_>,
+        guard: Option<&mut G>,
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
+        self.inner.compare_and_append(request, work, guard).await
+    }
+
+    async fn head(
+        &self,
+        authority: crate::AuthorityId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::Head, AuthorityStoreError> {
+        let observation = self.observation.lock().unwrap().take();
+        if let Some(observation) = observation {
+            assert!(work.allocations.live_bytes() >= observation.minimum);
+            assert!(work.spent().items_examined > 0);
+            work.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if let Some(completion) = observation.completion {
+                completion.await.map_err(|_| AuthorityStoreError::Retired)?;
+            }
+        }
+        self.inner.head(authority, work).await
+    }
+
+    async fn replay(
+        &self,
+        authority: crate::AuthorityId,
+        after: crate::Sequence,
+        limit: crate::ReplayLimit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        self.inner.replay(authority, after, limit, work).await
+    }
+
+    async fn find_operation(
+        &self,
+        authority: crate::AuthorityId,
+        operation: crate::OperationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Option<crate::DurableCommit>, AuthorityStoreError> {
+        self.inner.find_operation(authority, operation, work).await
+    }
 }

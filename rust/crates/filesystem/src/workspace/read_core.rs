@@ -1,6 +1,47 @@
 use super::*;
 use crate::facade::FsWork as _;
 
+pub(super) async fn lookup_paths<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    paths: &[NamespacePath],
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(crate::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
+    let mut scope = accounting.allocation_scope();
+    let result = async {
+        let mut checkout = workspace
+            .open_checkout(
+                selector,
+                CheckoutMode::read_only_pinned(),
+                &mut scope,
+                cancellation,
+            )
+            .await?;
+        let (lookup, allocation) = checkout
+            .value
+            .lookup_batch_no_follow_with_accounting::<true>(paths, false, &mut scope, cancellation)
+            .await?;
+        checkout.retire(&mut scope)?;
+        let allocation = workspace_allocation(allocation, &scope)?;
+        Ok((lookup, allocation))
+    }
+    .await;
+    let result = authorize(workspace, result, &mut scope, cancellation).await;
+    if result.is_ok() {
+        scope.keep();
+    } else {
+        drop(scope);
+    }
+    result.map(|(mut lookup, allocation)| {
+        lookup.work = accounting.spent();
+        (lookup, allocation)
+    })
+}
+
 pub(super) async fn read_selected<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -382,10 +423,20 @@ async fn finish<
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> W::Output<T, WorkspaceError> {
+    let result = authorize(workspace, result, accounting, cancellation).await;
+    work.finish(result, accounting)
+}
+
+async fn authorize<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, T>(
+    workspace: &Workspace<A, O>,
+    result: Result<T, WorkspaceError>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<T, WorkspaceError> {
     let authorization = workspace
         .check_current_access(accounting, cancellation)
         .await;
-    work.finish(authorization.and(result), accounting)
+    authorization.and(result)
 }
 
 #[cfg(test)]

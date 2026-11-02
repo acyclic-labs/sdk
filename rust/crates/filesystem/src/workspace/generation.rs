@@ -358,57 +358,24 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Resolves an ordered no-follow path batch, preserving absence and duplicates.
-    pub async fn lookup_paths(
+    /// Returns the canonical batch and its original result allocation. Current
+    /// workspace authority is checked before the selected data is returned.
+    pub async fn lookup_paths<W: crate::facade::FsWork>(
         &self,
         paths: &[NamespacePath],
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> crate::FsResult<Vec<Option<crate::kernel::FileRecord>>> {
-        let checkout = self
-            .workspace
-            .volume
-            .checkout(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        let mut accounting = KernelAccounting::Standalone {
-            allocations: crate::kernel::allocation::AllocationLedger::default(),
-            work: checkout.work,
-            budget,
+    ) -> W::Output<(crate::PathBatchLookup, crate::AuthorityAllocation), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = read_core::lookup_paths(
+            &self.workspace,
+            GenerationSelector::Exact(self.id),
+            paths,
+            &mut accounting,
             cancellation,
-        };
-        let mut checkout = checkout.value;
-        let result = async {
-            accounting.claim_owned(checkout.logical_owned_bytes(), 0)?;
-            let (lookup, allocation) = checkout
-                .lookup_batch_no_follow_with_accounting::<true>(
-                    paths,
-                    false,
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            let bytes = lookup.retained_allocation_bytes;
-            let lookup = crate::kernel::Owned::new(lookup, allocation, bytes);
-            let mut records =
-                crate::kernel::Owned::allocate(lookup.value.entries.len(), &mut accounting)
-                    .map_err(|error| match error {
-                        FsError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed) => {
-                            FsError::HandleAllocationFailed
-                        }
-                        error => error,
-                    })?;
-            for entry in lookup.value.entries {
-                accounting.charge_items(1)?;
-                records.value.push(entry.record);
-            }
-            Ok(records.value)
-        }
+        )
         .await;
-        crate::facade::measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Returns one exact-generation directory page and its result allocation.

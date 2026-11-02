@@ -118,51 +118,168 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 }
 
 #[tokio::test]
-async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
+async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
 -> Result<(), Box<dyn Error>> {
-    let fs = Fs::memory();
-    let workspace = unbounded!(fs, create_workspace("lookup-paths"))?;
-    workspace.write_text("/present", "body").await?;
-    let generation = unbounded!(workspace, head())?;
-    let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
-    let present = customer_path("/present", config)?;
-    let absent = customer_path("/absent", config)?;
-    let records = generation
-        .lookup_paths(
-            &[present.clone(), absent, present.clone()],
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+    use crate::access::{Action, INITIAL_POLICY, fixtures};
+    use crate::workspace::accounting_tests::{Observation, ObservedAuthority, Prefunded};
+    use std::sync::{Arc, Mutex};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let authority = Arc::new(ObservedAuthority::default());
+    let fs = Fs::new(
+        authority.clone(),
+        Arc::new(crate::MemoryObjectStore::default()),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let workspace = fs
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "lookup-paths",
+            crate::VolumeInitialization {
+                config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                access_policy: Some(INITIAL_POLICY),
+            },
+            crate::OperationId::new(),
+            budget,
+            &cancellation,
+            None,
         )
+        .await?
+        .value
+        .workspace();
+    workspace.write_text("/present", "body").await?;
+    let reader = workspace
+        .clone()
+        .bind_coarse_access(&Action::ALL, &cancellation)
         .await?;
-    assert_eq!(records.value.len(), 3);
-    assert!(records.value[0].is_some());
-    assert!(records.value[1].is_none());
-    assert_eq!(records.value[0], records.value[2]);
+    let generation = reader.head(budget, &cancellation).await?.value;
+    let config = workspace.volume_config();
+    let present = customer_path("/present", config)?;
+    let paths = [
+        present.clone(),
+        customer_path("/absent", config)?,
+        present.clone(),
+    ];
+    // Later publications cannot change the selected immutable batch.
+    workspace.write_text("/present", "later").await?;
+    for reads in [0, budget.backend_read_operations] {
+        let source = Prefunded {
+            budget: WorkBudget {
+                backend_read_operations: reads,
+                ..budget
+            },
+            held: Mutex::new(None),
+        };
+        let (result, spent, live, baseline) = generation
+            .lookup_paths(&paths, &source, &cancellation)
+            .await;
+        spent.verify(source.budget)?;
+        if reads == 0 {
+            assert!(matches!(
+                result,
+                Err(WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "backend_read_operations",
+                    ..
+                }))
+            ));
+            assert_eq!(spent.backend_read_operations, 0);
+            assert_eq!(live, baseline);
+        } else {
+            let (lookup, allocation) = result?;
+            assert!(allocation.is_none());
+            assert_eq!(lookup.work, spent);
+            assert_eq!(lookup.entries.len(), paths.len());
+            assert!(lookup.entries[0].record.is_some());
+            assert!(lookup.entries[1].record.is_none());
+            assert_eq!(lookup.entries[0], lookup.entries[2]);
+            assert_eq!(live, baseline + lookup.retained_allocation_bytes);
+            assert!(spent.items_examined > 1);
+        }
+    }
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let cancelled_failure = generation
-        .lookup_paths(
-            std::slice::from_ref(&present),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )
+    let failure = generation
+        .lookup_paths(&paths, budget, &cancelled)
         .await
-        .err()
-        .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
-    assert!(matches!(cancelled_failure.error, FsError::Cancelled(_)));
-    let budget_failure = generation
-        .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
-        .await
-        .err()
-        .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
-    assert!(matches!(
-        budget_failure.error,
-        FsError::Work(crate::WorkError::BudgetExceeded { .. })
-            | FsError::Object(crate::ObjectStoreError::Work(
-                crate::WorkError::BudgetExceeded { .. }
-            ))
-    ));
+        .unwrap_err();
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+
+    for withdraw in [false, true] {
+        let cancellation = CancellationToken::new();
+        let source = Prefunded {
+            budget,
+            held: Mutex::new(None),
+        };
+        let funded = &source;
+        let mut accounting = crate::facade::FsWork::accounting(&funded, &cancellation);
+        let baseline = accounting.standalone_parts().unwrap().0.live_bytes();
+        let (producer, completion) = tokio::sync::oneshot::channel();
+        *authority.observation.lock().unwrap() = Some(Observation {
+            minimum: baseline,
+            completion: Some(completion),
+        });
+        let mut operation = Box::pin(crate::workspace::read_core::lookup_paths(
+            &reader,
+            crate::GenerationSelector::Exact(generation.id()),
+            &paths,
+            &mut accounting,
+            &cancellation,
+        ));
+        assert!(futures::poll!(operation.as_mut()).is_pending());
+        assert!(authority.observation.lock().unwrap().is_none());
+        if withdraw {
+            cancellation.cancel();
+            drop(operation);
+            drop(producer);
+        } else {
+            drop(producer);
+            assert!(matches!(
+                operation.await,
+                Err(WorkspaceError::Filesystem(FsError::WorkspaceDeleted))
+            ));
+        }
+        assert_eq!(
+            accounting.standalone_parts().unwrap().0.live_bytes(),
+            baseline
+        );
+        assert!(accounting.spent().backend_read_operations > 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let original =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let native_baseline = original.live_allocation_bytes();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (lookup, allocation) = generation
+            .lookup_paths(&paths, &original, &cancellation)
+            .await?;
+        let allocation = allocation.ok_or("native batch lost its original result allocation")?;
+        assert_eq!(allocation.bytes(), lookup.retained_allocation_bytes);
+        assert!(original.live_allocation_bytes() >= native_baseline + allocation.bytes());
+        assert_eq!(lookup.entries[0], lookup.entries[2]);
+        assert!(lookup.entries[1].record.is_none());
+        drop((lookup, allocation));
+    }
+
+    // An old generation cannot bypass a later policy revocation.
+    fixtures::publish_policy(&workspace, &fixtures::denied(Action::Read, "present")).await?;
+    let source = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let (result, _, live, baseline) = generation
+        .lookup_paths(&paths, &source, &cancellation)
+        .await;
+    assert!(matches!(result, Err(WorkspaceError::AccessDenied)));
+    assert_eq!(live, baseline);
+    drop((generation, reader, workspace, fs, authority));
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(original.live_allocation_bytes(), native_baseline);
     Ok(())
 }
 
