@@ -5,32 +5,23 @@ agent for the shipping GraphCoder prompt mode. It never starts a benchmark.
 Every generated plan is marked BLOCKED until its explicit readiness requirements
 are satisfied. Fixture tests make no model calls and require no credentials.
 
-Run all Linux preparation on Linux. Build GraphCoder from the exact qualified main
-SHA using `cargo build --locked --release -p graphcoder`. Windows and macOS live
-acceptance must qualify that same SHA before benchmark execution. Do not build
-or run benchmark tasks on a developer PC.
-
-Use Harbor 0.24.0 and Python 3.12 or later. Install `requirements.lock` into a
-dedicated environment with pinned uv 0.13.5 (`uv venv`, then
-`uv pip sync --require-hashes --python ENV/bin/python scripts/benchmarks/requirements.lock`).
-The Linux system Python lacks ensurepip; `python3 -m venv` with pip bootstrapping
-is not a prerequisite. Keep tools, caches and environments in the lane target
-directory. Linux target directories are disposable per job: do not assume
-an environment from an earlier job still exists. The self-contained Linux setup
-downloads a SHA256-pinned public uv wheel, creates the environment without
-ensurepip and installs only the hashed dependency lock:
+Use Python 3.12 or later on Linux. The existing bootstrap installs the pinned
+Harbor dependencies from `requirements.lock` into an explicit tools directory:
 
 ```sh
-python3 -m scripts.benchmarks.bootstrap --directory "$CARGO_TARGET_DIR/benchmark-tools"
-bash scripts/qualify-benchmarks.sh "$CARGO_TARGET_DIR/benchmark-tools/environment/bin/python"
+python3 -m scripts.benchmarks.bootstrap --directory /path/to/benchmark-tools
+bash scripts/qualify-benchmarks.sh /path/to/benchmark-tools/environment/bin/python
 ```
 
 Setup network/install time is separate from the offline qualification suite.
 On Linux also run `cargo test --locked -p acyclic-harness-providers --test main benchmark_catalog::`.
 It generates the actual Python catalogue, loads/resolves it through GraphCoder's
 production registry with empty explicit credentials, and rejects the old
-incomplete feature declaration. It never sends a request. The ordinary Rust
-all-target gate includes this integration proof.
+incomplete feature declaration. It never sends a request.
+
+Build the Linux GraphCoder artifact from the selected source commit with
+`cargo build --locked --release -p graphcoder`. Preserve its source commit and
+SHA256 digest with the plan; the artifact alone does not satisfy run readiness.
 
 Inventory an already available public dataset checkout at its immutable Git
 commit. The inventory reads Git tree metadata only; it does not fetch tasks:
@@ -40,19 +31,19 @@ python3 -m scripts.benchmarks.plan inventory \
   --repository /path/to/terminal-bench-2 \
   --dataset terminal-bench@2.0 \
   --git-url https://github.com/laude-institute/terminal-bench-2.git \
-  --commit FULL_40_DIGIT_DATASET_COMMIT > /lane/tb2-manifest.json
+  --commit FULL_40_DIGIT_DATASET_COMMIT > /path/to/tb2-manifest.json
 ```
 
 Generate a plan with an explicitly supplied, unauthenticated Responses endpoint:
 
 ```sh
 python3 -m scripts.benchmarks.plan plan \
-  --stage tb2-20 --manifest /lane/tb2-manifest.json \
-  --binary /lane/target/release/graphcoder --binary-sha256 FULL_BINARY_SHA256 \
+  --stage tb2-20 --manifest /path/to/tb2-manifest.json \
+  --binary /path/to/graphcoder --binary-sha256 FULL_BINARY_SHA256 \
   --source-sha FULL_QUALIFIED_MAIN_COMMIT \
   --model openai/MODEL --base-url http://EXPLICIT_ENDPOINT/v1 \
   --context-tokens MODEL_CONTEXT_CAPACITY --output-tokens MODEL_OUTPUT_CAPACITY \
-  --codex-version EXACT_CODEX_VERSION > /lane/tb2-20-plan.json
+  --codex-version EXACT_CODEX_VERSION > /path/to/tb2-20-plan.json
 ```
 
 The planner has no Harbor dependency. It rejects floating commits, incomplete
@@ -71,6 +62,9 @@ Each plan contains `graphcoder` and `codex` Harbor job objects. Preserve the pla
 alongside any subsequently authorized job configurations and resulting Harbor
 `lock.json` and per-trial verifier results. A plan is not a run receipt. No
 comparison score or missing-trial interpretation is produced here.
+An execution receipt must retain failed attempts and distinguish process
+completion from the task's required effects. A zero exit status alone does not
+establish task success.
 
 The GraphCoder adapter verifies the Linux binary digest and captures those
 exact bytes before any upload, checks the digest again inside the environment,
