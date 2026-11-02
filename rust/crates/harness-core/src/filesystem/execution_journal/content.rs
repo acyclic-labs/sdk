@@ -582,12 +582,11 @@ where
             }
             references.push((file, binding));
         }
-        if io.is_none()
-            && references.iter().any(|(_, binding)| binding.is_some())
+        if references.iter().any(|(_, binding)| binding.is_some())
             && let Some(context) = context
         {
             context
-                .verify_model_contents(std::iter::once(content))
+                .verify_model_contents_with_io(std::iter::once(content), io)
                 .await?;
             for (file, _) in &references {
                 self.verify_input_file_with_io(file, io).await?;

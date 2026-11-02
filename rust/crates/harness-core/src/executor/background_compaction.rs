@@ -120,8 +120,22 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only {
             return Ok(None);
         }
-        let profile =
-            preparation_digest(&(&self.stock.model, self.stock.max_output_tokens), self.io)?;
+        let profile = preparation_digest(
+            &(
+                &self.stock.model,
+                self.stock.max_output_tokens,
+                self.original_context().map(|context| {
+                    let scope = context.scope();
+                    (
+                        scope.grants(),
+                        scope.limits(),
+                        scope.run_limits(),
+                        scope.extensions(),
+                    )
+                }),
+            ),
+            self.io,
+        )?;
         let mut selected = session.summary.lock().map_err(|_| {
             stock_boundary(
                 self.io,
@@ -173,8 +187,8 @@ impl StockExecution<'_> {
         let mut operation = [0; 16];
         operation.copy_from_slice(&identity.finalize().as_bytes()[..16]);
         let operation = OperationId::from_bytes(operation);
-        // A summary owns no foreground task context, stop token, tool effects,
-        // reply writer or hook invocation. Content uses the same journal grant.
+        // Native file options retain their original admission and readers,
+        // without the foreground journal, stop token or agent execution.
         let mut stock = StockExecutor::new(
             self.stock.model.clone(),
             Arc::clone(&self.stock.provider),
@@ -184,6 +198,11 @@ impl StockExecution<'_> {
         .with_limits(self.stock.limits)
         .with_compaction_policy(self.compaction_policy()?.clone());
         stock.max_output_tokens = self.stock.max_output_tokens;
+        if let Some((context, _)) = self.context {
+            let context = context.model_source();
+            stock.tool_scope = context.scope().clone();
+            stock.task_context = Some((Arc::new(context), operation));
+        }
         let (publish, completion) = watch::channel(None);
         let pending = Arc::new(PendingSummary {
             through,

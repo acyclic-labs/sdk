@@ -6,12 +6,22 @@ impl TaskContext {
         &self,
         contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
     ) -> Result<()> {
+        self.verify_model_contents_with_io(contents, None).await
+    }
+
+    pub(crate) async fn verify_model_contents_with_io<'a>(
+        &self,
+        contents: impl Iterator<Item = &'a ModelContent> + Clone + acyclic_stream::ProviderTask,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
         let limits = self.scope.limits();
         for content in contents.clone() {
-            content.validate_limits(limits, &mut None)?;
+            crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
             for file in content.file_refs() {
-                limits.validate_file(file, &mut None)?;
-                if !read_granted(self.scope.grants(), file)? {
+                crate::executor::with_history_io(io, |work| limits.validate_file(file, work))?;
+                if !crate::executor::with_history_io(io, |work| {
+                    read_granted_with_work(self.scope.grants(), file, work)
+                })? {
                     return Err(Error::Unauthorized(
                         "task scope cannot project this file".into(),
                     ));
@@ -26,7 +36,7 @@ impl TaskContext {
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
                     self.scope.extension_runtime.as_deref(),
-                    None,
+                    io,
                 )?;
                 Ok((binding, proof))
             })
@@ -41,15 +51,17 @@ impl TaskContext {
                     &binding.configuration.content,
                     binding.configuration.content.descriptor().byte_length(),
                     None,
-                    None,
+                    io,
                 )?
                 .await?;
+            #[cfg(feature = "filesystem")]
+            let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             schemas.verify_configuration_binding(
                 &binding.configuration,
                 *expected,
                 &bytes,
                 limits,
-                None,
+                io,
             )?;
         }
         for file in contents.flat_map(ModelContent::file_refs) {
@@ -60,7 +72,7 @@ impl TaskContext {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
                     .reader
-                    .verify(file, file.descriptor().byte_length(), None)?
+                    .verify(file, file.descriptor().byte_length(), io)?
                     .await?;
             }
         }

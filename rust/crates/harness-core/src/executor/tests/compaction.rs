@@ -2,6 +2,216 @@ use super::*;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[tokio::test]
+async fn serving_summary_preserves_native_file_admission() -> Result<()> {
+    use crate::conversation::{BoundedContentFuture, ContentResidencyVerifier, VolumeOperation};
+    use crate::extension::{
+        ExtensionIdentity, ExtensionRegistry, ExtensionRuntime, NativeExtension,
+    };
+
+    struct Reader(Arc<dyn ExecutionJournal>);
+    impl ContentResidencyVerifier for Reader {
+        fn read<'a>(
+            &'a self,
+            file: &'a FileRef,
+            maximum: u64,
+            _: Option<&'a Capabilities>,
+            io: Option<&'a PreparationIo>,
+        ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if file.descriptor().byte_length() > maximum {
+                return Err(Error::Invalid("selected file exceeds read credit".into()));
+            }
+            self.0.load(file, io)
+        }
+    }
+    struct Options(ExtensionIdentity);
+    impl NativeExtension for Options {
+        fn identity(&self) -> ExtensionIdentity {
+            self.0.clone()
+        }
+    }
+
+    let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+    let journal = Arc::new(journal);
+    let publication = OperationId::new();
+    let file = journal
+        .stage(publication, "image", b"image bytes", "image/png", None)?
+        .await?;
+    let options = journal
+        .stage(
+            publication,
+            "options",
+            b"{\"detail\":\"high\"}",
+            "application/json",
+            None,
+        )?
+        .await?;
+    let schema = json!({"type":"object", "properties":{"detail":{"const":"high"}}, "required":["detail"], "additionalProperties":false});
+    let identity = ExtensionIdentity::new("test.media", 1, [71; 32])?;
+    let mut schemas = crate::core::SchemaRegistry::new();
+    schemas.register(
+        "test.media",
+        1,
+        json!({"type":"object"}),
+        identity.digest,
+        crate::core::ExtensionForkPolicy::Inherit,
+        [],
+        Some(schema.clone()),
+    )?;
+    let binding = crate::model::NativeConfigurationBinding {
+        source: crate::core::EventReference {
+            authority: crate::core::Authority {
+                kind: crate::core::AggregateKind::Agent,
+                id: "native-summary".into(),
+            },
+            revision: 1,
+        },
+        configuration: crate::core::ExtensionConfiguration {
+            extension: crate::core::ExtensionDependency {
+                name: identity.name.clone(),
+                version: identity.version,
+            },
+            schema_digest: crate::executor::json::canonical_json_digest(
+                &schema,
+                u64::MAX,
+                &mut None,
+            )?,
+            content: options,
+        },
+        implementation_digest: identity.digest,
+    };
+    let admission = serde_json::from_value(json!({
+        "source": binding.source,
+        "selected": [binding.configuration.extension],
+        "configurations": [binding.configuration],
+    }))
+    .map_err(|error| Error::Invalid(error.to_string()))?;
+    let registry = ExtensionRegistry::default();
+    registry.install(Arc::new(Options(identity.clone())))?;
+    let runtime = ExtensionRuntime::activate(registry, [identity])?;
+    let volume = file.volume().clone();
+    let scope = crate::runtime::test_context::extension_scope(
+        RuntimeScope::new(
+            Capabilities::new([
+                "model:generate".into(),
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Limits::default(),
+        )?,
+        admission,
+        schemas,
+        runtime,
+    )?;
+    let context = agent_context(
+        scope.clone(),
+        Some(crate::runtime::ContentBindings {
+            volume: volume.clone(),
+            reader: Arc::new(Reader(journal.clone())),
+            writer: Some(Arc::new(PrivateVolume(volume))),
+        }),
+    )?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let (mut owner, session) = crate::filesystem::SessionWork::admit(work)?;
+    let slot = session.agent(&crate::agent::AgentId::from_bytes([84; 16]))?;
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("native summary".into())])
+            .with_token_counter(fixture_token_count),
+    );
+    let stock = StockExecutor::new(
+        Model::new("synthetic".into(), "native-summary".into(), "1".into())?,
+        provider.native(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_tool_authority(scope, allowed()?)?
+    .with_task_context(&context, OperationId::new())?
+    .with_session(Some(slot));
+    let execution = StockExecution::ordinary(&stock);
+    let source = crate::context::Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file,
+                    policy: crate::model::FileProjectionPolicy::Native(Box::new(
+                        crate::model::NativeMediaPolicy {
+                            intent: crate::model::NativeMediaIntent::Image {
+                                detail: crate::model::ImageDetail::High,
+                            },
+                            maximum_bytes: 64,
+                            maximum_work: 64,
+                            configuration: Some(binding.clone()),
+                        },
+                    )),
+                }),
+            },
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("recent input".into()),
+            },
+        ],
+        ..Default::default()
+    };
+    let pending = execution
+        .background_summary(journal.as_ref(), &source, 1)?
+        .unwrap();
+    let (summary, _) = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&pending, &source) => result?,
+    };
+    assert_eq!(
+        journal.load(&summary.output, None)?.await?.as_ref(),
+        b"native summary"
+    );
+    assert!(
+        journal
+            .authenticate_compaction_summary(&summary, None)?
+            .await?
+    );
+    assert_eq!(
+        provider.requests()[0].messages[0].content,
+        source.messages[0].content
+    );
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        execution.demand_summary(&pending, &source).await?.0,
+        summary
+    );
+
+    // The source's native options cannot be retargeted to another admission.
+    let mut foreign = source;
+    let ModelContent::Part(ModelContentPart::File { policy, .. }) =
+        &mut foreign.messages[0].content
+    else {
+        unreachable!()
+    };
+    let crate::model::FileProjectionPolicy::Native(policy) = policy else {
+        unreachable!()
+    };
+    policy.configuration.as_mut().unwrap().source.revision += 1;
+    let refused = execution
+        .background_summary(journal.as_ref(), &foreign, 1)?
+        .unwrap();
+    let error = tokio::select! {
+        result = owner.drive() => return result,
+        result = execution.demand_summary(&refused, &foreign) => result.unwrap_err(),
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "foreign options reached the model"
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
 async fn serving_summary_prefetch_failure_preserves_admitted_response_and_cancellation()
 -> Result<()> {
     for failure in 0..4 {

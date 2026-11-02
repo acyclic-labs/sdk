@@ -2,6 +2,20 @@
 use super::*;
 use crate::conversation::{VolumeClass, VolumeOwner};
 
+#[cfg(test)]
+pub(crate) fn extension_scope(
+    mut scope: RuntimeScope,
+    admission: ExtensionAdmission,
+    schemas: SchemaRegistry,
+    runtime: Arc<ExtensionRuntime>,
+) -> Result<RuntimeScope> {
+    admission.validate(&mut None)?;
+    scope.extensions = Some(admission);
+    scope.extension_schemas = Some(schemas);
+    scope.extensions_sealed = true;
+    scope.with_extension_runtime(runtime)
+}
+
 /// A publisher that only names its volume `0`.
 pub(crate) struct PrivateVolume(pub(crate) VolumeRef);
 

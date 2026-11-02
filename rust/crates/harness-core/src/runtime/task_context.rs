@@ -12,6 +12,18 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
+    /// Retains original content authority for an independent model operation.
+    /// The foreground journal and agent execution are not part of this source.
+    pub(crate) fn model_source(&self) -> Self {
+        Self {
+            harness: Arc::clone(&self.harness),
+            scope: self.scope.clone(),
+            output_content: self.output_content.clone(),
+            journal: None,
+            agent: None,
+        }
+    }
+
     /// Retains the same finalized journal supplied to this turn's executor.
     #[must_use]
     pub fn with_execution_journal(
