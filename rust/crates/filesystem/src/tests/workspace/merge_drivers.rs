@@ -303,10 +303,10 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         ));
     }
 
-    // Replacement classification must keep its path parsing and lookup on the
-    // same original allowance, rather than opening independent stat reads.
-    {
-        let conflict = MergeConflict::File(unbounded!(main, stat("/replaced"))?.file_id);
+    // Presentation and replacement lookup share the original path allowance;
+    // an ordinary binary conflict must not bypass it with a fresh frame.
+    for path in ["/binary", "/replaced"] {
+        let conflict = MergeConflict::File(unbounded!(main, stat(path))?.file_id);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
         let mut calibration = value!(
             join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
@@ -315,13 +315,16 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let prepared_components = calibration.work().source_path_components;
         let view = calibration.describe_conflict_file(conflict.clone()).await?;
         assert_eq!(view.kind, ConflictKind::Binary);
-        assert_eq!(
-            view.theirs,
-            ConflictValue::Record {
-                generation: pins.2,
-                file_id: replacement
-            }
-        );
+        assert_eq!(view.path.as_deref(), Some(path));
+        if path == "/replaced" {
+            assert_eq!(
+                view.theirs,
+                ConflictValue::Record {
+                    generation: pins.2,
+                    file_id: replacement
+                }
+            );
+        }
         assert!(calibration.work().source_path_components > prepared_components);
         drop(calibration);
         let join = unbounded!(agent.join_into(&main).git_metadata(), plan())?;
@@ -343,7 +346,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
                     crate::WorkError::BudgetExceeded { .. }
                 ))
             ),
-            "replacement lookup minted another path allowance"
+            "selected path presentation minted another path allowance: {path}"
         );
     }
 
